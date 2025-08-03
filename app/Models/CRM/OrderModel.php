@@ -12,12 +12,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use App\Models\FIN\ArPaymentDetailModel;
 use Carbon\Carbon;
-use App\Models\CRM\AccountCustomerModel;
+use App\Models\CRM\CustomerModel;
 
 class OrderModel extends BaseModel
 {
     use HasFactory, Notifiable, ArTransaction;
-    protected $table = 't_crm_order';
+    protected $table = 't_crm_orders';
     protected $primaryKey = 'id';
     // Rest omitted for brevity 
     public $timestamps = true;
@@ -30,54 +30,40 @@ class OrderModel extends BaseModel
 
     protected $fillable = [
         'id',
-        'company_id',
-        'branch_id',
-        'order_no',
-        'reg_no',
-        'cust_name',
-        'contact_no',
-        'email',
-        'order_date',
-        'description',
-        'tot_cost',
-        'tot_qty',
-        'tot_price',
-        'vat_rate',
-        'tot_vat',
-        'tot_price_vat',
-        'ord_status',
-        'is_walk_in',
-        'cust_id',
+        'shopify_id',
+        'contact_email',
         'created_at',
-        'created_by',
+        'currency',
+        'name',
+        'order_number',
+        'subtotal_price',
+        'total_price',
+        'total_tax',
+        'total_weight',
         'updated_at',
-        'updated_by'
+        'customer_id',
+        'created_by',
+        'updated_by',
+        'source'
     ];
 
     protected $map = [
         'id',
-        'company_id',
-        'branch_id',
-        'order_no',
-        'reg_no',
-        'cust_name',
-        'contact_no',
-        'email',
-        'order_date',
-        'description',
-        'tot_cost',
-        'tot_qty',
-        'tot_price',
-        'vat_rate',
-        'tot_vat',
-        'tot_price_vat',
-        'ord_status',
-        'is_walk_in',
-        'cust_id',
+        'shopify_id',
+        'contact_email',
         'created_at',
-        'created_by',
+        'currency',
+        'name',
+        'order_number',
+        'subtotal_price',
+        'total_price',
+        'total_tax',
+        'total_weight',
         'updated_at',
-        'updated_by'
+        'customer_id',
+        'created_by',
+        'updated_by',
+        'source'
     ];
 
 
@@ -85,34 +71,16 @@ class OrderModel extends BaseModel
     {
         return $this->hasMany(OrderDetailModel::class, 'order_id', 'id');
     }
-
-    public function AccountCustomer()
+    public function OrderAddress()
     {
-        return $this->hasOne(AccountCustomerModel::class, 'id', 'cust_id');
+        return $this->hasMany(OrderAddressModel::class, 'order_id', 'id');
     }
 
-
-    public function Company()
+    public function Customer()
     {
-        return $this->hasOne(CompanyModel::class, 'id', 'company_id');
+        return $this->hasOne(CustomerModel::class, 'id', 'customer_id');
     }
 
-    public function CompanyConfig()
-    {
-        return $this->hasOne(CompanyConfigModel::class, 'company_id', 'company_id');
-    }
-
-
-    public function Branch()
-    {
-        return $this->hasOne(BranchModel::class, 'id', 'branch_id');
-    }
-
-    function GetCountByBranch($id) //Single  
-    {
-        $list = OrderModel::where('branch_id', '=', $id)->get();
-        return  $list->count();
-    }
 
     function List($data) //All record
     {
@@ -176,356 +144,97 @@ class OrderModel extends BaseModel
 
             //Model Initialized 
             $model = new OrderModel;
-            $walkInCust = new WalkInCustomerModel;
-            //Set Data Validation Error Messages
-            $this->err_msgs = [
-                'reg_no.required' => 'Please enter reg no',
-            ];
-            //Set Data Validation Rules
-            $this->rules = [
-                'reg_no' => 'required'
-            ];
             $this->data = $data;
 
             // Validate the request...
-            if (array_key_exists("id", $this->data) && $this->data['id'] > 0) {
-                $model = OrderModel::find($this->data['id']);
+            if (array_key_exists("shopify_id", $this->data) && $this->data['shopify_id'] > 0) {
+                $model = OrderModel::where("shopify_id", $this->data['shopify_id'])->first();
                 if ($model == null) {
-                    $this->dataNotFound();
-                    return $this->setResponse();
+                    $model = new OrderModel;
                 }
-                $this->rules['cust_name'] =  $this->rules['cust_name'] . ',cust_name,' . $model->id;
-                $model->updated_by = $this->CurrentUserId();
-                $model->is_active   =  $this->data['is_active'];
             } else {
                 $model->created_by =  $this->CurrentUserId();
-                $model->company_id =  $this->data['company_id'];
-                $model->branch_id =  $this->data['branch_id'];
             }
+            $model->created_by =  $this->CurrentUserId();
+            $model->contact_email = $this->data['contact_email'];
+            $model->currency = $this->data['currency'];
+            $model->name = $this->data['name'];
+            $model->order_number = $this->data['order_number'];
+            $model->subtotal_price = $this->data['subtotal_price'];
+            $model->total_price = $this->data['total_price'];
+            $model->total_tax = $this->data['total_tax'];
+            $model->total_weight = $this->data['total_weight'];
+            $model->customer_id = $this->data["customer"]['id'];
+            $model->source = $this->data['source'];
+            $model->shopify_id = $this->data['shopify_id'];
 
-            //Order STATUS
-            $ord_status = $this->data['ord_status'];
-            //Order STATUS
-            //Order Number
-            $this->cid =   $model->company_id;
-            $this->bid =   $model->branch_id;
-            $this->getOrderNo();
-            $model->order_no = $this->newNum;
-            //Order Number          
-            $model->reg_no = $this->data['reg_no'];
-            $cust_id = 0;
-
-            if (isset($this->data["livesearchCustomer"])) {
-                $model->is_walk_in = "N";
-                $model->cust_id = $this->data["livesearchCustomer"]['id'];
-                $cust_id = $this->data["livesearchCustomer"]['id'];
-                $model->cust_name = $this->data["livesearchCustomer"]['company_name'];
-                $model->contact_no = $this->data["livesearchCustomer"]['contact_no'];
-                $model->email = $this->data["livesearchCustomer"]['email'];
-            } else {
-                $model->is_walk_in = "Y";
-                $model->cust_name = $this->data['cust_name'];
-                $model->contact_no = $this->data['contact_no'];
-                $model->email = $this->data['email'];
-
-                $walkInCustData = $walkInCust->GetByRegNo($model->reg_no,  $model->company_id); //WalkInCustomerModel::where("reg_no", "=", $model->reg_no)->where("company_id", "=", $model->company_id)->get();
-
-                if (isset($walkInCustData->data[0])) {
-                    $walkInCust = WalkInCustomerModel::find($walkInCustData->data[0]["id"]);
-                    $walkInCust->updated_by =  $this->CurrentUserId();
-                } else {
-                    $walkInCust->created_by =   $this->CurrentUserId();
-                }
-                $walkInCust->company_id =  $model->company_id;
-                $walkInCust->reg_no =  $model->reg_no;
-                $walkInCust->full_name =  $model->cust_name;
-                $walkInCust->contact_no = $model->contact_no;
-                $walkInCust->email = $model->email;
-                $walkInCust->save();
-            }
-
-            $model->ord_status = $this->data['ord_status'];
-            $model->order_date = $this->data['order_date'];
-            $model->description = $this->data['description'];
-            $model->tot_qty = $this->data['tot_qty'];
-            $model->tot_price = $this->data['tot_price'];
-            $model->vat_rate = $this->data['vat_rate'];
-            $model->tot_vat = $this->data['tot_vat'];
-            $model->tot_price_vat = $this->data['tot_price_vat'];
-            $model->tot_cost = 0; //$this->data['tot_purchase_price'];
-            // dd($this->data);
-            if (!$this->dataValidation()) {
-                return $this->setResponse();
-            }
             DB::beginTransaction();
             if ($model->save()) {
-                if (array_key_exists("OrderDetailModel", $this->data) && count($this->data['OrderDetailModel']) > 0) {
+                if (array_key_exists("line_items", $this->data) && count($this->data['line_items']) > 0) {
                     $model->OrderDetails()->delete();
                     $orderDetails = [];
                     $stockDetailsData = [];
 
-                    foreach ($this->data['OrderDetailModel'] as $key => $value) {
+                    foreach ($this->data['line_items'] as $key => $value) {
+                        $detailModel = new OrderDetailModel();
+                        $detailModel->order_id = $model->id;
+                        $detailModel->product_id = $value['product_id'];
+                        $detailModel->sku = $value['sku'];
+                        $detailModel->quantity = $value['quantity'];
+                        $detailModel->price = $value['price'];
+                        $detailModel->name = $value["name"];
+                        $detailModel->vendor = $value["vendor"];
+                        $detailModel->shopify_line_item_id = $value["id"];
+                        $detailModel->created_by =  $this->CurrentUserId();
 
-                        if ($value['service_id'] > 0) {
-
-                            $detailModel = new OrderDetailModel();
-                            $detailModel->company_id = $model->company_id;
-                            $detailModel->branch_id = $model->branch_id;
-                            $detailModel->order_id = $model->id;
-                            $detailModel->cust_id = $cust_id;
-                            $detailModel->ptp_id = $value['ptp_id'];
-                            $detailModel->part_id = $value['part_id'];
-                            $detailModel->service_id = $value['service_id'];
-                            $detailModel->description = $value['description'];
-                            $detailModel->purchase_price = $value["cost_value"];
-                            $detailModel->quantity = $value["quantity"];
-                            $detailModel->vat_rate = $value['vat_rate'];
-                            $detailModel->unit_price = $value['unit_price'];
-                            $detailModel->unit_price_vat_val = $value['unit_price_vat_val'];
-                            $detailModel->unit_price_vat = $value['unit_price_vat'];
-                            $detailModel->tot_price = $value['tot_price'];
-                            $detailModel->tot_price_vat_val = $value['tot_price_vat_val'];
-                            $detailModel->tot_price_vat = $value['tot_price_vat'];
-
-                            $detailModel->is_validity_req = $value['is_validity_req'];
-                            $detailModel->is_vat_cal = $value['is_vat_cal'];
-                            $detailModel->validity_period = $value['validity_period'];
-                            $detailModel->valid_till = Carbon::parse($model->order_date)->addDays($value['validity_period']);
-
-                            $detailModel->created_by =  $this->CurrentUserId();
-
-                            $orderDetails[] = $detailModel;
-                        } else {
-
-                            //Stock Details
-                            $stockDetailModel = new StockDetailModel();
-                            $find["filter"] = [];
-                            $find["filter"]["company_id"]   = $model->company_id;
-                            $find["filter"]["branch_id"]    = $model->branch_id;
-                            if ($value['ptp_id'] > 0) {
-                                $find["filter"]["ptp_id"] = $value['ptp_id'];
-                                $find["filter"]["is_part_worn"] = $value['is_part_worn'];
-                            } else {
-                                $find["filter"]["part_id"] = $value['part_id'];
-                            }
-                            $stockDetailList = $stockDetailModel->CheckStockList($find);
-                            if ($stockDetailList == null) {
-                                $this->dataNotFound();
-                                return $this->setResponse();
-                            }
-
-
-                            $orderRemQty = $value['quantity'];
-                            $orderQty = 0;
-                            $isBreakStockLoop = false;
-
-
-
-                            foreach ($stockDetailList as $keySkt => $stkValue) {
-
-                                if ($stkValue["stock_value"] >= $orderRemQty) {
-                                    $orderQty =  $orderRemQty;
-                                    $isBreakStockLoop = true;
-                                } else {
-                                    $orderQty = $stkValue["stock_value"];
-                                    $orderRemQty = $orderRemQty - $stkValue["stock_value"];
-                                }
-
-                                $detailModel = new OrderDetailModel();
-                                $detailModel->company_id = $model->company_id;
-                                $detailModel->branch_id = $model->branch_id;
-                                $detailModel->order_id = $model->id;
-                                $detailModel->cust_id = $cust_id;
-                                $detailModel->stock_detail_id = $stkValue['id'];
-                                $detailModel->ptp_id = $value['ptp_id'];
-                                $detailModel->is_part_worn = $value['is_part_worn'];
-                                $detailModel->part_id = $value['part_id'];
-                                $detailModel->service_id = $value['service_id'];
-                                $detailModel->description = $value['description'];
-                                $detailModel->purchase_price = $stkValue["purchase_price"];
-                                $detailModel->quantity = $orderQty;
-                                $detailModel->vat_rate = $value['vat_rate'];
-                                $detailModel->unit_price = $value['unit_price'];
-                                $detailModel->unit_price_vat_val = $value['unit_price_vat_val'];
-                                $detailModel->unit_price_vat = $value['unit_price_vat'];
-
-                                $detailModel->tot_price = $value['unit_price'] * $orderQty;
-                                $detailModel->tot_price_vat_val = $detailModel->tot_price * $value['vat_rate'];
-                                $detailModel->tot_price_vat = $detailModel->tot_price + $detailModel->tot_price_vat_val;
-
-                                $detailModel->created_by =  $this->CurrentUserId();
-
-                                $orderDetails[] = $detailModel;
-
-                                $stockDetailsData["id"] = $stkValue["id"];
-                                $stockDetailsData["stock_value"]  = ($stkValue["stock_value"] + ($orderQty * -1));
-
-                                $stockDetailsData["stock_value"]  = ($stkValue["stock_value"] + ($orderQty * -1));
-                                $stockDetailsData["tot_sold"]  = ($stkValue["tot_sold"] + $orderQty);
-                                $stockDetailsData["tot_sold_val"]  = ($stkValue["tot_sold_val"] + $detailModel->tot_price);
-
-                                $stockDetailModel->Create($stockDetailsData);
-
-                                if ($isBreakStockLoop) {
-                                    break;
-                                }
-                            }
-
-
-                            $stockData = [];
-                            $stockData["id"] = 0;
-                            //Update Stock
-                            $stock = new StockModel();
-                            //Check Existing Stock
-                            $find["filter"] = [];
-                            $find["filter"]["company_id"]   = $model->company_id;
-                            $find["filter"]["branch_id"]    = $model->branch_id;
-
-                            if ($value['ptp_id'] > 0) {
-                                $find["filter"]["ptp_id"] = $value['ptp_id'];
-                                $find["filter"]["is_part_worn"] = $value['is_part_worn'];
-                            } else {
-                                $find["filter"]["part_id"] = $value['part_id'];
-                            }
-                            $checkStock = $stock->CheckStock($find);
-                            if ($checkStock == null) {
-                                $this->dataNotFound();
-                                return $this->setResponse();
-                            }
-                            $stockData["id"] = $checkStock["id"];
-                            $stockData["action"] = "order";
-                            //Check Existing Stock 
-                            //Set Data                         
-                            $stockData["stock_value"]  = $checkStock["stock_value"] + ($value['quantity'] * -1);
-
-                            $stockData["tot_sold"]  = ($checkStock["tot_sold"] + $value['quantity']);
-                            $stockData["tot_sold_val"]  = ($stkValue["tot_sold_val"] + $value['tot_price']);
-
-                            $stock->Create($stockData);
-                            //Update Stock
-
-                        }
+                        $orderDetails[] = $detailModel;
                     }
                     $model->OrderDetails()->saveMany($orderDetails);
                 }
 
-
-                $paidAmt = 0;
-                $outStandingAmt =  $model->tot_price_vat;
-                //Paid Amount 
-                if ($ord_status != "CR" && array_key_exists("PaymentDetailModel", $this->data) && count($this->data['PaymentDetailModel']) > 0) {
-                    $items = $this->data['PaymentDetailModel'];
-                    $paidAmt = array_sum(array_column($items, 'amount'));
-                    $outStandingAmt =  $model->tot_price_vat - $paidAmt;
+                if (array_key_exists("customer", $this->data) && count($this->data['customer']) > 0) {
+                    $value =  $this->data["customer"];
+                    $customerModel = CustomerModel::where("shopify_cust_id", $value["id"])->first();
+                    if ($customerModel == null) {
+                        $customerModel = new CustomerModel();
+                    }
+                    $customerModel->email = $value['email'];
+                    $customerModel->first_name = $value['first_name'];
+                    $customerModel->last_name = $value['last_name'];
+                    $customerModel->state = $value['state'];
+                    $customerModel->note = $value["note"];
+                    $customerModel->verified_email = $value["verified_email"];
+                    $customerModel->tax_exempt = $value["tax_exempt"];
+                    $customerModel->phone = $value["phone"];
+                    $customerModel->shopify_cust_id = $value["id"];
+                    $customerModel->created_by =  $this->CurrentUserId();
+                    $customerModel->save();
                 }
-                //Paid Amount  
 
-                //Invoice   
-                //Payment Number
-                $this->cid =   $model->company_id;
-                $this->bid =   $model->branch_id;
-                $this->getArInvoiceNo();
-                //Payment Number 
+                if (array_key_exists("shipping_address", $this->data) && count($this->data['shipping_address']) > 0) {
+                    $value =  $this->data["shipping_address"];
 
-                $this->header                       =  $model->getOriginal();
-                $this->header["id"]                 =  0;
-                $this->header["order_id"]           =  $model->id;
-                $this->header["cust_id"]            =  $cust_id;
-                $this->header["company_id"]         =  $model->company_id;
-                $this->header["branch_id"]          =  $model->branch_id;
-                $this->header["inv_no"]             =  $this->newNum;
-                $this->header["inv_date"]           =  $this->data['order_date'];
-                $this->header["inv_status"]         =  $ord_status;
-                $this->header["paid_amt"]           =  $paidAmt;
-                $this->header["outstanding_amt"]    =  $outStandingAmt;
-                $this->details                      = $orderDetails; //$this->data['OrderDetailModel'];
+                    $addModel = OrderAddressModel::where("order_id", $model->id)->first();
+                    // FIX: Check if $addModel is null, not $model
+                    if ($addModel == null) {
+                        $addModel = new OrderAddressModel();
+                    }
 
-                $this->arInvoice();
-                //Invoice  
+                    $addModel->first_name = $value['first_name'];
+                    $addModel->last_name = $value['last_name'];
+                    $addModel->address1 = $value['address1'];
+                    $addModel->address2 = $value['address2'];
+                    $addModel->phone = $value["phone"];
+                    $addModel->city = $value['city'];
+                    $addModel->zip = $value["zip"];
+                    $addModel->country = $value["country"];
+                    $addModel->order_id = $model->id;
+                    $addModel->created_by =  $this->CurrentUserId();
 
-                if ($ord_status != "CR" && array_key_exists("PaymentDetailModel", $this->data) && count($this->data['PaymentDetailModel']) > 0) {
-                    //Payment  
-                    //Payment Number
-                    $this->cid =   $model->company_id;
-                    $this->bid =   $model->branch_id;
-                    $this->getArPaymentNo();
-                    //Payment Number 
-                    $this->header                   =  $model->getOriginal();
-                    $this->header["id"]             =  0;
-                    $this->header["order_id"]       =  $model->id;
-                    $this->header["company_id"]         =  $model->company_id;
-                    $this->header["branch_id"]          =  $model->branch_id;
-                    $this->header["ar_invoice_id"]  = session('transId');
-                    $this->header["pymt_no"]        =   $this->newNum;
-                    $this->header["pymt_date"]      =  $this->data['order_date'];
-                    $this->header["tot_amount"]     =  $paidAmt;
-
-                    $arPayDetails = [];
-                    $arPaydetailModel = new ArPaymentDetailModel();
-
-                    $arPaydetailModel->company_id = $model->company_id;
-                    $arPaydetailModel->branch_id = $model->branch_id;
-                    $arPaydetailModel->cust_id = $cust_id;
-                    $arPaydetailModel->order_id = $model->id;
-                    $arPaydetailModel->ar_invoice_id = session('transId');
-                    $arPaydetailModel->tot_amt =  $model->tot_price_vat;
-                    $arPaydetailModel->outstanding_amt =  $model->tot_price_vat;
-                    $arPaydetailModel->paid_amt =  $paidAmt;
-                    $arPaydetailModel->remaining_amt = $outStandingAmt;
-                    $arPaydetailModel->created_by =  $this->CurrentUserId();
-
-                    $arPayDetails[]                 =  $arPaydetailModel;
-                    $this->details                  =  $arPayDetails;
-                    $this->paymentSource            =  $this->data['PaymentDetailModel'];
-                    $this->arPayment();
-                    //Payment
+                    $addModel->save();
                 }
 
 
-
-                if ($ord_status != "CR" && array_key_exists("PaymentDetailModel", $this->data) && count($this->data['PaymentDetailModel']) > 0) {
-                    //Payment  
-                    //Payment Number 
-                    $this->getArPaymentNo();
-                    //Payment Number 
-                    $this->header                   =  $model->getOriginal();
-                    $this->header["id"]             =  0;
-                    $this->header["order_id"]       =  $model->id;
-                    $this->header["ar_invoice_id"]  = session('transId');
-                    $this->header["pymt_no"]        =   $this->newNum;
-                    $this->header["pymt_date"]      =  $this->data['order_date'];
-                    $this->header["tot_amount"]     =  $paidAmt;
-
-                    $arPayDetails = [];
-                    $arPaydetailModel = new ArPaymentDetailModel();
-
-                    $arPaydetailModel->company_id   = $model->company_id;
-                    $arPaydetailModel->branch_id    = $model->branch_id;
-                    $arPaydetailModel->order_id     = $model->order_id;
-                    $arPaydetailModel->ar_invoice_id = session('transId');
-                    $arPaydetailModel->tot_amt      =  $model->tot_price_vat;
-                    $arPaydetailModel->outstanding_amt =  $model->tot_price_vat;
-                    $arPaydetailModel->paid_amt     =  $paidAmt;
-                    $arPaydetailModel->remaining_amt = $outStandingAmt;
-                    $arPaydetailModel->created_by   =  $this->CurrentUserId();
-
-                    $arPayDetails[]                 =  $arPaydetailModel;
-                    $this->details                  =  $arPayDetails;
-                    $this->paymentSource            =  $this->data['PaymentDetailModel'];
-                    $this->arPayment();
-                    //Payment
-                }
-
-                // //Payment
-                // $this->header                   =  $model->getOriginal();
-                // $this->header["id"]             =  0;
-                // $this->header["order_id"]       =  $model->id;
-                // $this->header["ar_invoice_id"]  =  session('transId');
-                // $this->header["pymt_date"]      =  $this->data['order_date'];
-                // $this->details                  =  $this->data['OrderDetailModel'];
-                // $this->paymentSource            =  $this->data['PaymentDetailModel'];
-                // $this->arPayment();
-                // //Payment
 
                 DB::commit();
                 $this->data["id"] = $model->id;
@@ -533,6 +242,7 @@ class OrderModel extends BaseModel
                 return $this->setResponse();
             }
         } catch (\Exception $e) {
+            dd($e);
             DB::rollBack();
             $this->message = $e->getMessage();
             $this->trxnNotCompleted();

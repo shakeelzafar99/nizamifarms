@@ -4,10 +4,10 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Notifications\Notifiable; 
 use App\Models\Shared\BaseModel;  
 
-class OrderDetailModel extends BaseModel
+class OrderAddressModel extends BaseModel
 {
     use HasFactory, Notifiable;
-    protected $table = 't_crm_order_line_items';
+    protected $table = 't_crm_order_address';
     protected $primaryKey = 'id';
     // Rest omitted for brevity 
     public $timestamps = true; 
@@ -20,12 +20,12 @@ class OrderDetailModel extends BaseModel
     protected $fillable = [
         'id',
         'order_id',
-        'product_id',
-        'sku',
-        'quantity',
-        'price',
         'name',
-        'vendor',    
+        'address',
+        'city',
+        'zip',
+        'country',
+        'phone',    
         'created_at',
         'created_by',
         'updated_at',
