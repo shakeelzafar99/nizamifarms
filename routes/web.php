@@ -4,12 +4,8 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SysAdmin\MenuController;
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\CRM\OrderController;
-
-use App\Http\Controllers\{
-    Demo1Controller
-}; 
-
+use App\Http\Controllers\CRM\OrderController; 
+ 
 // Redirect root to demo1
 Route::get('/', function () {
     return redirect('/auth/login');
@@ -44,5 +40,4 @@ Route::middleware(['auth'])->group(function () {
 
 
 
-// Demo routes
-Route::get('/demo1', [Demo1Controller::class, 'index'])->name('demo1.index');
+ 

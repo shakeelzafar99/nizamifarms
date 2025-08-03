@@ -7,33 +7,14 @@ use App\Http\Controllers\CRM\BranchController;
 use App\Http\Controllers\CRM\CompanyConfigController;
 use App\Http\Controllers\CRM\CompanyController;
 use App\Http\Controllers\CRM\OrderController;
-use App\Http\Controllers\CRM\WalkInCustomerController;
-use App\Http\Controllers\FIN\ApInvoiceController;
-use App\Http\Controllers\FIN\ApPaymentController;
-use App\Http\Controllers\FIN\ArInvoiceController;
-use App\Http\Controllers\FIN\ArPaymentController;
-use App\Http\Controllers\FIN\GlController;
-use App\Http\Controllers\FIN\GlTypeController;
-use App\Http\Controllers\FIN\Sys\SysArInvoiceController;
-use App\Http\Controllers\FIN\Sys\SysArPaymentController;
-use App\Http\Controllers\FIN\Sys\SysReportsController;
-use App\Http\Controllers\HR\DepartmentController;
-use App\Http\Controllers\HR\DesignationController;
-use App\Http\Controllers\HR\InstituteController;
-use App\Http\Controllers\HR\QualificationController;
-use App\Http\Controllers\HR\ScaleController;
+use App\Http\Controllers\CRM\WalkInCustomerController; 
 use App\Http\Controllers\MailController;
 use App\Http\Controllers\PDM\BrandController;
 use App\Http\Controllers\PDM\PartController;
 use App\Http\Controllers\PDM\ProductController;
 use App\Http\Controllers\PDM\ProductTreadPatternsController;
 use App\Http\Controllers\PDM\ServiceController;
-use App\Http\Controllers\PDM\SizeController;
-use App\Http\Controllers\SCM\PurchaseController;
-use App\Http\Controllers\SCM\PurchaseDetailController;
-use App\Http\Controllers\SCM\ReceiveController;
-use App\Http\Controllers\SCM\StockController;
-use App\Http\Controllers\SCM\SupplierController;
+use App\Http\Controllers\PDM\SizeController; 
 use App\Http\Controllers\SysAdmin\ConfigController;
 use App\Http\Controllers\SysAdmin\EmailTemplateController;
 use App\Http\Controllers\SysAdmin\EnquiryController;
@@ -43,8 +24,7 @@ use App\Http\Controllers\SysAdmin\PackageController;
 use App\Http\Controllers\SysAdmin\PaymentMethodController;
 use App\Http\Controllers\SysAdmin\RoleController;
 use App\Http\Controllers\SysAdmin\UserController;
-use App\Http\Controllers\Webhook\ShopifyController;
-use Illuminate\Http\Request;
+use App\Http\Controllers\Webhook\ShopifyController; 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Route;
 
@@ -315,156 +295,6 @@ Route::group([
     });
 });
 
-
-Route::group([
-    'middleware' => ['auth:sanctum'],
-    'prefix' => 'scm'
-], function ($router) {
-    Route::prefix('purchase')->group(function () {
-        Route::post('store', [PurchaseController::class, 'store']);
-        Route::get('get/{id}', [PurchaseController::class, 'get']);
-        Route::get('details/get/{id}', [PurchaseController::class, 'getdetail']);
-        Route::post('list', [PurchaseController::class, 'list']);
-        Route::delete('remove/{id}', [PurchaseController::class, 'remove']);
-    });
-
-    Route::prefix('purchaseitem')->group(function () {
-        Route::post('list', [PurchaseDetailController::class, 'list']);
-        Route::post('store', [PurchaseDetailController::class, 'store']);
-        Route::delete('remove/{id}', [PurchaseDetailController::class, 'remove']);
-    });
-
-    Route::prefix('receive')->group(function () {
-        Route::get('get/{id}', [ReceiveController::class, 'get']);
-        Route::get('details/get/{id}', [ReceiveController::class, 'getdetail']); // Receive detail
-        Route::post('list', [ReceiveController::class, 'list']);
-        Route::post('store', [ReceiveController::class, 'store']);
-        Route::delete('remove/{id}', [ReceiveController::class, 'remove']);
-    });
-
-    Route::prefix('stock')->group(function () {
-        Route::post('product/list', [StockController::class, 'productList']);
-        Route::post('part/list', [StockController::class, 'partList']);
-        Route::get('get/{id}', [StockController::class, 'get']);
-        Route::post('store', [StockController::class, 'store']);
-    });
-
-    Route::prefix('supplier')->group(function () {
-        Route::get('get/{id}', [SupplierController::class, 'get']);
-        Route::post('list', [SupplierController::class, 'list']);
-        Route::get('list/{status}', [SupplierController::class, 'listByStatus']);
-        Route::post('store', [SupplierController::class, 'store']);
-        Route::delete('remove/{id}', [SupplierController::class, 'remove']);
-    });
-});
-
-
-
-Route::group([
-    'middleware' => ['auth:sanctum'],
-    'prefix' => 'fin'
-], function ($router) {
-    Route::prefix('gl')->group(function () {
-        Route::get('get/{id}', [GlController::class, 'get']);
-        Route::post('list', [GlController::class, 'list']);
-        Route::post('store', [GlController::class, 'store']);
-        Route::delete('remove/{id}', [GlController::class, 'remove']);
-    });
-
-    Route::prefix('glt')->group(function () {
-        Route::get('get/{id}', [GlTypeController::class, 'get']);
-        Route::post('list', [GlTypeController::class, 'list']);
-        Route::post('store', [GlTypeController::class, 'store']);
-        Route::delete('remove', [GlTypeController::class, 'remove']);
-    });
-
-    Route::prefix('invoice/payable')->group(function () {
-        Route::post('list', [ApInvoiceController::class, 'list']);
-        Route::get('get/{id}', [ApInvoiceController::class, 'get']);
-        Route::get('details/get/{id}', [ApInvoiceController::class, 'getdetail']);
-        Route::get('outstanding/list/{company_id}/{branch_id}/{supplier_id}', [ApInvoiceController::class, 'getOutstanding']);
-    });
-
-    Route::prefix('invoice/receivable')->group(function () {
-        Route::post('list', [ArInvoiceController::class, 'list']);
-        Route::get('get/{id}', [ArInvoiceController::class, 'get']);
-        Route::get('details/get/{id}', [ArInvoiceController::class, 'getdetail']);
-        Route::get('outstanding/list/{company_id}/{branch_id}/{cust_id}', [ArInvoiceController::class, 'getOutstanding']);
-    });
-
-    Route::prefix('payment/payable')->group(function () {
-        Route::post('list', [ApPaymentController::class, 'list']);
-        Route::get('get/{id}', [ApPaymentController::class, 'get']);
-        Route::get('details/get/{id}', [ApPaymentController::class, 'getdetail']);
-        Route::post('store', [ApPaymentController::class, 'store']);
-    });
-
-    Route::prefix('arpayment')->group(function () {
-        Route::post('list', [ArPaymentController::class, 'list']);
-        Route::get('get/{id}', [ArPaymentController::class, 'get']);
-        Route::get('detail/get/{id}', [ArPaymentController::class, 'getdetail']);
-    });
-
-    Route::prefix('sys/invoice/receivable')->group(function () {
-        Route::get('get/{id}', [SysArInvoiceController::class, 'get']);
-        Route::post('list', [SysArInvoiceController::class, 'list']);
-        Route::post('store', [SysArInvoiceController::class, 'store']);
-        Route::delete('remove/{id}', [SysArInvoiceController::class, 'remove']);
-        Route::get('email/{id}', [SysArInvoiceController::class, 'email']);
-    });
-
-    Route::prefix('sys/payment/receivable')->group(function () {
-        Route::get('get/{id}', [SysArPaymentController::class, 'get']);
-        Route::post('list', [SysArPaymentController::class, 'list']);
-        Route::post('store', [SysArPaymentController::class, 'store']);
-        Route::delete('remove/{id}', [SysArPaymentController::class, 'remove']);
-    });
-
-    Route::prefix('sys/reports')->group(function () {
-        Route::post('cashup', [SysReportsController::class, 'cashup']);
-    });
-});
-
-
-
-Route::group([
-    'middleware' => ['auth:sanctum'],
-    'prefix' => 'hr'
-], function ($router) {
-    Route::prefix('department')->group(function () {
-        Route::get('get/{id}', [DepartmentController::class, 'get']);
-        Route::post('list', [DepartmentController::class, 'list']);
-        Route::post('store', [DepartmentController::class, 'store']);
-        Route::delete('remove/{id}', [DepartmentController::class, 'remove']);
-    });
-
-    Route::prefix('designation')->group(function () {
-        Route::get('get/{id}', [DesignationController::class, 'get']);
-        Route::post('list', [DesignationController::class, 'list']);
-        Route::post('store', [DesignationController::class, 'store']);
-        Route::delete('remove/{id}', [DesignationController::class, 'remove']);
-    });
-
-    Route::prefix('institute')->group(function () {
-        Route::get('get/{id}', [InstituteController::class, 'get']);
-        Route::post('list', [InstituteController::class, 'list']);
-        Route::post('store', [InstituteController::class, 'store']);
-        Route::delete('remove/{id}', [InstituteController::class, 'remove']);
-    });
-
-    Route::prefix('qualification')->group(function () {
-        Route::get('get/{id}', [QualificationController::class, 'get']);
-        Route::post('list', [QualificationController::class, 'list']);
-        Route::post('store', [QualificationController::class, 'store']);
-        Route::delete('remove/{id}', [QualificationController::class, 'remove']);
-    });
-
-    Route::prefix('scale')->group(function () {
-        Route::get('get/{id}', [ScaleController::class, 'get']);
-        Route::post('list', [ScaleController::class, 'list']);
-        Route::post('store', [ScaleController::class, 'store']);
-        Route::delete('remove/{id}', [ScaleController::class, 'remove']);
-    });
-});
+  
  
 // Protected routes (requires authentication)

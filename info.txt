@@ -7,3 +7,21 @@ shareddb-h.hosting.stackcp.net
 
 bluehost
 Username: nizamifarms.com pass: Nizami@666
+
+
+
+instruction
+
+npm install concurrently --save-dev
+
+npm run start
+
+
+database :
+shareddb-h.hosting.stackcp.net
+napp_db-3735f1cb
+zsvuwg13j9
+
+
+
+replace utf8mb4_0900_ai_ci with utf8mb4_unicode_ci
