@@ -149,11 +149,7 @@ class OrderModel extends BaseModel
             'total' => count($orders)
         ]);
     }
-
  
-
-
-
     function Store($data)
     {
         try {
