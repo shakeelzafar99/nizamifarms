@@ -125,17 +125,7 @@ class OrderModel extends BaseModel
         }
     }
 
-
-    // function GetDetail($id) //All record
-    // {
-    //     try {
-    //         $this->data = OrderModel::find($id)->toArray();
-    //         $this->data["OrderDetailModel"] =  OrderModel::find($id)->OrderDetails()->get()->toArray();
-    //         return $this->setResponse();
-    //     } catch (\Exception $e) {
-    //         dd($e->getMessage());
-    //     }
-    // }
+ 
 
 
 
@@ -160,46 +150,7 @@ class OrderModel extends BaseModel
         ]);
     }
 
-    public function fetchShopifyOrders($fromDate, $toDate)
-    {
-        $apiKey = '12fb7238465b59711b2881da6152f723';
-        $password = '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';
-        $storeName = 'Nizamifarms';
-        $apiVersion = '2023-10';
-
-        $baseUrl = "https://{$storeName}.myshopify.com/admin/api/{$apiVersion}/orders.json";
-
-        $orders = [];
-        $dateRange = 7; // days per API call
-        $startDate = new \DateTime($fromDate);
-        $endDate = new \DateTime($toDate);
-
-        while ($startDate <= $endDate) {
-            $nextDate = clone $startDate;
-            $nextDate->modify("+{$dateRange} days");
-
-            $response = Http::withBasicAuth($apiKey, $password)
-                ->get($baseUrl, [
-                    'limit' => 250,
-                    'created_at_min' => $startDate->format('Y-m-d\TH:i:s'),
-                    'created_at_max' => $nextDate->format('Y-m-d\TH:i:s'),
-                ]);
-
-            if ($response->failed()) {
-                break;
-            }
-
-            $data = $response->json();
-
-            if (!empty($data['orders'])) {
-                $orders = array_merge($orders, $data['orders']);
-            }
-
-            $startDate = $nextDate;
-        }
-
-        return $orders;
-    }
+ 
 
 
 
