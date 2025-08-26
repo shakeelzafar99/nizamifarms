@@ -1,0 +1,116 @@
+function deliveryapp_newlogic() {
+  try {
+    var sheetName = "live_data";
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(sheetName);
+
+    var options = { muteHttpExceptions: true };
+    var currentDate = new Date();
+    var startDate = new Date(currentDate);
+    startDate.setDate(currentDate.getDate() - 30);
+    var endDate = new Date();
+    endDate.setDate(currentDate.getDate() +1);
+
+    var startDateFormatted = Utilities.formatDate(startDate, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss");
+    var endDateFormatted = Utilities.formatDate(endDate, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss");
+
+    var url = 'http://www.old.nizamifarms.com/wp-json/wc/v3/orders/';
+    url = url + '?consumer_key=ck_0de321de3829a0916267328f47df3b7125aaf5c0';
+    url = url + '&consumer_secret=cs_76ab11842270e728e159f590bdfd12cf1eef6a77';
+    url += '&per_page=100';
+    url += '&after=' + startDateFormatted;
+    url += '&before=' + endDateFormatted;
+    url = url + '&status=processing,on-hold';
+
+    var allOrders = [];
+    var resp = UrlFetchApp.fetch(url, options);
+    var result = JSON.parse(resp.getContentText());
+    allOrders = allOrders.concat(result);
+
+    var headers = resp.getAllHeaders();
+    var totalpages = headers['x-wp-totalpages'];
+
+    for (var pagenum = 2; pagenum <= totalpages; pagenum++) {
+      var pageUrl = url + '&page=' + pagenum;
+      var resp = UrlFetchApp.fetch(pageUrl, options);
+      var result = JSON.parse(resp.getContentText());
+      allOrders = allOrders.concat(result);
+    }
+
+    var dataToWrite = [];
+    allOrders.forEach(function (p) {
+      p['line_items'].forEach(function (lineItem) {
+        var items = "";
+        var total_line_items_quantity = 0;
+        for (k in p['line_items']) {
+          var item = p['line_items'][k]['name'];
+          var qty = p['line_items'][k]["quantity"];
+          var item_f = qty + " x " + item;
+          items = items + item_f + ",\n";
+          total_line_items_quantity += qty;
+        }
+// handling for coupons and discounts
+          var couponCodes = '';
+  var totalDiscount = 0;
+
+  if (p['coupon_lines'] && p['coupon_lines'].length > 0) {
+    p['coupon_lines'].forEach(function (coupon) {
+      couponCodes += coupon['code'] + ', ';
+      totalDiscount += parseFloat(coupon['discount']);
+    });
+    couponCodes = couponCodes.slice(0, -2); // Removing the last comma and space
+  }
+// end coupons and discount 
+
+        var rowData = [
+          p['number'],
+          p['status'],
+          new Date(p['date_created']),
+          p['billing']['first_name'],
+          p['billing']['last_name'],
+          p['billing']['address_1'],
+          p['payment_method'],
+          p['billing']['city'],
+          p['billing']['email'],
+          p['billing']['phone'],
+          p['discount_total'],
+          p['shipping_total'],
+          p['total'],
+          lineItem['sku'],
+          lineItem['id'],
+          lineItem['name'],
+          lineItem['quantity'],
+          lineItem['price'],
+          lineItem['subtotal'],
+         // (p['coupon_lines'] && p['coupon_lines'].length > 0) ? p['coupon_lines'][0]['code'] : '',
+          couponCodes,
+          totalDiscount,
+          //(p['coupon_lines'] && p['coupon_lines'].length > 0) ? p['coupon_lines'][0]['discount'] : '',
+         // new Date(p['date_modified']),
+          '', // Placeholder for the line items
+          p['billing']['first_name'] + ' ' + p['billing']['last_name'],
+          p['customer_note']
+         //items // Combined Line Items
+        ];
+        // rowData.splice(21, 0, ''); // Inserting an empty column for line items before the 22nd column
+    rowData[21] = items; // Replace 'your_line_item_data_here' with the actual line item data
+    
+        dataToWrite.push(rowData);
+      });
+    });
+
+    if (dataToWrite.length > 0) {
+      clearSheetnew();
+      var startRow = 2;
+      var startColumn = 1;
+      var numRows = dataToWrite.length;
+      var numColumns = dataToWrite[0].length;
+      sheet.getRange(startRow, startColumn, numRows, numColumns).setValues(dataToWrite);
+    }
+  } catch (error) {
+    Logger.log("Script encountered an error: " + error.message);
+   // sheet.getRange(2, 26).setValue("2");
+  }
+ // sheet.getRange(2, 26).setValue("1");
+}
+

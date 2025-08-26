@@ -6,582 +6,114 @@
 
 @section('content')
 
-<!-- Container -->
-<div class="kt-container-fixed" id="contentContainer">
-</div>
-<!-- End of Container -->
-<div class="flex items-center flex-wrap md:flex-nowrap lg:items-end justify-between border-b border-b-border gap-3 lg:gap-6 mb-5 lg:mb-10">
-    <!-- Container -->
-    <div class="kt-container-fixed" id="hero_container">
-        <div class="grid">
-            <div class="kt-scrollable-x-auto">
-                <div class="kt-menu gap-3" data-kt-menu="true">
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary kt-menu-item-dropdown" data-kt-menu-item-overflow="true" data-kt-menu-item-placement="bottom-start" data-kt-menu-item-placement-rtl="bottom-end" data-kt-menu-item-toggle="dropdown" data-kt-menu-item-trigger="click|lg:hover">
-                        <div class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2">
-                            <span class="kt-menu-title text-nowrap text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-medium kt-menu-item-here:text-primary kt-menu-item-here:font-medium kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Account Home
-                            </span>
-                            <span class="kt-menu-arrow">
-                                <i class="ki-filled ki-down text-xs text-muted-foreground menu-item-active:text-primary kt-menu-item-here:text-primary menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                </i>
-                            </span>
-                        </div>
-                        <div class="kt-menu-dropdown kt-menu-default py-2 min-w-[200px]">
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/get-started" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Get Started
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/user-profile" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        User Profile
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/company-profile" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Company Profile
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/settings-sidebar" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Settings - With Sidebar
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/settings-enterprise" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Settings - Enterprise
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/settings-plain" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Settings - Plain
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/home/settings-modal" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Settings - Modal
-                                    </span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary here kt-menu-item-dropdown" data-kt-menu-item-overflow="true" data-kt-menu-item-placement="bottom-start" data-kt-menu-item-placement-rtl="bottom-end" data-kt-menu-item-toggle="dropdown" data-kt-menu-item-trigger="click|lg:hover">
-                        <div class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2">
-                            <span class="kt-menu-title text-nowrap text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-medium kt-menu-item-here:text-primary kt-menu-item-here:font-medium kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Billing
-                            </span>
-                            <span class="kt-menu-arrow">
-                                <i class="ki-filled ki-down text-xs text-muted-foreground menu-item-active:text-primary kt-menu-item-here:text-primary menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                </i>
-                            </span>
-                        </div>
-                        <div class="kt-menu-dropdown kt-menu-default py-2 min-w-[200px]">
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/billing/basic" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Billing - Basic
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/billing/enterprise" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Billing - Enterprise
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/billing/plans" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Plans
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item active">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/billing/history" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Billing History
-                                    </span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary kt-menu-item-dropdown" data-kt-menu-item-overflow="true" data-kt-menu-item-placement="bottom-start" data-kt-menu-item-placement-rtl="bottom-end" data-kt-menu-item-toggle="dropdown" data-kt-menu-item-trigger="click|lg:hover">
-                        <div class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2">
-                            <span class="kt-menu-title text-nowrap text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-medium kt-menu-item-here:text-primary kt-menu-item-here:font-medium kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Security
-                            </span>
-                            <span class="kt-menu-arrow">
-                                <i class="ki-filled ki-down text-xs text-muted-foreground menu-item-active:text-primary kt-menu-item-here:text-primary menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                </i>
-                            </span>
-                        </div>
-                        <div class="kt-menu-dropdown kt-menu-default py-2 min-w-[200px]">
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/get-started" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Get Started
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/overview" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Security Overview
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/allowed-ip-addresses" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Allowed IP Addresses
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/privacy-settings" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Privacy Settings
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/device-management" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Device Management
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/backup-and-recovery" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Backup &amp; Recovery
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/current-sessions" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Current Sessions
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/security/security-log" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Security Log
-                                    </span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary kt-menu-item-dropdown" data-kt-menu-item-overflow="true" data-kt-menu-item-placement="bottom-start" data-kt-menu-item-placement-rtl="bottom-end" data-kt-menu-item-toggle="dropdown" data-kt-menu-item-trigger="click|lg:hover">
-                        <div class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2">
-                            <span class="kt-menu-title text-nowrap text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-medium kt-menu-item-here:text-primary kt-menu-item-here:font-medium kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Members &amp; Roles
-                            </span>
-                            <span class="kt-menu-arrow">
-                                <i class="ki-filled ki-down text-xs text-muted-foreground menu-item-active:text-primary kt-menu-item-here:text-primary menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                </i>
-                            </span>
-                        </div>
-                        <div class="kt-menu-dropdown kt-menu-default py-2 min-w-[200px]">
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/team-starter" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Teams Starter
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/teams" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Teams
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/team-info" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Team Info
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/members-starter" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Members Starter
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/team-members" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Team Members
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/import-members" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Import Members
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/roles" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Roles
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/permissions-toggle" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Permissions - Toggler
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/members/permissions-check" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Permissions - Check
-                                    </span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary">
-                        <a class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2" href="/metronic/tailwind/demo1/account/integrations">
-                            <span class="kt-menu-title text-nowrap font-medium text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-semibold kt-menu-item-here:text-primary kt-menu-item-here:font-semibold kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Integrations
-                            </span>
-                        </a>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary">
-                        <a class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2" href="/metronic/tailwind/demo1/account/notifications">
-                            <span class="kt-menu-title text-nowrap font-medium text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-semibold kt-menu-item-here:text-primary kt-menu-item-here:font-semibold kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                Notifications
-                            </span>
-                        </a>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary">
-                        <a class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2" href="/metronic/tailwind/demo1/account/api-keys">
-                            <span class="kt-menu-title text-nowrap font-medium text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-semibold kt-menu-item-here:text-primary kt-menu-item-here:font-semibold kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                API Keys
-                            </span>
-                        </a>
-                    </div>
-                    <div class="kt-menu-item border-b-2 border-b-transparent kt-menu-item-active:border-b-primary kt-menu-item-here:border-b-primary kt-menu-item-dropdown" data-kt-menu-item-overflow="true" data-kt-menu-item-placement="bottom-start" data-kt-menu-item-placement-rtl="bottom-end" data-kt-menu-item-toggle="dropdown" data-kt-menu-item-trigger="click|lg:hover">
-                        <div class="kt-menu-link gap-1.5 pb-2 lg:pb-4 px-2">
-                            <span class="kt-menu-title text-nowrap text-sm text-secondary-foreground kt-menu-item-active:text-primary kt-menu-item-active:font-medium kt-menu-item-here:text-primary kt-menu-item-here:font-medium kt-menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                More
-                            </span>
-                            <span class="kt-menu-arrow">
-                                <i class="ki-filled ki-down text-xs text-muted-foreground menu-item-active:text-primary kt-menu-item-here:text-primary menu-item-show:text-primary kt-menu-link-hover:text-primary">
-                                </i>
-                            </span>
-                        </div>
-                        <div class="kt-menu-dropdown kt-menu-default py-2 min-w-[200px]">
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/appearance" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Appearance
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/invite-a-friend" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Invite a Friend
-                                    </span>
-                                </a>
-                            </div>
-                            <div class="kt-menu-item">
-                                <a class="kt-menu-link" href="/metronic/tailwind/demo1/account/activity" tabindex="0">
-                                    <span class="kt-menu-title">
-                                        Activity
-                                    </span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <!-- End of Container -->
-</div>
-<!-- Container -->
+@if(session('success'))
+
 <div class="kt-container-fixed">
-    <div class="flex flex-wrap items-center lg:items-end justify-between gap-5 pb-7.5">
-        <div class="flex flex-col justify-center gap-2">
-            <h1 class="text-xl font-medium leading-none text-mono">
-                Billing History
-            </h1>
-            <div class="flex items-center gap-2 text-sm font-normal text-secondary-foreground">
-                Central Hub for Personal Customization
+    <div class="kt-alert kt-alert-success mb-5" id="alert_1">
+
+        <div class="kt-alert-title"><span>{{ session('success') }}</span></div>
+        <div class="kt-alert-toolbar">
+            <div class="kt-alert-actions">
+                <button class="kt-alert-close" data-kt-dismiss="#alert_1">
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="lucide lucide-x"
+                        aria-hidden="true">
+                        <path d="M18 6 6 18"></path>
+                        <path d="m6 6 12 12"></path>
+                    </svg>
+                </button>
             </div>
-        </div>
-        <div class="flex items-center gap-2.5">
-            <a class="kt-btn kt-btn-outline" href="#">
-                Billing
-            </a>
         </div>
     </div>
 </div>
-<!-- End of Container -->
+
+
+
+
+@endif
 <!-- Container -->
 <div class="kt-container-fixed">
     <div class="grid gap-5 lg:gap-7.5">
         <div class="kt-card kt-card-grid min-w-full">
-            <div class="kt-card-header">
-                <h3 class="kt-card-title">
-                    Billing and Invoicing
+            <div class="kt-card-header flex justify-between items-center">
+                <!-- Left: Title -->
+                <h3 class="kt-card-title text-lg font-semibold">
+                    Shopify Orders
                 </h3>
-                <button class="kt-btn kt-btn-outline">
-                    <i class="ki-filled ki-exit-down">
-                    </i>
-                    Download PDF
-                </button>
+
+                <!-- Right: Form -->
+                <form action="{{ route('orders.importShopify') }}" method="POST" class="flex gap-2 items-center">
+                    @csrf
+                    <span class="text-xs text-muted">From</span>
+                    <div class="kt-input">
+                        <input type="date" name="from_date" class="kt-input" placeholder="Date From" />
+                    </div>
+                    <span class="text-xs text-muted">To</span>
+                    <div class="kt-input">
+                        <input type="date" name="to_date" class="kt-input" placeholder="Date From" />
+                    </div>
+                    <button class="kt-btn kt-btn-outline" type="submit"> <i class="ki-filled ki-exit-down"> </i> Import Order </button>
+                </form>
             </div>
+
             <div class="kt-card-table">
                 <div class="grid datatable-initialized" data-kt-datatable="true" data-kt-datatable-page-size="10" data-kt-datatable-initialized="true">
                     <div class="kt-scrollable-x-auto">
-                        <table class="kt-table kt-table-border" data-kt-datatable-table="true">
-                            <thead>
+                        <table class="kt-table text-xs kt-table-border" data-kt-datatable-table="true">
+                            <thead class="bg-gray-100 font-bold">
                                 <tr>
-                                    <th class="w-14">
-                                        <input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-check="true" type="checkbox">
-                                    </th>
-                                    <th class="min-w-[200px]" data-kt-datatable-column="invoice">
-                                        <span class="kt-table-col">
-                                            <span class="kt-table-col-label">
-                                                Invoice
-                                            </span>
-                                            <span class="kt-table-col-sort">
-                                            </span>
-                                        </span>
-                                    </th>
-                                    <th class="w-[170px]">
-                                        <span class="kt-table-col">
-                                            <span class="kt-table-col-label">
-                                                Status
-                                            </span>
-                                            <span class="kt-table-col-sort">
-                                            </span>
-                                        </span>
-                                    </th>
-                                    <th class="min-w-[170px]" data-kt-datatable-column="date">
-                                        <span class="kt-table-col">
-                                            <span class="kt-table-col-label">
-                                                Date
-                                            </span>
-                                            <span class="kt-table-col-sort">
-                                            </span>
-                                        </span>
-                                    </th>
-                                    <th class="min-w-[170px]" data-kt-datatable-column="dueDate">
-                                        <span class="kt-table-col">
-                                            <span class="kt-table-col-label">
-                                                Due Date
-                                            </span>
-                                            <span class="kt-table-col-sort">
-                                            </span>
-                                        </span>
-                                    </th>
-                                    <th class="w-[170px]" data-kt-datatable-column="amount">
-                                        <span class="kt-table-col">
-                                            <span class="kt-table-col-label">
-                                                Amount
-                                            </span>
-                                            <span class="kt-table-col-sort">
-                                            </span>
-                                        </span>
-                                    </th>
-                                    <th class="w-[100px]">
-                                    </th>
+                                    <th class="w-[60px]">ID</th>
+                                    <th class="w-[200px]">Contact Email</th>
+                                    <th class="min-w-[130px]">Created At</th>
+                                    <th class="w-[100px]">Currency</th>
+                                    <th class="w-[150px]">Name</th>
+                                    <th class="min-w-[90px]">Order #</th>
+                                    <th class="min-w-[100px]">Subtotal</th>
+                                    <th class="w-[140px]">Total</th>
+                                    <th class="w-[120px]">Weight</th>
+                                    <th class="min-w-[130px]">Updated At</th>
+                                    <th class="w-[120px]">Customer ID</th>
+                                    <th class="w-[100px]">Source</th>
+                                    <th class="w-[160px]">Shopify ID</th>
                                 </tr>
                             </thead>
-
-                            <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" data-kt-datatable-spinner="true" style="display: none;">
-                                <div class="kt-datatable-loading">
-                                    <svg class="animate-spin -ml-1 h-5 w-5 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
-                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    Loading...
-                                </div>
-                            </div>
                             <tbody>
+                                @foreach ($orders as $order)
                                 <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="1"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-xd912c</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-warning">
-                                            Upcoming
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">HR Dept</td>
-                                    <td class="text-foreground font-normal">$24.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
+                                    <td>{{ $order->id }}</td>
+                                    <td>{{ $order->contact_email }}</td>
+                                    <td>{{ $order->created_at ? $order->created_at->format('d-M-Y H:i') : '' }}</td>
+                                    <td>{{ $order->currency }}</td>
+                                    <td>{{ $order->name }}</td>
+                                    <td>{{ $order->order_number }}</td>
+                                    <td>{{ $order->subtotal_price }}</td>
+                                    <td>{{ $order->total_price }}</td>
+                                    <td>{{ $order->total_weight }}</td>
+                                    <td>{{ $order->updated_at ? $order->updated_at->format('d-M-Y H:i') : '' }}</td>
+                                    <td>{{ $order->customer_id }}</td>
+                                    <td>{{ $order->source }}</td>
+                                    <td>{{ $order->shopify_id }}</td>
                                 </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="2"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-rq857m</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">17 Jun, 2024</td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">$29.99</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="3"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-jk563z</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">30 Apr, 2024</td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">$24.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="4"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-hg234x</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-destructive">
-                                            Declined
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">21 Apr, 2024</td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">$6.59</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="5"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-lp098y</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">14 Mar, 2024</td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">$79.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="6"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-q196l</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">08 Jan, 2024</td>
-                                    <td class="text-foreground font-normal">6 Aug, 2024</td>
-                                    <td class="text-foreground font-normal">$257.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="7"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-m113s</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-warning">
-                                            Upcoming
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">07 Nov, 2024</td>
-                                    <td class="text-foreground font-normal">Design Dept</td>
-                                    <td class="text-foreground font-normal">$67.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="8"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-u859c</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-destructive">
-                                            Declined
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">16 May, 2024</td>
-                                    <td class="text-foreground font-normal">07 Nov, 2024</td>
-                                    <td class="text-foreground font-normal">$494.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="9"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-m803g</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">16 Mar, 2024</td>
-                                    <td class="text-foreground font-normal">16 Mar, 2024</td>
-                                    <td class="text-foreground font-normal">$142.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
-                                <tr>
-                                    <td><input class="kt-checkbox kt-checkbox-sm" data-kt-datatable-row-check="true" type="checkbox" value="10"></td>
-                                    <td class="text-foreground font-normal">Invoice-2024-r204u</td>
-                                    <td>
-                                        <div class="kt-badge kt-badge-sm kt-badge-outline kt-badge-success">
-                                            Paid
-                                        </div>
-                                    </td>
-                                    <td class="text-foreground font-normal">25 Mar, 2024</td>
-                                    <td class="text-foreground font-normal">25 Mar, 2024</td>
-                                    <td class="text-foreground font-normal">$35.00</td>
-                                    <td class="text-center"><a class="kt-link kt-link-underlined kt-link-dashed" href="">
-                                            Download
-                                        </a></td>
-                                </tr>
+                                @endforeach
                             </tbody>
                         </table>
+
                     </div>
                     <div class="kt-card-footer justify-center md:justify-between flex-col md:flex-row gap-5 text-secondary-foreground text-sm font-medium">
-                        <div class="flex items-center gap-2 order-2 md:order-1">
+                        <div class="flex items-center gap-4 order-1 md:order-2">
+                            {{ $orders->links() }}
+                        </div>
+
+                        <!-- <div class="flex items-center gap-2 order-2 md:order-1">
                             Show
                             <select class="hidden" data-kt-datatable-size="true" data-kt-select="" name="perpage" data-kt-select-initialized="true">
                                 <option value="5" data-kt-select-option-initialized="true">5</option>
@@ -636,12 +168,17 @@
                                     </svg>
                                 </button></div>
                         </div>
+                    </div> -->
+
+
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
 </div>
+
 
 
 @endsection

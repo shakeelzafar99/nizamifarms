@@ -1,0 +1,149 @@
+
+function ShopifyOrderData() {
+   // Replace these with your Shopify API credentials and store name
+  var apiKey = '12fb7238465b59711b2881da6152f723';
+  var password = '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';
+  var storeName = 'Nizamifarms';
+// Specify the API version in the URL
+  var apiVersion = '2023-10';
+
+  // Base URL for Shopify API
+  var baseUrl = 'https://' + storeName + '.myshopify.com/admin/api/' + apiVersion;
+
+  // Define the endpoint to retrieve order data
+  var endpoint = '/orders.json';
+
+  // Create authentication headers
+  var headers = {
+    'Authorization': 'Basic ' + Utilities.base64Encode(apiKey + ':' + password)
+  };
+
+  // Get the current date and time
+  var endDate = new Date();
+
+  // Set the start date to 45 days ago
+  var startDate = new Date();
+  startDate.setDate(endDate.getDate() - 3);
+
+//var startDate = new Date('2023-09-01'); // Replace with your desired start date
+//var endDate = new Date('2023-09-30'); // Replace with your desired end date
+
+
+  var dateRange = 7; // Number of days per date range
+  var orders = [];
+
+  while (startDate <= endDate) {
+    var nextDate = new Date(startDate);
+    nextDate.setDate(startDate.getDate() + dateRange);
+
+    // Make the API request for the current date range
+    var response = null;
+
+    try {
+      // Make the API request with rate limiting
+      Utilities.sleep(500); // Sleep for 500 milliseconds (0.5 seconds) between API requests
+      response = UrlFetchApp.fetch(baseUrl + endpoint + '?limit=250&created_at_min=' + formatDate_order(startDate) + '&created_at_max=' + formatDate_order(nextDate), {
+        'method': 'get',
+        'headers': headers
+      });
+    } catch (e) {
+      // Handle any errors here
+      Logger.log('Error: ' + e);
+      break;
+    }
+
+    // Parse the JSON response
+    var data = JSON.parse(response.getContentText());
+
+    // Access the order data
+    var pageOrders = data.orders;
+
+    if (pageOrders.length > 0) {
+      // Add pageOrders to the overall orders array
+      orders = orders.concat(pageOrders);
+    }
+
+    // Move to the next date range
+    startDate = nextDate;
+  }
+
+  // Open the Google Sheet where you want to write the data for main orders
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var mainSheet = spreadsheet.getSheetByName('orders_main'); // Create a sheet for main orders
+  var lineItemSheet = spreadsheet.getSheetByName('orders_line_item'); // Create a sheet for line items
+
+  // Clear existing data in the sheets (optional)
+  mainSheet.clear();
+  lineItemSheet.clear();
+
+  // Write headers to the main sheet for main orders
+  var mainHeaders = ['Order ID', 'Order Date', 'First Name', 'Last Name', 'Address', 'Payment Method', 'City', 'Order Number', 'Customer Phone', 'Discount Code', 'Line Items'];
+  mainSheet.appendRow(mainHeaders);
+
+  // Write headers to the line item sheet for line items
+  var lineItemHeaders = ['Order Number', 'SKU', 'Product Name', 'Quantity','Price'];
+  lineItemSheet.appendRow(lineItemHeaders);
+
+  // Write order data to the sheets
+  for (var i = 0; i < orders.length; i++) {
+    var order = orders[i];
+
+    // Access customer information
+    var customerName = order.customer ? (order.customer.first_name + ' ' + order.customer.last_name) : '';
+
+    // new logic for number cleaning
+var customerPhone = order.billing_address ? order.billing_address.phone : '';
+customerPhone = customerPhone ? customerPhone.replace(/[^\d]+/g, '') : '';
+customerPhone = customerPhone.slice(-10);
+
+
+    // Access discount information
+    var discountCode = order.discount_codes.length > 0 ? order.discount_codes[0].code : '';
+
+    // Combine line items for the order into one string
+    var lineItemsCombined = '';
+    for (var j = 0; j < order.line_items.length; j++) {
+      var lineItem = order.line_items[j];
+      lineItemsCombined += lineItem.title + ' (Qty: ' + lineItem.quantity + ')' + '\n'; // Add line item details
+    }
+
+  // *** New code for transforming payment method ***
+  var paymentMethod = order.payment_gateway_names && order.payment_gateway_names.length > 0 ? order.payment_gateway_names.join(', ') : '';
+  var paymentCode = paymentMethod === 'Direct Bank Transfer' ? 'bacs' : 'cod';
+  // *** End of new code ***
+
+
+    // Write main order data to the main sheet, including combined line items
+    var mainRowData = [
+      order.id,
+      //formatDate_order(new Date(order.created_at)),
+       Utilities.formatDate(new Date(order.created_at), 'GMT', 'MM/dd/yyyy HH:mm:ss'), // Format order date
+      order.customer.first_name,
+      order.customer.last_name,
+      getAddress(order.shipping_address),
+     // order.payment_gateway_names && order.payment_gateway_names.length > 0 ? order.payment_gateway_names.join(', ') : '',
+      paymentCode,
+      order.shipping_address.city,
+     // order.email, commenting to accomodate order number
+      order.number,
+      customerPhone.slice(-10), // Only take the last 10 digits
+      discountCode,
+      lineItemsCombined.trim() // Trim excess whitespace
+      
+    ];
+    mainSheet.appendRow(mainRowData);
+
+    // Loop through line items and write them to the line item sheet
+    for (var j = 0; j < order.line_items.length; j++) {
+      var lineItem = order.line_items[j];
+      var lineItemRowData = [
+        order.id,
+        lineItem.sku || '',
+        lineItem.title,
+        lineItem.quantity,
+        lineItem.price
+      ];
+      lineItemSheet.appendRow(lineItemRowData);
+    }
+  }
+}

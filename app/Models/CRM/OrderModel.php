@@ -13,6 +13,7 @@ use Illuminate\Support\Str;
 use App\Models\FIN\ArPaymentDetailModel;
 use Carbon\Carbon;
 use App\Models\CRM\CustomerModel;
+use Illuminate\Support\Facades\Http;
 
 class OrderModel extends BaseModel
 {
@@ -137,15 +138,77 @@ class OrderModel extends BaseModel
     // }
 
 
-    function Store($data)
+
+    public function importShopifyOrders($data)
     {
 
-        try {
+        // $data->validate([
+        //     'from_date' => 'required|date',
+        //     'to_date'   => 'required|date|after_or_equal:from_date',
+        // ]);
 
+        $orders = $this->fetchShopifyOrders($data["from_date"], $data["to_date"]);
+    
+        foreach ($orders as $order) {
+            // Call your existing Store() method
+            $this->Store($order);
+        }
+
+        return response()->json([
+            'message' => 'Shopify orders imported successfully!',
+            'total' => count($orders)
+        ]);
+    }
+
+    public function fetchShopifyOrders($fromDate, $toDate)
+    {
+        $apiKey = '12fb7238465b59711b2881da6152f723';
+        $password = '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';
+        $storeName = 'Nizamifarms';
+        $apiVersion = '2023-10';
+
+        $baseUrl = "https://{$storeName}.myshopify.com/admin/api/{$apiVersion}/orders.json";
+
+        $orders = [];
+        $dateRange = 7; // days per API call
+        $startDate = new \DateTime($fromDate);
+        $endDate = new \DateTime($toDate);
+
+        while ($startDate <= $endDate) {
+            $nextDate = clone $startDate;
+            $nextDate->modify("+{$dateRange} days");
+
+            $response = Http::withBasicAuth($apiKey, $password)
+                ->get($baseUrl, [
+                    'limit' => 250,
+                    'created_at_min' => $startDate->format('Y-m-d\TH:i:s'),
+                    'created_at_max' => $nextDate->format('Y-m-d\TH:i:s'),
+                ]);
+
+            if ($response->failed()) {
+                break;
+            }
+
+            $data = $response->json();
+
+            if (!empty($data['orders'])) {
+                $orders = array_merge($orders, $data['orders']);
+            }
+
+            $startDate = $nextDate;
+        }
+
+        return $orders;
+    }
+
+
+
+    function Store($data)
+    {
+        try {
             //Model Initialized 
             $model = new OrderModel;
             $this->data = $data;
-
             // Validate the request...
             if (array_key_exists("shopify_id", $this->data) && $this->data['shopify_id'] > 0) {
                 $model = OrderModel::where("shopify_id", $this->data['shopify_id'])->first();
@@ -167,13 +230,11 @@ class OrderModel extends BaseModel
             $model->customer_id = $this->data["customer"]['id'];
             $model->source = $this->data['source'];
             $model->shopify_id = $this->data['shopify_id'];
-
             DB::beginTransaction();
             if ($model->save()) {
                 if (array_key_exists("line_items", $this->data) && count($this->data['line_items']) > 0) {
                     $model->OrderDetails()->delete();
                     $orderDetails = [];
-                    $stockDetailsData = [];
 
                     foreach ($this->data['line_items'] as $key => $value) {
                         $detailModel = new OrderDetailModel();
@@ -242,7 +303,7 @@ class OrderModel extends BaseModel
                 return $this->setResponse();
             }
         } catch (\Exception $e) {
-            dd($e);
+            dd($e->getMessage());
             DB::rollBack();
             $this->message = $e->getMessage();
             $this->trxnNotCompleted();

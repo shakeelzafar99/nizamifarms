@@ -90,23 +90,16 @@ class ShopifyModel extends BaseModel
         try {
             //Model Initialized 
             $model = new OrderModel;
-
             $this->data = $data;
             $this->data['shopify_id'] = $this->data["id"];
             $this->data['source'] = "shopify";
-
-            $response = $model->Store($this->data);
-
-            $this->trxnCompleted();
-            return $this->setResponse();
+            $model->Store($this->data);
         } catch (\Exception $e) {
             DB::rollBack();
             $this->message = $e->getMessage();
             $this->trxnNotCompleted();
             return;
         }
-        $this->intlSrvError();
-        return $this->setResponse();
     }
 
     function Remove($id) //DELETE

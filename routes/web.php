@@ -4,8 +4,8 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SysAdmin\MenuController;
 use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\CRM\OrderController; 
- 
+use App\Http\Controllers\CRM\OrderController;
+
 // Redirect root to demo1
 Route::get('/', function () {
     return redirect('/auth/login');
@@ -34,10 +34,7 @@ Route::group([
 
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index']);
-      Route::get('/orders', [OrderController::class, 'index']);
+    Route::get('/orders', [OrderController::class, 'index']);
+    Route::post('/orders/import-shopify', [OrderController::class, 'importShopify'])->name('orders.importShopify');
     // other protected routes...
 });
-
-
-
- 
