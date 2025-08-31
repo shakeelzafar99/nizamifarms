@@ -51,8 +51,15 @@
                 </h3>
 
                 <!-- Right: Form -->
-                <form action="{{ route('orders.importShopify') }}" method="POST" class="flex gap-2 items-center">
+                <form action="{{ route('orders.importOrders') }}" method="POST" class="flex gap-2 items-center">
                     @csrf
+                    <select
+                        class="kt-select" name="source"
+                        required>
+                        <option value="">Source</option>
+                        <option value="Shopify">Shopify</option>
+                        <option value="WooCommerce">WooCommerce</option>
+                    </select>
                     <span class="text-xs text-muted">From</span>
                     <div class="kt-input">
                         <input type="date" name="from_date" class="kt-input" placeholder="Date From" />
@@ -84,6 +91,7 @@
                                     <th class="w-[120px]">Customer ID</th>
                                     <th class="w-[100px]">Source</th>
                                     <th class="w-[160px]">Shopify ID</th>
+                                    <th class="w-[160px]">Woo ID</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -102,6 +110,7 @@
                                     <td>{{ $order->customer_id }}</td>
                                     <td>{{ $order->source }}</td>
                                     <td>{{ $order->shopify_id }}</td>
+                                    <td>{{ $order->woo_id }}</td>
                                 </tr>
                                 @endforeach
                             </tbody>

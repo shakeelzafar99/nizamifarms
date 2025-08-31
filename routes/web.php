@@ -35,6 +35,6 @@ Route::group([
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index']);
     Route::get('/orders', [OrderController::class, 'index']);
-    Route::post('/orders/import-shopify', [OrderController::class, 'importShopify'])->name('orders.importShopify');
+    Route::post('/orders/import-orders', [OrderController::class, 'importOrders'])->name('orders.importOrders');
     // other protected routes...
 });

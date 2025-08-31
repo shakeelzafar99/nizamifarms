@@ -7,18 +7,21 @@ use App\Http\Controllers\Controller;
 use App\Models\CRM\OrderModel;
 use Illuminate\Support\Facades\Validator;
 use App\Services\ShopifyService;
+use App\Services\WooCommerceService;
 use Illuminate\Support\Facades\Log;
-
+use Carbon\Carbon; // ✅ Correct namespace
 class OrderController extends Controller
 {
 
 
     protected $orderModel;
     protected ShopifyService $shopify;
-    public function __construct(OrderModel  $orderModel, ShopifyService $shopify)
+    protected WooCommerceService $wooCommerce;
+    public function __construct(OrderModel  $orderModel, ShopifyService $shopify, WooCommerceService $wooCommerce)
     {
         $this->orderModel = $orderModel;
         $this->shopify = $shopify;
+        $this->wooCommerce = $wooCommerce;
     }
 
     public function index()
@@ -31,14 +34,48 @@ class OrderController extends Controller
     }
 
 
-    public function importShopify(Request $request)
+
+
+    public function importOrders(Request $request)
+    {
+
+        $validated = $request->validate([
+            'source' => 'required',
+            'from_date' => 'required|date',
+            'to_date'   => 'required|date|after_or_equal:from_date',
+        ]);
+        $orderCount =  0;
+        if ($validated['source']  === "Shopify") {
+            $orderCount = $this->importShopify($validated);
+        } else if ($validated['source']  === "WooCommerce") {
+            $orderCount = $this->importWooOrders($validated);
+        }
+        return redirect()->back()->with('success',  $orderCount . ' ' . $validated['source'] . ' orders imported successfully.');
+    }
+
+
+    private function importWooOrders($validated)
+    {
+
+        $allOrders = $this->wooCommerce->fetchOrders($validated['from_date'], $validated['to_date']);
+        $orderModel = new OrderModel();
+        foreach ($allOrders as $order) {
+            try {
+                $mappedOrder = $orderModel->mapWooOrder($order);
+                $orderModel->store($mappedOrder);
+            } catch (\Exception $innerEx) {
+                Log::error("Failed to process WooCommerce order ID {$order['id']}: " . $innerEx->getMessage());
+                // Optionally continue to next order
+                continue;
+            }
+        }
+        return count($allOrders);
+    }
+
+    private function importShopify($validated)
     {
         try {
-            // ✅ Step 1: Validate inputs
-            $validated = $request->validate([
-                'from_date' => 'required|date',
-                'to_date'   => 'required|date|after_or_equal:from_date',
-            ]);
+
 
             // ✅ Step 2: Fetch orders from Shopify Service
             $orders = $this->shopify->fetchOrders($validated['from_date'], $validated['to_date']);
@@ -56,7 +93,7 @@ class OrderController extends Controller
             }
 
             // ✅ Step 4: Return success
-            return redirect()->back()->with('success', count($orders) . ' Shopify orders imported successfully.');
+              return count($orders);
         } catch (\Illuminate\Validation\ValidationException $e) {
             dd(" Validation errors" . $e->errors());
             // Validation errors (handled automatically but you can customize)

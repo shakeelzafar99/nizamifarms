@@ -125,7 +125,7 @@ class OrderModel extends BaseModel
         }
     }
 
- 
+
 
 
 
@@ -138,7 +138,7 @@ class OrderModel extends BaseModel
         // ]);
 
         $orders = $this->fetchShopifyOrders($data["from_date"], $data["to_date"]);
-    
+
         foreach ($orders as $order) {
             // Call your existing Store() method
             $this->Store($order);
@@ -149,7 +149,73 @@ class OrderModel extends BaseModel
             'total' => count($orders)
         ]);
     }
- 
+
+
+
+    function mapWooOrder(array $order)
+    {
+        // Compute subtotal & weight
+        $subtotal = 0;
+        $totalWeight = 0;
+        $lineItems = [];
+
+        foreach ($order['line_items'] as $item) {
+            $subtotal += $item['subtotal'];
+            $totalWeight += ($item['quantity'] * ($item['weight'] ?? 0));
+
+            $lineItems[] = [
+                'id' => $item['id'], // maps to shopify_line_item_id
+                'product_id' => $item['product_id'],
+                'sku' => $item['sku'],
+                'quantity' => $item['quantity'],
+                'price' => $item['price'],
+                'name' => $item['name'],
+                'vendor' => $order['store'] ?? 'WooCommerce', // Woo doesn't have vendor
+            ];
+        }
+
+        // Map customer (from billing)
+        $customer = [
+            'id' => $order['customer_id'] ?? null,
+            'email' => $order['billing']['email'] ?? null,
+            'first_name' => $order['billing']['first_name'] ?? '',
+            'last_name' => $order['billing']['last_name'] ?? '',
+            'state' => $order['billing']['state'] ?? '',
+            'note' => $order['customer_note'] ?? '',
+            'verified_email' => true,
+            'tax_exempt' => false,
+            'phone' => $order['billing']['phone'] ?? null,
+        ];
+
+        // Map shipping address
+        $shipping = [
+            'first_name' => $order['shipping']['first_name'] ?? '',
+            'last_name'  => $order['shipping']['last_name'] ?? '',
+            'address1'   => $order['shipping']['address_1'] ?? '',
+            'address2'   => $order['shipping']['address_2'] ?? '',
+            'phone'      => $order['billing']['phone'] ?? null,
+            'city'       => $order['shipping']['city'] ?? '',
+            'zip'        => $order['shipping']['postcode'] ?? '',
+            'country'    => $order['shipping']['country'] ?? '',
+        ];
+
+        return [
+            'woo_id' => $order['id'], // ⚡ Woo ID stored here
+            'source' => 'woocommerce',
+            'contact_email' => $order['billing']['email'] ?? null,
+            'currency' => $order['currency'],
+            'name' => trim(($order['billing']['first_name'] ?? '') . ' ' . ($order['billing']['last_name'] ?? '')),
+            'order_number' => $order['number'],
+            'subtotal_price' => $subtotal,
+            'total_price' => $order['total'],
+            'total_tax' => $order['total_tax'],
+            'total_weight' => $totalWeight,
+            'customer' => $customer,
+            'line_items' => $lineItems,
+            'shipping_address' => $shipping,
+        ];
+    }
+
     function Store($data)
     {
         try {
@@ -162,9 +228,16 @@ class OrderModel extends BaseModel
                 if ($model == null) {
                     $model = new OrderModel;
                 }
+                $model->shopify_id = $this->data['shopify_id'];
+            } elseif (array_key_exists("woo_id", $this->data) && $this->data['woo_id'] > 0) {
+                $model = OrderModel::where("woo_id", $this->data['woo_id'])->first();
+                if ($model == null) {
+                    $model = new OrderModel;
+                }
+                $model->woo_id = $this->data['woo_id'];
             } else {
                 $model->created_by =  $this->CurrentUserId();
-            }
+            } 
             $model->created_by =  $this->CurrentUserId();
             $model->contact_email = $this->data['contact_email'];
             $model->currency = $this->data['currency'];
@@ -175,8 +248,8 @@ class OrderModel extends BaseModel
             $model->total_tax = $this->data['total_tax'];
             $model->total_weight = $this->data['total_weight'];
             $model->customer_id = $this->data["customer"]['id'];
-            $model->source = $this->data['source'];
-            $model->shopify_id = $this->data['shopify_id'];
+            $model->source = $this->data['source']; 
+
             DB::beginTransaction();
             if ($model->save()) {
                 if (array_key_exists("line_items", $this->data) && count($this->data['line_items']) > 0) {

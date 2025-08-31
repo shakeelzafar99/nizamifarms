@@ -4,77 +4,22 @@ namespace App\Http\Controllers\Webhook;
 
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
-use App\Models\Webhook\ShopifyModel;
+use App\Models\CRM\OrderModel;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 
-class ShopifyController extends Controller
+class WooController extends Controller
 {
 
 
-    protected $shopifyModel;
-    public function __construct(ShopifyModel  $shopifyModel)
+    protected $orderModel;
+    public function __construct(OrderModel  $orderModel)
     {
-        $this->shopifyModel = $shopifyModel;
-    }
-    function list(Request $request)
-    {
-        try {
-            $response = $this->shopifyModel->List($request->all());
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        $this->orderModel = $orderModel;
     }
 
-    function getdetail($id)
-    {
-
-        try {
-            $response = $this->shopifyModel->GetDetail($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
-    }
-
-
-    function get($id)
-    {
-        try {
-            $response = $this->shopifyModel->Get($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
-    }
-
-
-
-    public function store_bk(Request $request)
-    {
-        try {
-            // Get raw request body as JSON string
-            $rawJson = $request->getContent();
-
-            // Decode JSON to array            
-
-            // Encode combined data to pretty JSON
-            $jsonToStore = json_encode($rawJson, JSON_PRETTY_PRINT);
-
-            // Filename with timestamp
-            $filename = 'shopify_requests/request_' . now()->format('Y_m_d_His') . '.json';
-
-            // Save to storage/app/shopify_requests/
-            Storage::disk('public')->put($filename, $jsonToStore);
-
-            return response()->json(['message' => 'Request and headers saved successfully']);
-        } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
-        }
-    }
 
     function createLog($data, $fileType, $directory, $filename)
     {
@@ -92,12 +37,12 @@ class ShopifyController extends Controller
 
         try {
 
-            $sharedSecret = Config::get('shopify.webhook_secret'); 
+            $sharedSecret = Config::get('woocommerce.webhook_secret');
             // Get the raw POST body
             $rawBody = $request->getContent();
             $this->createLog($request->all(), "json", "request", "t1");
             // Get HMAC header from Shopify
-            $hmacHeader = $request->header('x-shopify-hmac-sha256');
+            $hmacHeader = $request->header('X-WC-Webhook-Signature');
 
             // Calculate HMAC hash
             $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
@@ -108,18 +53,19 @@ class ShopifyController extends Controller
                 return response()->json(['error' => 'Unauthorized'], 401);
             }
             $payload = json_decode($rawBody, true);
-
-            $this->shopifyModel->Store($payload);
+            $mappedOrder = $this->orderModel->mapWooOrder($payload);
+            $this->orderModel->store($mappedOrder);
+            //$this->shopifyModel->Store($payload);
 
             return response()->json(['success' => 'completed'], 200); //$this->success($response);
-        } catch (\Exception $e) { 
+        } catch (\Exception $e) {
             $errorString =
                 "Message: " . $e->getMessage() . PHP_EOL .
                 "File: " . $e->getFile() . PHP_EOL .
                 "Line: " . $e->getLine() . PHP_EOL .
                 "Trace: " . $e->getTraceAsString();
             $this->createLog($errorString, "txt", "error", "e1");
-           
+
             return $this->error($e->getMessage(), $e->getCode());
         }
     }

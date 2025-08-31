@@ -16,5 +16,8 @@ return [
     'password' => env('SHOPIFY_PASSWORD', ''),
     'store_name' => env('SHOPIFY_STORE_NAME', ''),
     'api_version' => env('SHOPIFY_API_VERSION', '2023-10'),
+    'webhook_secret' => env('APP_SHOPIFY_WEBHOOK_SECRET'),
+
+
 
 ];
