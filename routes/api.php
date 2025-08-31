@@ -1,30 +1,11 @@
 <?php
 
 
-use App\Http\Controllers\AuthController;
-use App\Http\Controllers\CRM\AccountCustomerController;
-use App\Http\Controllers\CRM\BranchController;
-use App\Http\Controllers\CRM\CompanyConfigController;
-use App\Http\Controllers\CRM\CompanyController;
-use App\Http\Controllers\CRM\OrderController;
-use App\Http\Controllers\CRM\WalkInCustomerController;
-use App\Http\Controllers\MailController;
-use App\Http\Controllers\PDM\BrandController;
-use App\Http\Controllers\PDM\PartController;
-use App\Http\Controllers\PDM\ProductController;
-use App\Http\Controllers\PDM\ProductTreadPatternsController;
-use App\Http\Controllers\PDM\ServiceController;
-use App\Http\Controllers\PDM\SizeController;
-use App\Http\Controllers\SysAdmin\ConfigController;
-use App\Http\Controllers\SysAdmin\EmailTemplateController;
-use App\Http\Controllers\SysAdmin\EnquiryController;
-use App\Http\Controllers\SysAdmin\LovController;
-use App\Http\Controllers\SysAdmin\MenuController;
-use App\Http\Controllers\SysAdmin\PackageController;
-use App\Http\Controllers\SysAdmin\PaymentMethodController;
-use App\Http\Controllers\SysAdmin\RoleController;
-use App\Http\Controllers\SysAdmin\UserController;
+use App\Http\Controllers\AuthController; 
+use App\Http\Controllers\MailController; 
 use App\Http\Controllers\Webhook\ShopifyController;
+use App\Http\Controllers\Webhook\WooController;
+
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Route;
 
@@ -63,7 +44,7 @@ Route::prefix('webhook')->group(function () {
     });
 
     // WooCommerce Routes
-    Route::prefix('woo')->controller(ShopifyController::class)->group(function () {
+    Route::prefix('woo')->controller(WooController::class)->group(function () {
         Route::prefix('order')->group(function () {
             Route::get('get/{id}', 'get');
             Route::post('list', 'list');

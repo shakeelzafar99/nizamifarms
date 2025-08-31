@@ -25,3 +25,10 @@ zsvuwg13j9
 
 
 replace utf8mb4_0900_ai_ci with utf8mb4_unicode_ci
+
+
+
+ftp : 
+ftp.gb.stackcp.com
+username  : nizamifarms.com
+PAssword : 3FuYrC?13)K8
