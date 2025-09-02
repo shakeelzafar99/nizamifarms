@@ -24,13 +24,45 @@ class OrderController extends Controller
         $this->wooCommerce = $wooCommerce;
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        // Get orders with pagination (10 per page)
-        $orders = OrderModel::orderBy('created_at', 'desc')->paginate(10);
+        $source = $request->get('source', 'other'); // default to 'other' (non-shopify)
+        
+        // Filter orders based on source
+        $query = OrderModel::with(['OrderDetails', 'Customer', 'OrderAddress']);
+        
+        if ($source === 'shopify') {
+            $query->where('source', 'shopify');
+        } else {
+            // Show all non-shopify sources (woocommerce, manual, etc.)
+            $query->where('source', '!=', 'shopify')->orWhereNull('source');
+        }
+        
+        $orders = $query->orderBy('created_at', 'desc')->paginate(10);
+        
+        // Get counts for tab badges
+        $shopifyCount = OrderModel::where('source', 'shopify')->count();
+        $otherCount = OrderModel::where('source', '!=', 'shopify')->orWhereNull('source')->count();
 
-        // Pass orders to the view
-        return view('pages.orders.index', compact('orders'));
+        return view('pages.orders.index', compact('orders', 'source', 'shopifyCount', 'otherCount'));
+    }
+
+    public function show($id)
+    {
+        try {
+            $order = OrderModel::with(['OrderDetails', 'Customer', 'OrderAddress'])
+                        ->findOrFail($id);
+            
+            return response()->json([
+                'success' => true,
+                'order' => $order
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Order not found'
+            ], 404);
+        }
     }
 
 
