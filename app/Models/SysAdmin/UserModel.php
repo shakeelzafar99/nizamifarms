@@ -59,6 +59,17 @@ class UserModel extends BaseModel
         'updated_by'
     ];
 
+    // Define relationships
+    public function userRoles()
+    {
+        return $this->hasMany(UserRoleModel::class, 'user_id', 'id');
+    }
+
+    public function roles()
+    {
+        return $this->belongsToMany(RoleModel::class, 't_sys_user_role', 'user_id', 'role_id');
+    }
+
     function List($data) //All record
     {
         $this->listRequest($data);

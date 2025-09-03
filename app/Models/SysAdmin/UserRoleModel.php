@@ -31,5 +31,16 @@ class UserRoleModel extends BaseModel
         'role_id',
         'user_id'
     ]; 
+
+    // Define relationships
+    public function role()
+    {
+        return $this->belongsTo(RoleModel::class, 'role_id', 'id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(UserModel::class, 'user_id', 'id');
+    }
       
 }

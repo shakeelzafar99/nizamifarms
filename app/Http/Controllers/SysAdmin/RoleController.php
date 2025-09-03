@@ -1,58 +1,104 @@
 <?php
 
 namespace App\Http\Controllers\SysAdmin;
-
-use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\SysAdmin\RoleModel;
-use Illuminate\Support\Facades\Validator;
+use App\Models\SysAdmin\UserRoleModel;
+use Illuminate\Http\Request;
 
 class RoleController extends Controller
 {
-
-    protected $roleModel;
-    public function __construct(RoleModel  $roleModel)
+    public function index(Request $request)
     {
-        $this->roleModel = $roleModel;
+        // Get roles with user count
+        $roles = RoleModel::withCount('userRoles')->paginate(10);
+        
+        return view('pages.roles.index', compact('roles'));
     }
-    function list(Request $request)
+
+    public function show($id)
     {
         try {
-            $response = $this->roleModel->List($request->all());
-            return $this->success($response);
+            $role = RoleModel::with(['userRoles.user'])->findOrFail($id);
+            
+            return response()->json([
+                'success' => true,
+                'role' => $role
+            ]);
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
+            return response()->json([
+                'success' => false,
+                'message' => 'Role not found'
+            ], 404);
         }
     }
 
-    function get($id)
+    public function store(Request $request)
     {
+        $request->validate([
+            'urole_name' => 'required|string|max:255|unique:t_sys_role,urole_name',
+            'type' => 'required|string',
+            'description' => 'nullable|string|max:500'
+        ]);
+
         try {
-            $response = $this->roleModel->Get($id);
-            return $this->success($response);
+            RoleModel::create([
+                'urole_name' => $request->urole_name,
+                'type' => $request->type,
+                'description' => $request->description,
+                'is_active' => $request->is_active ?? 1,
+                'is_default' => 0,
+                'company_id' => 1, // Default company for now
+                'created_by' => auth()->id()
+            ]);
+
+            return redirect()->route('roles.index')->with('success', 'Role created successfully!');
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
+            return redirect()->back()->with('error', 'Error creating role: ' . $e->getMessage());
         }
     }
 
-    function store(Request $request) //ADD   
+    public function update(Request $request, $id)
     {
-        try { 
-            $response = $this->roleModel->Store($request->all());
-            return $this->success($response);
+        $request->validate([
+            'urole_name' => 'required|string|max:255|unique:t_sys_role,urole_name,' . $id,
+            'type' => 'required|string',
+            'description' => 'nullable|string|max:500'
+        ]);
+
+        try {
+            $role = RoleModel::findOrFail($id);
+            
+            $role->update([
+                'urole_name' => $request->urole_name,
+                'type' => $request->type,
+                'description' => $request->description,
+                'is_active' => $request->is_active ?? 1,
+                'updated_by' => auth()->id()
+            ]);
+
+            return redirect()->route('roles.index')->with('success', 'Role updated successfully!');
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
+            return redirect()->back()->with('error', 'Error updating role: ' . $e->getMessage());
         }
     }
 
-    function remove(Request $request) //DELETE
+    public function destroy($id)
     {
         try {
-            $id = $request->id;
-            $response = $this->roleModel->Remove($id);
-            return $this->success($response);
+            $role = RoleModel::findOrFail($id);
+            
+            // Check if role has users assigned
+            $userCount = UserRoleModel::where('role_id', $id)->count();
+            if ($userCount > 0) {
+                return redirect()->back()->with('error', 'Cannot delete role. It has ' . $userCount . ' user(s) assigned to it.');
+            }
+
+            $role->delete();
+
+            return redirect()->route('roles.index')->with('success', 'Role deleted successfully!');
         } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
+            return redirect()->back()->with('error', 'Error deleting role: ' . $e->getMessage());
         }
     }
 }

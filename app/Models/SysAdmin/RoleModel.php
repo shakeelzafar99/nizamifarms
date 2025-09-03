@@ -57,6 +57,16 @@ class RoleModel extends BaseModel
         return $this->hasMany(RoleMenuModel::class, 'role_id', 'id');
     }
 
+    public function userRoles()
+    {
+        return $this->hasMany(UserRoleModel::class, 'role_id', 'id');
+    }
+
+    public function users()
+    {
+        return $this->belongsToMany(UserModel::class, 't_sys_user_role', 'role_id', 'user_id');
+    }
+
 
     function List($data) //All record
     {
