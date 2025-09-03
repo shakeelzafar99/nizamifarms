@@ -68,26 +68,10 @@
                         </div>
                     </div>
 
-                    <!-- Right: Import Form -->
-                    <form action="{{ route('orders.importOrders') }}" method="POST" class="flex gap-2 items-center">
-                        @csrf
-                        <select class="kt-select" name="source" required>
-                            <option value="">Source</option>
-                            <option value="Shopify">Shopify</option>
-                            <option value="WooCommerce">WooCommerce</option>
-                        </select>
-                        <span class="text-xs text-muted">From</span>
-                        <div class="kt-input">
-                            <input type="date" name="from_date" class="kt-input" placeholder="Date From" />
-                        </div>
-                        <span class="text-xs text-muted">To</span>
-                        <div class="kt-input">
-                            <input type="date" name="to_date" class="kt-input" placeholder="Date From" />
-                        </div>
-                        <button class="kt-btn kt-btn-outline" type="submit">
-                            <i class="ki-filled ki-exit-down"></i> Import Order
-                        </button>
-                    </form>
+                    <!-- Right: Import Button -->
+                    <button onclick="openImportModal()" class="kt-btn kt-btn-outline">
+                        <i class="ki-filled ki-exit-down"></i> Import Orders
+                    </button>
                 </div>
             </div>
 
@@ -229,41 +213,98 @@
 </div>
 
 <!-- View Order Modal -->
-<div id="viewOrderModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
-    <div class="relative top-4 mx-auto p-0 border w-11/12 max-w-6xl shadow-lg rounded-lg bg-white max-h-[95vh] flex flex-col">
+<div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
         <!-- Modal Header -->
-        <div class="flex justify-between items-center p-6 border-b bg-gray-50 rounded-t-lg">
-            <h3 class="text-xl font-semibold text-gray-900">Order Details</h3>
-            <button onclick="closeModal('viewOrderModal')" class="text-gray-400 hover:text-gray-600 p-1">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
-            </button>
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Invoice Details</h3>
+            <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
         </div>
         
         <!-- Modal Body -->
-        <div id="viewOrderContent" class="flex-1 overflow-y-auto p-6">
+        <div id="viewOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
         </div>
     </div>
 </div>
 
 <!-- Edit Order Modal -->
-<div id="editOrderModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
-    <div class="relative top-10 mx-auto p-5 border w-11/12 max-w-5xl shadow-lg rounded-md bg-white">
+<div id="editOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
         <!-- Modal Header -->
-        <div class="flex justify-between items-center pb-4 border-b">
-            <h3 class="text-lg font-semibold text-gray-900">Edit Order</h3>
-            <button onclick="closeModal('editOrderModal')" class="text-gray-400 hover:text-gray-600">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                </svg>
-            </button>
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Edit Invoice</h3>
+            <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
         </div>
         
         <!-- Modal Body -->
-        <div id="editOrderContent" class="mt-4">
+        <div id="editOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
+<!-- Import Orders Modal -->
+<div id="importOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 500px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <!-- Modal Header -->
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Import Historical Orders</h3>
+            <button onclick="closeModal('importOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 20px;">
+            <form id="importOrderForm" action="{{ route('orders.importOrders') }}" method="POST">
+                @csrf
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Select Source</label>
+                    <select name="source" required style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
+                        <option value="">Choose a source...</option>
+                        <option value="Shopify">Shopify</option>
+                        <option value="WooCommerce">WooCommerce</option>
+                    </select>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">From Date</label>
+                        <input type="date" name="from_date" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" required>
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">To Date</label>
+                        <input type="date" name="to_date" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" required>
+                    </div>
+                </div>
+
+                <div style="background-color: #f0f9ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 12px; margin-bottom: 20px;">
+                    <div style="display: flex; align-items: start;">
+                        <div style="color: #3b82f6; margin-right: 8px;">
+                            <svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+                            </svg>
+                        </div>
+                        <div>
+                            <h4 style="font-size: 14px; font-weight: 500; color: #1e40af; margin: 0 0 4px 0;">Import Information</h4>
+                            <p style="font-size: 12px; color: #1e40af; margin: 0;">This will fetch and import orders from the selected platform within the specified date range. Existing orders will be updated if found.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                    <button type="button" onclick="closeModal('importOrderModal')" 
+                            style="padding: 10px 20px; border: 1px solid #d1d5db; border-radius: 6px; color: #374151; background-color: white; cursor: pointer; font-size: 14px;">
+                        Cancel
+                    </button>
+                    <button type="submit" 
+                            style="padding: 10px 20px; background-color: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                        <svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                        </svg>
+                        Import Orders
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -271,10 +312,16 @@
 @endsection
 
 @push('demo1_js')
+<style>
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+</style>
 <script>
 // Modal functions
 function closeModal(modalId) {
-    document.getElementById(modalId).classList.add('hidden');
+    document.getElementById(modalId).style.display = 'none';
 }
 
 // Format date helper
@@ -302,8 +349,8 @@ function viewOrderDetails(orderId) {
     const content = document.getElementById('viewOrderContent');
     
     // Show loading
-    content.innerHTML = '<div class="flex justify-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>';
-    modal.classList.remove('hidden');
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
     
     // Fetch order details via AJAX
     fetch(`/orders/${orderId}`, {
@@ -321,118 +368,102 @@ function viewOrderDetails(orderId) {
             console.log('Order data:', order);
             
             let html = `
-                <!-- Main Layout: Side-by-side design -->
-                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-                    
-                    <!-- Left Column: Order Info & Customer -->
-                    <div class="lg:col-span-1 space-y-4">
-                        <!-- Order Summary Card -->
-                        <div class="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
-                            <div class="flex items-center justify-between mb-3">
-                                <h4 class="font-semibold text-gray-800">Order #${order.order_number || order.id}</h4>
-                                <span class="px-2 py-1 text-xs font-medium rounded-full ${order.source === 'shopify' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800'}">
-                                    ${(order.source || 'manual').toUpperCase()}
-                                </span>
-                            </div>
-                            <div class="space-y-2 text-sm">
-                                <div class="flex justify-between"><span class="text-gray-600">Date:</span><span class="font-medium">${formatDate(order.created_at)}</span></div>
-                                <div class="flex justify-between"><span class="text-gray-600">Currency:</span><span class="font-medium">${order.currency || 'PKR'}</span></div>
-                                <hr class="my-2 border-blue-200">
-                                <div class="flex justify-between"><span class="text-gray-600">Subtotal:</span><span class="font-medium">${formatCurrency(order.subtotal_price, order.currency)}</span></div>
-                                <div class="flex justify-between text-base"><span class="font-semibold text-gray-800">Total:</span><span class="font-bold text-blue-600">${formatCurrency(order.total_price, order.currency)}</span></div>
-                            </div>
+                <div>
+                    <!-- Invoice Header -->
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px;">
+                        <div>
+                            <h2 style="font-size: 24px; font-weight: bold; color: #111827; margin: 0;">Invoice #${order.order_number || order.id}</h2>
+                            <p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ${formatDate(order.created_at)}</p>
                         </div>
-
-                        <!-- Customer Info Card -->
-                        ${order.customer ? `
-                        <div class="bg-gray-50 border rounded-lg p-4">
-                            <h4 class="font-semibold text-gray-800 mb-3 flex items-center">
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
-                                </svg>
-                                Customer
-                            </h4>
-                            <div class="space-y-2 text-sm">
-                                <div><span class="text-gray-600">Name:</span> <span class="font-medium">${order.customer.first_name || ''} ${order.customer.last_name || ''}</span></div>
-                                <div><span class="text-gray-600">Email:</span> <span class="font-medium">${order.customer.email || 'N/A'}</span></div>
-                                ${order.customer.phone ? `<div><span class="text-gray-600">Phone:</span> <span class="font-medium">${order.customer.phone}</span></div>` : ''}
-                            </div>
+                        <div style="text-align: right;">
+                            <span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ${order.source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;'}">
+                                ${(order.source || 'manual').toUpperCase()}
+                            </span>
+                            <p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">${formatCurrency(order.total_price, order.currency)}</p>
                         </div>
-                        ` : '<div class="bg-gray-50 border rounded-lg p-4"><p class="text-gray-500">No customer information</p></div>'}
-
-                        <!-- Shipping Address Card -->
-                        ${order.order_address && order.order_address.length > 0 ? `
-                        <div class="bg-gray-50 border rounded-lg p-4">
-                            <h4 class="font-semibold text-gray-800 mb-3 flex items-center">
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                                Shipping Address
-                            </h4>
-                            <div class="text-sm space-y-1 text-gray-700">
-                                <div class="font-medium">${order.order_address[0].first_name || ''} ${order.order_address[0].last_name || ''}</div>
-                                <div>${order.order_address[0].address1 || ''}</div>
-                                ${order.order_address[0].address2 ? `<div>${order.order_address[0].address2}</div>` : ''}
-                                <div>${order.order_address[0].city || ''}, ${order.order_address[0].zip || ''}</div>
-                                <div class="font-medium">${order.order_address[0].country || ''}</div>
-                                ${order.order_address[0].phone ? `<div class="pt-1"><span class="text-gray-600">Phone:</span> ${order.order_address[0].phone}</div>` : ''}
-                            </div>
-                        </div>
-                        ` : ''}
                     </div>
 
-                    <!-- Right Column: Line Items -->
-                    <div class="lg:col-span-2">
-                        ${order.order_details && order.order_details.length > 0 ? `
-                        <div class="bg-white border rounded-lg overflow-hidden h-full flex flex-col">
-                            <div class="bg-gray-50 px-4 py-3 border-b">
-                                <h4 class="font-semibold text-gray-800 flex items-center">
-                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
-                                    </svg>
-                                    Line Items (${order.order_details.length} items)
-                                </h4>
+                    <!-- Customer & Address Info -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
+                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Bill To:</h3>
+                            ${order.customer ? `
+                            <div style="font-size: 14px;">
+                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.customer.first_name || ''} ${order.customer.last_name || ''}</p>
+                                <p style="color: #6b7280; margin: 0 0 4px 0;">${order.customer.email || ''}</p>
+                                ${order.customer.phone ? `<p style="color: #6b7280; margin: 0;">${order.customer.phone}</p>` : ''}
                             </div>
-                            <div class="flex-1 overflow-y-auto">
-                                <table class="w-full text-sm">
-                                    <thead class="bg-gray-100 sticky top-0">
-                                        <tr>
-                                            <th class="px-4 py-3 text-left font-medium text-gray-700">Product</th>
-                                            <th class="px-4 py-3 text-center font-medium text-gray-700">Qty</th>
-                                            <th class="px-4 py-3 text-right font-medium text-gray-700">Unit Price</th>
-                                            <th class="px-4 py-3 text-right font-medium text-gray-700">Total</th>
-                                            <th class="px-4 py-3 text-left font-medium text-gray-700">Vendor</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        ${order.order_details.map((item, index) => `
-                                        <tr class="border-t hover:bg-gray-50">
-                                            <td class="px-4 py-3">
-                                                <div>
-                                                    <div class="font-medium text-gray-900">${item.name || 'N/A'}</div>
-                                                    ${item.sku ? `<div class="text-xs text-gray-500 font-mono mt-1">SKU: ${item.sku}</div>` : ''}
-                                                </div>
-                                            </td>
-                                            <td class="px-4 py-3 text-center">
-                                                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                                    ${item.quantity || 0}
-                                                </span>
-                                            </td>
-                                            <td class="px-4 py-3 text-right font-medium">${formatCurrency(item.price || 0, order.currency)}</td>
-                                            <td class="px-4 py-3 text-right font-semibold text-gray-900">${formatCurrency((item.price || 0) * (item.quantity || 0), order.currency)}</td>
-                                            <td class="px-4 py-3">
-                                                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                                                    ${item.vendor || 'N/A'}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                        `).join('')}
-                                    </tbody>
-                                </table>
+                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No customer information</p>'}
+                        </div>
+                        
+                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Ship To:</h3>
+                            ${order.order_address && order.order_address.length > 0 ? `
+                            <div style="font-size: 14px;">
+                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.order_address[0].first_name || ''} ${order.order_address[0].last_name || ''}</p>
+                                <p style="margin: 0 0 4px 0;">${order.order_address[0].address1 || ''}</p>
+                                ${order.order_address[0].address2 ? `<p style="margin: 0 0 4px 0;">${order.order_address[0].address2}</p>` : ''}
+                                <p style="margin: 0 0 4px 0;">${order.order_address[0].city || ''}, ${order.order_address[0].zip || ''}</p>
+                                <p style="margin: 0 0 4px 0;">${order.order_address[0].country || ''}</p>
+                                ${order.order_address[0].phone ? `<p style="color: #6b7280; margin: 0;">${order.order_address[0].phone}</p>` : ''}
+                            </div>
+                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No shipping address</p>'}
+                        </div>
+                    </div>
+
+                    <!-- Line Items -->
+                    <div>
+                        <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Items (${order.order_details ? order.order_details.length : 0})</h3>
+                        ${order.order_details && order.order_details.length > 0 ? `
+                        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead style="background-color: #f9fafb;">
+                                    <tr>
+                                        <th style="padding: 12px 16px; text-align: left; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Item</th>
+                                        <th style="padding: 12px 16px; text-align: center; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Qty</th>
+                                        <th style="padding: 12px 16px; text-align: right; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Unit Price</th>
+                                        <th style="padding: 12px 16px; text-align: right; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${order.order_details.map((item, index) => `
+                                    <tr style="border-top: 1px solid #e5e7eb;">
+                                        <td style="padding: 16px;">
+                                            <div style="font-weight: 500; color: #111827;">${item.name || 'N/A'}</div>
+                                            ${item.sku ? `<div style="font-size: 12px; color: #6b7280; margin-top: 4px;">SKU: ${item.sku}</div>` : ''}
+                                            ${item.vendor ? `<div style="font-size: 12px; color: #6b7280;">Vendor: ${item.vendor}</div>` : ''}
+                                        </td>
+                                        <td style="padding: 16px; text-align: center;">
+                                            <span style="font-size: 14px; font-weight: 500;">${item.quantity || 0}</span>
+                                        </td>
+                                        <td style="padding: 16px; text-align: right; font-size: 14px;">${formatCurrency(item.price || 0, order.currency)}</td>
+                                        <td style="padding: 16px; text-align: right; font-weight: 500;">${formatCurrency((item.price || 0) * (item.quantity || 0), order.currency)}</td>
+                                    </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- Totals -->
+                        <div style="margin-top: 16px; background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                            <div>
+                                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px;">
+                                    <span>Subtotal:</span>
+                                    <span>${formatCurrency(order.subtotal_price || 0, order.currency)}</span>
+                                </div>
+                                ${order.total_tax > 0 ? `
+                                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px;">
+                                    <span>Tax:</span>
+                                    <span>${formatCurrency(order.total_tax || 0, order.currency)}</span>
+                                </div>
+                                ` : ''}
+                                <div style="display: flex; justify-content: space-between; font-size: 18px; font-weight: bold; border-top: 1px solid #d1d5db; padding-top: 8px;">
+                                    <span>Total:</span>
+                                    <span style="color: #2563eb;">${formatCurrency(order.total_price, order.currency)}</span>
+                                </div>
                             </div>
                         </div>
-                        ` : '<div class="flex items-center justify-center h-64 bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg"><p class="text-gray-500">No line items found for this order</p></div>'}
+                        ` : '<div style="text-align: center; padding: 32px; color: #6b7280;">No items found</div>'}
                     </div>
                 </div>
             `;
@@ -475,27 +506,331 @@ function editOrderDetails(orderId) {
     const content = document.getElementById('editOrderContent');
     
     // Show loading
-    content.innerHTML = '<div class="flex justify-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>';
-    modal.classList.remove('hidden');
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
     
-    // For now, show a placeholder form - you can implement full editing later
-    setTimeout(() => {
-        content.innerHTML = `
-            <div class="text-center py-8">
-                <div class="mb-4">
-                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
-                    </svg>
+    // Fetch order details for editing
+    fetch(`/orders/${orderId}`, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const order = data.order;
+            loadEditForm(order);
+        } else {
+            showEditError('Error loading order: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching order for editing:', error);
+        showEditError('Network error. Please try again.');
+    });
+}
+
+function loadEditForm(order) {
+    const content = document.getElementById('editOrderContent');
+    content.innerHTML = `
+        <form id="editOrderForm" style="padding: 0;">
+            <input type="hidden" name="order_id" value="${order.id}">
+            
+            <!-- Order Information -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Information</h4>
+                    <div style="display: flex; flex-direction: column; gap: 16px;">
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Order Number</label>
+                            <input type="text" name="order_number" value="${order.order_number || ''}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Contact Email</label>
+                            <input type="email" name="contact_email" value="${order.contact_email || ''}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Customer Name</label>
+                            <input type="text" name="customer_name" value="${order.name || ''}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                    </div>
                 </div>
-                <h3 class="text-lg font-medium text-gray-900 mb-2">Edit Order #${orderId}</h3>
-                <p class="text-gray-500 mb-6">Order editing functionality will be implemented here.</p>
-                <div class="flex justify-center gap-4">
-                    <button onclick="closeModal('editOrderModal')" class="kt-btn kt-btn-light">Cancel</button>
-                    <button class="kt-btn kt-btn-primary">Save Changes</button>
+
+                <!-- Customer Information -->
+                <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Customer Details</h4>
+                    <div style="display: flex; flex-direction: column; gap: 16px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">First Name</label>
+                                <input type="text" name="customer_first_name" value="${order.customer ? order.customer.first_name || '' : ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Last Name</label>
+                                <input type="text" name="customer_last_name" value="${order.customer ? order.customer.last_name || '' : ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Email</label>
+                            <input type="email" name="customer_email" value="${order.customer ? order.customer.email || '' : ''}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Phone</label>
+                            <input type="text" name="customer_phone" value="${order.customer ? order.customer.phone || '' : ''}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                    </div>
                 </div>
             </div>
-        `;
-    }, 500);
+
+            <!-- Line Items Section -->
+            <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
+                <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0;">Line Items</h4>
+                    <button type="button" onclick="addLineItem()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                        + Add Item
+                    </button>
+                </div>
+                <div id="lineItemsContainer" style="padding: 16px;">
+                    ${order.order_details && order.order_details.length > 0 ? 
+                        order.order_details.map((item, index) => `
+                        <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
+                                <input type="text" name="items[${index}][name]" value="${item.name || ''}" 
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+                                <input type="number" name="items[${index}][quantity]" value="${item.quantity || 1}" min="1"
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+                                <input type="number" step="0.01" name="items[${index}][price]" value="${item.price || 0}" 
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+                                <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">${formatCurrency((item.price || 0) * (item.quantity || 0), order.currency)}</span>
+                            </div>
+                            <div>
+                                <button type="button" onclick="removeLineItem(${index})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                                    ×
+                                </button>
+                            </div>
+                        </div>
+                        `).join('') : 
+                        '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>'
+                    }
+                </div>
+            </div>
+
+            <!-- Order Totals -->
+            <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Totals</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Subtotal</label>
+                        <input type="number" step="0.01" name="subtotal_price" value="${order.subtotal_price || 0}" 
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" readonly>
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Total Tax</label>
+                        <input type="number" step="0.01" name="total_tax" value="${order.total_tax || 0}" 
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()">
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Total Price</label>
+                        <input type="number" step="0.01" name="total_price" value="${order.total_price || 0}" 
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; font-weight: 600;" readonly>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                <button type="button" onclick="closeModal('editOrderModal')" 
+                        style="padding: 10px 20px; border: 1px solid #d1d5db; border-radius: 6px; color: #374151; background-color: white; cursor: pointer; font-size: 14px;">
+                    Cancel
+                </button>
+                <button type="submit" 
+                        style="padding: 10px 20px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                    Save Changes
+                </button>
+            </div>
+        </form>
+    `;
+    
+    // Add form submission handler
+    document.getElementById('editOrderForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        saveOrderChanges(order.id);
+    });
+}
+
+function showEditError(message) {
+    const content = document.getElementById('editOrderContent');
+    content.innerHTML = `
+        <div class="text-center py-8">
+            <div class="text-red-600 mb-4">
+                <svg class="mx-auto h-12 w-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+            </div>
+            <h3 class="text-lg font-medium text-gray-900 mb-2">Error</h3>
+            <p class="text-gray-500">${message}</p>
+        </div>
+    `;
+}
+
+// Line item management functions
+let lineItemIndex = 1000; // Start high to avoid conflicts with existing items
+
+function addLineItem() {
+    const container = document.getElementById('lineItemsContainer');
+    const emptyMessage = container.querySelector('div[style*="text-align: center"]');
+    if (emptyMessage) {
+        emptyMessage.remove();
+    }
+    
+    const newItem = document.createElement('div');
+    newItem.className = 'line-item';
+    newItem.setAttribute('data-index', lineItemIndex);
+    newItem.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+    
+    newItem.innerHTML = `
+        <div>
+            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
+            <input type="text" name="items[${lineItemIndex}][name]" value="" 
+                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+            <input type="hidden" name="items[${lineItemIndex}][id]" value="">
+        </div>
+        <div>
+            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+            <input type="number" name="items[${lineItemIndex}][quantity]" value="1" min="1"
+                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
+        </div>
+        <div>
+            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+            <input type="number" step="0.01" name="items[${lineItemIndex}][price]" value="0" 
+                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
+        </div>
+        <div>
+            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+            <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+        </div>
+        <div>
+            <button type="button" onclick="removeLineItem(${lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                ×
+            </button>
+        </div>
+    `;
+    
+    container.appendChild(newItem);
+    lineItemIndex++;
+    updateSubtotal();
+}
+
+function removeLineItem(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (item) {
+        item.remove();
+        updateSubtotal();
+        
+        // Check if no items left
+        const container = document.getElementById('lineItemsContainer');
+        const items = container.querySelectorAll('.line-item');
+        if (items.length === 0) {
+            container.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>';
+        }
+    }
+}
+
+function updateLineTotal(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (item) {
+        const quantity = parseFloat(item.querySelector(`input[name="items[${index}][quantity]"]`).value) || 0;
+        const price = parseFloat(item.querySelector(`input[name="items[${index}][price]"]`).value) || 0;
+        const total = quantity * price;
+        
+        const totalSpan = item.querySelector('.line-total');
+        totalSpan.textContent = formatCurrency(total, 'PKR');
+        
+        updateSubtotal();
+    }
+}
+
+function updateSubtotal() {
+    let subtotal = 0;
+    const items = document.querySelectorAll('.line-item');
+    
+    items.forEach(item => {
+        const index = item.getAttribute('data-index');
+        const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`).value) || 0;
+        const price = parseFloat(item.querySelector(`input[name*="[price]"]`).value) || 0;
+        subtotal += quantity * price;
+    });
+    
+    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
+    if (subtotalInput) {
+        subtotalInput.value = subtotal.toFixed(2);
+        updateOrderTotal();
+    }
+}
+
+function updateOrderTotal() {
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]').value) || 0;
+    const tax = parseFloat(document.querySelector('input[name="total_tax"]').value) || 0;
+    const total = subtotal + tax;
+    
+    const totalInput = document.querySelector('input[name="total_price"]');
+    if (totalInput) {
+        totalInput.value = total.toFixed(2);
+    }
+}
+
+function saveOrderChanges(orderId) {
+    const form = document.getElementById('editOrderForm');
+    const formData = new FormData(form);
+    const submitBtn = form.querySelector('button[type="submit"]');
+    
+    submitBtn.textContent = 'Saving...';
+    submitBtn.disabled = true;
+    
+    const data = {};
+    formData.forEach((value, key) => data[key] = value);
+    
+    // For now, just show success message - you can implement actual save later
+    setTimeout(() => {
+        alert('Order updated successfully! (Demo - actual save not implemented yet)');
+        closeModal('editOrderModal');
+        submitBtn.textContent = 'Save Changes';
+        submitBtn.disabled = false;
+    }, 1000);
+}
+
+// Import modal functions
+function openImportModal() {
+    const modal = document.getElementById('importOrderModal');
+    modal.style.display = 'block';
+    
+    // Set default dates (last 30 days)
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+    
+    document.querySelector('input[name="to_date"]').value = today.toISOString().split('T')[0];
+    document.querySelector('input[name="from_date"]').value = thirtyDaysAgo.toISOString().split('T')[0];
 }
 
 // Close modals on escape key
@@ -503,16 +838,11 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         closeModal('viewOrderModal');
         closeModal('editOrderModal');
+        closeModal('importOrderModal');
     }
 });
 
-// Close modals when clicking outside
-window.addEventListener('click', function(e) {
-    if (e.target.classList.contains('fixed')) {
-        closeModal('viewOrderModal');
-        closeModal('editOrderModal');
-    }
-});
+// Close modals when clicking outside - this is now handled by onclick in the backdrop divs
 
 // Debug: Log when script loads
 console.log('Order management script loaded');

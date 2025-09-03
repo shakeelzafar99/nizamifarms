@@ -40,7 +40,7 @@
                                    </i>
                                </span>
                                <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
-                                   List
+                                   Invoices
                                </span>
                            </div>
                        </a>
