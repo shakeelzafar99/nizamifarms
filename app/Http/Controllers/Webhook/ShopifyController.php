@@ -108,10 +108,12 @@ class ShopifyController extends Controller
                 return response()->json(['error' => 'Unauthorized'], 401);
             }
             $payload = json_decode($rawBody, true);
+            
+            // Map and store using new structure
+            $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($payload);
+            \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
 
-            $this->shopifyModel->Store($payload);
-
-            return response()->json(['success' => 'completed'], 200); //$this->success($response);
+            return response()->json(['success' => 'completed'], 200);
         } catch (\Exception $e) { 
             $errorString =
                 "Message: " . $e->getMessage() . PHP_EOL .

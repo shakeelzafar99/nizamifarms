@@ -28,21 +28,27 @@ class OrderController extends Controller
     {
         $source = $request->get('source', 'other'); // default to 'other' (non-shopify)
         
-        // Filter orders based on source
-        $query = OrderModel::with(['OrderDetails', 'Customer', 'OrderAddress']);
+        // Filter orders based on source using new table structure
+        $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems']);
         
         if ($source === 'shopify') {
-            $query->where('source', 'shopify');
+            $query->where('external_source', 'shopify');
         } else {
             // Show all non-shopify sources (woocommerce, manual, etc.)
-            $query->where('source', '!=', 'shopify')->orWhereNull('source');
+            $query->where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            });
         }
         
-        $orders = $query->orderBy('created_at', 'desc')->paginate(10);
+        $orders = $query->orderBy('order_date', 'desc')->paginate(10);
         
-        // Get counts for tab badges
-        $shopifyCount = OrderModel::where('source', 'shopify')->count();
-        $otherCount = OrderModel::where('source', '!=', 'shopify')->orWhereNull('source')->count();
+        // Get counts for tab badges using new structure
+        $shopifyCount = \App\Models\CRM\OrderModel::where('external_source', 'shopify')->count();
+        $otherCount = \App\Models\CRM\OrderModel::where(function($q) {
+            $q->where('external_source', '!=', 'shopify')
+              ->orWhereNull('external_source');
+        })->count();
 
         return view('pages.orders.index', compact('orders', 'source', 'shopifyCount', 'otherCount'));
     }
@@ -50,7 +56,7 @@ class OrderController extends Controller
     public function show($id)
     {
         try {
-            $order = OrderModel::with(['OrderDetails', 'Customer', 'OrderAddress'])
+            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
                         ->findOrFail($id);
             
             return response()->json([
@@ -91,17 +97,22 @@ class OrderController extends Controller
 
         $allOrders = $this->wooCommerce->fetchOrders($validated['from_date'], $validated['to_date']);
         $orderModel = new OrderModel();
-        foreach ($allOrders as $order) {
+        $importedCount = 0;
+        foreach ($allOrders as $wooOrder) {
             try {
-                $mappedOrder = $orderModel->mapWooOrder($order);
-                $orderModel->store($mappedOrder);
+                // Map WooCommerce order to our format
+                $orderData = \App\Models\CRM\OrderModel::mapWooCommerceOrder($wooOrder);
+                
+                // Store order with line items and customer management
+                \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+                $importedCount++;
             } catch (\Exception $innerEx) {
-                Log::error("Failed to process WooCommerce order ID {$order['id']}: " . $innerEx->getMessage());
-                // Optionally continue to next order
+                \Log::error("Failed to process WooCommerce order ID {$wooOrder['id']}: " . $innerEx->getMessage());
+                // Continue to next order
                 continue;
             }
         }
-        return count($allOrders);
+        return $importedCount;
     }
 
     private function importShopify($validated)
@@ -116,16 +127,27 @@ class OrderController extends Controller
                 return redirect()->back()->with('warning', 'No orders found for the selected date range.');
             }
 
-            // ✅ Step 3: Store orders in DB
-            $orderModel = new OrderModel();
-            foreach ($orders as $order) {
-                $order['source'] = 'shopify';
-                $order['shopify_id'] = $order["id"];
-                $orderModel->store($order); // Assuming you already have a "store" method
+            // Store orders in new DB structure
+            $importedCount = 0;
+            foreach ($orders as $shopifyOrder) {
+                try {
+                    // Map Shopify order to our format
+                    $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($shopifyOrder);
+                    
+                    // Store order with line items and customer management
+                    \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+                    $importedCount++;
+                } catch (\Exception $e) {
+                    \Log::error('Failed to import Shopify order: ' . $e->getMessage(), [
+                        'shopify_order_id' => $shopifyOrder['id'] ?? 'unknown',
+                        'error' => $e->getMessage()
+                    ]);
+                    // Continue with next order instead of failing completely
+                }
             }
 
-            // ✅ Step 4: Return success
-              return count($orders);
+            // Return success
+            return $importedCount;
         } catch (\Illuminate\Validation\ValidationException $e) {
             dd(" Validation errors" . $e->errors());
             // Validation errors (handled automatically but you can customize)

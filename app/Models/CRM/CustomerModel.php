@@ -5,156 +5,181 @@ namespace App\Models\CRM;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Notifications\Notifiable;
 use App\Models\Shared\BaseModel;
-use App\Traits\Common;
-use DB;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class CustomerModel extends BaseModel
 {
-    use HasFactory, Notifiable, Common;
-    protected $table = 't_crm_customer';
+    use HasFactory, Notifiable;
+    
+    protected $table = 't_crm_prod_customer';
     protected $primaryKey = 'id';
-    // Rest omitted for brevity 
     public $timestamps = true;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array
-     */
     protected $fillable = [
-        'id',
-        'shopify_id',
-        'email',
-        'created_at',
-        'updated_at',
+        'phone',
         'first_name',
         'last_name',
-        'state',
-        'note',
-        'verified_email',
-        'updated_by',
-        'tax_exempt',
-        'phone',
-        'created_by'
-    ];
-
-    protected $map = [
-        'id',
-        'shopify_id',
+        'company',
         'email',
-        'created_at',
-        'updated_at',
-        'first_name',
-        'last_name',
-        'state',
-        'note',
-        'verified_email',
-        'updated_by',
-        'tax_exempt',
-        'phone',
-        'created_by'
+        'address1',
+        'address2',
+        'city',
+        'province',
+        'postal_code',
+        'country',
+        'latitude',
+        'longitude',
+        'external_customer_ids',
+        'first_order_date',
+        'last_order_date',
+        'total_orders',
+        'total_spent',
+        'is_active',
+        'created_by',
+        'updated_by'
     ];
 
-    function Autocomplete($company_id, $branch_id, $value, $value1, $value2)
+    protected $casts = [
+        'external_customer_ids' => 'json',
+        'first_order_date' => 'datetime',
+        'last_order_date' => 'datetime',
+        'total_spent' => 'decimal:2',
+        'latitude' => 'decimal:7',
+        'longitude' => 'decimal:7',
+        'is_active' => 'boolean',
+        'total_orders' => 'integer'
+    ];
+
+    // Relationships
+    public function orders(): HasMany
     {
-        $this->keyword = strtoupper($value);
-        try {
-            //DB::enableQueryLog(); // Enable query log
-            $this->data =  CustomerModel::select('id', 'cust_no', 'company_name', 'contact_no', 'email', 'postcode', 'description')->where("company_id", $company_id)->where("is_active", "Y")->whereRaw('UPPER(`company_name`) like ?', ['%' . $this->keyword . '%'])->orderBy("company_name")->get()->toArray();
-            //dd(DB::getQueryLog());
-        } catch (\Exception $e) {
-            dd($e->getMessage());
+        return $this->hasMany(OrderModel::class, 'customer_id');
+    }
+
+    // Helper methods
+    public function getFullNameAttribute(): string
+    {
+        return trim($this->first_name . ' ' . $this->last_name);
+    }
+
+    public function addExternalCustomerId(string $platform, string $externalId): void
+    {
+        $ids = $this->external_customer_ids ?? [];
+        $ids[$platform] = $externalId;
+        $this->external_customer_ids = $ids;
+        $this->save();
+    }
+
+    public function getExternalCustomerId(string $platform): ?string
+    {
+        return $this->external_customer_ids[$platform] ?? null;
+    }
+
+    /**
+     * Find or create customer by phone number
+     * Update first/last order dates and statistics
+     */
+    public static function findOrCreateByPhone(string $phone, array $orderData, string $orderDate, float $orderTotal, bool $isUpdate = false): self
+    {
+        if (!$phone) {
+            throw new \InvalidArgumentException('Phone number is required');
         }
-        return $this->setResponse();
-    }
 
-    function List($data) //All record
-    {
-        $this->listRequest($data);
-        $this->data = CustomerModel::where($this->filter)->whereLike([
-            'company_id',
-            'cust_no',
-            'company_name',
-            'contact_no',
-            'email',
-            'address_first_line',
-            'postcode',
-        ], $this->searchTerm)->orderBy($this->column, $this->direction)->paginate($this->pageSize)->toArray();
-        return $this->setResponse();
-    }
+        $customer = static::where('phone', $phone)->first();
+        
+        if (!$customer) {
+            // Create new customer
+            $customer = static::create([
+                'phone' => $phone,
+                'first_name' => $orderData['address_first_name'] ?? null,
+                'last_name' => $orderData['address_last_name'] ?? null,
+                'company' => $orderData['address_company'] ?? null,
+                'email' => $orderData['address_email'] ?? null,
+                'address1' => $orderData['address_line1'] ?? null,
+                'address2' => $orderData['address_line2'] ?? null,
+                'city' => $orderData['address_city'] ?? null,
+                'province' => $orderData['address_province'] ?? null,
+                'postal_code' => $orderData['address_postal_code'] ?? null,
+                'country' => $orderData['address_country'] ?? 'Pakistan',
+                'first_order_date' => $orderDate,
+                'last_order_date' => $orderDate,
+                'total_orders' => 1,
+                'total_spent' => $orderTotal,
+                'created_by' => auth()->id()
+            ]);
 
-    function Get($id) //Single  
-    {
-        $this->data = CustomerModel::find($id)->toArray();
-        return $this->setResponse();
-    }
- 
-
-    function Store($data)
-    {
-
-        try {
-            //Model Initialized 
-            $model = new CustomerModel;
-            // //Set Data Validation Error Messages
-            // $this->err_msgs = [
-            //     'company_name.required' => 'Please enter company name',
-            //     'email.required' => 'Please enter email',
-            //     'email.unique' => 'The email has already been taken.',
-            // ];
-            // //Set Data Validation Rules
-            // $this->rules = [
-            //     'company_name' => 'required',
-            //     'email' => 'required|max:100|email|unique:t_crm_account_customer,email',
-            // ];
-            $this->data = $data;
-
-            // Validate the request...
-            if (array_key_exists("id", $this->data) && $this->data['id'] > 0) {
-                $model = CustomerModel::find($this->data['id']);
-                if ($model == null) {
-                    $this->dataNotFound();
-                    return $this->setResponse();
-                }
-                $this->rules['email'] =  $this->rules['email'] . ',' . $model->id;
-                $model->updated_by = $this->CurrentUserId(); 
+            // Add external customer ID if provided
+            if (isset($orderData['external_customer_id']) && isset($orderData['external_source'])) {
+                $customer->addExternalCustomerId($orderData['external_source'], $orderData['external_customer_id']);
+            }
             } else {
-                $model->created_by =  $this->CurrentUserId();  
+            // Update existing customer
+            $updates = [];
+            
+            // Update order dates
+            if (!$customer->first_order_date || $orderDate < $customer->first_order_date) {
+                $updates['first_order_date'] = $orderDate;
             }
+            if (!$customer->last_order_date || $orderDate > $customer->last_order_date) {
+                $updates['last_order_date'] = $orderDate;
+            }
+            
+            // Update statistics (only increment for new orders, not updates)
+            if (!$isUpdate) {
+                $updates['total_orders'] = $customer->total_orders + 1;
+                $updates['total_spent'] = $customer->total_spent + $orderTotal;
+            }
+            $updates['updated_by'] = auth()->id();
+            
+            // Update contact info if this is the most recent order
+            if (!$customer->last_order_date || $orderDate >= $customer->last_order_date) {
+                $updates['email'] = $orderData['address_email'] ?? $customer->email;
+                $updates['first_name'] = $orderData['address_first_name'] ?? $customer->first_name;
+                $updates['last_name'] = $orderData['address_last_name'] ?? $customer->last_name;
+                $updates['company'] = $orderData['address_company'] ?? $customer->company;
+                $updates['address1'] = $orderData['address_line1'] ?? $customer->address1;
+                $updates['address2'] = $orderData['address_line2'] ?? $customer->address2;
+                $updates['city'] = $orderData['address_city'] ?? $customer->city;
+                $updates['province'] = $orderData['address_province'] ?? $customer->province;
+                $updates['postal_code'] = $orderData['address_postal_code'] ?? $customer->postal_code;
+                $updates['country'] = $orderData['address_country'] ?? $customer->country;
+            }
+            
+            $customer->update($updates);
 
-            $model->shopify_id = $this->data['shopify_id'];
-            $model->email = $this->data['email'];
-            $model->first_name = $this->data['first_name'];
-            $model->last_name = $this->data['last_name'];
-            $model->state = $this->data['state'];
-            $model->note = $this->data['note'];
-            $model->verified_email = $this->data['verified_email'];
-            $model->note = $this->data['note']; 
-
-            if (!$this->dataValidation()) {
-                return $this->setResponse();
+            // Update external customer ID if provided
+            if (isset($orderData['external_customer_id']) && isset($orderData['external_source'])) {
+                $customer->addExternalCustomerId($orderData['external_source'], $orderData['external_customer_id']);
             }
-            if ($model->save()) {
-                $this->trxnCompleted();
-                return $this->setResponse();
-            }
-            $this->intlSrvError();
-            return $this->setResponse();
-        } catch (\Exception $e) {
-            $this->intlSrvError();
-            $this->errors[0] = $e->getMessage();
-            return $this->setResponse();
         }
+        
+        return $customer;
     }
 
-
-    function Remove($id) //DELETE
+    /**
+     * Recalculate customer statistics based on actual orders
+     * Useful for fixing any inconsistencies
+     */
+    public function recalculateStatistics(): void
     {
-        if (CustomerModel::find($id)->delete()) {
-            $this->trxnCompleted();
-            return $this->setResponse();
+        $orders = $this->orders()->orderBy('order_date')->get();
+        
+        if ($orders->count() > 0) {
+            $this->update([
+                'first_order_date' => $orders->first()->order_date,
+                'last_order_date' => $orders->last()->order_date,
+                'total_orders' => $orders->count(),
+                'total_spent' => $orders->sum('total_price'),
+                'updated_by' => auth()->id()
+            ]);
+        } else {
+            $this->update([
+                'first_order_date' => null,
+                'last_order_date' => null,
+                'total_orders' => 0,
+                'total_spent' => 0,
+                'updated_by' => auth()->id()
+            ]);
         }
-        $this->intlSrvError();
-        return $this->setResponse();
     }
 }

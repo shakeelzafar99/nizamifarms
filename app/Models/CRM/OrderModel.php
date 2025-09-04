@@ -2,344 +2,323 @@
 
 namespace App\Models\CRM;
 
-use App\Models\SCM\StockModel;
-use App\Models\SCM\StockDetailModel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Notifications\Notifiable;
 use App\Models\Shared\BaseModel;
-use App\Traits\FIN\ArTransaction;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
-use App\Models\FIN\ArPaymentDetailModel;
-use Carbon\Carbon;
-use App\Models\CRM\CustomerModel;
-use Illuminate\Support\Facades\Http;
 
 class OrderModel extends BaseModel
 {
-    use HasFactory, Notifiable, ArTransaction;
-    protected $table = 't_crm_orders';
+    use HasFactory, Notifiable;
+    
+    protected $table = 't_crm_prod_order';
     protected $primaryKey = 'id';
-    // Rest omitted for brevity 
     public $timestamps = true;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array
-     */
-
     protected $fillable = [
-        'id',
-        'shopify_id',
-        'contact_email',
-        'created_at',
-        'currency',
-        'name',
-        'order_number',
-        'subtotal_price',
-        'total_price',
-        'total_tax',
-        'total_weight',
-        'updated_at',
         'customer_id',
+        'external_source',
+        'external_id',
+        'external_customer_id',
+        'order_number',
+        'order_status',
+        'order_date',
+        'name',
+        'currency',
+        'contact_email',
+        'subtotal_price',
+        'discount_total',
+        'shipping_total',
+        'total_tax',
+        'total_price',
+        'total_weight',
+        'address_first_name',
+        'address_last_name',
+        'address_company',
+        'address_email',
+        'address_phone',
+        'address_line1',
+        'address_line2',
+        'address_city',
+        'address_province',
+        'address_postal_code',
+        'address_country',
+        'coupon_code',
+        'payment_method',
+        'note',
+        'raw_products_text',
         'created_by',
-        'updated_by',
-        'source'
+        'updated_by'
     ];
 
-    protected $map = [
-        'id',
-        'shopify_id',
-        'contact_email',
-        'created_at',
-        'currency',
-        'name',
-        'order_number',
-        'subtotal_price',
-        'total_price',
-        'total_tax',
-        'total_weight',
-        'updated_at',
-        'customer_id',
-        'created_by',
-        'updated_by',
-        'source'
+    protected $casts = [
+        'order_date' => 'datetime',
+        'subtotal_price' => 'decimal:2',
+        'discount_total' => 'decimal:2',
+        'shipping_total' => 'decimal:2',
+        'total_tax' => 'decimal:2',
+        'total_price' => 'decimal:2',
+        'total_weight' => 'integer'
     ];
 
-
-    public function OrderDetails()
+    // Relationships
+    public function customer(): BelongsTo
     {
-        return $this->hasMany(OrderDetailModel::class, 'order_id', 'id');
-    }
-    public function OrderAddress()
-    {
-        return $this->hasMany(OrderAddressModel::class, 'order_id', 'id');
+        return $this->belongsTo(CustomerModel::class, 'customer_id');
     }
 
-    public function Customer()
+    public function lineItems(): HasMany
     {
-        return $this->hasOne(CustomerModel::class, 'id', 'customer_id');
+        return $this->hasMany(OrderLineItemModel::class, 'order_id');
     }
 
-
-    function List($data) //All record
+    // Helper methods
+    public function getFullAddressAttribute(): string
     {
-        $this->listRequest($data);
-
-        $this->data = OrderModel::where($this->filter)->whereLike([
-            'order_no',
-            'reg_no',
-            'cust_name',
-            'phone_no',
-            'email',
-            'order_date',
-            'description',
-            'tot_qty',
-            'tot_price',
-            'vat_rate',
-            'tot_vat',
-            'tot_price_vat',
-        ], $this->searchTerm)->orderBy($this->column, $this->direction)->paginate($this->pageSize)->toArray();
-        return $this->setResponse();
-    }
-
-    function Get($id) //Single  
-    {
-        $this->data = OrderModel::find($id)->toArray();
-        return $this->setResponse();
-    }
-
-    function GetDetail($id) //All record
-    {
-        try {
-            $this->data = OrderModel::find($id)->toArray();
-            $this->data["OrderDetailModel"] =  OrderModel::find($id)->OrderDetails()->get()->toArray();
-            $this->data["CompanyModel"] =  OrderModel::find($id)->Company()->get()->toArray();
-            $this->data["CompanyConfigModel"] =  OrderModel::find($id)->CompanyConfig()->get()->toArray();
-            $this->data["BranchModel"] =  OrderModel::find($id)->Branch()->get()->toArray();
-            $this->data["AccountCustomer"] =  OrderModel::find($id)->AccountCustomer()->get()->toArray();
-            return $this->setResponse();
-        } catch (\Exception $e) {
-            dd($e->getMessage());
-        }
-    }
-
-
-
-
-
-    public function importShopifyOrders($data)
-    {
-
-        // $data->validate([
-        //     'from_date' => 'required|date',
-        //     'to_date'   => 'required|date|after_or_equal:from_date',
-        // ]);
-
-        $orders = $this->fetchShopifyOrders($data["from_date"], $data["to_date"]);
-
-        foreach ($orders as $order) {
-            // Call your existing Store() method
-            $this->Store($order);
-        }
-
-        return response()->json([
-            'message' => 'Shopify orders imported successfully!',
-            'total' => count($orders)
+        $parts = array_filter([
+            $this->address_line1,
+            $this->address_line2,
+            $this->address_city,
+            $this->address_province,
+            $this->address_postal_code,
+            $this->address_country
         ]);
+        
+        return implode(', ', $parts);
     }
 
-
-
-    function mapWooOrder(array $order)
+    public function getCustomerNameAttribute(): string
     {
-        // Compute subtotal & weight
-        $subtotal = 0;
-        $totalWeight = 0;
-        $lineItems = [];
-
-        foreach ($order['line_items'] as $item) {
-            $subtotal += $item['subtotal'];
-            $totalWeight += ($item['quantity'] * ($item['weight'] ?? 0));
-
-            $lineItems[] = [
-                'id' => $item['id'], // maps to shopify_line_item_id
-                'product_id' => $item['product_id'],
-                'sku' => $item['sku'],
-                'quantity' => $item['quantity'],
-                'price' => $item['price'],
-                'name' => $item['name'],
-                'vendor' => $order['store'] ?? 'WooCommerce', // Woo doesn't have vendor
-            ];
-        }
-
-        // Map customer (from billing)
-        $customer = [
-            'id' => $order['customer_id'] ?? null,
-            'email' => $order['billing']['email'] ?? null,
-            'first_name' => $order['billing']['first_name'] ?? '',
-            'last_name' => $order['billing']['last_name'] ?? '',
-            'state' => $order['billing']['state'] ?? '',
-            'note' => $order['customer_note'] ?? '',
-            'verified_email' => true,
-            'tax_exempt' => false,
-            'phone' => $order['billing']['phone'] ?? null,
-        ];
-
-        // Map shipping address
-        $shipping = [
-            'first_name' => $order['shipping']['first_name'] ?? '',
-            'last_name'  => $order['shipping']['last_name'] ?? '',
-            'address1'   => $order['shipping']['address_1'] ?? '',
-            'address2'   => $order['shipping']['address_2'] ?? '',
-            'phone'      => $order['billing']['phone'] ?? null,
-            'city'       => $order['shipping']['city'] ?? '',
-            'zip'        => $order['shipping']['postcode'] ?? '',
-            'country'    => $order['shipping']['country'] ?? '',
-        ];
-
-        return [
-            'woo_id' => $order['id'], // ⚡ Woo ID stored here
-            'source' => 'woocommerce',
-            'contact_email' => $order['billing']['email'] ?? null,
-            'currency' => $order['currency'],
-            'name' => trim(($order['billing']['first_name'] ?? '') . ' ' . ($order['billing']['last_name'] ?? '')),
-            'order_number' => $order['number'],
-            'subtotal_price' => $subtotal,
-            'total_price' => $order['total'],
-            'total_tax' => $order['total_tax'],
-            'total_weight' => $totalWeight,
-            'customer' => $customer,
-            'line_items' => $lineItems,
-            'shipping_address' => $shipping,
-        ];
+        return trim(($this->address_first_name ?? '') . ' ' . ($this->address_last_name ?? ''));
     }
 
-    function Store($data)
+    /**
+     * Store order with line items and customer management
+     */
+    public static function storeOrderFromApi(array $orderData): self
     {
+        DB::beginTransaction();
+        
         try {
-            //Model Initialized 
-            $model = new OrderModel;
-            $this->data = $data;
-            // Validate the request...
-            if (array_key_exists("shopify_id", $this->data) && $this->data['shopify_id'] > 0) {
-                $model = OrderModel::where("shopify_id", $this->data['shopify_id'])->first();
-                if ($model == null) {
-                    $model = new OrderModel;
-                }
-                $model->shopify_id = $this->data['shopify_id'];
-            } elseif (array_key_exists("woo_id", $this->data) && $this->data['woo_id'] > 0) {
-                $model = OrderModel::where("woo_id", $this->data['woo_id'])->first();
-                if ($model == null) {
-                    $model = new OrderModel;
-                }
-                $model->woo_id = $this->data['woo_id'];
-            } else {
-                $model->created_by =  $this->CurrentUserId();
-            } 
-            $model->created_by =  $this->CurrentUserId();
-            $model->contact_email = $this->data['contact_email'];
-            $model->currency = $this->data['currency'];
-            $model->name = $this->data['name'];
-            $model->order_number = $this->data['order_number'];
-            $model->subtotal_price = $this->data['subtotal_price'];
-            $model->total_price = $this->data['total_price'];
-            $model->total_tax = $this->data['total_tax'];
-            $model->total_weight = $this->data['total_weight'];
-            $model->customer_id = $this->data["customer"]['id'];
-            $model->source = $this->data['source']; 
-
-            DB::beginTransaction();
-            if ($model->save()) {
-                if (array_key_exists("line_items", $this->data) && count($this->data['line_items']) > 0) {
-                    $model->OrderDetails()->delete();
-                    $orderDetails = [];
-
-                    foreach ($this->data['line_items'] as $key => $value) {
-                        $detailModel = new OrderDetailModel();
-                        $detailModel->order_id = $model->id;
-                        $detailModel->product_id = $value['product_id'];
-                        $detailModel->sku = $value['sku'];
-                        $detailModel->quantity = $value['quantity'];
-                        $detailModel->price = $value['price'];
-                        $detailModel->name = $value["name"];
-                        $detailModel->vendor = $value["vendor"];
-                        $detailModel->shopify_line_item_id = $value["id"];
-                        $detailModel->created_by =  $this->CurrentUserId();
-
-                        $orderDetails[] = $detailModel;
-                    }
-                    $model->OrderDetails()->saveMany($orderDetails);
-                }
-
-                if (array_key_exists("customer", $this->data) && count($this->data['customer']) > 0) {
-                    $value =  $this->data["customer"];
-                    $customerModel = CustomerModel::where("shopify_cust_id", $value["id"])->first();
-                    if ($customerModel == null) {
-                        $customerModel = new CustomerModel();
-                    }
-                    $customerModel->email = $value['email'];
-                    $customerModel->first_name = $value['first_name'];
-                    $customerModel->last_name = $value['last_name'];
-                    $customerModel->state = $value['state'];
-                    $customerModel->note = $value["note"];
-                    $customerModel->verified_email = $value["verified_email"];
-                    $customerModel->tax_exempt = $value["tax_exempt"];
-                    $customerModel->phone = $value["phone"];
-                    $customerModel->shopify_cust_id = $value["id"];
-                    $customerModel->created_by =  $this->CurrentUserId();
-                    $customerModel->save();
-                }
-
-                if (array_key_exists("shipping_address", $this->data) && count($this->data['shipping_address']) > 0) {
-                    $value =  $this->data["shipping_address"];
-
-                    $addModel = OrderAddressModel::where("order_id", $model->id)->first();
-                    // FIX: Check if $addModel is null, not $model
-                    if ($addModel == null) {
-                        $addModel = new OrderAddressModel();
-                    }
-
-                    $addModel->first_name = $value['first_name'];
-                    $addModel->last_name = $value['last_name'];
-                    $addModel->address1 = $value['address1'];
-                    $addModel->address2 = $value['address2'];
-                    $addModel->phone = $value["phone"];
-                    $addModel->city = $value['city'];
-                    $addModel->zip = $value["zip"];
-                    $addModel->country = $value["country"];
-                    $addModel->order_id = $model->id;
-                    $addModel->created_by =  $this->CurrentUserId();
-
-                    $addModel->save();
-                }
-
-
-
-                DB::commit();
-                $this->data["id"] = $model->id;
-                $this->trxnCompleted();
-                return $this->setResponse();
+            // Check for existing order
+            $existingOrder = null;
+            if (isset($orderData['external_source']) && isset($orderData['external_id'])) {
+                $existingOrder = static::where('external_source', $orderData['external_source'])
+                    ->where('external_id', $orderData['external_id'])
+                    ->first();
             }
+
+            // Find or create customer by phone
+            $customer = null;
+            if (isset($orderData['address_phone']) && $orderData['address_phone']) {
+                $customer = CustomerModel::findOrCreateByPhone(
+                    $orderData['address_phone'],
+                    $orderData,
+                    $orderData['order_date'] ?? now(),
+                    $orderData['total_price'] ?? 0,
+                    $existingOrder !== null  // Pass true if this is an update
+                );
+            }
+
+            // Prepare order data
+            $orderAttributes = $orderData;
+            $orderAttributes['customer_id'] = $customer?->id;
+            $orderAttributes['created_by'] = auth()->id();
+            
+            // Extract line items
+            $lineItems = $orderAttributes['line_items'] ?? [];
+            unset($orderAttributes['line_items']);
+
+            // Create or update order
+            if ($existingOrder) {
+                $existingOrder->update($orderAttributes);
+                $order = $existingOrder;
+            } else {
+                $order = static::create($orderAttributes);
+            }
+
+            // Store line items
+            if (!empty($lineItems)) {
+                // Delete existing line items if updating
+                if ($existingOrder) {
+                    $order->lineItems()->delete();
+                }
+
+                $lineItemModels = [];
+                foreach ($lineItems as $lineItem) {
+                    $lineItem['order_id'] = $order->id;
+                    $lineItem['created_by'] = auth()->id();
+                    $lineItemModels[] = new OrderLineItemModel($lineItem);
+                }
+                
+                $order->lineItems()->saveMany($lineItemModels);
+            }
+
+            DB::commit();
+            return $order->load(['customer', 'lineItems']);
+            
         } catch (\Exception $e) {
-            dd($e->getMessage());
             DB::rollBack();
-            $this->message = $e->getMessage();
-            $this->trxnNotCompleted();
-            return;
+            throw $e;
         }
-        $this->intlSrvError();
-        return $this->setResponse();
     }
 
-    function Remove($id) //DELETE
+    /**
+     * Map Shopify order data to our format
+     */
+    public static function mapShopifyOrder(array $shopifyOrder): array
     {
-        if (OrderModel::find($id)->delete()) {
-            $this->trxnCompleted();
-            return $this->setResponse();
-        }
-        $this->intlSrvError();
-        return $this->setResponse();
+        $billingAddress = $shopifyOrder['billing_address'] ?? [];
+        $shippingAddress = $shopifyOrder['shipping_address'] ?? $billingAddress;
+        
+        // Use shipping if available, otherwise billing
+        $primaryAddress = !empty($shippingAddress['address1']) ? $shippingAddress : $billingAddress;
+
+        $orderData = [
+            'external_source' => 'shopify',
+            'external_id' => (string)$shopifyOrder['id'],
+            'external_customer_id' => isset($shopifyOrder['customer']['id']) ? (string)$shopifyOrder['customer']['id'] : null,
+            
+            'order_number' => $shopifyOrder['order_number'] ?? $shopifyOrder['name'],
+            'order_status' => static::mapShopifyStatus($shopifyOrder['financial_status'] ?? 'pending'),
+            'order_date' => $shopifyOrder['created_at'],
+            'name' => $shopifyOrder['name'] ?? null,
+            'currency' => $shopifyOrder['currency'] ?? 'PKR',
+            'contact_email' => $shopifyOrder['email'] ?? null,
+            
+            // Money fields
+            'subtotal_price' => $shopifyOrder['subtotal_price'] ?? 0,
+            'discount_total' => $shopifyOrder['total_discounts'] ?? 0,
+            'shipping_total' => $shopifyOrder['total_shipping_price_set']['shop_money']['amount'] ?? 0,
+            'total_tax' => $shopifyOrder['total_tax'] ?? 0,
+            'total_price' => $shopifyOrder['total_price'] ?? 0,
+            'total_weight' => $shopifyOrder['total_weight'] ?? 0,
+            
+            // Address (single set)
+            'address_first_name' => $primaryAddress['first_name'] ?? null,
+            'address_last_name' => $primaryAddress['last_name'] ?? null,
+            'address_company' => $primaryAddress['company'] ?? null,
+            'address_email' => $shopifyOrder['email'] ?? null,
+            'address_phone' => $primaryAddress['phone'] ?? null,
+            'address_line1' => $primaryAddress['address1'] ?? null,
+            'address_line2' => $primaryAddress['address2'] ?? null,
+            'address_city' => $primaryAddress['city'] ?? null,
+            'address_province' => $primaryAddress['province'] ?? null,
+            'address_postal_code' => $primaryAddress['zip'] ?? null,
+            'address_country' => $primaryAddress['country'] ?? 'Pakistan',
+            
+            // Extras
+            'payment_method' => $shopifyOrder['gateway'] ?? null,
+            'note' => $shopifyOrder['note'] ?? null,
+            
+            // Line items
+            'line_items' => array_map([static::class, 'mapShopifyLineItem'], $shopifyOrder['line_items'] ?? [])
+        ];
+
+        return $orderData;
+    }
+
+    /**
+     * Map WooCommerce order data to our format
+     */
+    public static function mapWooCommerceOrder(array $wooOrder): array
+    {
+        $billing = $wooOrder['billing'] ?? [];
+        $shipping = $wooOrder['shipping'] ?? $billing;
+        
+        // Use shipping if available, otherwise billing
+        $primaryAddress = !empty($shipping['address_1']) ? $shipping : $billing;
+
+        $orderData = [
+            'external_source' => 'woocommerce',
+            'external_id' => (string)$wooOrder['id'],
+            'external_customer_id' => isset($wooOrder['customer_id']) ? (string)$wooOrder['customer_id'] : null,
+            
+            'order_number' => $wooOrder['number'] ?? $wooOrder['id'],
+            'order_status' => $wooOrder['status'] ?? 'pending',
+            'order_date' => $wooOrder['date_created'] ?? now(),
+            'currency' => $wooOrder['currency'] ?? 'PKR',
+            'contact_email' => $billing['email'] ?? null,
+            
+            // Money fields
+            'subtotal_price' => ($wooOrder['total'] ?? 0) - ($wooOrder['total_tax'] ?? 0),
+            'discount_total' => $wooOrder['discount_total'] ?? 0,
+            'shipping_total' => $wooOrder['shipping_total'] ?? 0,
+            'total_tax' => $wooOrder['total_tax'] ?? 0,
+            'total_price' => $wooOrder['total'] ?? 0,
+            
+            // Address (single set)
+            'address_first_name' => $primaryAddress['first_name'] ?? null,
+            'address_last_name' => $primaryAddress['last_name'] ?? null,
+            'address_company' => $primaryAddress['company'] ?? null,
+            'address_email' => $billing['email'] ?? null,
+            'address_phone' => $primaryAddress['phone'] ?? null,
+            'address_line1' => $primaryAddress['address_1'] ?? null,
+            'address_line2' => $primaryAddress['address_2'] ?? null,
+            'address_city' => $primaryAddress['city'] ?? null,
+            'address_province' => $primaryAddress['state'] ?? null,
+            'address_postal_code' => $primaryAddress['postcode'] ?? null,
+            'address_country' => $primaryAddress['country'] ?? 'Pakistan',
+            
+            // Extras
+            'payment_method' => $wooOrder['payment_method_title'] ?? null,
+            'note' => $wooOrder['customer_note'] ?? null,
+            
+            // Line items
+            'line_items' => array_map([static::class, 'mapWooCommerceLineItem'], $wooOrder['line_items'] ?? [])
+        ];
+
+        return $orderData;
+    }
+
+    private static function mapShopifyLineItem(array $item): array
+    {
+        return [
+            'external_line_item_id' => (string)$item['id'],
+            'product_id' => $item['product_id'] ?? null,
+            'variant_id' => $item['variant_id'] ?? null,
+            'sku' => $item['sku'] ?? null,
+            'name' => $item['name'] ?? null,
+            'vendor' => $item['vendor'] ?? null,
+            'quantity' => $item['quantity'] ?? 1,
+            'unit_price' => $item['price'] ?? 0,
+            'line_subtotal' => ($item['price'] ?? 0) * ($item['quantity'] ?? 1),
+            'discount_amount' => 0, // Shopify handles discounts at order level
+            'tax_amount' => 0, // Shopify handles tax at order level
+            'line_total' => ($item['price'] ?? 0) * ($item['quantity'] ?? 1),
+        ];
+    }
+
+    private static function mapWooCommerceLineItem(array $item): array
+    {
+        return [
+            'external_line_item_id' => (string)$item['id'],
+            'product_id' => $item['product_id'] ?? null,
+            'sku' => $item['sku'] ?? null,
+            'name' => $item['name'] ?? null,
+            'quantity' => $item['quantity'] ?? 1,
+            'unit_price' => $item['price'] ?? 0,
+            'line_subtotal' => $item['subtotal'] ?? 0,
+            'discount_amount' => 0,
+            'tax_amount' => $item['total_tax'] ?? 0,
+            'line_total' => $item['total'] ?? 0,
+        ];
+    }
+
+    private static function mapShopifyStatus(string $status): string
+    {
+        $statusMap = [
+            'pending' => 'pending',
+            'authorized' => 'processing',
+            'partially_paid' => 'processing',
+            'paid' => 'completed',
+            'partially_refunded' => 'completed',
+            'refunded' => 'refunded',
+            'voided' => 'cancelled'
+        ];
+
+        return $statusMap[$status] ?? 'pending';
     }
 }

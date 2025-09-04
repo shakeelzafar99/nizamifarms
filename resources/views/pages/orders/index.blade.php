@@ -99,14 +99,14 @@
                                 @foreach ($orders as $order)
                                 <tr class="hover:bg-gray-50">
                                     <td>{{ $order->id }}</td>
-                                    <td>{{ $order->contact_email }}</td>
-                                    <td>{{ $order->created_at ? $order->created_at->format('d-M-Y H:i') : '' }}</td>
+                                    <td>{{ $order->contact_email ?: $order->address_email }}</td>
+                                    <td>{{ $order->order_date ? $order->order_date->format('d-M-Y H:i') : ($order->created_at ? $order->created_at->format('d-M-Y H:i') : '') }}</td>
                                     <td>{{ $order->currency }}</td>
-                                    <td>{{ $order->name }}</td>
+                                    <td>{{ $order->name ?: $order->customer_name }}</td>
                                     <td>{{ $order->order_number }}</td>
                                     <td class="text-center">
                                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
-                                            {{ $order->OrderDetails ? count($order->OrderDetails) : 0 }}
+                                            {{ $order->lineItems ? count($order->lineItems) : 0 }}
                                         </span>
                                     </td>
                                     <td>{{ $order->subtotal_price }}</td>
@@ -114,8 +114,8 @@
                                     <td>{{ $order->total_weight }}</td>
                                     <td>
                                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs 
-                                            {{ $order->source === 'shopify' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800' }}">
-                                            {{ ucfirst($order->source ?: 'manual') }}
+                                            {{ $order->external_source === 'shopify' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800' }}">
+                                            {{ ucfirst($order->external_source ?: 'manual') }}
                                         </span>
                                     </td>
                                     <td>
@@ -376,8 +376,8 @@ function viewOrderDetails(orderId) {
                             <p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ${formatDate(order.created_at)}</p>
                         </div>
                         <div style="text-align: right;">
-                            <span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ${order.source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;'}">
-                                ${(order.source || 'manual').toUpperCase()}
+                            <span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ${order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;'}">
+                                ${(order.external_source || 'manual').toUpperCase()}
                             </span>
                             <p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">${formatCurrency(order.total_price, order.currency)}</p>
                         </div>
@@ -397,24 +397,24 @@ function viewOrderDetails(orderId) {
                         </div>
                         
                         <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Ship To:</h3>
-                            ${order.order_address && order.order_address.length > 0 ? `
+                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Address:</h3>
+                            ${order.address_first_name || order.address_line1 ? `
                             <div style="font-size: 14px;">
-                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.order_address[0].first_name || ''} ${order.order_address[0].last_name || ''}</p>
-                                <p style="margin: 0 0 4px 0;">${order.order_address[0].address1 || ''}</p>
-                                ${order.order_address[0].address2 ? `<p style="margin: 0 0 4px 0;">${order.order_address[0].address2}</p>` : ''}
-                                <p style="margin: 0 0 4px 0;">${order.order_address[0].city || ''}, ${order.order_address[0].zip || ''}</p>
-                                <p style="margin: 0 0 4px 0;">${order.order_address[0].country || ''}</p>
-                                ${order.order_address[0].phone ? `<p style="color: #6b7280; margin: 0;">${order.order_address[0].phone}</p>` : ''}
+                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.address_first_name || ''} ${order.address_last_name || ''}</p>
+                                <p style="margin: 0 0 4px 0;">${order.address_line1 || ''}</p>
+                                ${order.address_line2 ? `<p style="margin: 0 0 4px 0;">${order.address_line2}</p>` : ''}
+                                <p style="margin: 0 0 4px 0;">${order.address_city || ''}, ${order.address_postal_code || ''}</p>
+                                <p style="margin: 0 0 4px 0;">${order.address_country || ''}</p>
+                                ${order.address_phone ? `<p style="color: #6b7280; margin: 0;">${order.address_phone}</p>` : ''}
                             </div>
-                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No shipping address</p>'}
+                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No address information</p>'}
                         </div>
                     </div>
 
                     <!-- Line Items -->
                     <div>
-                        <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Items (${order.order_details ? order.order_details.length : 0})</h3>
-                        ${order.order_details && order.order_details.length > 0 ? `
+                        <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Items (${order.line_items ? order.line_items.length : 0})</h3>
+                        ${order.line_items && order.line_items.length > 0 ? `
                         <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
                             <table style="width: 100%; border-collapse: collapse;">
                                 <thead style="background-color: #f9fafb;">
@@ -426,7 +426,7 @@ function viewOrderDetails(orderId) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${order.order_details.map((item, index) => `
+                                    ${order.line_items.map((item, index) => `
                                     <tr style="border-top: 1px solid #e5e7eb;">
                                         <td style="padding: 16px;">
                                             <div style="font-weight: 500; color: #111827;">${item.name || 'N/A'}</div>
@@ -569,23 +569,23 @@ function loadEditForm(order) {
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">First Name</label>
-                                <input type="text" name="customer_first_name" value="${order.customer ? order.customer.first_name || '' : ''}" 
+                                <input type="text" name="address_first_name" value="${order.address_first_name || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Last Name</label>
-                                <input type="text" name="customer_last_name" value="${order.customer ? order.customer.last_name || '' : ''}" 
+                                <input type="text" name="address_last_name" value="${order.address_last_name || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
                         <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Email</label>
-                            <input type="email" name="customer_email" value="${order.customer ? order.customer.email || '' : ''}" 
+                            <input type="email" name="address_email" value="${order.address_email || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Phone</label>
-                            <input type="text" name="customer_phone" value="${order.customer ? order.customer.phone || '' : ''}" 
+                            <input type="text" name="address_phone" value="${order.address_phone || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
                     </div>
@@ -601,8 +601,8 @@ function loadEditForm(order) {
                     </button>
                 </div>
                 <div id="lineItemsContainer" style="padding: 16px;">
-                    ${order.order_details && order.order_details.length > 0 ? 
-                        order.order_details.map((item, index) => `
+                    ${order.line_items && order.line_items.length > 0 ? 
+                        order.line_items.map((item, index) => `
                         <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
