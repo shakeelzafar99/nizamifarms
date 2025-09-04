@@ -58,4 +58,103 @@ class ShopifyService
 
         return $orders;
     }
+
+    /**
+     * Fetch products from Shopify
+     */
+    public function fetchProducts(int $limit = 50): array
+    {
+        $baseUrl = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/products.json";
+
+        $response = Http::withBasicAuth($this->apiKey, $this->password)
+            ->withOptions(['verify' => $this->verifySsl])
+            ->get($baseUrl, [
+                'limit' => min($limit, 250), // Shopify max is 250
+                'status' => 'any' // Get all products regardless of status
+            ]);
+
+        if ($response->failed()) {
+            throw new \Exception('Failed to fetch products from Shopify: ' . $response->body());
+        }
+
+        $data = $response->json();
+        return $data['products'] ?? [];
+    }
+
+    /**
+     * Fetch single product from Shopify
+     */
+    public function fetchProduct(int $productId): ?array
+    {
+        $baseUrl = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/products/{$productId}.json";
+
+        $response = Http::withBasicAuth($this->apiKey, $this->password)
+            ->withOptions(['verify' => $this->verifySsl])
+            ->get($baseUrl);
+
+        if ($response->failed()) {
+            return null;
+        }
+
+        $data = $response->json();
+        return $data['product'] ?? null;
+    }
+
+    /**
+     * Fetch all products with pagination
+     */
+    public function fetchAllProducts(): array
+    {
+        $baseUrl = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/products.json";
+        
+        $allProducts = [];
+        $pageInfo = null;
+        
+        do {
+            $params = [
+                'limit' => 250,
+                'status' => 'any'
+            ];
+            
+            if ($pageInfo) {
+                $params['page_info'] = $pageInfo;
+            }
+
+            $response = Http::withBasicAuth($this->apiKey, $this->password)
+                ->withOptions(['verify' => $this->verifySsl])
+                ->get($baseUrl, $params);
+
+            if ($response->failed()) {
+                break;
+            }
+
+            $data = $response->json();
+            if (!empty($data['products'])) {
+                $allProducts = array_merge($allProducts, $data['products']);
+            }
+
+            // Get next page info from Link header
+            $pageInfo = $this->extractPageInfo($response->header('Link'));
+            
+        } while ($pageInfo);
+
+        return $allProducts;
+    }
+
+    /**
+     * Extract page info from Shopify Link header
+     */
+    private function extractPageInfo(?string $linkHeader): ?string
+    {
+        if (!$linkHeader) {
+            return null;
+        }
+
+        // Look for next page link
+        if (preg_match('/<[^>]*page_info=([^>&]+)[^>]*>;\s*rel="next"/', $linkHeader, $matches)) {
+            return $matches[1];
+        }
+
+        return null;
+    }
 }
