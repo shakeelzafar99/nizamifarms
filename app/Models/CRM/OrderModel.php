@@ -210,7 +210,8 @@ class OrderModel extends BaseModel
             'address_country' => $primaryAddress['country'] ?? 'Pakistan',
             
             // Extras
-            'payment_method' => $shopifyOrder['gateway'] ?? null,
+            'payment_method' => $shopifyOrder['gateway'] ?? $shopifyOrder['payment_gateway_names'][0] ?? 
+                               (isset($shopifyOrder['transactions'][0]) ? $shopifyOrder['transactions'][0]['gateway'] : null),
             'note' => $shopifyOrder['note'] ?? null,
             
             // Line items
@@ -263,7 +264,7 @@ class OrderModel extends BaseModel
             'address_country' => $primaryAddress['country'] ?? 'Pakistan',
             
             // Extras
-            'payment_method' => $wooOrder['payment_method_title'] ?? null,
+            'payment_method' => $wooOrder['payment_method_title'] ?? $wooOrder['payment_method'] ?? null,
             'note' => $wooOrder['customer_note'] ?? null,
             
             // Line items

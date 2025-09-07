@@ -32,32 +32,66 @@ class WooController extends Controller
         Storage::disk('public')->put($filename, $data);
     }
 
+    function test(Request $request) // TEST endpoint for debugging
+    {
+        try {
+            $rawBody = $request->getContent();
+            $payload = json_decode($rawBody, true);
+            
+            // Log everything for debugging
+            $this->createLog([
+                'headers' => $request->headers->all(),
+                'body' => $payload,
+                'raw_body' => $rawBody
+            ], "json", "debug", "woo_test");
+            
+            return response()->json(['success' => 'test completed', 'received' => $payload], 200);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
     function store(Request $request) //ADD   
     {
 
         try {
-
+            // Log the incoming request for debugging
+            $this->createLog($request->all(), "json", "request", "woo_webhook");
+            
             $sharedSecret = Config::get('woocommerce.webhook_secret');
             // Get the raw POST body
             $rawBody = $request->getContent();
-            $this->createLog($request->all(), "json", "request", "t1");
-            // Get HMAC header from Shopify
+            
+            // Get HMAC header from WooCommerce
             $hmacHeader = $request->header('X-WC-Webhook-Signature');
 
-            // Calculate HMAC hash
-            $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
+            // Skip signature verification if no secret is configured (for testing)
+            if ($sharedSecret) {
+                // Calculate HMAC hash
+                $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
 
-            // Verify webhook
-            if (! $hmacHeader && !hash_equals($calculatedHmac, $hmacHeader)) {
-                // Log::warning('Invalid Shopify Webhook Signature');
-                return response()->json(['error' => 'Unauthorized'], 401);
+                // Verify webhook
+                if (!$hmacHeader || !hash_equals($calculatedHmac, $hmacHeader)) {
+                    Log::warning('Invalid WooCommerce Webhook Signature');
+                    return response()->json(['error' => 'Unauthorized'], 401);
+                }
             }
+            
             $payload = json_decode($rawBody, true);
-            $mappedOrder = $this->orderModel->mapWooOrder($payload);
-            $this->orderModel->store($mappedOrder);
-            //$this->shopifyModel->Store($payload);
+            
+            // Check if payload is valid JSON
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \Exception('Invalid JSON payload: ' . json_last_error_msg());
+            }
+            
+            // Log the payload for debugging
+            $this->createLog($payload, "json", "payload", "woo_order");
+            
+            // Map and store using new structure
+            $orderData = \App\Models\CRM\OrderModel::mapWooCommerceOrder($payload);
+            \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
 
-            return response()->json(['success' => 'completed'], 200); //$this->success($response);
+            return response()->json(['success' => 'completed'], 200);
         } catch (\Exception $e) {
             $errorString =
                 "Message: " . $e->getMessage() . PHP_EOL .
@@ -66,7 +100,15 @@ class WooController extends Controller
                 "Trace: " . $e->getTraceAsString();
             $this->createLog($errorString, "txt", "error", "e1");
 
-            return $this->error($e->getMessage(), $e->getCode());
+            // Log the error
+            Log::error('WooCommerce Webhook Error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'error' => 'Internal Server Error',
+                'message' => $e->getMessage()
+            ], 500);
         }
     }
 

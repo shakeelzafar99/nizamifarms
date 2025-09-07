@@ -49,6 +49,7 @@ Route::prefix('webhook')->group(function () {
             Route::get('get/{id}', 'get');
             Route::post('list', 'list');
             Route::post('store', 'store');
+            Route::post('test', 'test'); // Test endpoint for debugging webhooks
             Route::delete('remove/{id}', 'remove');
         });
     });
