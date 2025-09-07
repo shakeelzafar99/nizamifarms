@@ -1140,15 +1140,30 @@ function getCellContent(order, columnId) {
             
         // Customer Info
         case 'customer_name':
-            return order.name || order.customer_name || (order.customer ? order.customer.first_name + ' ' + order.customer.last_name : '');
+            // Priority: order.name (from address) -> customer.full_name -> address fields
+            if (order.name && order.name.trim()) {
+                return order.name.trim();
+            }
+            if (order.customer && order.customer.full_name && order.customer.full_name.trim()) {
+                return order.customer.full_name.trim();
+            }
+            // Fallback to address fields
+            const firstName = order.address_first_name || '';
+            const lastName = order.address_last_name || '';
+            const fullName = (firstName + ' ' + lastName).trim();
+            return fullName || 'N/A';
         case 'contact_email':
             return order.contact_email || '';
         case 'customer_phone':
-            return order.customer ? order.customer.phone || '' : '';
+            return order.customer_phone || order.address_phone || '';
             
         // Address Info
         case 'address_first_name':
-            return order.address_first_name || '';
+            // Show full name from address fields
+            const addrFirstName = order.address_first_name || '';
+            const addrLastName = order.address_last_name || '';
+            const addrFullName = (addrFirstName + ' ' + addrLastName).trim();
+            return addrFullName || '';
         case 'address_email':
             return order.address_email || '';
         case 'address_phone':

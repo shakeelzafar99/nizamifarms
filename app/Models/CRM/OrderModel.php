@@ -91,6 +91,16 @@ class OrderModel extends BaseModel
 
     public function getCustomerNameAttribute(): string
     {
+        // Priority: order.name field -> customer relationship -> address fields
+        if ($this->name && trim($this->name)) {
+            return trim($this->name);
+        }
+        
+        if ($this->customer && $this->customer->full_name && trim($this->customer->full_name)) {
+            return trim($this->customer->full_name);
+        }
+        
+        // Fallback to address fields
         return trim(($this->address_first_name ?? '') . ' ' . ($this->address_last_name ?? ''));
     }
 
@@ -184,7 +194,7 @@ class OrderModel extends BaseModel
             'order_number' => $shopifyOrder['order_number'] ?? $shopifyOrder['name'],
             'order_status' => static::mapShopifyStatus($shopifyOrder['financial_status'] ?? 'pending'),
             'order_date' => $shopifyOrder['created_at'],
-            'name' => $shopifyOrder['name'] ?? null,
+            'name' => trim(($primaryAddress['first_name'] ?? '') . ' ' . ($primaryAddress['last_name'] ?? '')),
             'currency' => $shopifyOrder['currency'] ?? 'PKR',
             'contact_email' => $shopifyOrder['email'] ?? null,
             
@@ -240,6 +250,7 @@ class OrderModel extends BaseModel
             'order_number' => $wooOrder['number'] ?? $wooOrder['id'],
             'order_status' => $wooOrder['status'] ?? 'pending',
             'order_date' => $wooOrder['date_created'] ?? now(),
+            'name' => trim(($primaryAddress['first_name'] ?? '') . ' ' . ($primaryAddress['last_name'] ?? '')),
             'currency' => $wooOrder['currency'] ?? 'PKR',
             'contact_email' => $billing['email'] ?? null,
             
