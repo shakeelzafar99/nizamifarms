@@ -211,13 +211,17 @@
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
                     <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Role *</label>
-                        <select name="role_id" id="role_id" required 
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Role <span style="color: #6b7280; font-weight: normal;">(Optional)</span></label>
+                        <select name="role_id" id="role_id" 
                                 style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
                             <option value="">Select Role</option>
-                            @foreach($roles as $role)
-                                <option value="{{ $role->id }}">{{ $role->urole_name }}</option>
-                            @endforeach
+                            @if(isset($roles) && count($roles) > 0)
+                                @foreach($roles as $role)
+                                    <option value="{{ $role->id }}">{{ $role->urole_name }}</option>
+                                @endforeach
+                            @else
+                                <option value="" disabled>No roles available ({{ isset($roles) ? count($roles) : 'roles not set' }} roles found)</option>
+                            @endif
                         </select>
                     </div>
                     <div>

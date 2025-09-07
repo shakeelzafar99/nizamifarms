@@ -86,7 +86,7 @@ class ProductController extends Controller
             if (empty($products)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No products found in Shopify store.'
+                    'message' => 'No products found in Shopify store. This could mean: 1) Your store has no products, 2) API credentials are incorrect, or 3) Products are in draft status.'
                 ]);
             }
 

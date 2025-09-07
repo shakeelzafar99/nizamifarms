@@ -38,6 +38,14 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::post('/orders/import-orders', [OrderController::class, 'importOrders'])->name('orders.importOrders');
     
+    // Customer Management Routes
+    Route::prefix('customers')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index'])->name('customers.index');
+        Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
+        Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
+        Route::delete('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'destroy'])->name('customers.destroy');
+    });
+    
     // Product Management Routes
     Route::get('/products', [\App\Http\Controllers\CRM\ProductController::class, 'index'])->name('products.index');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');

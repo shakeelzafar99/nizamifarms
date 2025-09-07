@@ -54,7 +54,7 @@ class OrderModel extends BaseModel
     ];
 
     protected $casts = [
-        'order_date' => 'datetime',
+        // Removed 'order_date' => 'datetime' to preserve original timezone
         'subtotal_price' => 'decimal:2',
         'discount_total' => 'decimal:2',
         'shipping_total' => 'decimal:2',
@@ -102,6 +102,30 @@ class OrderModel extends BaseModel
         
         // Fallback to address fields
         return trim(($this->address_first_name ?? '') . ' ' . ($this->address_last_name ?? ''));
+    }
+
+    /**
+     * Get the order date as a Carbon instance (for display purposes)
+     * This preserves the original timezone from the source
+     */
+    public function getOrderDateAttribute($value)
+    {
+        if (!$value) {
+            return null;
+        }
+        
+        // If it's already a Carbon instance, return as-is
+        if ($value instanceof \Carbon\Carbon) {
+            return $value;
+        }
+        
+        // Parse the date string and preserve timezone
+        try {
+            return \Carbon\Carbon::parse($value);
+        } catch (\Exception $e) {
+            // If parsing fails, return the original value
+            return $value;
+        }
     }
 
     /**

@@ -231,6 +231,10 @@ function executeImport() {
         </div>
     `;
     
+    // Get CSRF token
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                     document.querySelector('input[name="_token"]')?.value || '';
+    
     // Make API call
     fetch('/products/import', {
         method: 'POST',
@@ -238,10 +242,11 @@ function executeImport() {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
-            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            'X-CSRF-TOKEN': csrfToken
         },
         body: JSON.stringify({
-            limit: parseInt(limit)
+            limit: parseInt(limit),
+            _token: csrfToken
         })
     })
     .then(response => response.json())
@@ -296,13 +301,20 @@ function syncProduct(productId) {
         return;
     }
     
+    // Get CSRF token
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                     document.querySelector('input[name="_token"]')?.value || '';
+    
     fetch(`/products/${productId}/sync`, {
         method: 'POST',
         headers: {
             'Accept': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
-            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-        }
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify({
+            _token: csrfToken
+        })
     })
     .then(response => response.json())
     .then(data => {

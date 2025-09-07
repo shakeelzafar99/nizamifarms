@@ -41,8 +41,7 @@ class CustomerModel extends BaseModel
 
     protected $casts = [
         'external_customer_ids' => 'json',
-        'first_order_date' => 'datetime',
-        'last_order_date' => 'datetime',
+        // Removed datetime casting for first_order_date and last_order_date to preserve original timezone
         'total_spent' => 'decimal:2',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
@@ -73,6 +72,46 @@ class CustomerModel extends BaseModel
     public function getExternalCustomerId(string $platform): ?string
     {
         return $this->external_customer_ids[$platform] ?? null;
+    }
+
+    /**
+     * Get the first order date as a Carbon instance (preserves original timezone)
+     */
+    public function getFirstOrderDateAttribute($value)
+    {
+        if (!$value) {
+            return null;
+        }
+        
+        if ($value instanceof \Carbon\Carbon) {
+            return $value;
+        }
+        
+        try {
+            return \Carbon\Carbon::parse($value);
+        } catch (\Exception $e) {
+            return $value;
+        }
+    }
+
+    /**
+     * Get the last order date as a Carbon instance (preserves original timezone)
+     */
+    public function getLastOrderDateAttribute($value)
+    {
+        if (!$value) {
+            return null;
+        }
+        
+        if ($value instanceof \Carbon\Carbon) {
+            return $value;
+        }
+        
+        try {
+            return \Carbon\Carbon::parse($value);
+        } catch (\Exception $e) {
+            return $value;
+        }
     }
 
     /**

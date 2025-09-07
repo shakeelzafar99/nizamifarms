@@ -24,8 +24,12 @@ class UserController extends Controller
         // Get users with their roles
         $users = UserModel::with(['userRoles.role'])->paginate(10);
         
-        // Get all roles for dropdown
-        $roles = RoleModel::where('is_active', 1)->get();
+        // Get all roles for dropdown - use direct DB query to avoid any model issues
+        $roles = \DB::table('t_sys_role')->where('is_active', 1)->get();
+        
+        // Debug: Log roles for troubleshooting
+        \Log::info('UserController::index - Roles count: ' . $roles->count());
+        \Log::info('UserController::index - Roles data: ' . $roles->toJson());
         
         return view('pages.users.index', compact('users', 'roles'));
     }
@@ -54,10 +58,13 @@ class UserController extends Controller
             'email' => 'required|email|unique:t_sys_user,email',
             'password' => 'required|min:6',
             'user_type' => 'required|string',
-            'role_id' => 'required|exists:t_sys_role,id'
+            'role_id' => 'nullable|exists:t_sys_role,id' // Made optional
         ]);
 
         try {
+            // Log the request data for debugging
+            \Log::info('Creating user with data:', $request->all());
+            
             // Create user
             $user = UserModel::create([
                 'fullname' => $request->fullname,
@@ -69,14 +76,23 @@ class UserController extends Controller
                 'created_by' => auth()->id()
             ]);
 
-            // Assign role
-            UserRoleModel::create([
-                'user_id' => $user->id,
-                'role_id' => $request->role_id
-            ]);
+            \Log::info('User created successfully with ID: ' . $user->id);
+
+            // Assign role only if provided
+            if ($request->role_id) {
+                UserRoleModel::create([
+                    'user_id' => $user->id,
+                    'role_id' => $request->role_id
+                ]);
+                \Log::info('Role assigned to user: ' . $request->role_id);
+            }
 
             return redirect()->route('users.index')->with('success', 'User created successfully!');
         } catch (\Exception $e) {
+            \Log::error('Error creating user: ' . $e->getMessage(), [
+                'request_data' => $request->all(),
+                'trace' => $e->getTraceAsString()
+            ]);
             return redirect()->back()->with('error', 'Error creating user: ' . $e->getMessage());
         }
     }
@@ -87,7 +103,7 @@ class UserController extends Controller
             'fullname' => 'required|string|max:255',
             'email' => 'required|email|unique:t_sys_user,email,' . $id,
             'user_type' => 'required|string',
-            'role_id' => 'required|exists:t_sys_role,id'
+            'role_id' => 'nullable|exists:t_sys_role,id' // Made optional
         ]);
 
         try {
@@ -109,12 +125,14 @@ class UserController extends Controller
 
             $user->update($updateData);
 
-            // Update role
+            // Update role - only if provided
             UserRoleModel::where('user_id', $id)->delete();
-            UserRoleModel::create([
-                'user_id' => $id,
-                'role_id' => $request->role_id
-            ]);
+            if ($request->role_id) {
+                UserRoleModel::create([
+                    'user_id' => $id,
+                    'role_id' => $request->role_id
+                ]);
+            }
 
             return redirect()->route('users.index')->with('success', 'User updated successfully!');
         } catch (\Exception $e) {

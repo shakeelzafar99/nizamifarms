@@ -46,9 +46,8 @@ class ProductVariantModel extends BaseModel
         'weight' => 'decimal:2',
         'inventory_quantity' => 'integer',
         'position' => 'integer',
-        'available' => 'boolean',
-        'shopify_created_at' => 'datetime',
-        'shopify_updated_at' => 'datetime'
+        'available' => 'boolean'
+        // Removed datetime casting for Shopify dates to preserve original timezone
     ];
 
     // Relationships

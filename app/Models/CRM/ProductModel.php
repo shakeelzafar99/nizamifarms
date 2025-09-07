@@ -46,10 +46,7 @@ class ProductModel extends BaseModel
     ];
 
     protected $casts = [
-        'published_at' => 'datetime',
-        'shopify_created_at' => 'datetime',
-        'shopify_updated_at' => 'datetime',
-        'last_synced_at' => 'datetime',
+        // Removed datetime casting for Shopify dates to preserve original timezone
         'price_min' => 'decimal:2',
         'price_max' => 'decimal:2',
         'compare_at_price' => 'decimal:2',

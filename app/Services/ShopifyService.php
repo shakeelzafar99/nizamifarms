@@ -66,18 +66,44 @@ class ShopifyService
     {
         $baseUrl = "https://{$this->storeName}.myshopify.com/admin/api/{$this->apiVersion}/products.json";
 
+        $params = [
+            'limit' => min($limit, 250), // Shopify max is 250
+            'status' => 'any', // Get all products regardless of status
+            'published_status' => 'any' // Include published and unpublished
+        ];
+        
+        // Log the request for debugging
+        \Log::info('Shopify Products API Request', [
+            'url' => $baseUrl,
+            'params' => $params,
+            'api_key_set' => !empty($this->apiKey),
+            'password_set' => !empty($this->password),
+            'store_name' => $this->storeName
+        ]);
+        
         $response = Http::withBasicAuth($this->apiKey, $this->password)
             ->withOptions(['verify' => $this->verifySsl])
-            ->get($baseUrl, [
-                'limit' => min($limit, 250), // Shopify max is 250
-                'status' => 'any' // Get all products regardless of status
-            ]);
+            ->timeout(30) // Add 30 second timeout
+            ->get($baseUrl, $params);
 
         if ($response->failed()) {
-            throw new \Exception('Failed to fetch products from Shopify: ' . $response->body());
+            $errorBody = $response->body();
+            $statusCode = $response->status();
+            throw new \Exception("Failed to fetch products from Shopify (HTTP {$statusCode}): {$errorBody}");
         }
 
         $data = $response->json();
+        
+        // Log the response for debugging
+        \Log::info('Shopify Products API Response', [
+            'url' => $baseUrl,
+            'limit' => $limit,
+            'status_code' => $response->status(),
+            'products_count' => count($data['products'] ?? []),
+            'response_keys' => array_keys($data),
+            'full_response' => $data // Log full response to see what we're getting
+        ]);
+        
         return $data['products'] ?? [];
     }
 

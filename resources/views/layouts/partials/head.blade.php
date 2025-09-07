@@ -43,6 +43,7 @@
 <link href="{{ url(request()->path()) }}" rel="canonical" />
 <meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport" />
 <meta content="{{ $pageDescription ?? 'Metronic admin dashboard' }}" name="description" />
+<meta name="csrf-token" content="{{ csrf_token() }}" />
 <!--begin::Fonts-->
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <!--end::Fonts-->
