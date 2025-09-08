@@ -21,15 +21,18 @@ class UserController extends Controller
     // Web interface methods
     public function index(Request $request)
     {
-        // Get users with their roles
-        $users = UserModel::with(['userRoles.role'])->paginate(10);
+        // Get users with their roles (most recent first)
+        $users = UserModel::with(['userRoles.role'])->orderBy('created_at', 'desc')->paginate(10);
+        
+        // Debug: Log user information
+        \Log::info('UserController::index - Users count: ' . $users->total());
+        \Log::info('UserController::index - Users on current page: ' . $users->count());
         
         // Get all roles for dropdown - use direct DB query to avoid any model issues
         $roles = \DB::table('t_sys_role')->where('is_active', 1)->get();
         
         // Debug: Log roles for troubleshooting
         \Log::info('UserController::index - Roles count: ' . $roles->count());
-        \Log::info('UserController::index - Roles data: ' . $roles->toJson());
         
         return view('pages.users.index', compact('users', 'roles'));
     }
@@ -62,10 +65,6 @@ class UserController extends Controller
         ]);
 
         try {
-            // Log the request data for debugging
-            \Log::info('Creating user with data:', $request->all());
-            
-            // Create user
             $user = UserModel::create([
                 'fullname' => $request->fullname,
                 'email' => $request->email,
@@ -73,10 +72,10 @@ class UserController extends Controller
                 'user_type' => $request->user_type,
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
+                'company_id' => 1, // Default company
+                'branch_id' => null, // Optional
                 'created_by' => auth()->id()
             ]);
-
-            \Log::info('User created successfully with ID: ' . $user->id);
 
             // Assign role only if provided
             if ($request->role_id) {
@@ -84,15 +83,12 @@ class UserController extends Controller
                     'user_id' => $user->id,
                     'role_id' => $request->role_id
                 ]);
-                \Log::info('Role assigned to user: ' . $request->role_id);
             }
 
-            return redirect()->route('users.index')->with('success', 'User created successfully!');
+            return redirect()->route('users.index')
+                ->with('success', 'User created successfully!')
+                ->withHeaders(['Cache-Control' => 'no-cache, no-store, must-revalidate']);
         } catch (\Exception $e) {
-            \Log::error('Error creating user: ' . $e->getMessage(), [
-                'request_data' => $request->all(),
-                'trace' => $e->getTraceAsString()
-            ]);
             return redirect()->back()->with('error', 'Error creating user: ' . $e->getMessage());
         }
     }

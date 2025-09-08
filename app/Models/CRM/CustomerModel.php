@@ -41,7 +41,6 @@ class CustomerModel extends BaseModel
 
     protected $casts = [
         'external_customer_ids' => 'json',
-        // Removed datetime casting for first_order_date and last_order_date to preserve original timezone
         'total_spent' => 'decimal:2',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
@@ -72,6 +71,41 @@ class CustomerModel extends BaseModel
     public function getExternalCustomerId(string $platform): ?string
     {
         return $this->external_customer_ids[$platform] ?? null;
+    }
+
+    // Mutators to format datetime values for MySQL
+    public function setFirstOrderDateAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['first_order_date'] = null;
+            return;
+        }
+        
+        try {
+            // Parse the date and convert to local time for MySQL storage
+            $date = \Carbon\Carbon::parse($value);
+            // Convert to local time (remove timezone offset) for MySQL storage
+            $this->attributes['first_order_date'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['first_order_date'] = null;
+        }
+    }
+    
+    public function setLastOrderDateAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['last_order_date'] = null;
+            return;
+        }
+        
+        try {
+            // Parse the date and convert to local time for MySQL storage
+            $date = \Carbon\Carbon::parse($value);
+            // Convert to local time (remove timezone offset) for MySQL storage
+            $this->attributes['last_order_date'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['last_order_date'] = null;
+        }
     }
 
     /**

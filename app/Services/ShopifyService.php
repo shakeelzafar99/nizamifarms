@@ -68,8 +68,8 @@ class ShopifyService
 
         $params = [
             'limit' => min($limit, 250), // Shopify max is 250
-            'status' => 'any', // Get all products regardless of status
-            'published_status' => 'any' // Include published and unpublished
+            'status' => 'active', // Get active products
+            'published_status' => 'published' // Get published products
         ];
         
         // Log the request for debugging

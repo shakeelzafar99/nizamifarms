@@ -47,8 +47,53 @@ class ProductVariantModel extends BaseModel
         'inventory_quantity' => 'integer',
         'position' => 'integer',
         'available' => 'boolean'
-        // Removed datetime casting for Shopify dates to preserve original timezone
     ];
+
+    // Mutators to format datetime values for MySQL
+    public function setShopifyCreatedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['shopify_created_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['shopify_created_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['shopify_created_at'] = null;
+        }
+    }
+    
+    public function setShopifyUpdatedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['shopify_updated_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['shopify_updated_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['shopify_updated_at'] = null;
+        }
+    }
+
+    // Accessors to parse datetime fields for display
+    public function getShopifyCreatedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
+    
+    public function getShopifyUpdatedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
 
     // Relationships
     public function product(): BelongsTo

@@ -89,8 +89,13 @@ class ShopifyController extends Controller
 
     function store(Request $request) //ADD   
     {
-
         try {
+            // Log webhook received
+            \Log::info('Shopify webhook received', [
+                'timestamp' => now()->toISOString(),
+                'headers' => $request->headers->all(),
+                'content_length' => strlen($request->getContent())
+            ]);
 
             $sharedSecret = Config::get('shopify.webhook_secret'); 
             // Get the raw POST body
@@ -103,18 +108,40 @@ class ShopifyController extends Controller
             $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
 
             // Verify webhook
-            if (! $hmacHeader && !hash_equals($calculatedHmac, $hmacHeader)) {
-                // Log::warning('Invalid Shopify Webhook Signature');
+            if (!$hmacHeader || !hash_equals($calculatedHmac, $hmacHeader)) {
+                \Log::warning('Invalid Shopify Webhook Signature', [
+                    'hmac_header' => $hmacHeader,
+                    'calculated_hmac' => $calculatedHmac,
+                    'has_secret' => !empty($sharedSecret)
+                ]);
                 return response()->json(['error' => 'Unauthorized'], 401);
             }
             $payload = json_decode($rawBody, true);
+            
+            // Log successful processing
+            \Log::info('Shopify webhook processing order', [
+                'order_id' => $payload['id'] ?? 'unknown',
+                'order_number' => $payload['order_number'] ?? 'unknown',
+                'customer_email' => $payload['customer']['email'] ?? 'unknown'
+            ]);
             
             // Map and store using new structure
             $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($payload);
             \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
 
+            \Log::info('Shopify webhook completed successfully', [
+                'order_id' => $payload['id'] ?? 'unknown'
+            ]);
+
             return response()->json(['success' => 'completed'], 200);
         } catch (\Exception $e) { 
+            \Log::error('Shopify webhook error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
             $errorString =
                 "Message: " . $e->getMessage() . PHP_EOL .
                 "File: " . $e->getFile() . PHP_EOL .
@@ -122,7 +149,7 @@ class ShopifyController extends Controller
                 "Trace: " . $e->getTraceAsString();
             $this->createLog($errorString, "txt", "error", "e1");
            
-            return $this->error($e->getMessage(), $e->getCode());
+            return response()->json(['error' => 'Internal Server Error'], 500);
         }
     }
 

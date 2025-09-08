@@ -54,7 +54,6 @@ class OrderModel extends BaseModel
     ];
 
     protected $casts = [
-        // Removed 'order_date' => 'datetime' to preserve original timezone
         'subtotal_price' => 'decimal:2',
         'discount_total' => 'decimal:2',
         'shipping_total' => 'decimal:2',
@@ -62,6 +61,23 @@ class OrderModel extends BaseModel
         'total_price' => 'decimal:2',
         'total_weight' => 'integer'
     ];
+
+    // Mutator to format order_date for MySQL
+    public function setOrderDateAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['order_date'] = null;
+            return;
+        }
+        
+        try {
+            // Parse the date and format it for MySQL (without timezone info)
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['order_date'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['order_date'] = null;
+        }
+    }
 
     // Relationships
     public function customer(): BelongsTo

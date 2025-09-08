@@ -95,13 +95,19 @@
                 
                 <div class="flex flex-wrap gap-2 lg:gap-5">
                     <!-- Search -->
-                    <form method="GET" class="flex items-center gap-2">
-                        <input type="text" name="search" value="{{ request('search') }}" 
-                               placeholder="Search customers..." 
-                               class="input input-sm w-48">
+                    <form method="GET" class="flex items-center gap-2" id="customerSearchForm">
+                        <div class="relative">
+                            <input type="text" name="search" value="{{ request('search') }}" 
+                                   placeholder="Search customers..." 
+                                   class="input input-sm w-64 pl-10"
+                                   id="customerSearchInput">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <i class="ki-filled ki-magnifier text-gray-400"></i>
+                            </div>
+                        </div>
                         
                         <!-- City Filter -->
-                        <select name="city" class="select select-sm">
+                        <select name="city" class="select select-sm w-40">
                             <option value="">All Cities</option>
                             @foreach($cities as $city)
                                 <option value="{{ $city }}" {{ request('city') == $city ? 'selected' : '' }}>
@@ -111,45 +117,49 @@
                         </select>
                         
                         <!-- Status Filter -->
-                        <select name="status" class="select select-sm">
+                        <select name="status" class="select select-sm w-32">
                             <option value="">All Status</option>
                             <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
                             <option value="inactive" {{ request('status') == 'inactive' ? 'selected' : '' }}>Inactive</option>
                         </select>
                         
-                        <button type="submit" class="kt-btn kt-btn-sm kt-btn-light">Filter</button>
+                        <button type="submit" class="kt-btn kt-btn-sm kt-btn-primary">
+                            <i class="ki-filled ki-magnifier"></i> Search
+                        </button>
                         @if(request()->hasAny(['search', 'city', 'status']))
-                            <a href="{{ route('customers.index') }}" class="kt-btn kt-btn-sm kt-btn-light">Clear</a>
+                            <a href="{{ route('customers.index') }}" class="kt-btn kt-btn-sm kt-btn-light">
+                                <i class="ki-filled ki-cross"></i> Clear
+                            </a>
                         @endif
                     </form>
                 </div>
             </div>
 
-            <div class="card-body">
-                <div class="scrollable-x-auto">
-                    <table class="table table-auto table-border" data-datatable="true">
-                        <thead>
+            <div class="card-body p-0">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 border-b">
                             <tr>
-                                <th class="w-[60px]">#</th>
-                                <th class="min-w-[200px]">Customer</th>
-                                <th class="w-[150px]">Contact</th>
-                                <th class="w-[150px]">Location</th>
-                                <th class="w-[100px]">Orders</th>
-                                <th class="w-[120px]">Total Spent</th>
-                                <th class="w-[100px]">Status</th>
-                                <th class="w-[100px]">Last Order</th>
-                                <th class="w-[120px]">Actions</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-16">#</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[200px]">Customer</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-40">Contact</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Location</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Orders</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Total Spent</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Last Order</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody class="bg-white divide-y divide-gray-200">
                             @foreach ($customers as $customer)
-                            <tr class="hover:bg-gray-50">
-                                <td class="text-center">
-                                    <span class="text-sm text-gray-500">#{{ $customer->id }}</span>
+                            <tr class="hover:bg-gray-50 transition-colors duration-150">
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <span class="text-sm font-medium text-gray-500">#{{ $customer->id }}</span>
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="flex flex-col">
-                                        <span class="font-medium text-gray-900">
+                                        <span class="text-sm font-medium text-gray-900">
                                             {{ $customer->first_name }} {{ $customer->last_name }}
                                         </span>
                                         @if($customer->company)
@@ -157,17 +167,17 @@
                                         @endif
                                     </div>
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="flex flex-col text-sm">
                                         @if($customer->email)
-                                            <span class="text-gray-600">{{ $customer->email }}</span>
+                                            <span class="text-gray-600 truncate max-w-[150px]" title="{{ $customer->email }}">{{ $customer->email }}</span>
                                         @endif
                                         @if($customer->phone)
                                             <span class="text-gray-500">{{ $customer->phone }}</span>
                                         @endif
                                     </div>
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="flex flex-col text-sm">
                                         @if($customer->city)
                                             <span class="text-gray-600">{{ $customer->city }}</span>
@@ -177,28 +187,30 @@
                                         @endif
                                     </div>
                                 </td>
-                                <td class="text-center">
-                                    <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                                <td class="px-6 py-4 whitespace-nowrap text-center">
+                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                                         {{ $customer->total_orders }}
                                     </span>
                                 </td>
-                                <td class="text-right">
-                                    <span class="font-medium text-gray-900">
+                                <td class="px-6 py-4 whitespace-nowrap text-right">
+                                    <span class="text-sm font-medium text-gray-900">
                                         PKR {{ number_format($customer->total_spent, 0) }}
                                     </span>
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     @if($customer->is_active)
-                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                            <div class="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5"></div>
                                             Active
                                         </span>
                                     @else
-                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-red-100 text-red-800">
+                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                            <div class="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5"></div>
                                             Inactive
                                         </span>
                                     @endif
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     @if($customer->last_order_date)
                                         <span class="text-sm text-gray-600">
                                             {{ $customer->last_order_date->format('M d, Y') }}
@@ -207,23 +219,23 @@
                                         <span class="text-sm text-gray-400">Never</span>
                                     @endif
                                 </td>
-                                <td>
+                                <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="flex items-center gap-1">
                                         <button onclick="viewCustomer({{ $customer->id }})" 
-                                                class="kt-btn kt-btn-sm kt-btn-light" 
+                                                class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
                                                 title="View Details">
-                                            <i class="ki-filled ki-eye"></i>
+                                            <i class="ki-filled ki-eye text-sm"></i>
                                         </button>
                                         <button onclick="editCustomer({{ $customer->id }})" 
-                                                class="kt-btn kt-btn-sm kt-btn-light" 
+                                                class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
                                                 title="Edit">
-                                            <i class="ki-filled ki-pencil"></i>
+                                            <i class="ki-filled ki-pencil text-sm"></i>
                                         </button>
                                         @if($customer->total_orders == 0)
                                             <button onclick="deleteCustomer({{ $customer->id }})" 
-                                                    class="kt-btn kt-btn-sm kt-btn-light text-red-600" 
+                                                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-red-400 hover:text-red-500 hover:bg-red-50 transition-colors duration-150" 
                                                     title="Delete">
-                                                <i class="ki-filled ki-trash"></i>
+                                                <i class="ki-filled ki-trash text-sm"></i>
                                             </button>
                                         @endif
                                     </div>
@@ -235,13 +247,62 @@
                 </div>
                 
                 <!-- Pagination -->
-                <div class="mt-6">
+                <div class="px-6 py-4 border-t border-gray-200">
                     {{ $customers->appends(request()->query())->links() }}
                 </div>
             </div>
         </div>
     </div>
 </div>
+
+@push('scripts')
+<script>
+// Real-time search functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('customerSearchInput');
+    const searchForm = document.getElementById('customerSearchForm');
+    let searchTimeout;
+    
+    // Debounced search
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            if (searchInput.value.length >= 2 || searchInput.value.length === 0) {
+                searchForm.submit();
+            }
+        }, 500);
+    });
+    
+    // Auto-submit on filter changes
+    const citySelect = document.querySelector('select[name="city"]');
+    const statusSelect = document.querySelector('select[name="status"]');
+    
+    [citySelect, statusSelect].forEach(select => {
+        select.addEventListener('change', function() {
+            searchForm.submit();
+        });
+    });
+});
+
+// Customer action functions
+function viewCustomer(id) {
+    // Implement customer view modal
+    console.log('View customer:', id);
+}
+
+function editCustomer(id) {
+    // Implement customer edit modal
+    console.log('Edit customer:', id);
+}
+
+function deleteCustomer(id) {
+    if (confirm('Are you sure you want to delete this customer? This action cannot be undone.')) {
+        // Implement customer deletion
+        console.log('Delete customer:', id);
+    }
+}
+</script>
+@endpush
 
 <!-- View Customer Modal -->
 <div id="viewCustomerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1000;">

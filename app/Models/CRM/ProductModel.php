@@ -46,7 +46,6 @@ class ProductModel extends BaseModel
     ];
 
     protected $casts = [
-        // Removed datetime casting for Shopify dates to preserve original timezone
         'price_min' => 'decimal:2',
         'price_max' => 'decimal:2',
         'compare_at_price' => 'decimal:2',
@@ -57,6 +56,96 @@ class ProductModel extends BaseModel
         'tags' => 'json',
         'options' => 'json'
     ];
+
+    // Mutators to format datetime values for MySQL
+    public function setPublishedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['published_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['published_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['published_at'] = null;
+        }
+    }
+    
+    public function setShopifyCreatedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['shopify_created_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['shopify_created_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['shopify_created_at'] = null;
+        }
+    }
+    
+    public function setShopifyUpdatedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['shopify_updated_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['shopify_updated_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['shopify_updated_at'] = null;
+        }
+    }
+    
+    public function setLastSyncedAtAttribute($value)
+    {
+        if (!$value) {
+            $this->attributes['last_synced_at'] = null;
+            return;
+        }
+        
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['last_synced_at'] = $date->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            $this->attributes['last_synced_at'] = null;
+        }
+    }
+
+    // Accessors to parse datetime fields for display
+    public function getPublishedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
+    
+    public function getShopifyCreatedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
+    
+    public function getShopifyUpdatedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
+    
+    public function getLastSyncedAtAttribute($value)
+    {
+        if (!$value) { return null; }
+        if ($value instanceof \Carbon\Carbon) { return $value; }
+        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+    }
 
     // Relationships
     public function variants(): HasMany

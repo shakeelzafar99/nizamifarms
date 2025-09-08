@@ -43,6 +43,9 @@ class OrderController extends Controller
         
         $orders = $query->orderBy('order_date', 'desc')->paginate(10);
         
+        // Append source parameter to pagination links
+        $orders->appends(['source' => $source]);
+        
         // Get counts for tab badges using new structure
         $shopifyCount = \App\Models\CRM\OrderModel::where('external_source', 'shopify')->count();
         $otherCount = \App\Models\CRM\OrderModel::where(function($q) {

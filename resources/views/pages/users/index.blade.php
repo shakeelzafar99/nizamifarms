@@ -177,6 +177,18 @@
                 @csrf
                 <input type="hidden" id="userFormMethod" name="_method" value="">
                 
+                <!-- Display validation errors -->
+                @if ($errors->any())
+                    <div style="background-color: #fef2f2; border: 1px solid #fecaca; color: #dc2626; padding: 12px; border-radius: 6px; margin-bottom: 20px;">
+                        <strong>Please fix the following errors:</strong>
+                        <ul style="margin: 8px 0 0 0; padding-left: 20px;">
+                            @foreach ($errors->all() as $error)
+                                <li>{{ $error }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+                
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Full Name *</label>
@@ -192,9 +204,11 @@
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
                     <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Password <span id="passwordRequired">*</span></label>
-                        <input type="password" name="password" id="password" 
-                               style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Password <span id="passwordRequired">*</span> <span style="color: #6b7280; font-weight: normal;">(min 6 characters)</span></label>
+                        <input type="password" name="password" id="password" minlength="6"
+                               style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;"
+                               oninput="validatePassword(this)">
+                        <div id="passwordError" style="color: #dc2626; font-size: 12px; margin-top: 4px; display: none;"></div>
                         <small style="color: #6b7280; font-size: 12px;" id="passwordHelp">Leave blank to keep current password (when editing)</small>
                     </div>
                     <div>
@@ -476,7 +490,44 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// Debug: Log when script loads
-console.log('User management script loaded');
+// Password validation function
+function validatePassword(input) {
+    const errorDiv = document.getElementById('passwordError');
+    const password = input.value;
+    
+    if (password.length > 0 && password.length < 6) {
+        errorDiv.textContent = 'Password must be at least 6 characters long';
+        errorDiv.style.display = 'block';
+        input.style.borderColor = '#dc2626';
+    } else {
+        errorDiv.style.display = 'none';
+        input.style.borderColor = '#d1d5db';
+    }
+}
+
+// Add User Modal Functions
+function openAddUserModal() {
+    const modal = document.getElementById('userFormModal');
+    const form = document.getElementById('userForm');
+    const title = document.getElementById('userFormModalTitle');
+    
+    // Reset form
+    form.reset();
+    form.action = '{{ route("users.store") }}';
+    document.getElementById('userFormMethod').value = '';
+    
+    // Update title and password field
+    title.textContent = 'Add New User';
+    document.getElementById('password').required = true;
+    document.getElementById('passwordRequired').textContent = '*';
+    document.getElementById('passwordHelp').style.display = 'none';
+    
+    modal.style.display = 'block';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
 </script>
 @endpush
