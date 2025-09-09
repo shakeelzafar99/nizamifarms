@@ -168,6 +168,77 @@ class ProductModel extends BaseModel
     }
 
     /**
+     * Find product by Shopify ID
+     */
+    public static function findByShopifyId(string $shopifyId): ?self
+    {
+        return static::where('shopify_product_id', $shopifyId)->first();
+    }
+
+    /**
+     * Create or update product from Shopify data
+     */
+    public static function createOrUpdateFromShopify(array $shopifyProduct): self
+    {
+        $existingProduct = static::findByShopifyId($shopifyProduct['id']);
+        
+        if ($existingProduct) {
+            // Update existing product
+            \Log::info("Updating existing product: {$shopifyProduct['title']} (Shopify ID: {$shopifyProduct['id']})");
+            $product = $existingProduct;
+        } else {
+            // Create new product
+            \Log::info("Creating new product: {$shopifyProduct['title']} (Shopify ID: {$shopifyProduct['id']})");
+            $product = new static();
+        }
+        
+        // Map Shopify data to our format
+        $productData = static::mapShopifyProduct($shopifyProduct);
+        
+        // Update or create the product
+        $product->fill($productData);
+        $product->save();
+        
+        // Handle variants
+        if (isset($shopifyProduct['variants']) && is_array($shopifyProduct['variants'])) {
+            static::syncVariants($product, $shopifyProduct['variants']);
+        }
+        
+        return $product;
+    }
+
+    /**
+     * Sync product variants
+     */
+    protected static function syncVariants(self $product, array $shopifyVariants): void
+    {
+        // Get existing variant IDs
+        $existingVariantIds = $product->variants()->pluck('shopify_variant_id')->toArray();
+        $shopifyVariantIds = array_column($shopifyVariants, 'id');
+        
+        // Delete variants that no longer exist in Shopify
+        $variantsToDelete = array_diff($existingVariantIds, $shopifyVariantIds);
+        if (!empty($variantsToDelete)) {
+            $product->variants()->whereIn('shopify_variant_id', $variantsToDelete)->delete();
+            \Log::info("Deleted " . count($variantsToDelete) . " variants for product: {$product->title}");
+        }
+        
+        // Create or update variants
+        foreach ($shopifyVariants as $shopifyVariant) {
+            $variant = $product->variants()->where('shopify_variant_id', $shopifyVariant['id'])->first();
+            
+            if (!$variant) {
+                $variant = new \App\Models\CRM\ProductVariantModel();
+                $variant->product_id = $product->id;
+            }
+            
+            $variantData = \App\Models\CRM\ProductVariantModel::mapShopifyVariant($shopifyVariant);
+            $variant->fill($variantData);
+            $variant->save();
+        }
+    }
+
+    /**
      * Map Shopify product data to our format
      */
     public static function mapShopifyProduct(array $shopifyProduct): array
@@ -254,8 +325,8 @@ class ProductModel extends BaseModel
 
             // Prepare product data
             $productAttributes = $productData;
-            $productAttributes['created_by'] = auth()->id();
-            $productAttributes['updated_by'] = auth()->id();
+            $productAttributes['created_by'] = auth()->check() ? auth()->id() : null;
+            $productAttributes['updated_by'] = auth()->check() ? auth()->id() : null;
             
             // Extract variants
             $variants = $productAttributes['variants'] ?? [];
@@ -280,7 +351,7 @@ class ProductModel extends BaseModel
                 foreach ($variants as $variant) {
                     $variantData = ProductVariantModel::mapShopifyVariant($variant);
                     $variantData['product_id'] = $product->id;
-                    $variantData['created_by'] = auth()->id();
+                    $variantData['created_by'] = auth()->check() ? auth()->id() : null;
                     $variantModels[] = new ProductVariantModel($variantData);
                 }
                 

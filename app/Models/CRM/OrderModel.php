@@ -175,7 +175,7 @@ class OrderModel extends BaseModel
             // Prepare order data
             $orderAttributes = $orderData;
             $orderAttributes['customer_id'] = $customer?->id;
-            $orderAttributes['created_by'] = auth()->id();
+            $orderAttributes['created_by'] = auth()->check() ? auth()->id() : null;
             
             // Extract line items
             $lineItems = $orderAttributes['line_items'] ?? [];
@@ -199,7 +199,7 @@ class OrderModel extends BaseModel
                 $lineItemModels = [];
                 foreach ($lineItems as $lineItem) {
                     $lineItem['order_id'] = $order->id;
-                    $lineItem['created_by'] = auth()->id();
+                    $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
                     $lineItemModels[] = new OrderLineItemModel($lineItem);
                 }
                 

@@ -69,7 +69,7 @@ class ProductController extends Controller
     }
 
     /**
-     * Import products from Shopify
+     * Import products from Shopify (limited)
      */
     public function importProducts(Request $request)
     {
@@ -92,17 +92,24 @@ class ProductController extends Controller
 
             // Store products in database
             $importedCount = 0;
+            $updatedCount = 0;
             $errorCount = 0;
             $errors = [];
 
             foreach ($products as $shopifyProduct) {
                 try {
-                    // Map Shopify product to our format
-                    $productData = ProductModel::mapShopifyProduct($shopifyProduct);
+                    // Check if product already exists
+                    $existingProduct = ProductModel::findByShopifyId($shopifyProduct['id']);
+                    $isUpdate = $existingProduct !== null;
                     
-                    // Store product with variants
-                    ProductModel::storeProductFromApi($productData);
-                    $importedCount++;
+                    // Create or update product
+                    ProductModel::createOrUpdateFromShopify($shopifyProduct);
+                    
+                    if ($isUpdate) {
+                        $updatedCount++;
+                    } else {
+                        $importedCount++;
+                    }
                 } catch (\Exception $e) {
                     $errorCount++;
                     $errors[] = "Product ID {$shopifyProduct['id']}: " . $e->getMessage();
@@ -114,15 +121,22 @@ class ProductController extends Controller
                 }
             }
 
-            $message = "Successfully imported {$importedCount} products from Shopify.";
+            $message = "Successfully processed " . ($importedCount + $updatedCount) . " products from Shopify.";
+            if ($importedCount > 0) {
+                $message .= " {$importedCount} new products imported.";
+            }
+            if ($updatedCount > 0) {
+                $message .= " {$updatedCount} existing products updated.";
+            }
             if ($errorCount > 0) {
-                $message .= " {$errorCount} products failed to import.";
+                $message .= " {$errorCount} products failed to process.";
             }
 
             return response()->json([
                 'success' => true,
                 'message' => $message,
                 'imported_count' => $importedCount,
+                'updated_count' => $updatedCount,
                 'error_count' => $errorCount,
                 'errors' => $errors
             ]);
@@ -186,6 +200,100 @@ class ProductController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to sync product: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Import ALL products from Shopify
+     */
+    public function importAllProducts(Request $request)
+    {
+        try {
+            \Log::info('Starting bulk import of all products from Shopify');
+
+            // Fetch ALL products from Shopify
+            $products = $this->shopify->fetchAllProducts();
+
+            if (empty($products)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No products found in Shopify store. This could mean: 1) Your store has no products, 2) API credentials are incorrect, or 3) Products are in draft status.'
+                ]);
+            }
+
+            \Log::info('Fetched ' . count($products) . ' products from Shopify, starting import process');
+
+            // Store products in database
+            $importedCount = 0;
+            $updatedCount = 0;
+            $errorCount = 0;
+            $errors = [];
+            $totalProducts = count($products);
+
+            foreach ($products as $index => $shopifyProduct) {
+                try {
+                    // Check if product already exists
+                    $existingProduct = ProductModel::findByShopifyId($shopifyProduct['id']);
+                    $isUpdate = $existingProduct !== null;
+                    
+                    // Create or update product
+                    ProductModel::createOrUpdateFromShopify($shopifyProduct);
+                    
+                    if ($isUpdate) {
+                        $updatedCount++;
+                    } else {
+                        $importedCount++;
+                    }
+
+                    // Log progress every 10 products
+                    if (($index + 1) % 10 === 0) {
+                        \Log::info("Processed " . ($index + 1) . "/{$totalProducts} products");
+                    }
+                } catch (\Exception $e) {
+                    $errorCount++;
+                    $errors[] = "Product ID {$shopifyProduct['id']}: " . $e->getMessage();
+                    
+                    Log::error('Failed to import Shopify product: ' . $e->getMessage(), [
+                        'shopify_product_id' => $shopifyProduct['id'] ?? 'unknown',
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
+            \Log::info('Completed bulk import', [
+                'total_products' => $totalProducts,
+                'imported_count' => $importedCount,
+                'updated_count' => $updatedCount,
+                'error_count' => $errorCount
+            ]);
+
+            $message = "Successfully processed {$totalProducts} products from Shopify.";
+            if ($importedCount > 0) {
+                $message .= " {$importedCount} new products imported.";
+            }
+            if ($updatedCount > 0) {
+                $message .= " {$updatedCount} existing products updated.";
+            }
+            if ($errorCount > 0) {
+                $message .= " {$errorCount} products failed to process.";
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'total_products' => $totalProducts,
+                'imported_count' => $importedCount,
+                'updated_count' => $updatedCount,
+                'error_count' => $errorCount,
+                'errors' => $errors
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Bulk product import error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred while importing all products: ' . $e->getMessage()
             ], 500);
         }
     }

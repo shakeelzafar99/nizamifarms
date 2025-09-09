@@ -135,34 +135,55 @@ class ShopifyService
         
         $allProducts = [];
         $pageInfo = null;
+        $pageCount = 0;
+        
+        \Log::info('Starting to fetch all products from Shopify', [
+            'api_version' => $this->apiVersion,
+            'store_name' => $this->storeName
+        ]);
         
         do {
+            $pageCount++;
             $params = [
                 'limit' => 250,
-                'status' => 'any'
+                'status' => 'active',
+                'published_status' => 'published'
             ];
             
             if ($pageInfo) {
                 $params['page_info'] = $pageInfo;
             }
 
+            \Log::info("Fetching products page {$pageCount}", ['params' => $params]);
+
             $response = Http::withBasicAuth($this->apiKey, $this->password)
                 ->withOptions(['verify' => $this->verifySsl])
+                ->timeout(60) // Longer timeout for bulk operations
                 ->get($baseUrl, $params);
 
             if ($response->failed()) {
+                \Log::error("Failed to fetch products page {$pageCount}", [
+                    'status' => $response->status(),
+                    'response' => $response->body()
+                ]);
                 break;
             }
 
             $data = $response->json();
             if (!empty($data['products'])) {
                 $allProducts = array_merge($allProducts, $data['products']);
+                \Log::info("Fetched " . count($data['products']) . " products from page {$pageCount}");
             }
 
             // Get next page info from Link header
             $pageInfo = $this->extractPageInfo($response->header('Link'));
             
         } while ($pageInfo);
+
+        \Log::info('Completed fetching all products', [
+            'total_products' => count($allProducts),
+            'pages_fetched' => $pageCount
+        ]);
 
         return $allProducts;
     }

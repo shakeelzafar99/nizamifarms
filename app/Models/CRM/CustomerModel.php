@@ -178,7 +178,7 @@ class CustomerModel extends BaseModel
                 'last_order_date' => $orderDate,
                 'total_orders' => 1,
                 'total_spent' => $orderTotal,
-                'created_by' => auth()->id()
+                'created_by' => auth()->check() ? auth()->id() : null
             ]);
 
             // Add external customer ID if provided
@@ -202,7 +202,7 @@ class CustomerModel extends BaseModel
                 $updates['total_orders'] = $customer->total_orders + 1;
                 $updates['total_spent'] = $customer->total_spent + $orderTotal;
             }
-            $updates['updated_by'] = auth()->id();
+            $updates['updated_by'] = auth()->check() ? auth()->id() : null;
             
             // Update contact info if this is the most recent order
             if (!$customer->last_order_date || $orderDate >= $customer->last_order_date) {
@@ -243,7 +243,7 @@ class CustomerModel extends BaseModel
                 'last_order_date' => $orders->last()->order_date,
                 'total_orders' => $orders->count(),
                 'total_spent' => $orders->sum('total_price'),
-                'updated_by' => auth()->id()
+                'updated_by' => auth()->check() ? auth()->id() : null
             ]);
         } else {
             $this->update([
@@ -251,7 +251,7 @@ class CustomerModel extends BaseModel
                 'last_order_date' => null,
                 'total_orders' => 0,
                 'total_spent' => 0,
-                'updated_by' => auth()->id()
+                'updated_by' => auth()->check() ? auth()->id() : null
             ]);
         }
     }

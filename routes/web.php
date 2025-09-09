@@ -50,6 +50,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/products', [\App\Http\Controllers\CRM\ProductController::class, 'index'])->name('products.index');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');
     Route::post('/products/import', [\App\Http\Controllers\CRM\ProductController::class, 'importProducts'])->name('products.import');
+    Route::post('/products/import-all', [\App\Http\Controllers\CRM\ProductController::class, 'importAllProducts'])->name('products.import-all');
     Route::post('/products/{id}/sync', [\App\Http\Controllers\CRM\ProductController::class, 'syncProduct'])->name('products.sync');
     
     // User Management Routes
