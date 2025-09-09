@@ -85,14 +85,24 @@ class ProductVariantModel extends BaseModel
     {
         if (!$value) { return null; }
         if ($value instanceof \Carbon\Carbon) { return $value; }
-        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+        try { 
+            $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
+            return $carbon->setTimezone(config('app.timezone', 'UTC'));
+        } catch (\Exception $e) { 
+            try { return \Carbon\Carbon::parse($value); } catch (\Exception $e2) { return $value; }
+        }
     }
     
     public function getShopifyUpdatedAtAttribute($value)
     {
         if (!$value) { return null; }
         if ($value instanceof \Carbon\Carbon) { return $value; }
-        try { return \Carbon\Carbon::parse($value); } catch (\Exception $e) { return $value; }
+        try { 
+            $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
+            return $carbon->setTimezone(config('app.timezone', 'UTC'));
+        } catch (\Exception $e) { 
+            try { return \Carbon\Carbon::parse($value); } catch (\Exception $e2) { return $value; }
+        }
     }
 
     // Relationships

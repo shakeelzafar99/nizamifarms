@@ -122,9 +122,16 @@ class CustomerModel extends BaseModel
         }
         
         try {
-            return \Carbon\Carbon::parse($value);
+            // Create Carbon instance and explicitly set it as local timezone
+            $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
+            return $carbon->setTimezone(config('app.timezone', 'UTC'));
         } catch (\Exception $e) {
-            return $value;
+            // If parsing fails, try the original method
+            try {
+                return \Carbon\Carbon::parse($value);
+            } catch (\Exception $e2) {
+                return $value;
+            }
         }
     }
 
@@ -142,9 +149,16 @@ class CustomerModel extends BaseModel
         }
         
         try {
-            return \Carbon\Carbon::parse($value);
+            // Create Carbon instance and explicitly set it as local timezone
+            $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
+            return $carbon->setTimezone(config('app.timezone', 'UTC'));
         } catch (\Exception $e) {
-            return $value;
+            // If parsing fails, try the original method
+            try {
+                return \Carbon\Carbon::parse($value);
+            } catch (\Exception $e2) {
+                return $value;
+            }
         }
     }
 

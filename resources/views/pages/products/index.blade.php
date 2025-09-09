@@ -318,6 +318,38 @@ function executeImport() {
     });
 }
 
+// Format date as local time (not UTC)
+function formatDateLocal(dateString) {
+    if (!dateString) return '';
+    try {
+        // Handle different date formats more robustly
+        let date;
+        if (dateString.includes(' ')) {
+            // Format: "2025-09-09 14:59:48"
+            const [datePart, timePart] = dateString.split(' ');
+            const [year, month, day] = datePart.split('-');
+            const [hour, minute, second] = timePart.split(':');
+            date = new Date(year, month - 1, day, hour, minute, second);
+        } else if (dateString.includes('T')) {
+            // Format: "2025-09-09T14:59:48" (ISO format)
+            date = new Date(dateString);
+        } else {
+            // Fallback to standard parsing
+            date = new Date(dateString);
+        }
+        
+        // Check if date is valid
+        if (isNaN(date.getTime())) {
+            return dateString; // Return original string if parsing fails
+        }
+        
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch (error) {
+        console.error('Date parsing error:', error, 'for date:', dateString);
+        return dateString; // Return original string if parsing fails
+    }
+}
+
 // Product data from server
 const productsData = @json($products->items());
 
@@ -681,7 +713,7 @@ function renderProductDetails(product) {
                             <span style="color: #6b7280; font-size: 14px;">Last Sync:</span>
                             <span style="color: #111827; font-size: 14px;">
                                 ${product.last_synced_at ? 
-                                    new Date(product.last_synced_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 
+                                    formatDateLocal(product.last_synced_at) : 
                                     'Never'}
                             </span>
                         </div>

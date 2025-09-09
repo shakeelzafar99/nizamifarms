@@ -258,6 +258,38 @@
 @push('scripts')
 <script>
 // Real-time search functionality
+// Format date as local time (not UTC)
+function formatDateLocal(dateString) {
+    if (!dateString) return '';
+    try {
+        // Handle different date formats more robustly
+        let date;
+        if (dateString.includes(' ')) {
+            // Format: "2025-09-09 14:59:48"
+            const [datePart, timePart] = dateString.split(' ');
+            const [year, month, day] = datePart.split('-');
+            const [hour, minute, second] = timePart.split(':');
+            date = new Date(year, month - 1, day, hour, minute, second);
+        } else if (dateString.includes('T')) {
+            // Format: "2025-09-09T14:59:48" (ISO format)
+            date = new Date(dateString);
+        } else {
+            // Fallback to standard parsing
+            date = new Date(dateString);
+        }
+        
+        // Check if date is valid
+        if (isNaN(date.getTime())) {
+            return dateString; // Return original string if parsing fails
+        }
+        
+        return date.toLocaleDateString();
+    } catch (error) {
+        console.error('Date parsing error:', error, 'for date:', dateString);
+        return dateString; // Return original string if parsing fails
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const searchInput = document.getElementById('customerSearchInput');
     const searchForm = document.getElementById('customerSearchForm');
@@ -421,11 +453,11 @@ function viewCustomer(customerId) {
                             </div>
                             <div>
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">First Order</label>
-                                <p style="margin: 4px 0 0 0; font-size: 14px; font-weight: 500;">${customer.first_order_date ? new Date(customer.first_order_date).toLocaleDateString() : 'N/A'}</p>
+                                <p style="margin: 4px 0 0 0; font-size: 14px; font-weight: 500;">${customer.first_order_date ? formatDateLocal(customer.first_order_date) : 'N/A'}</p>
                             </div>
                             <div>
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Last Order</label>
-                                <p style="margin: 4px 0 0 0; font-size: 14px; font-weight: 500;">${customer.last_order_date ? new Date(customer.last_order_date).toLocaleDateString() : 'N/A'}</p>
+                                <p style="margin: 4px 0 0 0; font-size: 14px; font-weight: 500;">${customer.last_order_date ? formatDateLocal(customer.last_order_date) : 'N/A'}</p>
                             </div>
                         </div>
                     </div>

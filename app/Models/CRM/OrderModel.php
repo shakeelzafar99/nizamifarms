@@ -135,12 +135,18 @@ class OrderModel extends BaseModel
             return $value;
         }
         
-        // Parse the date string and preserve timezone
+        // Parse the date string and treat it as local time (not UTC)
         try {
-            return \Carbon\Carbon::parse($value);
+            // Create Carbon instance and explicitly set it as local timezone
+            $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
+            return $carbon->setTimezone(config('app.timezone', 'UTC'));
         } catch (\Exception $e) {
-            // If parsing fails, return the original value
-            return $value;
+            // If parsing fails, try the original method
+            try {
+                return \Carbon\Carbon::parse($value);
+            } catch (\Exception $e2) {
+                return $value;
+            }
         }
     }
 

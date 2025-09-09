@@ -222,4 +222,67 @@ class OrderController extends Controller
             return $this->error($e->getMessage(), $e->getCode());
         }
     }
+
+    public function filter(Request $request)
+    {
+        try {
+            $source = $request->get('source', 'other');
+            $search = $request->get('search', '');
+            $status = $request->get('status', '');
+            $date = $request->get('date', '');
+            
+            // Start with base query
+            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems']);
+            
+            // Filter by source
+            if ($source === 'shopify') {
+                $query->where('external_source', 'shopify');
+            } else {
+                $query->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+                });
+            }
+            
+            // Apply search filter
+            if (!empty($search)) {
+                $query->where(function($q) use ($search) {
+                    $q->where('order_number', 'like', '%' . $search . '%')
+                      ->orWhere('name', 'like', '%' . $search . '%')
+                      ->orWhereHas('customer', function($customerQuery) use ($search) {
+                          $customerQuery->where('name', 'like', '%' . $search . '%')
+                                       ->orWhere('phone', 'like', '%' . $search . '%')
+                                       ->orWhere('email', 'like', '%' . $search . '%');
+                      });
+                });
+            }
+            
+            // Apply status filter
+            if (!empty($status)) {
+                $query->where('order_status', $status);
+            }
+            
+            // Apply date filter
+            if (!empty($date)) {
+                $query->whereDate('order_date', $date);
+            }
+            
+            // Get results (limit to 100 for performance)
+            $orders = $query->orderBy('order_date', 'desc')->limit(100)->get();
+            
+            return response()->json([
+                'success' => true,
+                'orders' => $orders->toArray(),
+                'total' => $orders->count()
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Order filter error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Filter failed: ' . $e->getMessage(),
+                'orders' => []
+            ], 500);
+        }
+    }
 }
