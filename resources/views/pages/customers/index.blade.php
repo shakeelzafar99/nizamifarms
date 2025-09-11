@@ -477,14 +477,15 @@ window.viewOrderDetails = function(orderId) {
                         <tr style="border-bottom: 1px solid #f3f4f6;">
                             <td style="padding: 12px;">
                                 <div>
-                                    <p style="margin: 0; font-weight: 500; color: #1f2937;">${item.title || 'N/A'}</p>
+                                    <p style="margin: 0; font-weight: 500; color: #1f2937;">${item.name || item.title || 'N/A'}</p>
                                     ${item.variant_title ? `<p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">${item.variant_title}</p>` : ''}
                                     ${item.sku ? `<p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">SKU: ${item.sku}</p>` : ''}
+                                    ${item.vendor ? `<p style="margin: 2px 0 0 0; font-size: 12px; color: #6b7280;">Vendor: ${item.vendor}</p>` : ''}
                                 </div>
                             </td>
                             <td style="padding: 12px; text-align: center; color: #6b7280;">${item.quantity || 0}</td>
-                            <td style="padding: 12px; text-align: right; color: #6b7280;">PKR ${(item.price || 0).toLocaleString()}</td>
-                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${((item.quantity || 0) * (item.price || 0)).toLocaleString()}</td>
+                            <td style="padding: 12px; text-align: right; color: #6b7280;">PKR ${((item.unit_price || item.price || 0)).toLocaleString()}</td>
+                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${(item.line_total || ((item.quantity || 0) * (item.unit_price || item.price || 0))).toLocaleString()}</td>
                         </tr>
                     `;
                 });

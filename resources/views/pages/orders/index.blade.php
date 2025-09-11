@@ -4,6 +4,209 @@
 
 @section('title', 'Orders')
 
+@push('styles')
+<style>
+/* Enhanced Orders Page Styles */
+.orders-table-container {
+    /* Custom scrollbar for better UX */
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.orders-table-container::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.orders-table-container::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+
+.orders-table-container::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+}
+
+.orders-table-container::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Enhanced table row hover effects */
+.orders-table-container tbody tr:hover {
+    background-color: #f8fafc !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    position: relative;
+    z-index: 1;
+}
+
+/* Improved sticky header */
+.orders-table-container thead {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Better table spacing */
+.orders-table-container {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.orders-table-container table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+/* Improved table cell spacing */
+.orders-table-container td {
+    border-bottom: 1px solid #f1f5f9;
+    vertical-align: middle;
+}
+
+.orders-table-container tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Better text sizing and spacing */
+.table-text-primary {
+    font-size: 14px;
+    font-weight: 500;
+    color: #1f2937;
+    line-height: 1.4;
+}
+
+.table-text-secondary {
+    font-size: 13px;
+    color: #6b7280;
+    line-height: 1.3;
+}
+
+.table-text-small {
+    font-size: 12px;
+    color: #9ca3af;
+    line-height: 1.2;
+}
+
+/* Smooth transitions for all interactive elements */
+.transition-all-smooth {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Enhanced focus states */
+input:focus, select:focus, button:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Loading animation enhancement */
+@keyframes pulse-subtle {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 0.4; }
+}
+
+.loading-pulse {
+    animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Status badge improvements */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: capitalize;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 768px) {
+    .sticky-header-mobile {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+    }
+    
+    .compact-mobile-filters {
+        flex-direction: column;
+        gap: 12px;
+    }
+    
+    .mobile-pagination {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        border-top: 1px solid #e5e7eb;
+        padding: 12px 16px;
+        z-index: 40;
+    }
+}
+
+/* Enhanced button hover effects */
+.btn-enhanced:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.btn-enhanced:active {
+    transform: translateY(0);
+}
+
+/* Table cell content improvements */
+.table-cell-content {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Improved pagination styling */
+.pagination-btn {
+    transition: all 0.15s ease;
+    border: 1px solid #e5e7eb;
+    background: white;
+    border-radius: 6px;
+    font-weight: 500;
+}
+
+.pagination-btn:hover:not(:disabled) {
+    background: #f8fafc;
+    border-color: #cbd5e1;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.pagination-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #f9fafb;
+}
+
+.pagination-btn.active {
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    color: white;
+    border-color: #3b82f6;
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
+    font-weight: 600;
+}
+
+/* Enhanced backdrop blur for bottom bar */
+.bg-white\/95 {
+    background-color: rgba(255, 255, 255, 0.95);
+}
+
+/* Improved table container shadow */
+.orders-table-container {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+</style>
+@endpush
+
 @section('content')
 
 @if(session('success'))
@@ -40,132 +243,212 @@
 
 
 @endif
-<!-- Container -->
+
+<!-- Enhanced Layout with Sticky Elements -->
+<div class="min-h-screen bg-gray-50">
+    <!-- Sticky Top Bar -->
+    <div class="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm">
 <div class="kt-container-fixed">
-    <div class="grid gap-5 lg:gap-7.5">
-        <div class="kt-card kt-card-grid min-w-full">
-            <!-- Header with Tabs and Import Form -->
-            <div class="kt-card-header">
-                <div class="flex flex-col lg:flex-row lg:justify-between lg:items-center w-full gap-4">
-                    <!-- Left: Tabs -->
-                    <div class="flex items-center gap-4">
-                        <h3 class="kt-card-title text-lg font-semibold mr-4">Orders</h3>
-                        <div class="flex bg-gray-100 rounded-lg p-1">
-                            <a href="{{ url('/orders') }}?source=other" 
-                               class="px-4 py-2 rounded-md text-sm font-medium transition-colors {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800' }}">
-                                Invoices
-                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs {{ $source === 'other' ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-600' }}">
-                                    {{ $otherCount }}
-                                </span>
-                            </a>
-                            <a href="{{ url('/orders') }}?source=shopify" 
-                               class="px-4 py-2 rounded-md text-sm font-medium transition-colors {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800' }}">
-                                Shopify
-                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs {{ $source === 'shopify' ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-600' }}">
-                                    {{ $shopifyCount }}
-                                </span>
-                            </a>
-                        </div>
+            <div class="flex items-center justify-between py-4">
+                <!-- Left: Title + Tabs + Quick Stats -->
+                <div class="flex items-center gap-6">
+                    <h1 class="text-xl font-semibold text-gray-900">Orders</h1>
+                    
+                    <!-- Compact Tabs -->
+                    <div class="flex bg-gray-100 rounded-lg p-1">
+                        <a href="{{ url('/orders') }}?source=other" 
+                           class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                            Invoices
+                            <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $otherCount }}</span>
+                        </a>
+                        <a href="{{ url('/orders') }}?source=shopify" 
+                           class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                            Shopify
+                            <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
+                        </a>
                     </div>
-
-
-                    <!-- Right: Buttons -->
-                    <div class="flex gap-2">
-                        <button onclick="openColumnSettings()" class="kt-btn kt-btn-light">
-                            <i class="ki-filled ki-setting-2"></i> Columns
-                        </button>
-                        <button onclick="openImportModal()" class="kt-btn kt-btn-outline">
-                            <i class="ki-filled ki-exit-down"></i> Import Orders
-                        </button>
+                    
+                    <!-- Quick Stats -->
+                    <div id="quick-stats" class="text-sm text-gray-500 font-medium">
+                        <span id="results-count">Showing {{ $orders->total() }} orders</span>
                     </div>
                 </div>
-                
-                <!-- Search and Filters Section -->
-                <div class="mt-6 p-4 bg-gray-50 border-t border-gray-200">
-                    <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-                        <!-- Search Input -->
-                        <div class="relative flex-1 max-w-md">
-                            <input type="text" 
-                                   id="orderSearch" 
-                                   placeholder="Search by customer name, order number..." 
-                                   class="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white shadow-sm">
-                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <i class="ki-filled ki-magnifier text-gray-400"></i>
-                            </div>
+
+                <!-- Right: Inline Filters + Actions -->
+                <div class="flex items-center gap-3">
+                    <!-- Compact Search -->
+                    <div class="relative">
+                        <input type="text" 
+                               id="orderSearch" 
+                               placeholder="Search orders..." 
+                               class="w-64 pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <i class="ki-filled ki-magnifier text-gray-400"></i>
                         </div>
-                        
-                        <!-- Filters and Results -->
-                        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-                            <!-- Filters -->
-                            <div class="flex gap-2">
-                                <select id="statusFilter" class="px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white shadow-sm">
-                                    <option value="">All Status</option>
-                                    <option value="on-hold">On Hold</option>
-                                    <option value="completed">Completed</option>
-                                    <option value="processing">Processing</option>
-                                    <option value="cancelled">Cancelled</option>
+                    </div>
+                    
+                    <!-- Compact Status Filter -->
+                    <select id="statusFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                        <option value="">All Status</option>
+                        <option value="pending">Pending</option>
+                        <option value="processing">Processing</option>
+                        <option value="on-hold">On Hold</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                        <option value="refunded">Refunded</option>
+                        <option value="failed">Failed</option>
                     </select>
-                                
-                                <input type="date" 
-                                       id="dateFilter" 
-                                       class="px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white shadow-sm">
-                                
-                                <button onclick="clearFilters()" class="px-3 py-2.5 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg text-sm border border-gray-300 shadow-sm transition-colors">
-                                    <i class="ki-filled ki-cross"></i> Clear
-                                </button>
+                    
+                    <!-- Compact Date Filter -->
+                    <input type="date" 
+                           id="dateFilter" 
+                           class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    
+                    <!-- Clear Button -->
+                    <button onclick="clearFilters()" 
+                            class="px-3 py-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg text-sm border border-gray-300 transition-colors">
+                        <i class="ki-filled ki-cross mr-1"></i> Clear
+                    </button>
+                    
+                    <!-- Action Buttons -->
+                    <div class="flex gap-2 ml-2 pl-2 border-l border-gray-200">
+                        <button onclick="openColumnSettings()" 
+                                class="flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all-smooth btn-enhanced text-sm">
+                            <i class="ki-filled ki-setting-2 mr-1.5"></i>
+                            Columns
+                        </button>
+                        <button onclick="openImportModal()" 
+                                class="flex items-center px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all-smooth btn-enhanced text-sm">
+                            <i class="ki-filled ki-exit-down mr-1.5"></i>
+                            Import
+                        </button>
                     </div>
-                            
-                            <!-- Results Count -->
-                            <div class="text-sm text-gray-600 whitespace-nowrap">
-                                <span id="results-count">Showing {{ $orders->total() }} orders</span>
                     </div>
-                        </div>
-                    </div>
-                </div>
+            </div>
+        </div>
             </div>
 
-            <div class="kt-card-table">
-                <div class="grid datatable-initialized" data-kt-datatable="true" data-kt-datatable-page-size="10" data-kt-datatable-initialized="true">
-                    <div class="kt-scrollable-x-auto">
-                        <table class="kt-table text-sm kt-table-border" data-kt-datatable-table="true">
-                            <thead class="bg-gradient-to-r from-gray-50 to-gray-100 font-semibold">
-                                <tr id="table-header" class="border-b border-gray-200">
-                                    <!-- Dynamic headers will be generated by JavaScript -->
+    <!-- Main Content Container -->
+    <div class="kt-container-fixed pt-6 pb-24">
+
+        <!-- Enhanced Table Container with Proper Spacing -->
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <!-- Table with Sticky Header -->
+            <div class="orders-table-container relative" style="max-height: calc(100vh - 280px); overflow-y: auto;">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-white z-20 shadow-sm border-b-2 border-gray-200">
+                        <tr id="table-header" class="bg-gradient-to-r from-gray-50 to-blue-50">
+                            <!-- Dynamic headers will be generated by JavaScript -->
                                 </tr>
                             </thead>
-                            <tbody id="table-body" class="divide-y divide-gray-100">
-                                <!-- Dynamic rows will be generated by JavaScript -->
-                            </tbody>
-                            <tbody id="loading-state" class="hidden">
-                                <tr>
-                                    <td colspan="100%" class="text-center py-8">
-                                        <div class="flex items-center justify-center">
-                                            <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mr-3"></div>
-                                            <span class="text-gray-600">Filtering orders...</span>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </tbody>
-                            <tbody id="no-results-state" class="hidden">
-                                <tr>
-                                    <td colspan="100%" class="text-center py-12">
-                                        <div class="flex flex-col items-center">
-                                            <div class="text-6xl text-gray-300 mb-4">🔍</div>
-                                            <h3 class="text-lg font-medium text-gray-900 mb-2">No orders found</h3>
-                                            <p class="text-gray-500 mb-4">Try adjusting your search criteria or filters</p>
-                                            <button onclick="clearFilters()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                                                Clear Filters
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
+                    <tbody id="table-body" class="bg-white divide-y divide-gray-100">
+                        <!-- Dynamic rows will be generated by JavaScript -->
                             </tbody>
                         </table>
 
+                <!-- Loading State -->
+                <div id="loading-state" class="hidden">
+                    <div class="flex items-center justify-center py-12">
+                        <div class="flex items-center space-x-3">
+                            <div class="animate-spin rounded-full h-6 w-6 border-2 border-blue-600 border-t-transparent"></div>
+                            <span class="text-gray-600 font-medium">Loading orders...</span>
                     </div>
-                    <div class="kt-card-footer justify-center md:justify-between flex-col md:flex-row gap-5 text-secondary-foreground text-sm font-medium">
-                        <div class="flex items-center gap-4 order-1 md:order-2">
-                            {{ $orders->links() }}
+                    </div>
+                </div>
+                
+                <!-- Empty State -->
+                <div id="no-results-state" class="hidden">
+                    <div class="flex flex-col items-center justify-center py-12 text-gray-500">
+                        <svg class="w-12 h-12 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        <p class="text-lg font-medium text-gray-900 mb-2">No orders found</p>
+                        <p class="text-sm text-gray-500 mb-4">Try adjusting your search or filter criteria</p>
+                        <button onclick="clearFilters()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                            Clear Filters
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Enhanced Bottom Pagination Bar -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-sm border-t border-gray-200 shadow-lg z-40">
+        <div class="kt-container-fixed">
+            <div class="flex items-center justify-between py-4">
+                <!-- Left: Compact Info -->
+                <div class="flex items-center gap-6">
+                    <div class="flex items-center gap-2 text-sm text-gray-600">
+                        <span>Show</span>
+                        <select id="per-page-selector" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                            <option value="10" {{ $orders->perPage() == 10 ? 'selected' : '' }}>10</option>
+                            <option value="25" {{ $orders->perPage() == 25 ? 'selected' : '' }}>25</option>
+                            <option value="50" {{ $orders->perPage() == 50 ? 'selected' : '' }}>50</option>
+                            <option value="100" {{ $orders->perPage() == 100 ? 'selected' : '' }}>100</option>
+                        </select>
+                        <span>entries</span>
+                    </div>
+                    <div class="text-sm font-medium text-gray-800">
+                        <span id="pagination-info">{{ $orders->firstItem() ?? 0 }}-{{ $orders->lastItem() ?? 0 }} of {{ number_format($orders->total()) }}</span>
+                    </div>
+                </div>
+                
+                <!-- Right: Pagination Controls -->
+                <div class="flex items-center gap-2">
+                    @if($orders->onFirstPage())
+                        <button class="px-3 py-1.5 text-sm pagination-btn" disabled>
+                            <i class="ki-filled ki-left mr-1"></i> Previous
+                        </button>
+                    @else
+                        <a href="{{ $orders->previousPageUrl() }}" class="px-3 py-1.5 text-sm pagination-btn">
+                            <i class="ki-filled ki-left mr-1"></i> Previous
+                        </a>
+                    @endif
+                    
+                    <div class="flex items-center gap-1">
+                        @php
+                            $current = $orders->currentPage();
+                            $last = $orders->lastPage();
+                            $start = max(1, $current - 2);
+                            $end = min($last, $current + 2);
+                        @endphp
+                        
+                        @if($current > 3)
+                            <a href="{{ $orders->url(1) }}" class="px-3 py-1.5 text-sm pagination-btn">1</a>
+                            @if($current > 4)
+                                <span class="px-2 py-1.5 text-sm text-gray-400">...</span>
+                            @endif
+                        @endif
+                        
+                        @for($page = $start; $page <= $end; $page++)
+                            @if ($page == $current)
+                                <span class="px-3 py-1.5 text-sm pagination-btn active">{{ $page }}</span>
+                            @else
+                                <a href="{{ $orders->url($page) }}" class="px-3 py-1.5 text-sm pagination-btn">{{ $page }}</a>
+                            @endif
+                        @endfor
+                        
+                        @if($current < $last - 2)
+                            @if($current < $last - 3)
+                                <span class="px-2 py-1.5 text-sm text-gray-400">...</span>
+                            @endif
+                            <a href="{{ $orders->url($last) }}" class="px-3 py-1.5 text-sm pagination-btn">{{ $last }}</a>
+                        @endif
+                    </div>
+                    
+                    @if($orders->hasMorePages())
+                        <a href="{{ $orders->nextPageUrl() }}" class="px-3 py-1.5 text-sm pagination-btn">
+                            Next <i class="ki-filled ki-right ml-1"></i>
+                        </a>
+                    @else
+                        <button class="px-3 py-1.5 text-sm pagination-btn" disabled>
+                            Next <i class="ki-filled ki-right ml-1"></i>
+                        </button>
+                    @endif
+                </div>
+            </div>
+        </div>
                         </div>
 
                         <!-- <div class="flex items-center gap-2 order-2 md:order-1">
@@ -526,15 +809,16 @@ function viewOrderDetails(orderId) {
                                     ${order.line_items.map((item, index) => `
                                     <tr style="border-top: 1px solid #e5e7eb;">
                                         <td style="padding: 16px;">
-                                            <div style="font-weight: 500; color: #111827;">${item.name || 'N/A'}</div>
+                                            <div style="font-weight: 500; color: #111827;">${item.name || item.title || 'N/A'}</div>
                                             ${item.sku ? `<div style="font-size: 12px; color: #6b7280; margin-top: 4px;">SKU: ${item.sku}</div>` : ''}
                                             ${item.vendor ? `<div style="font-size: 12px; color: #6b7280;">Vendor: ${item.vendor}</div>` : ''}
+                                            ${item.variant_title ? `<div style="font-size: 12px; color: #6b7280;">Variant: ${item.variant_title}</div>` : ''}
                                         </td>
                                         <td style="padding: 16px; text-align: center;">
                                             <span style="font-size: 14px; font-weight: 500;">${item.quantity || 0}</span>
                                         </td>
-                                        <td style="padding: 16px; text-align: right; font-size: 14px;">${formatCurrency(item.price || 0, order.currency)}</td>
-                                        <td style="padding: 16px; text-align: right; font-weight: 500;">${formatCurrency((item.price || 0) * (item.quantity || 0), order.currency)}</td>
+                                        <td style="padding: 16px; text-align: right; font-size: 14px;">${formatCurrency(item.unit_price || item.price || 0, order.currency)}</td>
+                                        <td style="padding: 16px; text-align: right; font-weight: 500;">${formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</td>
                                     </tr>
                                     `).join('')}
                                 </tbody>
@@ -703,23 +987,23 @@ function loadEditForm(order) {
                         <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
-                                <input type="text" name="items[${index}][name]" value="${item.name || ''}" 
+                                <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
-                                <input type="number" name="items[${index}][quantity]" value="${item.quantity || 1}" min="1"
+                                <input type="number" step="0.001" name="items[${index}][quantity]" value="${item.quantity || 1}" min="0.001"
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
-                                <input type="number" step="0.01" name="items[${index}][price]" value="${item.price || 0}" 
+                                <input type="number" step="0.01" name="items[${index}][unit_price]" value="${item.unit_price || item.price || 0}" 
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
-                                <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">${formatCurrency((item.price || 0) * (item.quantity || 0), order.currency)}</span>
+                                <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">${formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</span>
                             </div>
                             <div>
                                 <button type="button" onclick="removeLineItem(${index})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
@@ -815,12 +1099,12 @@ function addLineItem() {
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
-            <input type="number" name="items[${lineItemIndex}][quantity]" value="1" min="1"
+            <input type="number" step="0.001" name="items[${lineItemIndex}][quantity]" value="1" min="0.001"
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
-            <input type="number" step="0.01" name="items[${lineItemIndex}][price]" value="0" 
+            <input type="number" step="0.01" name="items[${lineItemIndex}][unit_price]" value="0" 
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
         </div>
         <div>
@@ -858,7 +1142,7 @@ function updateLineTotal(index) {
     const item = document.querySelector(`.line-item[data-index="${index}"]`);
     if (item) {
         const quantity = parseFloat(item.querySelector(`input[name="items[${index}][quantity]"]`).value) || 0;
-        const price = parseFloat(item.querySelector(`input[name="items[${index}][price]"]`).value) || 0;
+        const price = parseFloat(item.querySelector(`input[name="items[${index}][unit_price]"]`).value) || 0;
         const total = quantity * price;
         
         const totalSpan = item.querySelector('.line-total');
@@ -1151,13 +1435,14 @@ function renderTableHeader() {
     const header = document.getElementById('table-header');
     header.innerHTML = '';
     
-    
     currentColumns.forEach(column => {
         if (column.visible) {
             const columnConfig = availableColumns[column.id];
             if (columnConfig) {
                 const th = document.createElement('th');
-                th.className = `px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider ${columnConfig.width}`;
+                th.className = `px-6 py-5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider ${columnConfig.width}`;
+                th.style.background = 'linear-gradient(135deg, #fafbfc 0%, #f8fafc 100%)';
+                th.style.borderBottom = '2px solid #e2e8f0';
                 th.textContent = columnConfig.label;
                 header.appendChild(th);
             }
@@ -1185,20 +1470,20 @@ function renderTableBody() {
     window.ordersData.forEach((order, index) => {
         try {
             const row = document.createElement('tr');
-            row.className = `hover:bg-blue-50 transition-colors duration-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`;
+            row.className = `hover:bg-gray-50/50 transition-all duration-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/20'}`;
             
             currentColumns.forEach(column => {
                 if (column.visible) {
                     try {
                         const td = document.createElement('td');
-                        td.className = 'px-4 py-3 align-top';
+                        td.className = 'px-6 py-5 align-middle';
                         const cellContent = getCellContent(order, column.id);
                         td.innerHTML = cellContent;
                         row.appendChild(td);
                     } catch (cellError) {
                         console.error(`Error rendering cell ${column.id}:`, cellError);
                         const td = document.createElement('td');
-                        td.className = 'px-4 py-3 align-top';
+                        td.className = 'px-6 py-5 align-middle';
                         td.innerHTML = '<span class="text-red-500">Error</span>';
                         row.appendChild(td);
                     }
@@ -1246,7 +1531,7 @@ function getCellContent(order, columnId) {
                 cleanDate = `${day} ${monthName} ${year}, ${hour}:${minute}`;
             }
             
-            return `<span class="text-sm text-gray-900">${cleanDate}</span>`;
+            return `<div class="table-text-primary">${cleanDate}</div>`;
         } catch (error) {
             console.error('Date parsing error:', error, 'for date:', dateStr);
             return `<span class="text-sm text-gray-600">${dateStr}</span>`;
@@ -1270,48 +1555,50 @@ function getCellContent(order, columnId) {
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
-                'pending': { bg: 'bg-yellow-100', text: 'text-yellow-800', icon: '⏳' },
-                'processing': { bg: 'bg-blue-100', text: 'text-blue-800', icon: '⚡' },
-                'completed': { bg: 'bg-green-100', text: 'text-green-800', icon: '✓' },
-                'cancelled': { bg: 'bg-red-100', text: 'text-red-800', icon: '✕' },
-                'refunded': { bg: 'bg-purple-100', text: 'text-purple-800', icon: '↩' },
-                'on-hold': { bg: 'bg-orange-100', text: 'text-orange-800', icon: '⏸' }
+                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: '⏳' },
+                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '⚡' },
+                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '✓' },
+                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '✕' },
+                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '↩' },
+                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' }
             };
-            const config = statusConfig[status] || { bg: 'bg-gray-100', text: 'text-gray-800', icon: '?' };
-            return `<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}">
-                        <span class="mr-1">${config.icon}</span>
+            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
+            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
+                        <span class="mr-1.5">${config.icon}</span>
                         ${status.charAt(0).toUpperCase() + status.slice(1)}
                     </span>`;
         case 'external_source':
             const source = order.external_source || 'manual';
             const sourceColors = {
-                'shopify': 'bg-green-100 text-green-800',
-                'woocommerce': 'bg-purple-100 text-purple-800',
-                'manual': 'bg-orange-100 text-orange-800'
+                'shopify': 'bg-green-50 border-green-200 text-green-700',
+                'woocommerce': 'bg-purple-50 border-purple-200 text-purple-700',
+                'manual': 'bg-orange-50 border-orange-200 text-orange-700'
             };
-            const sourceColor = sourceColors[source] || 'bg-gray-100 text-gray-800';
-            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
+            const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
+            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
         case 'external_id':
             return order.external_id || '';
             
         // Customer Info
         case 'customer_name':
             // Priority: order.name (from address) -> customer.full_name -> address fields
+            let customerName = '';
             if (order.name && order.name.trim()) {
-                return order.name.trim();
+                customerName = order.name.trim();
+            } else if (order.customer && order.customer.full_name && order.customer.full_name.trim()) {
+                customerName = order.customer.full_name.trim();
+            } else {
+                // Fallback to address fields
+                const firstName = order.address_first_name || '';
+                const lastName = order.address_last_name || '';
+                customerName = (firstName + ' ' + lastName).trim();
             }
-            if (order.customer && order.customer.full_name && order.customer.full_name.trim()) {
-                return order.customer.full_name.trim();
-            }
-            // Fallback to address fields
-            const firstName = order.address_first_name || '';
-            const lastName = order.address_last_name || '';
-            const fullName = (firstName + ' ' + lastName).trim();
-            return fullName || 'N/A';
+            return customerName ? `<div class="table-text-primary">${customerName}</div>` : '<span class="table-text-small">N/A</span>';
         case 'contact_email':
             return order.contact_email || '';
         case 'customer_phone':
-            return order.customer_phone || order.address_phone || '';
+            const phone = order.customer_phone || order.address_phone || '';
+            return phone ? `<div class="table-text-secondary">${phone}</div>` : '<span class="table-text-small">N/A</span>';
             
         // Address Info
         case 'address_first_name':
@@ -1343,7 +1630,8 @@ function getCellContent(order, columnId) {
         case 'total_tax':
             return formatCurrency(order.total_tax);
         case 'total_price':
-            return formatCurrency(order.total_price);
+            const totalPrice = formatCurrency(order.total_price);
+            return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
         case 'total_weight':
             return order.total_weight || '0';
             
@@ -1359,7 +1647,7 @@ function getCellContent(order, columnId) {
         // Line Items
         case 'line_items_count':
             const itemCount = order.line_items ? order.line_items.length : 0;
-            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewOrderDetails(${order.id})" title="Click to view order details">${itemCount}</span>`;
+            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-50 border border-blue-200 text-blue-700 cursor-pointer hover:bg-blue-100 transition-colors" onclick="viewOrderDetails(${order.id})" title="Click to view order details">${itemCount} items</span>`;
             
         // Timestamps
         case 'created_at':
@@ -1557,13 +1845,9 @@ function renderOrdersWithFilters(data) {
     window.ordersData = data;
     
     if (data.length === 0) {
-        // Show no results state
-        document.getElementById('table-body').style.display = 'none';
-        document.getElementById('no-results-state').classList.remove('hidden');
+        showEmptyState();
     } else {
-        // Show normal table
-        document.getElementById('no-results-state').classList.add('hidden');
-        document.getElementById('table-body').style.display = '';
+        hideEmptyState();
         renderOrdersTable(); // Re-render the table
     }
 }
@@ -1581,11 +1865,23 @@ function clearFilters() {
 // Loading state functions
 function showLoadingState() {
     document.getElementById('table-body').style.display = 'none';
+    document.getElementById('no-results-state').classList.add('hidden');
     document.getElementById('loading-state').classList.remove('hidden');
 }
 
 function hideLoadingState() {
     document.getElementById('loading-state').classList.add('hidden');
+    document.getElementById('table-body').style.display = '';
+}
+
+function showEmptyState() {
+    document.getElementById('table-body').style.display = 'none';
+    document.getElementById('loading-state').classList.add('hidden');
+    document.getElementById('no-results-state').classList.remove('hidden');
+}
+
+function hideEmptyState() {
+    document.getElementById('no-results-state').classList.add('hidden');
     document.getElementById('table-body').style.display = '';
 }
 
