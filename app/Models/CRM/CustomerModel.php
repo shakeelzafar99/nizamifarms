@@ -17,6 +17,8 @@ class CustomerModel extends BaseModel
 
     protected $fillable = [
         'phone',
+        'phone_normalized',
+        'phone_original',
         'first_name',
         'last_name',
         'company',
@@ -163,6 +165,36 @@ class CustomerModel extends BaseModel
     }
 
     /**
+     * Normalize phone number to 10-digit format
+     * Extracts last 10 digits from any phone number format
+     */
+    public static function normalizePhone(string $phone): array
+    {
+        if (empty($phone)) {
+            return [
+                'normalized' => '',
+                'original' => ''
+            ];
+        }
+
+        // Remove all non-digits
+        $digits = preg_replace('/\D/', '', $phone);
+        
+        // Take last 10 digits (Pakistan mobile format)
+        $normalized = substr($digits, -10);
+        
+        // Ensure we have exactly 10 digits
+        if (strlen($normalized) < 10) {
+            $normalized = str_pad($normalized, 10, '0', STR_PAD_LEFT);
+        }
+        
+        return [
+            'normalized' => $normalized,
+            'original' => $phone
+        ];
+    }
+
+    /**
      * Find or create customer by phone number
      * Update first/last order dates and statistics
      */
@@ -172,12 +204,23 @@ class CustomerModel extends BaseModel
             throw new \InvalidArgumentException('Phone number is required');
         }
 
-        $customer = static::where('phone', $phone)->first();
+        // Normalize phone number
+        $phoneData = static::normalizePhone($phone);
+        $normalizedPhone = $phoneData['normalized'];
+        $originalPhone = $phoneData['original'];
+        
+        // Check if this is a Shopify order (exclude from statistics)
+        $isShopifyOrder = isset($orderData['external_source']) && strtolower($orderData['external_source']) === 'shopify';
+
+        // Find customer by normalized phone
+        $customer = static::where('phone_normalized', $normalizedPhone)->first();
         
         if (!$customer) {
             // Create new customer
-            $customer = static::create([
-                'phone' => $phone,
+            $customerData = [
+                'phone' => $normalizedPhone, // Keep for backward compatibility
+                'phone_normalized' => $normalizedPhone,
+                'phone_original' => $originalPhone,
                 'first_name' => $orderData['address_first_name'] ?? null,
                 'last_name' => $orderData['address_last_name'] ?? null,
                 'company' => $orderData['address_company'] ?? null,
@@ -188,12 +231,24 @@ class CustomerModel extends BaseModel
                 'province' => $orderData['address_province'] ?? null,
                 'postal_code' => $orderData['address_postal_code'] ?? null,
                 'country' => $orderData['address_country'] ?? 'Pakistan',
-                'first_order_date' => $orderDate,
-                'last_order_date' => $orderDate,
-                'total_orders' => 1,
-                'total_spent' => $orderTotal,
                 'created_by' => auth()->check() ? auth()->id() : null
-            ]);
+            ];
+            
+            // Only add statistics if NOT a Shopify order
+            if (!$isShopifyOrder) {
+                $customerData['first_order_date'] = $orderDate;
+                $customerData['last_order_date'] = $orderDate;
+                $customerData['total_orders'] = 1;
+                $customerData['total_spent'] = $orderTotal;
+            } else {
+                // For Shopify orders, set default values (will be calculated from non-Shopify orders)
+                $customerData['first_order_date'] = null;
+                $customerData['last_order_date'] = null;
+                $customerData['total_orders'] = 0;
+                $customerData['total_spent'] = 0.00;
+            }
+            
+            $customer = static::create($customerData);
 
             // Add external customer ID if provided
             if (isset($orderData['external_customer_id']) && isset($orderData['external_source'])) {
@@ -203,18 +258,21 @@ class CustomerModel extends BaseModel
             // Update existing customer
             $updates = [];
             
-            // Update order dates
-            if (!$customer->first_order_date || $orderDate < $customer->first_order_date) {
-                $updates['first_order_date'] = $orderDate;
-            }
-            if (!$customer->last_order_date || $orderDate > $customer->last_order_date) {
-                $updates['last_order_date'] = $orderDate;
-            }
-            
-            // Update statistics (only increment for new orders, not updates)
-            if (!$isUpdate) {
-                $updates['total_orders'] = $customer->total_orders + 1;
-                $updates['total_spent'] = $customer->total_spent + $orderTotal;
+            // Only update statistics if NOT a Shopify order
+            if (!$isShopifyOrder) {
+                // Update order dates
+                if (!$customer->first_order_date || $orderDate < $customer->first_order_date) {
+                    $updates['first_order_date'] = $orderDate;
+                }
+                if (!$customer->last_order_date || $orderDate > $customer->last_order_date) {
+                    $updates['last_order_date'] = $orderDate;
+                }
+                
+                // Update statistics (only increment for new orders, not updates)
+                if (!$isUpdate) {
+                    $updates['total_orders'] = $customer->total_orders + 1;
+                    $updates['total_spent'] = $customer->total_spent + $orderTotal;
+                }
             }
             $updates['updated_by'] = auth()->check() ? auth()->id() : null;
             
@@ -230,6 +288,11 @@ class CustomerModel extends BaseModel
                 $updates['province'] = $orderData['address_province'] ?? $customer->province;
                 $updates['postal_code'] = $orderData['address_postal_code'] ?? $customer->postal_code;
                 $updates['country'] = $orderData['address_country'] ?? $customer->country;
+                
+                // Update phone_original if this is a different format
+                if ($customer->phone_original !== $originalPhone) {
+                    $updates['phone_original'] = $originalPhone;
+                }
             }
             
             $customer->update($updates);
@@ -245,11 +308,19 @@ class CustomerModel extends BaseModel
 
     /**
      * Recalculate customer statistics based on actual orders
+     * Excludes Shopify orders from statistics as per business logic
      * Useful for fixing any inconsistencies
      */
     public function recalculateStatistics(): void
     {
-        $orders = $this->orders()->orderBy('order_date')->get();
+        // Only count non-Shopify orders for statistics
+        $orders = $this->orders()
+                      ->where(function($query) {
+                          $query->where('external_source', '!=', 'shopify')
+                                ->orWhereNull('external_source');
+                      })
+                      ->orderBy('order_date')
+                      ->get();
         
         if ($orders->count() > 0) {
             $this->update([

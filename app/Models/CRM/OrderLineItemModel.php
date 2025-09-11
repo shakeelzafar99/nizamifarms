@@ -34,7 +34,7 @@ class OrderLineItemModel extends BaseModel
     ];
 
     protected $casts = [
-        'quantity' => 'integer',
+        'quantity' => 'decimal:3',
         'unit_price' => 'decimal:2',
         'line_subtotal' => 'decimal:2',
         'discount_amount' => 'decimal:2',

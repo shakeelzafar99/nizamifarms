@@ -64,7 +64,8 @@ class OrderController extends Controller
             
             return response()->json([
                 'success' => true,
-                'order' => $order
+                'order' => $order,
+                'lineItems' => $order->lineItems // Explicitly include line items
             ]);
         } catch (\Exception $e) {
             return response()->json([

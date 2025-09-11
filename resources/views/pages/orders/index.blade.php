@@ -104,7 +104,7 @@
                                     <option value="completed">Completed</option>
                                     <option value="processing">Processing</option>
                                     <option value="cancelled">Cancelled</option>
-                                </select>
+                    </select>
                                 
                                 <input type="date" 
                                        id="dateFilter" 
@@ -113,12 +113,12 @@
                                 <button onclick="clearFilters()" class="px-3 py-2.5 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg text-sm border border-gray-300 shadow-sm transition-colors">
                                     <i class="ki-filled ki-cross"></i> Clear
                                 </button>
-                            </div>
+                    </div>
                             
                             <!-- Results Count -->
                             <div class="text-sm text-gray-600 whitespace-nowrap">
                                 <span id="results-count">Showing {{ $orders->total() }} orders</span>
-                            </div>
+                    </div>
                         </div>
                     </div>
                 </div>
@@ -1359,7 +1359,7 @@ function getCellContent(order, columnId) {
         // Line Items
         case 'line_items_count':
             const itemCount = order.line_items ? order.line_items.length : 0;
-            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">${itemCount}</span>`;
+            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewOrderDetails(${order.id})" title="Click to view order details">${itemCount}</span>`;
             
         // Timestamps
         case 'created_at':
@@ -1574,10 +1574,8 @@ function clearFilters() {
     document.getElementById('statusFilter').value = '';
     document.getElementById('dateFilter').value = '';
     
-    // Reset to current page data
-    window.filteredOrders = [...window.ordersData];
-    renderOrdersWithFilters(window.filteredOrders);
-    updateResultsCount();
+    // Fetch fresh unfiltered data from server
+    fetchFilteredOrders();
 }
 
 // Loading state functions

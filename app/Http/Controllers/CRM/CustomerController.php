@@ -79,6 +79,41 @@ class CustomerController extends Controller
         }
     }
     
+    public function orders($id)
+    {
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            
+            // Get customer orders with line items count
+            $orders = OrderModel::where('customer_id', $id)
+                              ->withCount('lineItems')
+                              ->orderBy('order_date', 'desc')
+                              ->get();
+            
+            return response()->json([
+                'success' => true, 
+                'orders' => $orders->map(function($order) {
+                    return [
+                        'id' => $order->id,
+                        'order_number' => $order->order_number,
+                        'order_date' => $order->order_date,
+                        'order_status' => $order->order_status,
+                        'total_price' => $order->total_price,
+                        'line_items_count' => $order->line_items_count,
+                        'external_source' => $order->external_source,
+                        'payment_method' => $order->payment_method,
+                        'notes' => $order->notes
+                    ];
+                })
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false, 
+                'message' => 'Error fetching customer orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
     public function update(Request $request, $id)
     {
         $request->validate([
