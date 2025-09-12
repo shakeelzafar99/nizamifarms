@@ -115,22 +115,31 @@ class OrderController extends Controller
             // Update order
             $order->update($validated);
             
-            // Update line items
+            // Update line items using existing API method
             if (isset($validated['items'])) {
-                // Delete existing line items
-                $order->lineItems()->delete();
-                
-                // Create new line items
+                // Format line items for the existing API method
+                $formattedLineItems = [];
                 foreach ($validated['items'] as $itemData) {
-                    $order->lineItems()->create([
+                    $quantity = $itemData['quantity'];
+                    $unitPrice = $itemData['unit_price'];
+                    
+                    $formattedLineItems[] = [
                         'name' => $itemData['name'],
-                        'quantity' => $itemData['quantity'],
-                        'unit_price' => $itemData['unit_price'],
-                        'line_total' => $itemData['line_total'],
-                        'created_by' => auth()->id(),
-                        'updated_by' => auth()->id()
-                    ]);
+                        'quantity' => $quantity,
+                        'unit_price' => $unitPrice,
+                        'line_subtotal' => $quantity * $unitPrice,
+                        'discount_amount' => 0,
+                        'tax_amount' => 0,
+                        'line_total' => $quantity * $unitPrice,
+                    ];
                 }
+                
+                // Use existing storeOrderFromApi method to handle line items
+                $orderData = array_merge($validated, [
+                    'line_items' => $formattedLineItems
+                ]);
+                
+                $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData, $order->id);
             }
             
             return response()->json([
@@ -256,6 +265,7 @@ class OrderController extends Controller
                 'external_source' => 'webapp',
                 'order_number' => $orderNumber,
                 'currency' => 'PKR',
+                'name' => trim(($validated['address_first_name'] ?? '') . ' ' . ($validated['address_last_name'] ?? '')), // Populate name from address
                 'created_by' => auth()->id(),
                 'updated_by' => auth()->id()
             ]);
@@ -266,21 +276,30 @@ class OrderController extends Controller
                 unset($orderData[$field]);
             }
             
-            $order = \App\Models\CRM\OrderModel::create($orderData);
-            
-            // Create line items
+            // Format line items for the existing API method
+            $formattedLineItems = [];
             if (isset($validated['items'])) {
                 foreach ($validated['items'] as $itemData) {
-                    $order->lineItems()->create([
+                    $quantity = $itemData['quantity'];
+                    $unitPrice = $itemData['unit_price'];
+                    
+                    $formattedLineItems[] = [
                         'name' => $itemData['name'],
-                        'quantity' => $itemData['quantity'],
-                        'unit_price' => $itemData['unit_price'],
-                        'line_total' => $itemData['line_total'],
-                        'created_by' => auth()->id(),
-                        'updated_by' => auth()->id()
-                    ]);
+                        'quantity' => $quantity,
+                        'unit_price' => $unitPrice,
+                        'line_subtotal' => $quantity * $unitPrice,
+                        'discount_amount' => 0,
+                        'tax_amount' => 0,
+                        'line_total' => $quantity * $unitPrice,
+                    ];
                 }
             }
+            
+            // Add line items to order data and use existing storeOrderFromApi method
+            $orderData['line_items'] = $formattedLineItems;
+            
+            // Use existing storeOrderFromApi method to handle both order and line items
+            $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
             
             return response()->json([
                 'success' => true,

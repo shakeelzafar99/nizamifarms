@@ -758,6 +758,40 @@ function formatDate(dateString) {
     }
 }
 
+// Add formatDateLocal function for consistency with customer page
+window.formatDateLocal = function(dateString) {
+    if (!dateString) return 'N/A';
+    
+    try {
+        // Handle different date formats
+        let date;
+        if (dateString.includes('T')) {
+            // ISO format
+            date = new Date(dateString);
+        } else if (dateString.includes(' ')) {
+            // MySQL datetime format
+            const [datePart, timePart] = dateString.split(' ');
+            const [year, month, day] = datePart.split('-');
+            const [hour, minute, second] = timePart.split(':');
+            date = new Date(year, month - 1, day, hour, minute, second);
+        } else {
+            // Fallback
+            date = new Date(dateString);
+        }
+        
+        return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    } catch (error) {
+        console.error('Date formatting error:', error);
+        return dateString;
+    }
+};
+
 // Format currency helper
 function formatCurrency(amount, currency = 'PKR') {
     const num = isNaN(parseFloat(amount)) ? 0 : parseFloat(amount);
@@ -1209,7 +1243,7 @@ function updateSubtotal() {
     items.forEach(item => {
         const index = item.getAttribute('data-index');
         const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`).value) || 0;
-        const price = parseFloat(item.querySelector(`input[name*="[price]"]`).value) || 0;
+        const price = parseFloat(item.querySelector(`input[name*="[unit_price]"]`).value) || 0;
         subtotal += quantity * price;
     });
     
@@ -1217,17 +1251,6 @@ function updateSubtotal() {
     if (subtotalInput) {
         subtotalInput.value = subtotal.toFixed(2);
         updateOrderTotal();
-    }
-}
-
-function updateOrderTotal() {
-    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]').value) || 0;
-    const tax = parseFloat(document.querySelector('input[name="total_tax"]').value) || 0;
-    const total = subtotal + tax;
-    
-    const totalInput = document.querySelector('input[name="total_price"]');
-    if (totalInput) {
-        totalInput.value = total.toFixed(2);
     }
 }
 
@@ -1379,22 +1402,6 @@ function updateOrderTotal() {
     if (totalInput) {
         totalInput.value = total.toFixed(2);
     }
-}
-
-// Update subtotal from line items
-function updateSubtotal() {
-    let subtotal = 0;
-    document.querySelectorAll('.line-item').forEach(item => {
-        const lineTotal = parseFloat(item.querySelector('input[name*="[line_total]"]')?.value) || 0;
-        subtotal += lineTotal;
-    });
-    
-    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
-    if (subtotalInput) {
-        subtotalInput.value = subtotal.toFixed(2);
-    }
-    
-    updateOrderTotal();
 }
 
 function showProductDropdown(index) {
@@ -1819,20 +1826,17 @@ function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
-            // Handle ISO format: "2025-09-09T17:41:03.000000Z"
-            let cleanDate = dateStr;
+            // Parse the date string
+            const date = new Date(dateStr);
             
-            // Remove timezone info if present
-            if (cleanDate.includes('T')) {
-                cleanDate = cleanDate.split('T')[0];
-            }
-            
-            // Parse and format
-            const date = new Date(cleanDate);
+            // Format with both date and time
             return date.toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
-                day: 'numeric'
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
             });
         } catch (error) {
             console.error('Date formatting error:', error);
@@ -2203,20 +2207,17 @@ function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
-            // Handle ISO format: "2025-09-09T17:41:03.000000Z"
-            let cleanDate = dateStr;
+            // Parse the date string
+            const date = new Date(dateStr);
             
-            // Remove timezone info if present
-            if (cleanDate.includes('T')) {
-                cleanDate = cleanDate.split('T')[0];
-            }
-            
-            // Parse and format
-            const date = new Date(cleanDate);
+            // Format with both date and time
             return date.toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
-                day: 'numeric'
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
             });
         } catch (error) {
             console.error('Date parsing error:', error, 'for date:', dateStr);
@@ -2702,8 +2703,8 @@ function createNewOrder() {
                             </select>
                         </div>
                         <div style="margin-bottom: 12px;">
-                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date</label>
-                            <input type="date" name="order_date" required value="${new Date().toISOString().split('T')[0]}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date & Time</label>
+                            <input type="datetime-local" name="order_date" required value="${new Date().toISOString().slice(0, 16)}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                         </div>
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Contact Email</label>
@@ -2873,36 +2874,6 @@ function saveNewOrder() {
         console.error('Error:', error);
         alert('Error creating order');
     });
-}
-
-// Update order total calculations
-function updateOrderTotal() {
-    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
-    const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
-    const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
-    const tax = parseFloat(document.querySelector('input[name="total_tax"]')?.value) || 0;
-    
-    const total = subtotal - discount + shipping + tax;
-    const totalInput = document.querySelector('input[name="total_price"]');
-    if (totalInput) {
-        totalInput.value = total.toFixed(2);
-    }
-}
-
-// Update subtotal from line items
-function updateSubtotal() {
-    let subtotal = 0;
-    document.querySelectorAll('.line-item').forEach(item => {
-        const lineTotal = parseFloat(item.querySelector('input[name*="[line_total]"]')?.value) || 0;
-        subtotal += lineTotal;
-    });
-    
-    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
-    if (subtotalInput) {
-        subtotalInput.value = subtotal.toFixed(2);
-    }
-    
-    updateOrderTotal();
 }
 
 // ==================== CUSTOMER SELECTION HELPERS (single source of truth) ====================
