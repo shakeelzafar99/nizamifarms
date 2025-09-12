@@ -105,6 +105,71 @@ window.viewCustomer = function(id) {
                         </div>
                     </div>
                 </div>
+                
+                <div style="margin-top: 24px;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Recent Orders (Last 10)</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                        ${customer.orders && customer.orders.length > 0 ? `
+                            <div style="overflow-x: auto;">
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="border-bottom: 2px solid #e5e7eb;">
+                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Order #</th>
+                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Date</th>
+                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Status</th>
+                                            <th style="padding: 8px; text-align: left; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Source</th>
+                                            <th style="padding: 8px; text-align: right; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Total</th>
+                                            <th style="padding: 8px; text-align: center; font-size: 12px; font-weight: 600; color: #374151; text-transform: uppercase;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${customer.orders.map(order => {
+                                            const statusColor = order.order_status === 'completed' ? '#059669' : 
+                                                              order.order_status === 'pending' ? '#d97706' : 
+                                                              order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
+                                            const sourceColor = order.external_source === 'shopify' ? '#7c3aed' :
+                                                              order.external_source === 'woocommerce' ? '#2563eb' :
+                                                              order.external_source === 'webapp' ? '#059669' : '#6b7280';
+                                            return `
+                                                <tr style="border-bottom: 1px solid #e5e7eb; hover:background-color: #ffffff;">
+                                                    <td style="padding: 10px 8px; font-weight: 600; color: #1f2937; font-size: 13px;">#${order.order_number || order.id}</td>
+                                                    <td style="padding: 10px 8px; color: #6b7280; font-size: 13px;">${window.formatDateLocal(order.order_date)}</td>
+                                                    <td style="padding: 10px 8px; font-size: 13px;">
+                                                        <span style="display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: 500; background-color: ${statusColor}20; color: ${statusColor};">
+                                                            ${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'N/A'}
+                                                        </span>
+                                                    </td>
+                                                    <td style="padding: 10px 8px; font-size: 13px;">
+                                                        <span style="display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: 500; background-color: ${sourceColor}20; color: ${sourceColor};">
+                                                            ${order.external_source || 'Direct'}
+                                                        </span>
+                                                    </td>
+                                                    <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: #1f2937; font-size: 13px;">PKR ${(order.total_price || 0).toLocaleString()}</td>
+                                                    <td style="padding: 10px 8px; text-align: center;">
+                                                        <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
+                                                                style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 4px;"
+                                                                onmouseover="this.style.background='#2563eb'" 
+                                                                onmouseout="this.style.background='#3b82f6'">
+                                                            View
+                                                        </button>
+                                                        <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" 
+                                                                style="padding: 4px 8px; background: #059669; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
+                                                                onmouseover="this.style.background='#047857'" 
+                                                                onmouseout="this.style.background='#059669'">
+                                                            Invoice
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ` : `
+                            <p style="text-align: center; color: #6b7280; padding: 20px; font-size: 14px;">No orders found for this customer.</p>
+                        `}
+                    </div>
+                </div>
             `;
             
             content.innerHTML = html;
@@ -144,17 +209,38 @@ window.openColumnSettings = function() {
         'status': { label: 'Status', width: 'w-24' },
         'first_order_date': { label: 'First Order', width: 'w-32' },
         'last_order_date': { label: 'Last Order', width: 'w-32' },
-        'phone_original': { label: 'Original Phone', width: 'w-32' },
-        'phone_normalized': { label: 'Normalized Phone', width: 'w-32' },
+        
+        // Personal Information
+        'first_name': { label: 'First Name', width: 'w-32' },
+        'last_name': { label: 'Last Name', width: 'w-32' },
         'email': { label: 'Email', width: 'w-40' },
         'company': { label: 'Company', width: 'w-32' },
-        'address1': { label: 'Address', width: 'w-48' },
-        'address2': { label: 'Address 2', width: 'w-32' },
+        
+        // Phone Numbers
+        'phone': { label: 'Phone', width: 'w-32' },
+        'phone_original': { label: 'Original Phone', width: 'w-32' },
+        'phone_normalized': { label: 'Normalized Phone', width: 'w-32' },
+        
+        // Address Information
+        'address1': { label: 'Address Line 1', width: 'w-48' },
+        'address2': { label: 'Address Line 2', width: 'w-32' },
         'city': { label: 'City', width: 'w-24' },
         'province': { label: 'Province', width: 'w-24' },
         'postal_code': { label: 'Postal Code', width: 'w-24' },
-        'created_at': { label: 'Created', width: 'w-32' },
-        'updated_at': { label: 'Updated', width: 'w-32' }
+        'country': { label: 'Country', width: 'w-24' },
+        
+        // Additional Fields
+        'notes': { label: 'Notes', width: 'w-64' },
+        'latitude': { label: 'Latitude', width: 'w-24' },
+        'longitude': { label: 'Longitude', width: 'w-24' },
+        'external_customer_ids': { label: 'External IDs', width: 'w-32' },
+        'is_active': { label: 'Active Status', width: 'w-24' },
+        
+        // Timestamps
+        'created_at': { label: 'Created Date', width: 'w-32' },
+        'updated_at': { label: 'Updated Date', width: 'w-32' },
+        'created_by': { label: 'Created By', width: 'w-24' },
+        'updated_by': { label: 'Updated By', width: 'w-24' }
     };
     
     let html = '';
@@ -408,6 +494,216 @@ window.clearFilters = function() {
     // Reload page to clear filters
     window.location.href = window.location.pathname;
 };
+
+// New AJAX-based customer search functionality
+let customerSearchTimeout;
+window.allCustomers = @json($customers->items());
+window.filteredCustomers = [...window.allCustomers];
+
+function clearCustomerFilters() {
+    document.getElementById('customerSearchInput').value = '';
+    document.getElementById('customerCityFilter').value = '';
+    document.getElementById('customerStatusFilter').value = '';
+    
+    // Reset to original data
+    window.filteredCustomers = [...window.allCustomers];
+    renderCustomersTable();
+}
+
+function fetchFilteredCustomers() {
+    const searchTerm = document.getElementById('customerSearchInput').value.trim();
+    const cityFilter = document.getElementById('customerCityFilter').value;
+    const statusFilter = document.getElementById('customerStatusFilter').value;
+    
+    // Show loading state
+    showCustomerLoadingState();
+    
+    // Build query parameters
+    const params = new URLSearchParams();
+    if (searchTerm) params.append('search', searchTerm);
+    if (cityFilter) params.append('city', cityFilter);
+    if (statusFilter) params.append('status', statusFilter);
+    
+    // Make API call
+    fetch(`/customers/filter?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            window.filteredCustomers = data.customers;
+            renderCustomersTable();
+        } else {
+            console.error('Filter error:', data.message);
+            // Show empty state when search fails
+            window.filteredCustomers = [];
+            renderCustomersTable();
+        }
+    })
+    .catch(error => {
+        console.error('Filter request failed:', error);
+        // Show empty state when search fails
+        window.filteredCustomers = [];
+        renderCustomersTable();
+    })
+    .finally(() => {
+        hideCustomerLoadingState();
+    });
+}
+
+function renderCustomersTable() {
+    const tbody = document.getElementById('table-body');
+    const noResultsState = document.getElementById('no-results-state');
+    
+    if (window.filteredCustomers.length === 0) {
+        tbody.style.display = 'none';
+        noResultsState.classList.remove('hidden');
+    } else {
+        noResultsState.classList.add('hidden');
+        tbody.style.display = '';
+        
+        // Render customer rows
+        let html = '';
+        window.filteredCustomers.forEach(customer => {
+            html += `
+                <tr class="hover:bg-gray-50 transition-colors duration-150 cursor-pointer" onclick="viewCustomer(${customer.id})">
+                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                        <span class="text-sm font-medium text-gray-500">#${customer.id}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex flex-col">
+                            <span class="text-sm font-medium text-gray-900">
+                                ${customer.first_name} ${customer.last_name}
+                            </span>
+                            ${customer.company ? `<span class="text-xs text-gray-500">${customer.company}</span>` : ''}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex flex-col text-sm">
+                            ${customer.email ? `<span class="text-gray-600 truncate max-w-[150px]" title="${customer.email}">${customer.email}</span>` : ''}
+                            ${customer.phone_original || customer.phone ? `<span class="text-gray-500">${customer.phone_original || customer.phone}</span>` : ''}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex flex-col text-sm">
+                            ${customer.city ? `<span class="text-gray-600">${customer.city}</span>` : ''}
+                            ${customer.province ? `<span class="text-gray-500">${customer.province}</span>` : ''}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(${customer.id}, '${customer.first_name} ${customer.last_name}')" title="Click to view customer orders">${customer.total_orders || 0}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right">
+                        <span class="text-sm font-medium text-gray-900">
+                            PKR ${(customer.total_spent || 0).toLocaleString()}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        ${customer.is_active ? 
+                            `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                <div class="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5"></div>
+                                Active
+                            </span>` :
+                            `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                <div class="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5"></div>
+                                Inactive
+                            </span>`
+                        }
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        ${customer.first_order_date ? 
+                            `<span class="text-sm text-gray-600">${window.formatDateLocal(customer.first_order_date)}</span>` :
+                            `<span class="text-sm text-gray-400">Never</span>`
+                        }
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        ${customer.last_order_date ? 
+                            `<span class="text-sm text-gray-600">${window.formatDateLocal(customer.last_order_date)}</span>` :
+                            `<span class="text-sm text-gray-400">Never</span>`
+                        }
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
+                        <div class="flex items-center gap-1">
+                            <button onclick="addCustomerNote(${customer.id})" 
+                                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
+                                    title="Add Notes">
+                                <i class="ki-filled ki-note text-sm"></i>
+                            </button>
+                            <button onclick="createOrderForCustomer(${customer.id})" 
+                                    class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" 
+                                    title="Create Order">
+                                <i class="ki-filled ki-plus text-sm"></i>
+                            </button>
+                            <button onclick="editCustomer(${customer.id})" 
+                                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
+                                    title="Edit">
+                                <i class="ki-filled ki-pencil text-sm"></i>
+                            </button>
+                            ${customer.total_orders == 0 ? 
+                                `<button onclick="deleteCustomer(${customer.id})" 
+                                        class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-red-400 hover:text-red-500 hover:bg-red-50 transition-colors duration-150" 
+                                        title="Delete">
+                                    <i class="ki-filled ki-trash text-sm"></i>
+                                </button>` : ''
+                            }
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        tbody.innerHTML = html;
+    }
+}
+
+function showCustomerLoadingState() {
+    document.getElementById('table-body').style.display = 'none';
+    document.getElementById('no-results-state').classList.add('hidden');
+    document.getElementById('loading-state').classList.remove('hidden');
+}
+
+function hideCustomerLoadingState() {
+    document.getElementById('loading-state').classList.add('hidden');
+    document.getElementById('table-body').style.display = '';
+}
+
+// Initialize customer search functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('customerSearchInput');
+    const cityFilter = document.getElementById('customerCityFilter');
+    const statusFilter = document.getElementById('customerStatusFilter');
+    
+    // Search functionality with debouncing
+    searchInput.addEventListener('input', function() {
+        clearTimeout(customerSearchTimeout);
+        customerSearchTimeout = setTimeout(() => {
+            const searchTerm = searchInput.value.trim();
+            if (searchTerm.length > 2) {
+                fetchFilteredCustomers();
+            } else if (searchTerm.length === 0) {
+                // Auto-clear when search box is empty
+                clearCustomerFilters();
+            } else {
+                // Reset to current page data if search is too short but not empty
+                window.filteredCustomers = [...window.allCustomers];
+                renderCustomersTable();
+            }
+        }, 300);
+    });
+    
+    // Filter functionality
+    cityFilter.addEventListener('change', function() {
+        fetchFilteredCustomers();
+    });
+    
+    statusFilter.addEventListener('change', function() {
+        fetchFilteredCustomers();
+    });
+});
 
 window.formatDateLocal = function(dateString) {
     if (!dateString) return 'N/A';
@@ -846,11 +1142,11 @@ window.viewOrderDetails = function(orderId) {
 
             <!-- Compact Search and Filters Section -->
             <div class="px-4 py-3 bg-gray-50 border-b border-gray-200">
-                <form method="GET" class="flex items-center gap-2" id="customerSearchForm">
+                <div class="flex items-center gap-2">
                     <div class="flex-1 min-w-48">
                         <div class="relative">
                             <input type="text" name="search" value="{{ request('search') }}" 
-                                   placeholder="Search customers..." 
+                                   placeholder="Search customers (name, phone, email)..." 
                                    class="input input-sm w-full pl-8"
                                    id="customerSearchInput">
                             <div class="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
@@ -859,7 +1155,7 @@ window.viewOrderDetails = function(orderId) {
                         </div>
                     </div>
                     
-                    <select name="city" class="select select-sm w-32 text-xs">
+                    <select name="city" class="select select-sm w-32 text-xs" id="customerCityFilter">
                         <option value="">All Cities</option>
                         @foreach($cities as $city)
                             <option value="{{ $city }}" {{ request('city') == $city ? 'selected' : '' }}>
@@ -868,22 +1164,16 @@ window.viewOrderDetails = function(orderId) {
                         @endforeach
                     </select>
                     
-                    <select name="status" class="select select-sm w-28 text-xs">
+                    <select name="status" class="select select-sm w-28 text-xs" id="customerStatusFilter">
                         <option value="">All Status</option>
                         <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
                         <option value="inactive" {{ request('status') == 'inactive' ? 'selected' : '' }}>Inactive</option>
                     </select>
                     
-                    <button type="submit" class="kt-btn kt-btn-sm kt-btn-primary text-xs px-3">
-                        <i class="ki-filled ki-magnifier text-sm"></i>
+                    <button type="button" onclick="clearCustomerFilters()" class="kt-btn kt-btn-sm kt-btn-outline text-xs px-3" title="Clear all filters">
+                        <i class="ki-filled ki-cross text-sm"></i>
                     </button>
-                    
-                    @if(request()->hasAny(['search', 'city', 'status']))
-                        <a href="{{ route('customers.index') }}" class="kt-btn kt-btn-sm kt-btn-outline text-xs px-3">
-                            <i class="ki-filled ki-cross text-sm"></i>
-                        </a>
-                    @endif
-                </form>
+                </div>
             </div>
 
             <div class="card-body p-0">

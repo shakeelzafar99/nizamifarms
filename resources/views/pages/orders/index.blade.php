@@ -2417,13 +2417,16 @@ document.addEventListener('DOMContentLoaded', function() {
             const searchTerm = searchInput.value.trim();
             if (searchTerm.length > 2) {
                 fetchFilteredOrders();
+            } else if (searchTerm.length === 0) {
+                // Auto-clear when search box is empty
+                clearFilters();
             } else {
-                // Reset to current page data if search is too short
+                // Reset to current page data if search is too short but not empty
                 window.filteredOrders = [...window.ordersData];
                 renderOrdersWithFilters(window.filteredOrders);
                 updateResultsCount();
             }
-        }, 500);
+        }, 300); // Reduced timeout for better responsiveness
     });
     
     // Filter functionality - make API call for full dataset
@@ -2472,16 +2475,16 @@ function fetchFilteredOrders() {
             updateResultsCount();
         } else {
             console.error('Filter error:', data.message);
-            // Fallback to current page data
-            window.filteredOrders = [...window.ordersData];
+            // Show empty state instead of fallback data when search fails
+            window.filteredOrders = [];
             renderOrdersWithFilters(window.filteredOrders);
             updateResultsCount();
         }
     })
     .catch(error => {
         console.error('Filter request failed:', error);
-        // Fallback to current page data
-        window.filteredOrders = [...window.ordersData];
+        // Show empty state instead of fallback data when search fails
+        window.filteredOrders = [];
         renderOrdersWithFilters(window.filteredOrders);
         updateResultsCount();
     })
@@ -2572,8 +2575,10 @@ function clearFilters() {
     document.getElementById('statusFilter').value = '';
     document.getElementById('dateFilter').value = '';
     
-    // Fetch fresh unfiltered data from server
-    fetchFilteredOrders();
+    // Reset to original page data without API call
+    window.filteredOrders = [...window.allOrders];
+    renderOrdersWithFilters(window.filteredOrders);
+    updateResultsCount();
 }
 
 // Loading state functions

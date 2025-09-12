@@ -90,8 +90,10 @@ class CustomerController extends Controller
                     $q->where('first_name', 'LIKE', "%{$query}%")
                       ->orWhere('last_name', 'LIKE', "%{$query}%")
                       ->orWhere('email', 'LIKE', "%{$query}%")
+                      ->orWhere('phone', 'LIKE', "%{$query}%")
                       ->orWhere('phone_original', 'LIKE', "%{$query}%")
                       ->orWhere('phone_normalized', 'LIKE', "%{$query}%")
+                      ->orWhere('company', 'LIKE', "%{$query}%")
                       ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$query}%"]);
                 })
                 ->limit($limit)
@@ -128,6 +130,59 @@ class CustomerController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to search customers: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function filter(Request $request)
+    {
+        try {
+            $search = $request->get('search', '');
+            $city = $request->get('city', '');
+            $status = $request->get('status', '');
+            
+            // Start with base query
+            $query = CustomerModel::query();
+            
+            // Apply search filter
+            if (!empty($search)) {
+                $query->where(function($q) use ($search) {
+                    $q->where('first_name', 'LIKE', "%{$search}%")
+                      ->orWhere('last_name', 'LIKE', "%{$search}%")
+                      ->orWhere('email', 'LIKE', "%{$search}%")
+                      ->orWhere('phone', 'LIKE', "%{$search}%")
+                      ->orWhere('phone_original', 'LIKE', "%{$search}%")
+                      ->orWhere('phone_normalized', 'LIKE', "%{$search}%")
+                      ->orWhere('company', 'LIKE', "%{$search}%")
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$search}%"]);
+                });
+            }
+            
+            // Apply city filter
+            if (!empty($city)) {
+                $query->where('city', $city);
+            }
+            
+            // Apply status filter
+            if (!empty($status)) {
+                $query->where('is_active', $status === 'active' ? 1 : 0);
+            }
+            
+            // Get results (limit to 100 for performance)
+            $customers = $query->orderBy('last_order_date', 'desc')
+                             ->orderBy('created_at', 'desc')
+                             ->limit(100)
+                             ->get();
+            
+            return response()->json([
+                'success' => true,
+                'customers' => $customers
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to filter customers: ' . $e->getMessage()
             ], 500);
         }
     }
