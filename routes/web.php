@@ -37,7 +37,16 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
+    Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
+    Route::put('/orders/{id}', [OrderController::class, 'update'])->name('orders.update');
+    Route::post('/orders', [OrderController::class, 'store'])->name('orders.store');
     Route::post('/orders/import-orders', [OrderController::class, 'importOrders'])->name('orders.importOrders');
+    
+    // API endpoints for products
+    Route::get('/api/products/search', [\App\Http\Controllers\CRM\ProductController::class, 'search'])->name('products.search');
+    
+    // API endpoints for customers
+    Route::get('/api/customers/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search'])->name('customers.search');
     
     // Customer Management Routes
     Route::prefix('customers')->group(function () {
@@ -45,6 +54,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
         Route::get('/{id}/orders', [\App\Http\Controllers\CRM\CustomerController::class, 'orders'])->name('customers.orders');
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
+        Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote'])->name('customers.addNote');
         Route::delete('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'destroy'])->name('customers.destroy');
     });
     

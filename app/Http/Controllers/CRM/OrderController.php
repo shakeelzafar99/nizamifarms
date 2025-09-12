@@ -75,8 +75,226 @@ class OrderController extends Controller
         }
     }
 
+    public function invoice($id)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                        ->findOrFail($id);
+            
+            return view('pages.orders.invoice', compact('order'));
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Order not found');
+        }
+    }
 
-
+    public function update(Request $request, $id)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::findOrFail($id);
+            
+            // Validate request
+            $validated = $request->validate([
+                'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
+                'order_status' => 'required|string',
+                'order_date' => 'required|date',
+                'contact_email' => 'nullable|email',
+                'subtotal_price' => 'required|numeric',
+                'discount_total' => 'nullable|numeric',
+                'shipping_total' => 'nullable|numeric',
+                'total_tax' => 'nullable|numeric',
+                'total_price' => 'required|numeric',
+                'payment_method' => 'nullable|string',
+                'note' => 'nullable|string',
+                'items' => 'required|array',
+                'items.*.name' => 'required|string',
+                'items.*.quantity' => 'required|numeric|min:0.001',
+                'items.*.unit_price' => 'required|numeric|min:0',
+                'items.*.line_total' => 'required|numeric|min:0'
+            ]);
+            
+            // Update order
+            $order->update($validated);
+            
+            // Update line items
+            if (isset($validated['items'])) {
+                // Delete existing line items
+                $order->lineItems()->delete();
+                
+                // Create new line items
+                foreach ($validated['items'] as $itemData) {
+                    $order->lineItems()->create([
+                        'name' => $itemData['name'],
+                        'quantity' => $itemData['quantity'],
+                        'unit_price' => $itemData['unit_price'],
+                        'line_total' => $itemData['line_total'],
+                        'created_by' => auth()->id(),
+                        'updated_by' => auth()->id()
+                    ]);
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order updated successfully',
+                'order' => $order->load(['customer', 'lineItems'])
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update order: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    public function store(Request $request)
+    {
+        try {
+            // Validate request
+            $validated = $request->validate([
+                'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
+                'order_status' => 'required|string',
+                'order_date' => 'required|date',
+                'contact_email' => 'nullable|email',
+                'subtotal_price' => 'required|numeric',
+                'discount_total' => 'nullable|numeric',
+                'shipping_total' => 'nullable|numeric',
+                'total_tax' => 'nullable|numeric',
+                'total_price' => 'required|numeric',
+                'payment_method' => 'nullable|string',
+                'note' => 'nullable|string',
+                'items' => 'required|array',
+                'items.*.name' => 'required|string',
+                'items.*.quantity' => 'required|numeric|min:0.001',
+                'items.*.unit_price' => 'required|numeric|min:0',
+                'items.*.line_total' => 'required|numeric|min:0',
+                // Customer creation fields
+                'customer_phone' => 'nullable|string',
+                'customer_first_name' => 'nullable|string',
+                'customer_last_name' => 'nullable|string',
+                'customer_company' => 'nullable|string',
+                'customer_address1' => 'nullable|string',
+                'customer_address2' => 'nullable|string',
+                'customer_city' => 'nullable|string',
+                'customer_province' => 'nullable|string',
+                'customer_postal_code' => 'nullable|string',
+                'customer_country' => 'nullable|string'
+            ]);
+            
+            // Generate order number for webapp orders
+            $latestOrder = \App\Models\CRM\OrderModel::where('external_source', 'webapp')
+                ->orderBy('id', 'desc')
+                ->first();
+            
+            $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
+            $orderNumber = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+            
+            // Handle customer creation/selection
+            $customerId = $validated['customer_id'];
+            if (!$customerId && $validated['customer_phone']) {
+                // Create new customer from provided data
+                $customerData = [
+                    'external_source' => 'webapp',
+                    'address_first_name' => $validated['customer_first_name'],
+                    'address_last_name' => $validated['customer_last_name'],
+                    'address_company' => $validated['customer_company'],
+                    'address_email' => $validated['contact_email'],
+                    'address_line1' => $validated['customer_address1'],
+                    'address_line2' => $validated['customer_address2'],
+                    'address_city' => $validated['customer_city'],
+                    'address_province' => $validated['customer_province'],
+                    'address_postal_code' => $validated['customer_postal_code'],
+                    'address_country' => $validated['customer_country'] ?: 'Pakistan'
+                ];
+                
+                // Use the customer model's method to create/update customer with KPIs
+                $customer = \App\Models\CRM\CustomerModel::findOrCreateByPhone(
+                    $validated['customer_phone'],
+                    $customerData,
+                    $validated['order_date'],
+                    $validated['total_price']
+                );
+                
+                $customerId = $customer->id;
+                
+                // Set address fields from customer data
+                $validated['address_first_name'] = $validated['customer_first_name'];
+                $validated['address_last_name'] = $validated['customer_last_name'];
+                $validated['address_company'] = $validated['customer_company'];
+                $validated['address_email'] = $validated['contact_email'];
+                $validated['address_phone'] = $validated['customer_phone'];
+                $validated['address_line1'] = $validated['customer_address1'];
+                $validated['address_line2'] = $validated['customer_address2'];
+                $validated['address_city'] = $validated['customer_city'];
+                $validated['address_province'] = $validated['customer_province'];
+                $validated['address_postal_code'] = $validated['customer_postal_code'];
+                $validated['address_country'] = $validated['customer_country'] ?: 'Pakistan';
+            } elseif ($customerId) {
+                // Load existing customer and populate address fields
+                $customer = \App\Models\CRM\CustomerModel::find($customerId);
+                if ($customer) {
+                    $validated['address_first_name'] = $customer->first_name;
+                    $validated['address_last_name'] = $customer->last_name;
+                    $validated['address_company'] = $customer->company;
+                    $validated['address_email'] = $customer->email;
+                    $validated['address_phone'] = $customer->phone_original;
+                    $validated['address_line1'] = $customer->address1;
+                    $validated['address_line2'] = $customer->address2;
+                    $validated['address_city'] = $customer->city;
+                    $validated['address_province'] = $customer->province;
+                    $validated['address_postal_code'] = $customer->postal_code;
+                    $validated['address_country'] = $customer->country;
+                    
+                    // Update customer KPIs for webapp orders
+                    $customer->recalculateStatistics();
+                }
+            }
+            
+            // Create order
+            $orderData = array_merge($validated, [
+                'customer_id' => $customerId,
+                'external_source' => 'webapp',
+                'order_number' => $orderNumber,
+                'currency' => 'PKR',
+                'created_by' => auth()->id(),
+                'updated_by' => auth()->id()
+            ]);
+            
+            // Remove customer creation fields from order data
+            $customerFields = ['customer_phone', 'customer_first_name', 'customer_last_name', 'customer_company', 'customer_address1', 'customer_address2', 'customer_city', 'customer_province', 'customer_postal_code', 'customer_country'];
+            foreach ($customerFields as $field) {
+                unset($orderData[$field]);
+            }
+            
+            $order = \App\Models\CRM\OrderModel::create($orderData);
+            
+            // Create line items
+            if (isset($validated['items'])) {
+                foreach ($validated['items'] as $itemData) {
+                    $order->lineItems()->create([
+                        'name' => $itemData['name'],
+                        'quantity' => $itemData['quantity'],
+                        'unit_price' => $itemData['unit_price'],
+                        'line_total' => $itemData['line_total'],
+                        'created_by' => auth()->id(),
+                        'updated_by' => auth()->id()
+                    ]);
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order created successfully',
+                'order' => $order->load(['customer', 'lineItems'])
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create order: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 
     public function importOrders(Request $request)
     {
@@ -203,26 +421,6 @@ class OrderController extends Controller
         }
     }
 
-    function store(Request $request) //ADD   
-    {
-        try {
-            $response = $this->orderModel->Store($request->all());
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
-    }
-
-    function remove(Request $request) //DELETE
-    {
-        try {
-            $id = $request->id;
-            $response = $this->orderModel->Remove($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
-    }
 
     public function filter(Request $request)
     {

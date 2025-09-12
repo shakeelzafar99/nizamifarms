@@ -204,6 +204,31 @@ input:focus, select:focus, button:focus {
 .orders-table-container {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
 }
+
+/* Floating Create Order button - always visible top-right */
+.floating-create-order {
+    position: fixed;
+    top: 112px; /* ensure below global header */
+    right: 24px;
+    z-index: 200; /* above sticky headers/toolbars */
+}
+@media (max-width: 1024px) {
+    .floating-create-order { top: 96px; right: 16px; }
+}
+@media (max-width: 768px) {
+    /* Hide floating button on small screens to avoid overlay; header button remains */
+    .floating-create-order { display: none; }
+}
+
+/* Ensure Create Order button is always visible and readable */
+.create-order-btn {
+    background-color: #10b981; /* emerald */
+    color: #ffffff !important;
+    border: 1px solid #10b981;
+}
+.create-order-btn:hover {
+    background-color: #059669; /* darker emerald */
+}
 </style>
 @endpush
 
@@ -275,13 +300,13 @@ input:focus, select:focus, button:focus {
                 </div>
 
                 <!-- Right: Inline Filters + Actions -->
-                <div class="flex items-center gap-3">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <!-- Compact Search -->
                     <div class="relative">
                         <input type="text" 
                                id="orderSearch" 
                                placeholder="Search orders..." 
-                               class="w-64 pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                               class="w-64 xl:w-64 lg:w-56 md:w-48 sm:w-40 pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                             <i class="ki-filled ki-magnifier text-gray-400"></i>
                         </div>
@@ -306,21 +331,26 @@ input:focus, select:focus, button:focus {
                     
                     <!-- Clear Button -->
                     <button onclick="clearFilters()" 
-                            class="px-3 py-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg text-sm border border-gray-300 transition-colors">
-                        <i class="ki-filled ki-cross mr-1"></i> Clear
+                            class="px-2.5 py-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg text-sm border border-gray-200 transition-colors" title="Clear all filters">
+                        <i class="ki-filled ki-cross text-xs"></i>
                     </button>
                     
                     <!-- Action Buttons -->
-                    <div class="flex gap-2 ml-2 pl-2 border-l border-gray-200">
+                    <div class="flex gap-2 ml-2 pl-2 border-l border-gray-200 shrink-0">
                         <button onclick="openColumnSettings()" 
-                                class="flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all-smooth btn-enhanced text-sm">
-                            <i class="ki-filled ki-setting-2 mr-1.5"></i>
+                                class="flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all-smooth btn-enhanced text-sm" title="Columns">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="12" y1="8" x2="12" y2="21"/></svg>
                             Columns
                         </button>
                         <button onclick="openImportModal()" 
-                                class="flex items-center px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all-smooth btn-enhanced text-sm">
-                            <i class="ki-filled ki-exit-down mr-1.5"></i>
+                                class="flex items-center px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all-smooth btn-enhanced text-sm" title="Import">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                             Import
+                        </button>
+                        <button onclick="createNewOrder()" 
+                                class="flex items-center px-3 py-2 rounded-lg transition-all-smooth text-sm border border-emerald-500 text-emerald-700 hover:bg-emerald-50 font-medium" title="Create Order">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            Create Order
                         </button>
                     </div>
                     </div>
@@ -329,12 +359,12 @@ input:focus, select:focus, button:focus {
             </div>
 
     <!-- Main Content Container -->
-    <div class="kt-container-fixed pt-6 pb-24">
+    <div class="kt-container-fixed pt-8 pb-40">
 
         <!-- Enhanced Table Container with Proper Spacing -->
         <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
             <!-- Table with Sticky Header -->
-            <div class="orders-table-container relative" style="max-height: calc(100vh - 280px); overflow-y: auto;">
+            <div class="orders-table-container relative pb-24" style="max-height: calc(100vh - 320px); overflow-y: auto;">
                 <table class="w-full text-sm">
                     <thead class="sticky top-0 bg-white z-20 shadow-sm border-b-2 border-gray-200">
                         <tr id="table-header" class="bg-gradient-to-r from-gray-50 to-blue-50">
@@ -528,7 +558,19 @@ input:focus, select:focus, button:focus {
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Invoice Details</h3>
-            <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button id="viewInvoiceBtn" onclick="viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10,9 9,9 8,9"/>
+                    </svg>
+                    View Invoice
+                </button>
+                <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            </div>
         </div>
         
         <!-- Modal Body -->
@@ -694,9 +736,8 @@ function formatDate(dateString) {
             // Format as: "09 Sep 2025, 17:41"
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            const monthName = monthNames[parseInt(month) - 1];
-            
-            cleanDate = `${day} ${monthName} ${year}, ${hour}:${minute}`;
+            const monthName = monthNames[parseInt(month, 10) - 1];
+            cleanDate = day + ' ' + monthName + ' ' + year + ', ' + hour + ':' + minute;
         } else if (dateString.includes(' ')) {
             // Handle format: "2025-09-09 17:41:03"
             const [datePart, timePart] = dateString.split(' ');
@@ -705,9 +746,9 @@ function formatDate(dateString) {
             
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            const monthName = monthNames[parseInt(month) - 1];
+            const monthName = monthNames[parseInt(month, 10) - 1];
             
-            cleanDate = `${day} ${monthName} ${year}, ${hour}:${minute}`;
+            cleanDate = day + ' ' + monthName + ' ' + year + ', ' + hour + ':' + minute;
         }
         
         return cleanDate;
@@ -719,12 +760,14 @@ function formatDate(dateString) {
 
 // Format currency helper
 function formatCurrency(amount, currency = 'PKR') {
-    return `${currency} ${parseFloat(amount).toFixed(2)}`;
+    const num = isNaN(parseFloat(amount)) ? 0 : parseFloat(amount);
+    return currency + ' ' + num.toFixed(2);
 }
 
 // View Order Details
 function viewOrderDetails(orderId) {
     console.log('View order details clicked for order:', orderId);
+    currentOrderId = orderId; // Store the order ID for invoice viewing
     const modal = document.getElementById('viewOrderModal');
     const content = document.getElementById('viewOrderContent');
     
@@ -733,7 +776,7 @@ function viewOrderDetails(orderId) {
     modal.style.display = 'block';
     
     // Fetch order details via AJAX
-    fetch(`/orders/${orderId}`, {
+    fetch('/orders/' + orderId, {
         method: 'GET',
         headers: {
             'Accept': 'application/json',
@@ -747,107 +790,99 @@ function viewOrderDetails(orderId) {
             const order = data.order;
             console.log('Order data:', order);
             
-            let html = `
-                <div>
-                    <!-- Invoice Header -->
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px;">
-                        <div>
-                            <h2 style="font-size: 24px; font-weight: bold; color: #111827; margin: 0;">Invoice #${order.order_number || order.id}</h2>
-                            <p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ${formatDate(order.created_at)}</p>
-                        </div>
-                        <div style="text-align: right;">
-                            <span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ${order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;'}">
-                                ${(order.external_source || 'manual').toUpperCase()}
-                            </span>
-                            <p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">${formatCurrency(order.total_price, order.currency)}</p>
-                        </div>
-                    </div>
+            // Build HTML using string concatenation to avoid Blade conflicts
+            let html = '<div>';
+            
+            // Invoice Header
+            html += '<div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px;">';
+            html += '<div>';
+            html += '<h2 style="font-size: 24px; font-weight: bold; color: #111827; margin: 0;">Invoice #' + (order.order_number || order.id) + '</h2>';
+            html += '<p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ' + formatDate(order.created_at) + '</p>';
+            html += '</div>';
+            html += '<div style="text-align: right;">';
+            const sourceStyle = order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;';
+            html += '<span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ' + sourceStyle + '">';
+            html += (order.external_source || 'manual').toUpperCase();
+            html += '</span>';
+            html += '<p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">' + formatCurrency(order.total_price, order.currency) + '</p>';
+            html += '</div>';
+            html += '</div>';
 
-                    <!-- Customer & Address Info -->
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
-                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Bill To:</h3>
-                            ${order.customer ? `
-                            <div style="font-size: 14px;">
-                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.customer.first_name || ''} ${order.customer.last_name || ''}</p>
-                                <p style="color: #6b7280; margin: 0 0 4px 0;">${order.customer.email || ''}</p>
-                                ${order.customer.phone ? `<p style="color: #6b7280; margin: 0;">${order.customer.phone}</p>` : ''}
-                            </div>
-                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No customer information</p>'}
-                        </div>
-                        
-                        <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Address:</h3>
-                            ${order.address_first_name || order.address_line1 ? `
-                            <div style="font-size: 14px;">
-                                <p style="font-weight: 500; margin: 0 0 4px 0;">${order.address_first_name || ''} ${order.address_last_name || ''}</p>
-                                <p style="margin: 0 0 4px 0;">${order.address_line1 || ''}</p>
-                                ${order.address_line2 ? `<p style="margin: 0 0 4px 0;">${order.address_line2}</p>` : ''}
-                                <p style="margin: 0 0 4px 0;">${order.address_city || ''}, ${order.address_postal_code || ''}</p>
-                                <p style="margin: 0 0 4px 0;">${order.address_country || ''}</p>
-                                ${order.address_phone ? `<p style="color: #6b7280; margin: 0;">${order.address_phone}</p>` : ''}
-                            </div>
-                            ` : '<p style="color: #9ca3af; font-size: 14px; margin: 0;">No address information</p>'}
-                        </div>
-                    </div>
+            
+            // Add basic order details (avoiding template literal conflicts)
+            html += '<div style="padding: 20px; background-color: #f9fafb; border-radius: 8px; margin: 20px 0;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Order Details</h3>';
+            html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
+            html += '<div>';
+            html += '<p><strong>Customer:</strong> ' + (order.name || 'N/A') + '</p>';
+            html += '<p><strong>Email:</strong> ' + (order.contact_email || 'N/A') + '</p>';
+            html += '<p><strong>Phone:</strong> ' + ((order.customer_phone || order.address_phone || '').toString() || 'N/A') + '</p>';
+            html += '</div>';
+            html += '<div>';
+            html += '<p><strong>Status:</strong> ' + (order.order_status || 'N/A') + '</p>';
+            html += '<p><strong>Total:</strong> ' + formatCurrency(order.total_price, order.currency) + '</p>';
+            html += '<p><strong>Items:</strong> ' + (order.line_items ? order.line_items.length : 0) + '</p>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            
+            // Line Items (read-only)
+            var items = (order.line_items && Array.isArray(order.line_items)) ? order.line_items : [];
+            html += '<div style="padding: 20px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 0 0 20px 0;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Line Items</h3>';
+            if (items.length > 0) {
+                html += '<div style="overflow-x: auto;">';
+                html += '<table style="width: 100%; border-collapse: collapse;">';
+                html += '<thead><tr>' +
+                        '<th style="text-align:left; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Item</th>' +
+                        '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Qty</th>' +
+                        '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Unit</th>' +
+                        '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Total</th>' +
+                        '</tr></thead>';
+                html += '<tbody>';
+                var itemsSubtotal = 0;
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i] || {};
+                    var name = (it.name || it.title || 'Item');
+                    var qty = parseFloat(it.quantity || 0);
+                    var unit = parseFloat((it.unit_price != null ? it.unit_price : (it.price != null ? it.price : 0)));
+                    var lineTotal = parseFloat((it.line_total != null ? it.line_total : (unit * qty)) || 0);
+                    if (!isFinite(qty)) qty = 0;
+                    if (!isFinite(unit)) unit = 0;
+                    if (!isFinite(lineTotal)) lineTotal = 0;
+                    itemsSubtotal += lineTotal;
+                    html += '<tr>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + name + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
+                    '</tr>';
+                }
+                html += '</tbody>';
+                html += '<tfoot>';
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(itemsSubtotal, order.currency) + '</td></tr>';
+                if (order.discount_total) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Discount</td><td style="padding: 8px; text-align:right;">-' + formatCurrency(order.discount_total, order.currency) + '</td></tr>';
+                }
+                if (order.shipping_total) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Shipping</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.shipping_total, order.currency) + '</td></tr>';
+                }
+                if (order.total_tax) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Tax</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.total_tax, order.currency) + '</td></tr>';
+                }
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#111827; font-weight:700;">Total</td><td style="padding: 8px; text-align:right; font-weight:700;">' + formatCurrency(order.total_price, order.currency) + '</td></tr>';
+                html += '</tfoot>';
+                html += '</table>';
+                html += '</div>';
+            } else {
+                html += '<div style="text-align:center; color:#6b7280; padding: 10px 0;">No line items</div>';
+            }
+            html += '</div>';
 
-                    <!-- Line Items -->
-                    <div>
-                        <h3 style="font-weight: 600; color: #111827; margin: 0 0 12px 0;">Items (${order.line_items ? order.line_items.length : 0})</h3>
-                        ${order.line_items && order.line_items.length > 0 ? `
-                        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
-                            <table style="width: 100%; border-collapse: collapse;">
-                                <thead style="background-color: #f9fafb;">
-                                    <tr>
-                                        <th style="padding: 12px 16px; text-align: left; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Item</th>
-                                        <th style="padding: 12px 16px; text-align: center; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Qty</th>
-                                        <th style="padding: 12px 16px; text-align: right; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Unit Price</th>
-                                        <th style="padding: 12px 16px; text-align: right; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">Amount</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${order.line_items.map((item, index) => `
-                                    <tr style="border-top: 1px solid #e5e7eb;">
-                                        <td style="padding: 16px;">
-                                            <div style="font-weight: 500; color: #111827;">${item.name || item.title || 'N/A'}</div>
-                                            ${item.sku ? `<div style="font-size: 12px; color: #6b7280; margin-top: 4px;">SKU: ${item.sku}</div>` : ''}
-                                            ${item.vendor ? `<div style="font-size: 12px; color: #6b7280;">Vendor: ${item.vendor}</div>` : ''}
-                                            ${item.variant_title ? `<div style="font-size: 12px; color: #6b7280;">Variant: ${item.variant_title}</div>` : ''}
-                                        </td>
-                                        <td style="padding: 16px; text-align: center;">
-                                            <span style="font-size: 14px; font-weight: 500;">${item.quantity || 0}</span>
-                                        </td>
-                                        <td style="padding: 16px; text-align: right; font-size: 14px;">${formatCurrency(item.unit_price || item.price || 0, order.currency)}</td>
-                                        <td style="padding: 16px; text-align: right; font-weight: 500;">${formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</td>
-                                    </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                        
-                        <!-- Totals -->
-                        <div style="margin-top: 16px; background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                            <div>
-                                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px;">
-                                    <span>Subtotal:</span>
-                                    <span>${formatCurrency(order.subtotal_price || 0, order.currency)}</span>
-                                </div>
-                                ${order.total_tax > 0 ? `
-                                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px;">
-                                    <span>Tax:</span>
-                                    <span>${formatCurrency(order.total_tax || 0, order.currency)}</span>
-                                </div>
-                                ` : ''}
-                                <div style="display: flex; justify-content: space-between; font-size: 18px; font-weight: bold; border-top: 1px solid #d1d5db; padding-top: 8px;">
-                                    <span>Total:</span>
-                                    <span style="color: #2563eb;">${formatCurrency(order.total_price, order.currency)}</span>
-                                </div>
-                            </div>
-                        </div>
-                        ` : '<div style="text-align: center; padding: 32px; color: #6b7280;">No items found</div>'}
-                    </div>
-                </div>
-            `;
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
             
             content.innerHTML = html;
         } else {
@@ -859,7 +894,7 @@ function viewOrderDetails(orderId) {
                         </svg>
                     </div>
                     <h3 class="text-lg font-medium text-gray-900 mb-2">Error Loading Order</h3>
-                    <p class="text-gray-500">${data.message || 'Unable to load order details'}</p>
+                    <p class="text-gray-500">Unable to load order details</p>
                 </div>
             `;
         }
@@ -880,6 +915,17 @@ function viewOrderDetails(orderId) {
     });
 }
 
+// View Invoice
+let currentOrderId = null;
+
+function viewInvoice() {
+    if (currentOrderId) {
+        window.open('/orders/' + currentOrderId + '/invoice', '_blank');
+    } else {
+        console.error('No order ID available for invoice');
+    }
+}
+
 // Edit Order Details
 function editOrderDetails(orderId) {
     console.log('Edit order details clicked for order:', orderId);
@@ -891,7 +937,7 @@ function editOrderDetails(orderId) {
     modal.style.display = 'block';
     
     // Fetch order details for editing
-    fetch(`/orders/${orderId}`, {
+    fetch('/orders/' + orderId, {
         method: 'GET',
         headers: {
             'Accept': 'application/json',
@@ -1091,10 +1137,14 @@ function addLineItem() {
     newItem.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
     
     newItem.innerHTML = `
-        <div>
+        <div style="position: relative;">
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
             <input type="text" name="items[${lineItemIndex}][name]" value="" 
-                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                   onkeyup="searchProducts(this, ${lineItemIndex})" 
+                   onfocus="showProductDropdown(${lineItemIndex})"
+                   placeholder="Type to search products...">
+            <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
             <input type="hidden" name="items[${lineItemIndex}][id]" value="">
         </div>
         <div>
@@ -1228,9 +1278,201 @@ document.addEventListener('keydown', function(e) {
 // Debug: Log when script loads
 console.log('Order management script loaded');
 
+// Check for preloaded customer on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const preloadCustomerId = localStorage.getItem('preloadCustomerId');
+    if (preloadCustomerId) {
+        // Remove from localStorage
+        localStorage.removeItem('preloadCustomerId');
+        
+        // Open create order modal with preloaded customer
+        createNewOrderWithCustomer(preloadCustomerId);
+    }
+});
+
+// Debug function to reset columns (can be called from browser console)
+window.resetOrderColumns = function() {
+    localStorage.removeItem('orderTableColumns');
+    location.reload();
+};
+
+// Product search functionality
+let productSearchTimeout = null;
+
+function searchProducts(input, index) {
+    clearTimeout(productSearchTimeout);
+    const query = input.value.trim();
+    
+    if (query.length < 2) {
+        hideProductDropdown(index);
+        return;
+    }
+    
+    productSearchTimeout = setTimeout(() => {
+        fetch(`/api/products/search?q=${encodeURIComponent(query)}&limit=10`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showProductResults(data.products, index);
+            }
+        })
+        .catch(error => {
+            console.error('Product search error:', error);
+        });
+    }, 300);
+}
+
+function showProductResults(products, index) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (!dropdown) return;
+    
+    if (products.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 8px; color: #6b7280; font-size: 12px;">No products found</div>';
+    } else {
+        dropdown.innerHTML = products.map(product => `
+            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price})" 
+                 style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; hover:background-color: #f9fafb;"
+                 onmouseover="this.style.backgroundColor='#f9fafb'" 
+                 onmouseout="this.style.backgroundColor='white'">
+                <div style="font-weight: 500; font-size: 13px;">${product.name}</div>
+                <div style="font-size: 11px; color: #6b7280;">
+                    ${product.sku ? 'SKU: ' + product.sku + ' | ' : ''}Price: PKR ${product.price} | Stock: ${product.inventory || 0}
+                </div>
+            </div>
+        `).join('');
+    }
+    
+    dropdown.style.display = 'block';
+}
+
+function selectProduct(index, productId, productName, price) {
+    // Fill in the product details
+    const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
+    const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
+    
+    if (nameInput) nameInput.value = productName;
+    if (priceInput) priceInput.value = price;
+    
+    // Update the line total
+    updateLineTotal(index);
+    
+    // Hide dropdown
+    hideProductDropdown(index);
+}
+
+// Update order total calculations
+function updateOrderTotal() {
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
+    const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
+    const tax = parseFloat(document.querySelector('input[name="total_tax"]')?.value) || 0;
+    
+    const total = subtotal - discount + shipping + tax;
+    const totalInput = document.querySelector('input[name="total_price"]');
+    if (totalInput) {
+        totalInput.value = total.toFixed(2);
+    }
+}
+
+// Update subtotal from line items
+function updateSubtotal() {
+    let subtotal = 0;
+    document.querySelectorAll('.line-item').forEach(item => {
+        const lineTotal = parseFloat(item.querySelector('input[name*="[line_total]"]')?.value) || 0;
+        subtotal += lineTotal;
+    });
+    
+    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
+    if (subtotalInput) {
+        subtotalInput.value = subtotal.toFixed(2);
+    }
+    
+    updateOrderTotal();
+}
+
+function showProductDropdown(index) {
+    // Hide other dropdowns
+    document.querySelectorAll('.product-dropdown').forEach(dropdown => {
+        if (dropdown.id !== `productDropdown_${index}`) {
+            dropdown.style.display = 'none';
+        }
+    });
+}
+
+function hideProductDropdown(index) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (dropdown) {
+        setTimeout(() => {
+            dropdown.style.display = 'none';
+        }, 200);
+    }
+}
+
+// Create new order with preloaded customer
+function createNewOrderWithCustomer(customerId) {
+    // Fetch customer data by ID (reuses customers show endpoint that returns JSON)
+    fetch(`/customers/${customerId}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data && data.success && data.customer) {
+            const customer = data.customer;
+            const fullName = [customer.first_name || '', customer.last_name || ''].join(' ').trim() || (customer.name || '');
+            
+            // Open create order modal
+            createNewOrder();
+            
+            // Switch to existing customer mode and preload data
+            setTimeout(() => {
+                selectCustomerMode('existing');
+                document.getElementById('customerSearch').value = fullName;
+                document.getElementById('selectedCustomerId').value = customer.id;
+                
+                // Auto-fill contact email
+                const emailInput = document.querySelector('input[name="contact_email"]');
+                if (emailInput && customer.email) {
+                    emailInput.value = customer.email;
+                }
+                
+                // Hide the customer selection buttons since customer is already selected
+                const existingBtn = document.getElementById('existingCustomerBtn');
+                const newBtn = document.getElementById('newCustomerBtn');
+                if (existingBtn && newBtn) {
+                    existingBtn.style.display = 'none';
+                    newBtn.style.display = 'none';
+                }
+                
+                // Add a note showing which customer was preloaded
+                const customerSection = document.querySelector('#existingCustomerSection');
+                if (customerSection) {
+                    const note = document.createElement('div');
+                    note.style.cssText = 'margin-top: 8px; padding: 8px; background-color: #ecfdf5; border: 1px solid #d1fae5; border-radius: 4px; font-size: 12px; color: #065f46;';
+                    note.innerHTML = `✓ Customer pre-selected from customers page: ${fullName}`;
+                    customerSection.appendChild(note);
+                }
+            }, 100);
+        } else {
+            // Fallback to regular create order
+            createNewOrder();
+        }
+    })
+    .catch(error => {
+        console.error('Error loading customer:', error);
+        // Fallback to regular create order
+        createNewOrder();
+    });
+}
+
+// DUPLICATE FUNCTION REMOVED - Complete version exists later in the file
+
 // ==================== COLUMN CUSTOMIZATION SYSTEM ====================
 
-// Available columns with their properties (Based on new 3-table structure)
 const availableColumns = {
     id: { label: 'ID', width: 'w-[60px]', key: 'id' },
     order_number: { label: 'Order #', width: 'min-w-[100px]', key: 'order_number' },
@@ -1245,16 +1487,21 @@ const availableColumns = {
     customer_phone: { label: 'Customer Phone', width: 'w-[130px]', key: 'customer_phone' },
     
     // Address Info
-    address_first_name: { label: 'Address Name', width: 'w-[150px]', key: 'address_first_name' },
+    address_first_name: { label: 'Address First Name', width: 'w-[150px]', key: 'address_first_name' },
+    address_last_name: { label: 'Address Last Name', width: 'w-[150px]', key: 'address_last_name' },
+    address_full_name: { label: 'Address Name', width: 'w-[180px]', key: 'address_full_name' },
     address_email: { label: 'Address Email', width: 'w-[180px]', key: 'address_email' },
     address_phone: { label: 'Address Phone', width: 'w-[130px]', key: 'address_phone' },
+    address1: { label: 'Address Line 1', width: 'w-[200px]', key: 'address1' },
+    address2: { label: 'Address Line 2', width: 'w-[200px]', key: 'address2' },
     address_city: { label: 'City', width: 'w-[120px]', key: 'address_city' },
     address_province: { label: 'Province', width: 'w-[120px]', key: 'address_province' },
-    address_country: { label: 'Country', width: 'w-[100px]', key: 'address_country' },
+    address_country: { label: 'Country', width: 'w-[120px]', key: 'address_country' },
+    postal_code: { label: 'Postal Code', width: 'w-[100px]', key: 'postal_code' },
     
     // Financial Info
     currency: { label: 'Currency', width: 'w-[80px]', key: 'currency' },
-    subtotal_price: { label: 'Subtotal', width: 'min-w-[100px]', key: 'subtotal_price' },
+    subtotal_price: { label: 'Subtotal', width: 'w-[100px]', key: 'subtotal_price' },
     discount_total: { label: 'Discount', width: 'w-[100px]', key: 'discount_total' },
     shipping_total: { label: 'Shipping', width: 'w-[100px]', key: 'shipping_total' },
     total_tax: { label: 'Tax', width: 'w-[100px]', key: 'total_tax' },
@@ -1262,22 +1509,21 @@ const availableColumns = {
     total_weight: { label: 'Weight', width: 'w-[100px]', key: 'total_weight' },
     
     // Payment & Other Info
-    payment_method: { label: 'Payment Method', width: 'w-[130px]', key: 'payment_method' },
-    coupon_code: { label: 'Coupon', width: 'w-[100px]', key: 'coupon_code' },
+    payment_method: { label: 'Payment Method', width: 'w-[120px]', key: 'payment_method' },
+    coupon_code: { label: 'Coupon Code', width: 'w-[100px]', key: 'coupon_code' },
     note: { label: 'Note', width: 'w-[150px]', key: 'note' },
+    created_at: { label: 'Created At', width: 'w-[130px]', key: 'created_at' },
+    updated_at: { label: 'Updated At', width: 'w-[130px]', key: 'updated_at' },
     
-    // Line Items
+    // Line Items Count
     line_items_count: { label: 'Items', width: 'w-[80px]', key: 'line_items_count' },
     
-    // Timestamps
-    created_at: { label: 'Created At', width: 'min-w-[130px]', key: 'created_at' },
-    updated_at: { label: 'Updated At', width: 'min-w-[130px]', key: 'updated_at' },
-    
-    // Actions (always visible and last)
+    // Actions column
     actions: { label: 'Actions', width: 'w-[120px]', key: 'actions', fixed: true }
 };
 
-// Default column order and visibility (practical selection)
+// DUPLICATE SECTION REMOVED - Proper definitions exist later in file
+
 const defaultColumns = [
     { id: 'id', visible: true },
     { id: 'order_number', visible: true },
@@ -1294,11 +1540,18 @@ const defaultColumns = [
     // Hidden by default but available
     { id: 'external_id', visible: false },
     { id: 'customer_phone', visible: false },
+    
+    // Address Fields
     { id: 'address_first_name', visible: false },
+    { id: 'address_last_name', visible: false },
+    { id: 'address_full_name', visible: false },
     { id: 'address_email', visible: false },
     { id: 'address_phone', visible: false },
+    { id: 'address1', visible: false },
+    { id: 'address2', visible: false },
     { id: 'address_city', visible: false },
     { id: 'address_province', visible: false },
+    { id: 'postal_code', visible: false },
     { id: 'address_country', visible: false },
     { id: 'currency', visible: false },
     { id: 'subtotal_price', visible: false },
@@ -1314,6 +1567,455 @@ const defaultColumns = [
 
 // Current column settings
 let currentColumns = JSON.parse(localStorage.getItem('orderTableColumns')) || defaultColumns;
+
+// Ensure Actions column is always present and visible
+function ensureActionsColumn() {
+    const hasActions = currentColumns.find(col => col.id === 'actions');
+    if (!hasActions) {
+        currentColumns.push({ id: 'actions', visible: true });
+    } else {
+        // Make sure it's visible
+        hasActions.visible = true;
+    }
+}
+
+// Ensure all address fields are present in currentColumns
+function ensureAddressFields() {
+    const addressFields = [
+        'address_first_name', 'address_last_name', 'address_full_name',
+        'address1', 'address2', 'postal_code'
+    ];
+    
+    addressFields.forEach(fieldId => {
+        const hasField = currentColumns.find(col => col.id === fieldId);
+        if (!hasField) {
+            // Add missing address field
+            currentColumns.push({ id: fieldId, visible: false });
+        }
+    });
+}
+
+// Initialize columns
+ensureActionsColumn();
+ensureAddressFields();
+
+// Save the updated columns to localStorage
+localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+
+// Debug: Log current columns after initialization
+console.log('Current columns after initialization:', currentColumns);
+
+// Orders data passed from Laravel
+window.ordersData = @json($orders->items());
+
+// Initialize table on page load
+document.addEventListener('DOMContentLoaded', function() {
+    renderOrdersTable();
+});
+
+function openColumnSettings() {
+    renderColumnSettings();
+    document.getElementById('columnSettingsModal').style.display = 'block';
+}
+
+function renderColumnSettings() {
+    const columnList = document.getElementById('columnList');
+    columnList.innerHTML = '';
+    
+    currentColumns.forEach((column, index) => {
+        const columnConfig = availableColumns[column.id];
+        if (!columnConfig) return;
+        
+        const item = document.createElement('div');
+        item.className = 'column-item';
+        item.draggable = true;
+        item.dataset.columnId = column.id;
+        item.style.cssText = `
+            display: flex; 
+            align-items: center; 
+            padding: 12px; 
+            margin-bottom: 8px; 
+            background: white; 
+            border: 1px solid #e5e7eb; 
+            border-radius: 6px; 
+            cursor: ${columnConfig.fixed ? 'default' : 'grab'};
+            user-select: none;
+        `;
+        
+        item.innerHTML = `
+            <div style="display: flex; align-items: center; width: 100%;">
+                <div style="margin-right: 12px; color: #6b7280; cursor: ${columnConfig.fixed ? 'default' : 'grab'};">
+                    ${columnConfig.fixed ? '🔒' : '☰'}
+                </div>
+                <div style="flex: 1;">
+                    <div style="font-weight: 500; color: #374151;">${columnConfig.label}</div>
+                    <div style="font-size: 12px; color: #6b7280;">${column.id}</div>
+                </div>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" ${column.visible ? 'checked' : ''} 
+                           onchange="toggleColumnVisibility('${column.id}', this.checked)"
+                           style="margin-right: 8px;">
+                    <span style="font-size: 12px; color: #6b7280;">Show</span>
+                </label>
+            </div>
+        `;
+        
+        // Add drag and drop only for non-fixed columns
+        if (!columnConfig.fixed) {
+            item.addEventListener('dragstart', handleDragStart);
+            item.addEventListener('dragover', handleDragOver);
+            item.addEventListener('drop', handleDrop);
+            item.addEventListener('dragend', handleDragEnd);
+        }
+        
+        columnList.appendChild(item);
+    });
+}
+
+// Drag and drop handlers
+let draggedItem = null;
+
+function handleDragStart(e) {
+    draggedItem = this;
+    this.style.opacity = '0.5';
+}
+
+function handleDragOver(e) {
+    e.preventDefault();
+}
+
+function handleDrop(e) {
+    e.preventDefault();
+    if (this !== draggedItem) {
+        const allItems = Array.from(this.parentNode.children);
+        const draggedIndex = allItems.indexOf(draggedItem);
+        const targetIndex = allItems.indexOf(this);
+        
+        if (draggedIndex < targetIndex) {
+            this.parentNode.insertBefore(draggedItem, this.nextSibling);
+        } else {
+            this.parentNode.insertBefore(draggedItem, this);
+        }
+        
+        // Update the column order
+        reorderColumns();
+    }
+}
+
+function handleDragEnd(e) {
+    this.style.opacity = '';
+    draggedItem = null;
+}
+
+function reorderColumns() {
+    const columnList = document.getElementById('columnList');
+    const items = Array.from(columnList.children);
+    
+    const newOrder = items.map(item => {
+        const columnId = item.dataset.columnId;
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        return {
+            id: columnId,
+            visible: checkbox.checked
+        };
+    });
+    
+    currentColumns = newOrder;
+    localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+}
+
+function toggleColumnVisibility(columnId, isVisible) {
+    const column = currentColumns.find(col => col.id === columnId);
+    if (column) {
+        column.visible = isVisible;
+        localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+    }
+}
+
+function saveColumnSettings() {
+    localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+    document.getElementById('columnSettingsModal').style.display = 'none';
+    renderOrdersTable();
+}
+
+function resetColumnSettings() {
+    localStorage.removeItem('orderTableColumns');
+    currentColumns = [...defaultColumns];
+    ensureActionsColumn();
+    ensureAddressFields();
+    localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+    renderColumnSettings();
+}
+
+function renderOrdersTable() {
+    const tableHead = document.querySelector('#ordersTable thead tr');
+    const tbody = document.querySelector('#ordersTable tbody');
+    
+    if (!tableHead || !tbody) {
+        console.error('Table elements not found');
+        return;
+    }
+    
+    // Clear existing content
+    tableHead.innerHTML = '';
+    tbody.innerHTML = '';
+    
+    // Create header
+    currentColumns.forEach(column => {
+        if (column.visible) {
+            const columnConfig = availableColumns[column.id];
+            if (columnConfig) {
+                const th = document.createElement('th');
+                th.className = `px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
+                th.innerHTML = columnConfig.label;
+                tableHead.appendChild(th);
+            }
+        }
+    });
+    
+    if (!window.ordersData || window.ordersData.length === 0) {
+        // Show a message in the table
+        const row = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 10;
+        td.className = 'text-center py-8 text-gray-500';
+        td.innerHTML = 'No orders found';
+        row.appendChild(td);
+        tbody.appendChild(row);
+        return;
+    }
+    
+    window.ordersData.forEach((order, index) => {
+        try {
+            const row = document.createElement('tr');
+            row.className = `hover:bg-gray-50/50 transition-all duration-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/20'}`;
+            
+            currentColumns.forEach(column => {
+                if (column.visible) {
+                    try {
+                        const td = document.createElement('td');
+                        td.className = 'px-6 py-5 align-middle';
+                        const cellContent = getCellContent(order, column.id);
+                        td.innerHTML = cellContent;
+                        row.appendChild(td);
+                    } catch (cellError) {
+                        console.error(`Error rendering cell ${column.id}:`, cellError);
+                        const td = document.createElement('td');
+                        td.className = 'px-6 py-5 align-middle';
+                        td.innerHTML = '<span class="text-red-500">Error</span>';
+                        row.appendChild(td);
+                    }
+                }
+            });
+            
+            tbody.appendChild(row);
+        } catch (rowError) {
+            console.error(`Error rendering row ${index}:`, rowError, order);
+        }
+    });
+}
+
+function getCellContent(order, columnId) {
+    const formatDate = (dateStr) => {
+        if (!dateStr) return '<span class="text-gray-400">-</span>';
+        try {
+            // Handle ISO format: "2025-09-09T17:41:03.000000Z"
+            let cleanDate = dateStr;
+            
+            // Remove timezone info if present
+            if (cleanDate.includes('T')) {
+                cleanDate = cleanDate.split('T')[0];
+            }
+            
+            // Parse and format
+            const date = new Date(cleanDate);
+            return date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+        } catch (error) {
+            console.error('Date formatting error:', error);
+            return '<span class="text-red-400">Invalid Date</span>';
+        }
+    };
+
+    const formatCurrency = (amount) => {
+        if (!amount && amount !== 0) return '0.00';
+        return parseFloat(amount).toFixed(2);
+    };
+
+    switch (columnId) {
+        case 'id':
+            return order.id || '';
+        case 'order_number':
+            return order.order_number || '';
+        case 'order_date':
+            return formatDate(order.order_date);
+        case 'order_status':
+            const status = order.order_status || 'pending';
+            const statusConfig = {
+                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: '⏳' },
+                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '⚡' },
+                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '✓' },
+                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '✕' },
+                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '↩' },
+                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' }
+            };
+            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
+                        <span class="mr-1 text-xs">${config.icon}</span>
+                        ${status.charAt(0).toUpperCase() + status.slice(1)}
+                    </span>`;
+        case 'external_source':
+            const source = order.external_source || 'manual';
+            const sourceColors = {
+                'shopify': 'bg-green-50 border-green-200 text-green-700',
+                'woocommerce': 'bg-purple-50 border-purple-200 text-purple-700',
+                'webapp': 'bg-blue-50 border-blue-200 text-blue-700',
+                'manual': 'bg-orange-50 border-orange-200 text-orange-700'
+            };
+            const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
+        case 'external_id':
+            return order.external_id || '';
+            
+        // Customer Info
+        case 'customer_name':
+            // Priority: order.name (from address) -> customer.full_name -> address fields
+            let customerName = '';
+            if (order.name && order.name.trim()) {
+                customerName = order.name.trim();
+            } else if (order.customer && order.customer.full_name && order.customer.full_name.trim()) {
+                customerName = order.customer.full_name.trim();
+            } else {
+                // Fallback to address fields
+                const firstName = order.address_first_name || '';
+                const lastName = order.address_last_name || '';
+                customerName = (firstName + ' ' + lastName).trim();
+            }
+            return customerName ? `<div class="table-text-primary">${customerName}</div>` : '<span class="table-text-small">N/A</span>';
+        case 'contact_email':
+            return order.contact_email || '';
+        case 'customer_phone':
+            const phone = order.customer_phone || order.address_phone || '';
+            return phone ? `<div class="table-text-secondary">${phone}</div>` : '<span class="table-text-small">N/A</span>';
+            
+        // Address Info
+        case 'address_first_name':
+            return order.address_first_name || '';
+        case 'address_last_name':
+            return order.address_last_name || '';
+        case 'address_full_name':
+            const addrFirstName = order.address_first_name || '';
+            const addrLastName = order.address_last_name || '';
+            const addrFullName = (addrFirstName + ' ' + addrLastName).trim();
+            return addrFullName || '';
+        case 'address_email':
+            return order.address_email || '';
+        case 'address_phone':
+            return order.address_phone || '';
+        case 'address1':
+            return order.address_line1 || '';
+        case 'address2':
+            return order.address_line2 || '';
+        case 'address_city':
+            return order.address_city || '';
+        case 'address_province':
+            return order.address_province || '';
+        case 'address_country':
+            return order.address_country || '';
+        case 'postal_code':
+            return order.postal_code || '';
+            
+        // Financial Info
+        case 'currency':
+            return order.currency || 'PKR';
+        case 'subtotal_price':
+            return formatCurrency(order.subtotal_price);
+        case 'discount_total':
+            return formatCurrency(order.discount_total);
+        case 'shipping_total':
+            return formatCurrency(order.shipping_total);
+        case 'total_tax':
+            return formatCurrency(order.total_tax);
+        case 'total_price':
+            const totalPrice = formatCurrency(order.total_price);
+            return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
+        case 'total_weight':
+            return order.total_weight || '0';
+            
+        // Payment & Other Info
+        case 'payment_method':
+            return order.payment_method || '';
+        case 'coupon_code':
+            return order.coupon_code || '';
+        case 'note':
+            return order.note || '';
+        case 'created_at':
+            return formatDate(order.created_at);
+        case 'updated_at':
+            return formatDate(order.updated_at);
+            
+        // Line Items Count
+        case 'line_items_count':
+            const itemCount = order.line_items ? order.line_items.length : (order.line_items_count || 0);
+            return `<span onclick="viewOrderDetails($${'{'}order.id${'}'}" class="inline-flex items-center px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700 rounded-md text-sm font-medium cursor-pointer hover:bg-blue-100 transition-colors">
+                        $${'{'}itemCount${'}'} item$${'{'}itemCount !== 1 ? 's' : ''${'}'}
+                    </span>`;
+            
+        // Actions column
+        case 'actions':
+            return `
+                <div class="flex items-center space-x-2">
+                    <button onclick="viewOrderDetails($${'{'}order.id${'}'}" 
+                            class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-600 hover:text-gray-700 hover:bg-gray-50 transition-colors duration-150" 
+                            title="View Details">
+                        <i class="ki-filled ki-eye text-sm"></i>
+                    </button>
+                    <button onclick="editOrderDetails($${'{'}order.id${'}'}" 
+                            class="inline-flex items-center p-1.5 border border-blue-300 rounded-md text-blue-600 hover:text-blue-700 hover:bg-blue-50 transition-colors duration-150" 
+                            title="Edit Order">
+                        <i class="ki-filled ki-notepad-edit text-sm"></i>
+                    </button>
+                    <button onclick="window.open('/orders/$${'{'}order.id${'}'}/invoice', '_blank')" 
+                            class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" 
+                            title="View Invoice">
+                        <i class="ki-filled ki-file-sheet text-sm"></i>
+                    </button>
+                </div>
+            `;
+            
+        default:
+            return '';
+    }
+}
+
+// Ensure all address fields are present in currentColumns
+function ensureAddressFields() {
+    const addressFields = [
+        'address_first_name', 'address_last_name', 'address_full_name',
+        'address1', 'address2', 'postal_code'
+    ];
+    
+    addressFields.forEach(fieldId => {
+        const hasField = currentColumns.find(col => col.id === fieldId);
+        if (!hasField) {
+            // Add missing address field
+            currentColumns.push({ id: fieldId, visible: false });
+        }
+    });
+}
+
+// Initialize columns
+ensureActionsColumn();
+ensureAddressFields();
+
+// Save the updated columns to localStorage
+localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+
+// Debug: Log current columns after initialization
+console.log('Current columns after initialization:', currentColumns);
 
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
@@ -1498,40 +2200,24 @@ function renderTableBody() {
 }
 
 function getCellContent(order, columnId) {
-    
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
             // Handle ISO format: "2025-09-09T17:41:03.000000Z"
             let cleanDate = dateStr;
             
-            if (dateStr.includes('T')) {
-                // Extract date and time parts
-                const [datePart, timePart] = dateStr.split('T');
-                const [year, month, day] = datePart.split('-');
-                const timeOnly = timePart.split('.')[0]; // Remove microseconds
-                const [hour, minute] = timeOnly.split(':');
-                
-                // Format as: "09 Sep 2025, 17:41"
-                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                const monthName = monthNames[parseInt(month) - 1];
-                
-                cleanDate = `${day} ${monthName} ${year}, ${hour}:${minute}`;
-            } else if (dateStr.includes(' ')) {
-                // Handle format: "2025-09-09 17:41:03"
-                const [datePart, timePart] = dateStr.split(' ');
-                const [year, month, day] = datePart.split('-');
-                const [hour, minute] = timePart.split(':');
-                
-                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                const monthName = monthNames[parseInt(month) - 1];
-                
-                cleanDate = `${day} ${monthName} ${year}, ${hour}:${minute}`;
+            // Remove timezone info if present
+            if (cleanDate.includes('T')) {
+                cleanDate = cleanDate.split('T')[0];
             }
             
-            return `<div class="table-text-primary">${cleanDate}</div>`;
+            // Parse and format
+            const date = new Date(cleanDate);
+            return date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
         } catch (error) {
             console.error('Date parsing error:', error, 'for date:', dateStr);
             return `<span class="text-sm text-gray-600">${dateStr}</span>`;
@@ -1563,8 +2249,8 @@ function getCellContent(order, columnId) {
                 'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' }
             };
             const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
-            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
-                        <span class="mr-1.5">${config.icon}</span>
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
+                        <span class="mr-1 text-xs">${config.icon}</span>
                         ${status.charAt(0).toUpperCase() + status.slice(1)}
                     </span>`;
         case 'external_source':
@@ -1575,7 +2261,7 @@ function getCellContent(order, columnId) {
                 'manual': 'bg-orange-50 border-orange-200 text-orange-700'
             };
             const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
-            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
         case 'external_id':
             return order.external_id || '';
             
@@ -1617,6 +2303,19 @@ function getCellContent(order, columnId) {
             return order.address_province || '';
         case 'address_country':
             return order.address_country || '';
+        case 'address_last_name':
+            return order.address_last_name || '';
+        case 'address_full_name':
+            const fullAddrFirstName = order.address_first_name || '';
+            const fullAddrLastName = order.address_last_name || '';
+            const fullAddrName = (fullAddrFirstName + ' ' + fullAddrLastName).trim();
+            return fullAddrName || '';
+        case 'address1':
+            return order.address_line1 || '';
+        case 'address2':
+            return order.address_line2 || '';
+        case 'postal_code':
+            return order.postal_code || '';
             
         // Financial Info
         case 'currency':
@@ -1647,7 +2346,12 @@ function getCellContent(order, columnId) {
         // Line Items
         case 'line_items_count':
             const itemCount = order.line_items ? order.line_items.length : 0;
-            return `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-50 border border-blue-200 text-blue-700 cursor-pointer hover:bg-blue-100 transition-colors" onclick="viewOrderDetails(${order.id})" title="Click to view order details">${itemCount} items</span>`;
+            return `<div class="text-center">
+                        <span class="text-sm font-medium text-blue-600 cursor-pointer hover:text-blue-800 hover:underline transition-colors" onclick="viewOrderDetails(${order.id})" title="Click to view order details">
+                            ${itemCount}
+                        </span>
+                        <div class="text-xs text-gray-400 mt-0.5">items</div>
+                    </div>`;
             
         // Timestamps
         case 'created_at':
@@ -1658,12 +2362,22 @@ function getCellContent(order, columnId) {
         // Actions
         case 'actions':
             return `
-                <div class="flex gap-2">
-                    <button onclick="viewOrderDetails(${order.id})" class="kt-btn kt-btn-sm kt-btn-light" title="View Details">
-                        <i class="ki-filled ki-eye text-sm"></i>
+                <div class="flex items-center justify-center gap-1.5">
+                    <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                        </svg>
                     </button>
-                    <button onclick="editOrderDetails(${order.id})" class="kt-btn kt-btn-sm kt-btn-primary" title="Edit Order">
-                        <i class="ki-filled ki-notepad-edit text-sm"></i>
+                    <button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
+                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                        </svg>
+                    </button>
+                    <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="View Invoice (PDF)">
+                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
                     </button>
                 </div>
             `;
@@ -1886,6 +2600,427 @@ function hideEmptyState() {
 }
 
 // ==================== END SEARCH AND FILTER ====================
+
+// Create new order functionality
+function createNewOrder() {
+    // Reset and open the edit modal for creating new order
+    const modal = document.getElementById('editOrderModal');
+    const content = document.getElementById('editOrderContent');
+    
+    // Set up form for new order
+    content.innerHTML = `
+        <form id="editOrderForm">
+            <!-- Customer Section -->
+            <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
+                <div style="padding: 16px; border-bottom: 1px solid #e5e7eb;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0;">Customer Information</h4>
+                </div>
+                <div style="padding: 16px;">
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Customer Selection</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <button type="button" id="existingCustomerBtn" onclick="selectCustomerMode('existing')" style="padding: 6px 12px; border: 1px solid #d1d5db; background-color: #f9fafb; color: #374151; border-radius: 4px; font-size: 12px; cursor: pointer;">Existing Customer</button>
+                            <button type="button" id="newCustomerBtn" onclick="selectCustomerMode('new')" style="padding: 6px 12px; border: 1px solid #10b981; background-color: #10b981; color: white; border-radius: 4px; font-size: 12px; cursor: pointer;">New Customer</button>
+                        </div>
+                        
+                        <!-- Existing Customer Search -->
+                        <div id="existingCustomerSection" style="display: none;">
+                            <div style="position: relative;">
+                                <input type="text" id="customerSearch" placeholder="Search customers by name, phone, or email..." 
+                                       style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                                       onkeyup="searchCustomers(this)" onfocus="showCustomerDropdown()">
+                                <div id="customerDropdown" class="customer-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                                <input type="hidden" name="customer_id" id="selectedCustomerId">
+                            </div>
+                        </div>
+                        
+                        <!-- New Customer Fields -->
+                        <div id="newCustomerSection">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">First Name</label>
+                                    <input type="text" name="customer_first_name" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Last Name</label>
+                                    <input type="text" name="customer_last_name" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 12px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Phone Number *</label>
+                                <input type="text" name="customer_phone" placeholder="+92345000681 or 03455000681" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            </div>
+                            <div style="margin-bottom: 12px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Company</label>
+                                <input type="text" name="customer_company" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Address Line 1</label>
+                                    <input type="text" name="customer_address1" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Address Line 2</label>
+                                    <input type="text" name="customer_address2" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">City</label>
+                                    <input type="text" name="customer_city" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Province</label>
+                                    <input type="text" name="customer_province" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Postal Code</label>
+                                    <input type="text" name="customer_postal_code" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
+                <div>
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Information</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Status</label>
+                            <select name="order_status" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="pending">Pending</option>
+                                <option value="processing">Processing</option>
+                                <option value="completed">Completed</option>
+                                <option value="on-hold">On Hold</option>
+                            </select>
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date</label>
+                            <input type="date" name="order_date" required value="${new Date().toISOString().split('T')[0]}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Contact Email</label>
+                            <input type="email" name="contact_email" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Payment Method</label>
+                            <select name="payment_method" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="">Select Payment Method</option>
+                                <option value="cash">Cash</option>
+                                <option value="bank_transfer">Bank Transfer</option>
+                                <option value="card">Card</option>
+                                <option value="online">Online Payment</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <div>
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Pricing</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Subtotal</label>
+                            <input type="number" step="0.01" name="subtotal_price" value="0" readonly style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Discount</label>
+                            <input type="number" step="0.01" name="discount_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Shipping</label>
+                            <input type="number" step="0.01" name="shipping_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Tax</label>
+                            <input type="number" step="0.01" name="total_tax" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+                            <input type="number" step="0.01" name="total_price" value="0" readonly style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; font-weight: 600;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Line Items Section -->
+            <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
+                <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0;">Line Items</h4>
+                    <button type="button" onclick="addLineItem()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                        + Add Item
+                    </button>
+                </div>
+                <div id="lineItemsContainer" style="padding: 16px;">
+                    <div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>
+                </div>
+            </div>
+
+            <!-- Notes Section -->
+            <div style="margin-bottom: 24px;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Notes</label>
+                <textarea name="note" rows="3" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="Order notes..."></textarea>
+            </div>
+
+            <!-- Form Actions -->
+            <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                <button type="button" onclick="closeModal('editOrderModal')" style="padding: 10px 20px; border: 1px solid #d1d5db; background-color: white; color: #374151; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    Cancel
+                </button>
+                <button type="submit" style="padding: 10px 20px; background-color: #059669; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    Create Order
+                </button>
+            </div>
+        </form>
+    `;
+    
+    // Reset line item index for new order
+    lineItemIndex = 0;
+    
+    // Set up form submission for new order
+    document.getElementById('editOrderForm').onsubmit = function(e) {
+        e.preventDefault();
+        saveNewOrder();
+    };
+    
+    modal.style.display = 'block';
+}
+
+// DUPLICATE FUNCTION REMOVED - Original exists at line 1402
+
+// Save new order
+function saveNewOrder() {
+    const form = document.getElementById('editOrderForm');
+    const formData = new FormData(form);
+    
+    // Collect line items
+    const items = [];
+    document.querySelectorAll('.line-item').forEach((item, index) => {
+        const name = item.querySelector(`input[name*="[name]"]`)?.value;
+        const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`)?.value) || 0;
+        const unitPrice = parseFloat(item.querySelector(`input[name*="[unit_price]"]`)?.value) || 0;
+        
+        if (name && quantity > 0 && unitPrice >= 0) {
+            items.push({
+                name: name,
+                quantity: quantity,
+                unit_price: unitPrice,
+                line_total: quantity * unitPrice
+            });
+        }
+    });
+    
+    if (items.length === 0) {
+        alert('Please add at least one line item');
+        return;
+    }
+    
+    // Prepare data
+    const orderData = {
+        customer_id: formData.get('customer_id'),
+        order_status: formData.get('order_status'),
+        order_date: formData.get('order_date'),
+        contact_email: formData.get('contact_email'),
+        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+        discount_total: parseFloat(formData.get('discount_total')) || 0,
+        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+        total_tax: parseFloat(formData.get('total_tax')) || 0,
+        total_price: parseFloat(formData.get('total_price')) || 0,
+        payment_method: formData.get('payment_method'),
+        note: formData.get('note'),
+        items: items,
+        // Customer creation fields
+        customer_phone: formData.get('customer_phone'),
+        customer_first_name: formData.get('customer_first_name'),
+        customer_last_name: formData.get('customer_last_name'),
+        customer_company: formData.get('customer_company'),
+        customer_address1: formData.get('customer_address1'),
+        customer_address2: formData.get('customer_address2'),
+        customer_city: formData.get('customer_city'),
+        customer_province: formData.get('customer_province'),
+        customer_postal_code: formData.get('customer_postal_code'),
+        customer_country: formData.get('customer_country')
+    };
+    
+    // Submit to server
+    fetch('/orders', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(orderData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Order created successfully!');
+            closeModal('editOrderModal');
+            // Refresh the page to show the new order
+            location.reload();
+        } else {
+            alert('Error creating order: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error creating order');
+    });
+}
+
+// Update order total calculations
+function updateOrderTotal() {
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
+    const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
+    const tax = parseFloat(document.querySelector('input[name="total_tax"]')?.value) || 0;
+    
+    const total = subtotal - discount + shipping + tax;
+    const totalInput = document.querySelector('input[name="total_price"]');
+    if (totalInput) {
+        totalInput.value = total.toFixed(2);
+    }
+}
+
+// Update subtotal from line items
+function updateSubtotal() {
+    let subtotal = 0;
+    document.querySelectorAll('.line-item').forEach(item => {
+        const lineTotal = parseFloat(item.querySelector('input[name*="[line_total]"]')?.value) || 0;
+        subtotal += lineTotal;
+    });
+    
+    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
+    if (subtotalInput) {
+        subtotalInput.value = subtotal.toFixed(2);
+    }
+    
+    updateOrderTotal();
+}
+
+// ==================== CUSTOMER SELECTION HELPERS (single source of truth) ====================
+let customerSearchTimeout;
+
+function selectCustomerMode(mode) {
+    const existingSection = document.getElementById('existingCustomerSection');
+    const newSection = document.getElementById('newCustomerSection');
+    const existingBtn = document.getElementById('existingCustomerBtn');
+    const newBtn = document.getElementById('newCustomerBtn');
+
+    if (!existingSection || !newSection || !existingBtn || !newBtn) return;
+
+    if (mode === 'existing') {
+        existingSection.style.display = '';
+        newSection.style.display = 'none';
+        existingBtn.style.backgroundColor = '#10b981';
+        existingBtn.style.color = '#ffffff';
+        existingBtn.style.borderColor = '#10b981';
+        newBtn.style.backgroundColor = '#f9fafb';
+        newBtn.style.color = '#374151';
+        newBtn.style.borderColor = '#d1d5db';
+    } else {
+        existingSection.style.display = 'none';
+        newSection.style.display = '';
+        newBtn.style.backgroundColor = '#10b981';
+        newBtn.style.color = '#ffffff';
+        newBtn.style.borderColor = '#10b981';
+        existingBtn.style.backgroundColor = '#f9fafb';
+        existingBtn.style.color = '#374151';
+        existingBtn.style.borderColor = '#d1d5db';
+    }
+}
+
+function showCustomerDropdown() {
+    const dd = document.getElementById('customerDropdown');
+    if (dd) dd.style.display = 'block';
+}
+
+function hideCustomerDropdown() {
+    const dd = document.getElementById('customerDropdown');
+    if (dd) dd.style.display = 'none';
+}
+
+function searchCustomers(inputEl) {
+    const query = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
+    clearTimeout(customerSearchTimeout);
+    if (!query) { hideCustomerDropdown(); return; }
+
+    customerSearchTimeout = setTimeout(() => {
+        fetch(`/api/customers/search?q=${encodeURIComponent(query)}&limit=10`, {
+            headers: { 'Accept': 'application/json' }
+        })
+        .then(r => r.json())
+        .then(data => {
+            const customers = (data && data.success) ? data.customers : [];
+            showCustomerResults(customers);
+        })
+        .catch(() => { /* silent */ });
+    }, 250);
+}
+
+function showCustomerResults(customers) {
+    const dd = document.getElementById('customerDropdown');
+    if (!dd) return;
+    if (!customers || customers.length === 0) { dd.innerHTML = '<div style="padding:8px;color:#6b7280;font-size:12px;">No customers found</div>'; showCustomerDropdown(); return; }
+
+    let html = '';
+    customers.forEach(c => {
+        const display = [c.name || '', c.phone || '', c.email || ''].filter(Boolean).join(' • ');
+        const addressData = {
+            address1: c.address_line1 || c.address1 || '',
+            address2: c.address_line2 || c.address2 || '',
+            city: c.city || c.address_city || '',
+            province: c.province || c.address_province || '',
+            postal_code: c.postal_code || '',
+        };
+        const payload = encodeURIComponent(JSON.stringify(addressData));
+        html += `<div style="padding:8px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid #f3f4f6;" onclick="selectCustomer('${c.id}','${(c.name||'').replace(/'/g, "\'")}', '${payload}')">${display}</div>`;
+    });
+    dd.innerHTML = html;
+    showCustomerDropdown();
+}
+
+function selectCustomer(customerId, customerName, encodedAddress) {
+    const addressData = encodedAddress ? JSON.parse(decodeURIComponent(encodedAddress)) : {};
+    const searchInput = document.getElementById('customerSearch');
+    const hiddenId = document.getElementById('selectedCustomerId');
+    if (searchInput) searchInput.value = customerName || '';
+    if (hiddenId) hiddenId.value = customerId || '';
+    hideCustomerDropdown();
+
+    // Optionally pre-fill new customer fields if visible
+    const fields = [
+        ['input[name="customer_address1"]', 'address1'],
+        ['input[name="customer_address2"]', 'address2'],
+        ['input[name="customer_city"]', 'city'],
+        ['input[name="customer_province"]', 'province'],
+        ['input[name="customer_postal_code"]', 'postal_code']
+    ];
+    fields.forEach(([sel, key]) => {
+        const el = document.querySelector(sel);
+        if (el && addressData[key]) el.value = addressData[key];
+    });
+}
+// ==================== END CUSTOMER SELECTION HELPERS ====================
+
+// Remove any stray duplicate "+ Create Order" label rendered outside the toolbar
+document.addEventListener('DOMContentLoaded', function() {
+    const containers = document.querySelectorAll('.kt-container-fixed');
+    containers.forEach(container => {
+        const suspects = Array.from(container.querySelectorAll('span, a, button, div'));
+        suspects.forEach(el => {
+            const t = (el.textContent || '').trim();
+            if ((t === '+ Create Order' || t === 'Create Order') && !el.closest('[title="Create Order"]')) {
+                // Hide only if it's not the actual toolbar button
+                if (!el.className || !/border-emerald-500|create-order-btn/.test(el.className)) {
+                    el.style.display = 'none';
+                }
+            }
+        });
+    });
+});
 
 </script>
 @endpush

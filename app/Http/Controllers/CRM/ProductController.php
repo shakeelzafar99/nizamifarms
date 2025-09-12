@@ -68,6 +68,66 @@ class ProductController extends Controller
         }
     }
 
+    public function search(Request $request)
+    {
+        try {
+            $query = $request->get('q', '');
+            $limit = $request->get('limit', 10);
+            
+            $products = \App\Models\CRM\ProductModel::with('variants')
+                ->where('is_active', true)
+                ->where(function($q) use ($query) {
+                    $q->where('title', 'LIKE', "%{$query}%")
+                      ->orWhereHas('variants', function($vq) use ($query) {
+                          $vq->where('sku', 'LIKE', "%{$query}%")
+                            ->orWhere('title', 'LIKE', "%{$query}%");
+                      });
+                })
+                ->limit($limit)
+                ->get();
+            
+            $results = [];
+            foreach ($products as $product) {
+                // Add main product
+                $results[] = [
+                    'id' => 'product_' . $product->id,
+                    'type' => 'product',
+                    'name' => $product->title,
+                    'sku' => null,
+                    'price' => $product->price_min,
+                    'inventory' => $product->total_inventory,
+                    'vendor' => $product->vendor
+                ];
+                
+                // Add variants
+                foreach ($product->variants as $variant) {
+                    if ($variant->available) {
+                        $results[] = [
+                            'id' => 'variant_' . $variant->id,
+                            'type' => 'variant',
+                            'name' => $product->title . ($variant->title ? ' - ' . $variant->title : ''),
+                            'sku' => $variant->sku,
+                            'price' => $variant->price,
+                            'inventory' => $variant->inventory_quantity,
+                            'vendor' => $product->vendor
+                        ];
+                    }
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'products' => $results
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to search products: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
     /**
      * Import products from Shopify (limited)
      */

@@ -190,9 +190,209 @@ window.closeModal = function(modalId) {
     }
 };
 
+window.addCustomerNote = function(id) {
+    console.log('addCustomerNote called with:', id);
+    const modal = document.getElementById('addNoteModal');
+    const content = document.getElementById('addNoteContent');
+    
+    if (!modal) {
+        console.error('Add note modal not found');
+        return;
+    }
+    
+    // Show loading
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
+    
+    // Fetch customer details to get current notes
+    fetch(`/customers/${id}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const customer = data.customer;
+            
+            let html = `
+                <form id="addNoteForm" onsubmit="saveCustomerNote(event, ${id})">
+                    <div style="margin-bottom: 16px;">
+                        <h4 style="font-weight: 600; color: #374151; margin: 0 0 12px 0;">Add Note for ${customer.first_name} ${customer.last_name}</h4>
+                        <div style="background-color: #f9fafb; padding: 12px; border-radius: 6px; margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Current Notes</label>
+                            <p style="margin: 4px 0 0 0; color: #374151;">${customer.notes || 'No notes yet'}</p>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Add New Note</label>
+                        <textarea name="notes" rows="4" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="Enter your note here..." required></textarea>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                        <button type="button" onclick="closeModal('addNoteModal')" style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            Cancel
+                        </button>
+                        <button type="submit" style="padding: 8px 16px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            Save Note
+                        </button>
+                    </div>
+                </form>
+            `;
+            
+            content.innerHTML = html;
+        } else {
+            content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching customer:', error);
+        content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+    });
+};
+
+window.saveCustomerNote = function(event, customerId) {
+    event.preventDefault();
+    const form = event.target;
+    const formData = new FormData(form);
+    
+    fetch(`/customers/${customerId}/notes`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            closeModal('addNoteModal');
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error saving note: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error saving note:', error);
+        alert('Error saving note');
+    });
+};
+
 window.editCustomer = function(id) {
     console.log('editCustomer called with:', id);
-    // TODO: Implement edit functionality
+    const modal = document.getElementById('editCustomerModal');
+    const content = document.getElementById('editCustomerContent');
+    
+    if (!modal) {
+        console.error('Edit customer modal not found');
+        return;
+    }
+    
+    // Show loading
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
+    
+    // Fetch customer details
+    fetch(`/customers/${id}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const customer = data.customer;
+            
+            let html = `
+                <form id="editCustomerForm" onsubmit="saveCustomer(event, ${id})">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">First Name</label>
+                            <input type="text" name="first_name" value="${customer.first_name || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Last Name</label>
+                            <input type="text" name="last_name" value="${customer.last_name || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" required>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Email</label>
+                        <input type="email" name="email" value="${customer.email || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Phone</label>
+                        <input type="text" name="phone" value="${customer.phone_original || customer.phone || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Company</label>
+                        <input type="text" name="company" value="${customer.company || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Address Line 1</label>
+                        <input type="text" name="address1" value="${customer.address1 || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Address Line 2</label>
+                        <input type="text" name="address2" value="${customer.address2 || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">City</label>
+                            <input type="text" name="city" value="${customer.city || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Province</label>
+                            <input type="text" name="province" value="${customer.province || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Postal Code</label>
+                            <input type="text" name="postal_code" value="${customer.postal_code || ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Notes</label>
+                        <textarea name="notes" rows="3" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; resize: vertical;" placeholder="Customer notes...">${customer.notes || ''}</textarea>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                        <button type="button" onclick="closeModal('editCustomerModal')" style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            Cancel
+                        </button>
+                        <button type="submit" style="padding: 8px 16px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                            Save Changes
+                        </button>
+                    </div>
+                </form>
+            `;
+            
+            content.innerHTML = html;
+        } else {
+            content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching customer:', error);
+        content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+    });
+};
+
+window.saveCustomer = function(event, customerId) {
+    event.preventDefault();
+    const form = event.target;
+    const formData = new FormData(form);
+    
+    fetch(`/customers/${customerId}`, {
+        method: 'PUT',
+        body: formData,
+        headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            closeModal('editCustomerModal');
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error saving customer: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error saving customer:', error);
+        alert('Error saving customer');
+    });
 };
 
 window.deleteCustomer = function(id) {
@@ -382,8 +582,19 @@ window.editOrderFromCustomer = function(orderId) {
 };
 
 // Add the viewOrderDetails function from orders page
+window.currentOrderId = null;
+
+window.viewInvoice = function() {
+    if (window.currentOrderId) {
+        window.open(`/orders/${window.currentOrderId}/invoice`, '_blank');
+    } else {
+        console.error('No order ID available for invoice');
+    }
+};
+
 window.viewOrderDetails = function(orderId) {
     console.log('View order details clicked for order:', orderId);
+    window.currentOrderId = orderId; // Store the order ID for invoice viewing
     const modal = document.getElementById('viewOrderModal');
     const content = document.getElementById('viewOrderContent');
     
@@ -716,7 +927,7 @@ window.viewOrderDetails = function(orderId) {
                             <!-- Fallback: Show static table if JavaScript fails -->
                             @if($customers->count() > 0)
                                 @foreach ($customers as $customer)
-                                <tr class="hover:bg-gray-50 transition-colors duration-150">
+                                <tr class="hover:bg-gray-50 transition-colors duration-150 cursor-pointer" onclick="viewCustomer({{ $customer->id }})">
                                     <td class="px-6 py-4 whitespace-nowrap text-center">
                                         <span class="text-sm font-medium text-gray-500">#{{ $customer->id }}</span>
                                     </td>
@@ -789,12 +1000,17 @@ window.viewOrderDetails = function(orderId) {
                                             <span class="text-sm text-gray-400">Never</span>
                                         @endif
                                     </td>
-                                    <td class="px-6 py-4 whitespace-nowrap">
+                                    <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
                                         <div class="flex items-center gap-1">
-                                            <button onclick="viewCustomer({{ $customer->id }})" 
+                                            <button onclick="addCustomerNote({{ $customer->id }})" 
                                                     class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
-                                                    title="View Details">
-                                                <i class="ki-filled ki-eye text-sm"></i>
+                                                    title="Add Notes">
+                                                <i class="ki-filled ki-note text-sm"></i>
+                                            </button>
+                                            <button onclick="createOrderForCustomer({{ $customer->id }})" 
+                                                    class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" 
+                                                    title="Create Order">
+                                                <i class="ki-filled ki-plus text-sm"></i>
                                             </button>
                                             <button onclick="editCustomer({{ $customer->id }})" 
                                                     class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
@@ -893,13 +1109,57 @@ window.viewOrderDetails = function(orderId) {
     </div>
 </div>
 
+<!-- Add Note Modal -->
+<div id="addNoteModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 20px; font-weight: 600; margin: 0;">Add Customer Note</h3>
+                <button onclick="closeModal('addNoteModal')" 
+                        style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+            </div>
+        </div>
+        <div id="addNoteContent" style="padding: 24px;">
+            <!-- Content will be populated by JavaScript -->
+        </div>
+    </div>
+</div>
+
+<!-- Edit Customer Modal -->
+<div id="editCustomerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 20px; font-weight: 600; margin: 0;">Edit Customer</h3>
+                <button onclick="closeModal('editCustomerModal')" 
+                        style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+            </div>
+        </div>
+        <div id="editCustomerContent" style="padding: 24px;">
+            <!-- Content will be populated by JavaScript -->
+        </div>
+    </div>
+</div>
+
 <!-- Order Details Modal (from orders page) -->
 <div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1002;">
     <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Invoice Details</h3>
-            <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <button id="viewInvoiceBtn" onclick="window.viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10,9 9,9 8,9"/>
+                    </svg>
+                    View Invoice
+                </button>
+                <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            </div>
         </div>
         
         <!-- Modal Body -->
@@ -908,4 +1168,15 @@ window.viewOrderDetails = function(orderId) {
         </div>
     </div>
 </div>
+<script>
+// Create order for specific customer
+window.createOrderForCustomer = function(customerId) {
+    // Store customer ID in localStorage for the orders page
+    localStorage.setItem('preloadCustomerId', customerId);
+    
+    // Navigate to orders page
+    window.location.href = '/orders';
+};
+</script>
+
 @endsection

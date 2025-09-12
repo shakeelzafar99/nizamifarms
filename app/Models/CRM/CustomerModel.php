@@ -36,6 +36,7 @@ class CustomerModel extends BaseModel
         'last_order_date',
         'total_orders',
         'total_spent',
+        'notes',
         'is_active',
         'created_by',
         'updated_by'

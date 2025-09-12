@@ -79,6 +79,59 @@ class CustomerController extends Controller
         }
     }
     
+    public function search(Request $request)
+    {
+        try {
+            $query = $request->get('q', '');
+            $limit = $request->get('limit', 10);
+            
+            $customers = \App\Models\CRM\CustomerModel::query()
+                ->where(function($q) use ($query) {
+                    $q->where('first_name', 'LIKE', "%{$query}%")
+                      ->orWhere('last_name', 'LIKE', "%{$query}%")
+                      ->orWhere('email', 'LIKE', "%{$query}%")
+                      ->orWhere('phone_original', 'LIKE', "%{$query}%")
+                      ->orWhere('phone_normalized', 'LIKE', "%{$query}%")
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$query}%"]);
+                })
+                ->limit($limit)
+                ->get();
+            
+            $results = $customers->map(function($customer) {
+                return [
+                    'id' => $customer->id,
+                    'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                    'email' => $customer->email,
+                    'phone' => $customer->phone_original,
+                    'address' => [
+                        'first_name' => $customer->first_name,
+                        'last_name' => $customer->last_name,
+                        'company' => $customer->company,
+                        'email' => $customer->email,
+                        'phone' => $customer->phone_original,
+                        'address1' => $customer->address1,
+                        'address2' => $customer->address2,
+                        'city' => $customer->city,
+                        'province' => $customer->province,
+                        'postal_code' => $customer->postal_code,
+                        'country' => $customer->country
+                    ]
+                ];
+            });
+            
+            return response()->json([
+                'success' => true,
+                'customers' => $results
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to search customers: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function orders($id)
     {
         try {
@@ -128,6 +181,7 @@ class CustomerController extends Controller
             'province' => 'nullable|string|max:100',
             'postal_code' => 'nullable|string|max:20',
             'country' => 'nullable|string|max:100',
+            'notes' => 'nullable|string',
             'is_active' => 'boolean'
         ]);
         
@@ -135,9 +189,58 @@ class CustomerController extends Controller
             $customer = CustomerModel::findOrFail($id);
             $customer->update($request->all());
             
+            // Handle both AJAX and regular form submissions
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Customer updated successfully!'
+                ]);
+            }
+            
             return redirect()->route('customers.index')->with('success', 'Customer updated successfully!');
         } catch (\Exception $e) {
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error updating customer: ' . $e->getMessage()
+                ], 500);
+            }
+            
             return redirect()->back()->with('error', 'Error updating customer: ' . $e->getMessage());
+        }
+    }
+
+    public function addNote(Request $request, $id)
+    {
+        $request->validate([
+            'notes' => 'required|string'
+        ]);
+        
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            
+            // Append new note to existing notes
+            $existingNotes = $customer->notes ?? '';
+            $newNote = $request->notes;
+            $timestamp = now()->format('Y-m-d H:i:s');
+            
+            if ($existingNotes) {
+                $updatedNotes = $existingNotes . "\n\n[{$timestamp}] " . $newNote;
+            } else {
+                $updatedNotes = "[{$timestamp}] " . $newNote;
+            }
+            
+            $customer->update(['notes' => $updatedNotes]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Note added successfully!'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error adding note: ' . $e->getMessage()
+            ], 500);
         }
     }
     

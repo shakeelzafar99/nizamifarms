@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice #{{ $order->order_number }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        
+        .invoice-header {
+            background-color: white;
+            color: #2d3748;
+            padding: 25px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .logo {
+            width: 180px;
+            height: 120px;
+            background-color: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .company-info h1 {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 5px;
+            letter-spacing: 1px;
+            color: #2d3748;
+        }
+        
+        .company-tagline {
+            font-size: 13px;
+            color: #4a5568;
+            font-style: italic;
+        }
+        
+        .company-details {
+            text-align: right;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #4a5568;
+        }
+        
+        .company-details div {
+            margin-bottom: 2px;
+        }
+        
+        .company-details strong {
+            color: #2d3748;
+        }
+        
+        .invoice-title {
+            background-color: white;
+            padding: 30px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .invoice-title h2 {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2d3748;
+            text-align: center;
+        }
+        
+        .invoice-info {
+            padding: 30px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+        }
+        
+        .customer-info h3,
+        .order-info h3 {
+            font-size: 14px;
+            font-weight: bold;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+        
+        .customer-details,
+        .order-details {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #4a5568;
+        }
+        
+        .customer-details div,
+        .order-details div {
+            margin-bottom: 5px;
+        }
+        
+        .customer-name {
+            font-weight: bold;
+            color: #2d3748;
+        }
+        
+        .products-table {
+            margin: 0 30px;
+            border-collapse: collapse;
+            width: calc(100% - 60px);
+            margin-bottom: 30px;
+        }
+        
+        .products-table thead {
+            background-color: #2d3748;
+            color: white;
+        }
+        
+        .products-table th {
+            padding: 15px 10px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .products-table th:nth-child(2),
+        .products-table th:nth-child(3) {
+            text-align: center;
+        }
+        
+        .products-table th:last-child {
+            text-align: right;
+        }
+        
+        .products-table tbody tr {
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .products-table tbody tr:nth-child(even) {
+            background-color: #f7fafc;
+        }
+        
+        .products-table td {
+            padding: 15px 10px;
+            font-size: 13px;
+            color: #4a5568;
+        }
+        
+        .products-table td:nth-child(2),
+        .products-table td:nth-child(3) {
+            text-align: center;
+        }
+        
+        .products-table td:last-child {
+            text-align: right;
+            font-weight: bold;
+        }
+        
+        .product-name {
+            font-weight: bold;
+            color: #2d3748;
+            margin-bottom: 3px;
+        }
+        
+        .product-sku {
+            font-size: 11px;
+            color: #718096;
+        }
+        
+        .totals-section {
+            padding: 0 30px 30px 30px;
+        }
+        
+        .totals-table {
+            width: 100%;
+            max-width: 300px;
+            margin-left: auto;
+            border-collapse: collapse;
+        }
+        
+        .totals-table td {
+            padding: 8px 15px;
+            font-size: 14px;
+        }
+        
+        .totals-table .label {
+            text-align: right;
+            font-weight: bold;
+            color: #4a5568;
+            border-right: 1px solid #e2e8f0;
+        }
+        
+        .totals-table .amount {
+            text-align: right;
+            color: #2d3748;
+            font-weight: bold;
+        }
+        
+        .totals-table .total-row {
+            border-top: 2px solid #2d3748;
+            background-color: #f7fafc;
+        }
+        
+        .totals-table .total-row .label,
+        .totals-table .total-row .amount {
+            font-size: 16px;
+            font-weight: bold;
+            color: #2d3748;
+        }
+        
+        .footer {
+            background-color: #f7fafc;
+            padding: 30px;
+            text-align: center;
+            border-top: 1px solid #e2e8f0;
+        }
+        
+        .footer-message {
+            font-size: 14px;
+            color: #4a5568;
+            margin-bottom: 15px;
+        }
+        
+        .footer-contact {
+            font-size: 12px;
+            color: #718096;
+            line-height: 1.5;
+        }
+        
+        @media print {
+            body {
+                padding: 0;
+                background-color: white;
+            }
+            
+            .invoice-container {
+                box-shadow: none;
+                max-width: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <!-- Header -->
+        <div class="invoice-header">
+            <div class="logo-section">
+                <div class="logo">
+                    <!-- Try multiple logo paths with debugging -->
+                <div id="logoContainer" style="width: 100%; height: 100%; position: relative;">
+                    <!-- Try multiple logo paths -->
+                    <img id="logoImage" src="{{ asset('assets/media/logos/nizami-farms-logo.png.jpg') }}" alt="Nizami Farms" 
+                         style="border-radius: 6px; max-width: 100%; max-height: 100%;"
+                         onload="console.log('✅ Logo loaded successfully from:', this.src)" 
+                         onerror="tryNextLogo(this)">
+                    
+                    <!-- Fallback company name -->
+                    <div id="logoFallback" style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; background: white; border-radius: 6px; border: 2px solid #059669; padding: 8px;">
+                        <div style="text-align: center;">
+                            <div style="color: #059669; font-size: 16px; font-weight: bold; margin-bottom: 2px;">NIZAMI FARMS</div>
+                            <div style="color: #6b7280; font-size: 10px;">Quality meat since generations</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <script>
+                // Debug: Show what URLs Laravel is generating
+                console.log('🔍 Laravel asset base URL:', '{{ asset("") }}');
+                console.log('🔍 Expected logo URL:', '{{ asset("assets/media/logos/nizami-farms-logo.png.jpg") }}');
+                
+                const logoPaths = [
+                    '{{ asset("assets/media/logos/nizami-farms-logo.png.jpg") }}',
+                    '{{ asset("assets/media/logos/nizami-farms-logo.png") }}',
+                    '{{ asset("assets/media/logos/nizami-farms-logo.jpg") }}',
+                    '{{ asset("assets/media/logos/mi-farms-logo.png") }}', 
+                    '{{ asset("assets/media/app/nizami-logo.png") }}',
+                    '{{ asset("assets/media/logos/logo.png") }}',
+                    '{{ asset("logo.png") }}',
+                    '{{ asset("assets/logo.png") }}'
+                ];
+                let currentLogoIndex = 0;
+                
+                function tryNextLogo(imgElement) {
+                    currentLogoIndex++;
+                    console.log(`❌ Logo failed to load from: ${imgElement.src}`);
+                    
+                    if (currentLogoIndex < logoPaths.length) {
+                        console.log(`🔄 Trying next logo path: ${logoPaths[currentLogoIndex]}`);
+                        imgElement.src = logoPaths[currentLogoIndex];
+                    } else {
+                        console.log('⚠️ All logo paths failed, showing fallback company name');
+                        imgElement.style.display = 'none';
+                        document.getElementById('logoFallback').style.display = 'flex';
+                    }
+                }
+                </script>
+                </div>
+                <!-- Company info should come from logo image, not hardcoded text -->
+            </div>
+            <div class="company-details">
+                <div><strong>NTN: A02148-1</strong></div>
+                <div>F-12, Rehman Arcade</div>
+                <div>Azizpura Market, G-6/1</div>
+                <div>Islamabad</div>
+                <div>www.nizamifarms.com</div>
+                <div>Ph: 0333-5300605</div>
+            </div>
+        </div>
+        
+        <!-- Invoice Title -->
+        <div class="invoice-title">
+            <h2>INVOICE</h2>
+        </div>
+        
+        <!-- Invoice Information -->
+        <div class="invoice-info">
+            <div class="customer-section">
+                <h3>Bill To:</h3>
+                <div class="customer-details">
+                    <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
+                    @if($order->customer && $order->customer->address1)
+                        <div>{{ $order->customer->address1 }}</div>
+                        @if($order->customer->address2)
+                            <div>{{ $order->customer->address2 }}</div>
+                        @endif
+                        <div>{{ $order->customer->city ?? '' }}@if($order->customer->province), {{ $order->customer->province }}@endif</div>
+                        @if($order->customer->postal_code)
+                            <div>{{ $order->customer->postal_code }}</div>
+                        @endif
+                    @endif
+                    @if($order->customer && $order->customer->phone_original)
+                        <div>{{ $order->customer->phone_original }}</div>
+                    @endif
+                </div>
+            </div>
+            <div class="order-section">
+                <div class="order-details">
+                    <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                    <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
+                    <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Products Table -->
+        <table class="products-table">
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Quantity</th>
+                    <th>Price</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($order->lineItems as $item)
+                <tr>
+                    <td>
+                        <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
+                        @if($item->sku)
+                            <div class="product-sku">SKU: {{ $item->sku }}</div>
+                        @endif
+                    </td>
+                    <td>{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
+                    <td>Rs.{{ number_format($item->unit_price, 0) }}</td>
+                    <td>Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+        
+        <!-- Totals -->
+        <div class="totals-section">
+            <table class="totals-table">
+                <tr>
+                    <td class="label">Subtotal:</td>
+                    <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
+                </tr>
+                @if($order->shipping_cost && $order->shipping_cost > 0)
+                <tr>
+                    <td class="label">Shipping:</td>
+                    <td class="amount">Rs.{{ number_format($order->shipping_cost, 0) }} via Flat Rate</td>
+                </tr>
+                @endif
+                <tr class="total-row">
+                    <td class="label">Total:</td>
+                    <td class="amount">Rs.{{ number_format($order->total_price, 0) }}</td>
+                </tr>
+            </table>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <div class="footer-message">
+                You have trusted us to serve you the best meat in town, thank you!
+            </div>
+            <div class="footer-contact">
+                Follow us on Facebook & Instagram: @nizamifarms, in case of complaints, please contact: 0333-5300605 or write to<br>
+                us at: support@nizamifarms.com
+            </div>
+        </div>
+    </div>
+</body>
+</html>
