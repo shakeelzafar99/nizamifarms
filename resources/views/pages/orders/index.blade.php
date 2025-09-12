@@ -1615,6 +1615,13 @@ console.log('Current columns after initialization:', currentColumns);
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 
+// DEBUG: Log the raw data from Laravel
+console.log('DEBUG - Raw ordersData from Laravel:', window.ordersData);
+if (window.ordersData && window.ordersData.length > 0) {
+    console.log('DEBUG - First order sample:', window.ordersData[0]);
+    console.log('DEBUG - First order order_date:', window.ordersData[0].order_date);
+}
+
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
@@ -1826,11 +1833,16 @@ function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
+            // DEBUG: Log the raw date string received
+            console.log('DEBUG formatDate - Raw dateStr:', dateStr);
+            
             // Parse the date string
             const date = new Date(dateStr);
+            console.log('DEBUG formatDate - Parsed Date object:', date);
+            console.log('DEBUG formatDate - Date toISOString:', date.toISOString());
             
             // Format with both date and time
-            return date.toLocaleDateString('en-US', {
+            const formatted = date.toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',
@@ -1838,6 +1850,8 @@ function getCellContent(order, columnId) {
                 minute: '2-digit',
                 hour12: false
             });
+            console.log('DEBUG formatDate - Formatted result:', formatted);
+            return formatted;
         } catch (error) {
             console.error('Date formatting error:', error);
             return '<span class="text-red-400">Invalid Date</span>';
@@ -2024,6 +2038,13 @@ console.log('Current columns after initialization:', currentColumns);
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 
+// DEBUG: Log the raw data from Laravel
+console.log('DEBUG - Raw ordersData from Laravel:', window.ordersData);
+if (window.ordersData && window.ordersData.length > 0) {
+    console.log('DEBUG - First order sample:', window.ordersData[0]);
+    console.log('DEBUG - First order order_date:', window.ordersData[0].order_date);
+}
+
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
@@ -2207,11 +2228,16 @@ function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
+            // DEBUG: Log the raw date string received (second function)
+            console.log('DEBUG formatDate #2 - Raw dateStr:', dateStr);
+            
             // Parse the date string
             const date = new Date(dateStr);
+            console.log('DEBUG formatDate #2 - Parsed Date object:', date);
+            console.log('DEBUG formatDate #2 - Date toISOString:', date.toISOString());
             
             // Format with both date and time
-            return date.toLocaleDateString('en-US', {
+            const formatted = date.toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
                 day: 'numeric',
@@ -2219,6 +2245,8 @@ function getCellContent(order, columnId) {
                 minute: '2-digit',
                 hour12: false
             });
+            console.log('DEBUG formatDate #2 - Formatted result:', formatted);
+            return formatted;
         } catch (error) {
             console.error('Date parsing error:', error, 'for date:', dateStr);
             return `<span class="text-sm text-gray-600">${dateStr}</span>`;

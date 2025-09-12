@@ -135,11 +135,11 @@ class OrderModel extends BaseModel
             return $value;
         }
         
-        // Parse the date string and treat it as local time (not UTC)
+        // Parse the date string and return as-is (no timezone conversion)
         try {
-            // Create Carbon instance and explicitly set it as local timezone
+            // Create Carbon instance without timezone conversion
             $carbon = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $value);
-            return $carbon->setTimezone(config('app.timezone', 'UTC'));
+            return $carbon;
         } catch (\Exception $e) {
             // If parsing fails, try the original method
             try {
@@ -148,6 +148,22 @@ class OrderModel extends BaseModel
                 return $value;
             }
         }
+    }
+
+    /**
+     * Override how order_date is serialized to JSON to prevent timezone conversion
+     */
+    public function toArray()
+    {
+        $array = parent::toArray();
+        
+        // Override order_date serialization to return raw database value
+        if (isset($array['order_date']) && $this->order_date) {
+            // Get the raw database value without timezone conversion
+            $array['order_date'] = $this->getRawOriginal('order_date') ?: $this->attributes['order_date'];
+        }
+        
+        return $array;
     }
 
     /**
