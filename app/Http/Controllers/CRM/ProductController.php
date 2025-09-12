@@ -357,4 +357,234 @@ class ProductController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Show the form for creating a new product
+     */
+    public function create()
+    {
+        return view('pages.products.create');
+    }
+
+    /**
+     * Store a manually created product
+     */
+    public function store(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'title' => 'required|string|max:255',
+                'description' => 'nullable|string',
+                'vendor' => 'nullable|string|max:100',
+                'product_type' => 'nullable|string|max:100',
+                'status' => 'required|in:active,draft,archived',
+                'tags' => 'nullable|string',
+                'seo_title' => 'nullable|string|max:255',
+                'seo_description' => 'nullable|string|max:500',
+                'track_inventory' => 'boolean',
+                'is_active' => 'boolean',
+                
+                // Variants
+                'variants' => 'required|array|min:1',
+                'variants.*.title' => 'required|string|max:255',
+                'variants.*.sku' => 'nullable|string|max:100',
+                'variants.*.price' => 'required|numeric|min:0',
+                'variants.*.compare_at_price' => 'nullable|numeric|min:0',
+                'variants.*.cost_price' => 'nullable|numeric|min:0',
+                'variants.*.inventory_quantity' => 'required|integer|min:0',
+                'variants.*.weight' => 'nullable|numeric|min:0',
+                'variants.*.weight_unit' => 'nullable|string|in:g,kg,oz,lb',
+                'variants.*.barcode' => 'nullable|string|max:100',
+            ]);
+
+            // Format data to match API structure
+            $productData = $this->formatManualProductData($validated);
+            
+            // Use the same function as API to maintain consistency
+            $product = ProductModel::storeProductFromApi($productData);
+
+            return redirect()->route('products.index')
+                ->with('success', 'Product created successfully.');
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return back()->withInput()
+                ->withErrors($e->errors());
+        } catch (\Exception $e) {
+            Log::error('Error creating manual product: ' . $e->getMessage());
+            return back()->withInput()
+                ->with('error', 'Failed to create product. Please try again.');
+        }
+    }
+
+    /**
+     * Show the form for editing the specified product
+     */
+    public function edit($id)
+    {
+        try {
+            $product = ProductModel::with('variants')->findOrFail($id);
+            return view('pages.products.edit', compact('product'));
+        } catch (\Exception $e) {
+            Log::error('Error fetching product for edit: ' . $e->getMessage());
+            return redirect()->route('products.index')
+                ->with('error', 'Product not found.');
+        }
+    }
+
+    /**
+     * Update the specified product
+     */
+    public function update(Request $request, $id)
+    {
+        try {
+            $product = ProductModel::findOrFail($id);
+
+            // Don't allow editing Shopify products
+            if ($product->shopify_product_id) {
+                return back()->with('error', 'Shopify products cannot be edited manually. Please sync from Shopify instead.');
+            }
+
+            $validated = $request->validate([
+                'title' => 'required|string|max:255',
+                'description' => 'nullable|string',
+                'vendor' => 'nullable|string|max:100',
+                'product_type' => 'nullable|string|max:100',
+                'status' => 'required|in:active,draft,archived',
+                'tags' => 'nullable|string',
+                'seo_title' => 'nullable|string|max:255',
+                'seo_description' => 'nullable|string|max:500',
+                'track_inventory' => 'boolean',
+                'is_active' => 'boolean',
+                
+                // Variants
+                'variants' => 'required|array|min:1',
+                'variants.*.id' => 'nullable|integer|exists:t_crm_prod_product_variant,id',
+                'variants.*.title' => 'required|string|max:255',
+                'variants.*.sku' => 'nullable|string|max:100',
+                'variants.*.price' => 'required|numeric|min:0',
+                'variants.*.compare_at_price' => 'nullable|numeric|min:0',
+                'variants.*.cost_price' => 'nullable|numeric|min:0',
+                'variants.*.inventory_quantity' => 'required|integer|min:0',
+                'variants.*.weight' => 'nullable|numeric|min:0',
+                'variants.*.weight_unit' => 'nullable|string|in:g,kg,oz,lb',
+                'variants.*.barcode' => 'nullable|string|max:100',
+            ]);
+
+            // Format data to match API structure
+            $productData = $this->formatManualProductData($validated);
+            
+            // For updates, we need to include the existing product ID in variants
+            if (isset($productData['variants'])) {
+                foreach ($productData['variants'] as $index => $variantData) {
+                    // If this is an existing variant, preserve its ID
+                    if (isset($validated['variants'][$index]['id'])) {
+                        $productData['variants'][$index]['id'] = $validated['variants'][$index]['id'];
+                    }
+                }
+            }
+            
+            // Use the same function as API to maintain consistency
+            $updatedProduct = ProductModel::storeProductFromApi($productData);
+
+            return redirect()->route('products.index')
+                ->with('success', 'Product updated successfully.');
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return back()->withInput()
+                ->withErrors($e->errors());
+        } catch (\Exception $e) {
+            Log::error('Error updating manual product: ' . $e->getMessage());
+            return back()->withInput()
+                ->with('error', 'Failed to update product. Please try again.');
+        }
+    }
+
+    /**
+     * Format manual product data to match API structure
+     */
+    private function formatManualProductData(array $validated): array
+    {
+        // Calculate price range from variants
+        $prices = array_column($validated['variants'], 'price');
+        $priceMin = min($prices);
+        $priceMax = max($prices);
+        
+        // Calculate total inventory
+        $totalInventory = array_sum(array_column($validated['variants'], 'inventory_quantity'));
+        
+        // Format variants to match API structure
+        $variants = [];
+        foreach ($validated['variants'] as $index => $variantData) {
+            $variants[] = [
+                'id' => $variantData['id'] ?? null, // For updates
+                'title' => $variantData['title'],
+                'sku' => $variantData['sku'] ?? null,
+                'barcode' => $variantData['barcode'] ?? null,
+                'price' => $variantData['price'],
+                'compare_at_price' => $variantData['compare_at_price'] ?? null,
+                'cost_price' => $variantData['cost_price'] ?? null,
+                'inventory_quantity' => $variantData['inventory_quantity'],
+                'inventory_policy' => 'deny', // Default for manual products
+                'weight' => $variantData['weight'] ?? null,
+                'weight_unit' => $variantData['weight_unit'] ?? 'g',
+                'position' => $index + 1,
+                'available' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+        }
+
+        // Parse tags
+        $tags = [];
+        if (!empty($validated['tags'])) {
+            $tags = array_map('trim', explode(',', $validated['tags']));
+        }
+
+        // Format data to match API structure
+        return [
+            // No Shopify IDs for manual products
+            'shopify_product_id' => null,
+            'shopify_handle' => null,
+            
+            // Basic info
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
+            'vendor' => $validated['vendor'] ?? null,
+            'product_type' => $validated['product_type'] ?? null,
+            'status' => $validated['status'],
+            'published_at' => $validated['status'] === 'active' ? now() : null,
+            
+            // Pricing
+            'price_min' => $priceMin,
+            'price_max' => $priceMax,
+            
+            // Inventory
+            'total_inventory' => $totalInventory,
+            'track_inventory' => $validated['track_inventory'] ?? true,
+            
+            // SEO
+            'seo_title' => $validated['seo_title'] ?? null,
+            'seo_description' => $validated['seo_description'] ?? null,
+            
+            // Media (manual products start without images)
+            'featured_image' => null,
+            'images' => [],
+            
+            // Organization
+            'tags' => $tags,
+            'options' => [], // Manual products can have simple options later
+            
+            // Sync status (manual products are not synced)
+            'sync_status' => 'manual',
+            'last_synced_at' => null,
+            'shopify_created_at' => null,
+            'shopify_updated_at' => null,
+            
+            // Activity
+            'is_active' => $validated['is_active'] ?? true,
+            
+            // Variants
+            'variants' => $variants
+        ];
+    }
 }

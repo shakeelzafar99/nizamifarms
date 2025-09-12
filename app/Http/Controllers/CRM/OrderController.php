@@ -41,10 +41,14 @@ class OrderController extends Controller
             });
         }
         
-        $orders = $query->orderBy('order_date', 'desc')->paginate(10);
+        // Handle per_page parameter
+        $perPage = $request->get('per_page', 10);
+        $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 10; // Validate per_page values
         
-        // Append source parameter to pagination links
-        $orders->appends(['source' => $source]);
+        $orders = $query->orderBy('order_date', 'desc')->paginate($perPage);
+        
+        // Append parameters to pagination links
+        $orders->appends(['source' => $source, 'per_page' => $perPage]);
         
         // Get counts for tab badges using new structure
         $shopifyCount = \App\Models\CRM\OrderModel::where('external_source', 'shopify')->count();

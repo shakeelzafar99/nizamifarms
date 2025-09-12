@@ -13,6 +13,10 @@
         </div>
         
         <div class="flex items-center gap-2.5">
+            <a href="{{ route('products.create') }}" class="kt-btn kt-btn-light">
+                <i class="ki-filled ki-plus"></i>
+                Create Product
+            </a>
             <button onclick="openColumnSettings()" class="kt-btn kt-btn-light">
                 <i class="ki-filled ki-setting-2"></i>
                 Columns

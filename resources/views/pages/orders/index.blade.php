@@ -881,7 +881,11 @@ function viewOrderDetails(orderId) {
                     var name = (it.name || it.title || 'Item');
                     var qty = parseFloat(it.quantity || 0);
                     var unit = parseFloat((it.unit_price != null ? it.unit_price : (it.price != null ? it.price : 0)));
-                    var lineTotal = parseFloat((it.line_total != null ? it.line_total : (unit * qty)) || 0);
+                    // Use the same calculation logic as the invoice: prefer line_total, fallback to qty * unit_price
+                    var lineTotal = parseFloat(it.line_total || 0);
+                    if (!lineTotal || lineTotal === 0) {
+                        lineTotal = qty * unit;
+                    }
                     if (!isFinite(qty)) qty = 0;
                     if (!isFinite(unit)) unit = 0;
                     if (!isFinite(lineTotal)) lineTotal = 0;
@@ -895,7 +899,9 @@ function viewOrderDetails(orderId) {
                 }
                 html += '</tbody>';
                 html += '<tfoot>';
-                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(itemsSubtotal, order.currency) + '</td></tr>';
+                // Use the same subtotal as the invoice: prefer order.subtotal_price, fallback to calculated
+                var displaySubtotal = order.subtotal_price || itemsSubtotal;
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(displaySubtotal, order.currency) + '</td></tr>';
                 if (order.discount_total) {
                     html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Discount</td><td style="padding: 8px; text-align:right;">-' + formatCurrency(order.discount_total, order.currency) + '</td></tr>';
                 }
@@ -1575,6 +1581,9 @@ const defaultColumns = [
 // Current column settings
 let currentColumns = JSON.parse(localStorage.getItem('orderTableColumns')) || defaultColumns;
 
+/* ⚠️ DUPLICATE INITIALIZATION BLOCK - COMMENTED OUT TO PREVENT CONFLICTS
+   This block is duplicated below around line 1966 and causes JavaScript errors
+   
 // Ensure Actions column is always present and visible
 function ensureActionsColumn() {
     const hasActions = currentColumns.find(col => col.id === 'actions');
@@ -1615,17 +1624,12 @@ console.log('Current columns after initialization:', currentColumns);
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 
-// DEBUG: Log the raw data from Laravel
-console.log('DEBUG - Raw ordersData from Laravel:', window.ordersData);
-if (window.ordersData && window.ordersData.length > 0) {
-    console.log('DEBUG - First order sample:', window.ordersData[0]);
-    console.log('DEBUG - First order order_date:', window.ordersData[0].order_date);
-}
 
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
 });
+*/ 
 
 function openColumnSettings() {
     renderColumnSettings();
@@ -1761,85 +1765,23 @@ function resetColumnSettings() {
     renderColumnSettings();
 }
 
+// ⚠️ DEPRECATED: This function has been replaced by the modular renderTableHeader() and renderTableBody() system
+// Keeping this as a wrapper for backward compatibility, but it now calls the newer modular functions
 function renderOrdersTable() {
-    const tableHead = document.querySelector('#ordersTable thead tr');
-    const tbody = document.querySelector('#ordersTable tbody');
-    
-    if (!tableHead || !tbody) {
-        console.error('Table elements not found');
-        return;
-    }
-    
-    // Clear existing content
-    tableHead.innerHTML = '';
-    tbody.innerHTML = '';
-    
-    // Create header
-    currentColumns.forEach(column => {
-        if (column.visible) {
-            const columnConfig = availableColumns[column.id];
-            if (columnConfig) {
-                const th = document.createElement('th');
-                th.className = `px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
-                th.innerHTML = columnConfig.label;
-                tableHead.appendChild(th);
-            }
-        }
-    });
-    
-    if (!window.ordersData || window.ordersData.length === 0) {
-        // Show a message in the table
-        const row = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 10;
-        td.className = 'text-center py-8 text-gray-500';
-        td.innerHTML = 'No orders found';
-        row.appendChild(td);
-        tbody.appendChild(row);
-        return;
-    }
-    
-    window.ordersData.forEach((order, index) => {
-        try {
-            const row = document.createElement('tr');
-            row.className = `hover:bg-gray-50/50 transition-all duration-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/20'}`;
-            
-            currentColumns.forEach(column => {
-                if (column.visible) {
-                    try {
-                        const td = document.createElement('td');
-                        td.className = 'px-6 py-5 align-middle';
-                        const cellContent = getCellContent(order, column.id);
-                        td.innerHTML = cellContent;
-                        row.appendChild(td);
-                    } catch (cellError) {
-                        console.error(`Error rendering cell ${column.id}:`, cellError);
-                        const td = document.createElement('td');
-                        td.className = 'px-6 py-5 align-middle';
-                        td.innerHTML = '<span class="text-red-500">Error</span>';
-                        row.appendChild(td);
-                    }
-                }
-            });
-            
-            tbody.appendChild(row);
-        } catch (rowError) {
-            console.error(`Error rendering row ${index}:`, rowError, order);
-        }
-    });
+    // Call the newer, more maintainable modular system
+    renderTableHeader();
+    renderTableBody();
 }
 
+/* ⚠️ DEPRECATED: This function has been replaced by the newer getCellContent() function below (around line 2227)
+   This older version has been commented out to avoid conflicts and duplicated code
+   The newer version has better error handling, debug logging, and more features
 function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
-            // DEBUG: Log the raw date string received
-            console.log('DEBUG formatDate - Raw dateStr:', dateStr);
-            
             // Parse the date string
             const date = new Date(dateStr);
-            console.log('DEBUG formatDate - Parsed Date object:', date);
-            console.log('DEBUG formatDate - Date toISOString:', date.toISOString());
             
             // Format with both date and time
             const formatted = date.toLocaleDateString('en-US', {
@@ -1850,7 +1792,6 @@ function getCellContent(order, columnId) {
                 minute: '2-digit',
                 hour12: false
             });
-            console.log('DEBUG formatDate - Formatted result:', formatted);
             return formatted;
         } catch (error) {
             console.error('Date formatting error:', error);
@@ -2007,9 +1948,21 @@ function getCellContent(order, columnId) {
         default:
             return '';
     }
+} // END DEPRECATED getCellContent function */
+
+// DEPRECATED: The following functions are part of the older system and have been commented out
+// to avoid conflicts. The newer implementations are used instead.
+// Ensure Actions column is always present and visible (active)
+function ensureActionsColumn() {
+    const hasActions = currentColumns.find(function(col) { return col.id === 'actions'; });
+    if (!hasActions) {
+        currentColumns.push({ id: 'actions', visible: true });
+    } else {
+        hasActions.visible = true;
+    }
 }
 
-// Ensure all address fields are present in currentColumns
+// Ensure all address fields are present in currentColumns (legacy copy)
 function ensureAddressFields() {
     const addressFields = [
         'address_first_name', 'address_last_name', 'address_full_name',
@@ -2038,12 +1991,6 @@ console.log('Current columns after initialization:', currentColumns);
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 
-// DEBUG: Log the raw data from Laravel
-console.log('DEBUG - Raw ordersData from Laravel:', window.ordersData);
-if (window.ordersData && window.ordersData.length > 0) {
-    console.log('DEBUG - First order sample:', window.ordersData[0]);
-    console.log('DEBUG - First order order_date:', window.ordersData[0].order_date);
-}
 
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -2228,13 +2175,8 @@ function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
-            // DEBUG: Log the raw date string received (second function)
-            console.log('DEBUG formatDate #2 - Raw dateStr:', dateStr);
-            
             // Parse the date string
             const date = new Date(dateStr);
-            console.log('DEBUG formatDate #2 - Parsed Date object:', date);
-            console.log('DEBUG formatDate #2 - Date toISOString:', date.toISOString());
             
             // Format with both date and time
             const formatted = date.toLocaleDateString('en-US', {
@@ -2245,7 +2187,6 @@ function getCellContent(order, columnId) {
                 minute: '2-digit',
                 hour12: false
             });
-            console.log('DEBUG formatDate #2 - Formatted result:', formatted);
             return formatted;
         } catch (error) {
             console.error('Date parsing error:', error, 'for date:', dateStr);
@@ -2466,6 +2407,18 @@ document.addEventListener('DOMContentLoaded', function() {
     dateFilter.addEventListener('change', function() {
         fetchFilteredOrders();
     });
+    
+    // Per-page selector functionality
+    const perPageSelector = document.getElementById('per-page-selector');
+    if (perPageSelector) {
+        perPageSelector.addEventListener('change', function() {
+            const perPage = this.value;
+            const currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.set('per_page', perPage);
+            currentUrl.searchParams.set('page', '1'); // Reset to first page
+            window.location.href = currentUrl.toString();
+        });
+    }
 });
 
 // Fetch filtered orders from backend
@@ -2951,16 +2904,16 @@ function searchCustomers(inputEl) {
     clearTimeout(customerSearchTimeout);
     if (!query) { hideCustomerDropdown(); return; }
 
-    customerSearchTimeout = setTimeout(() => {
-        fetch(`/api/customers/search?q=${encodeURIComponent(query)}&limit=10`, {
+    customerSearchTimeout = setTimeout(function() {
+        fetch('/api/customers/search?q=' + encodeURIComponent(query) + '&limit=10', {
             headers: { 'Accept': 'application/json' }
         })
-        .then(r => r.json())
-        .then(data => {
-            const customers = (data && data.success) ? data.customers : [];
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            const customers = (data && data.success && data.customers) ? data.customers : [];
             showCustomerResults(customers);
         })
-        .catch(() => { /* silent */ });
+        .catch(function() {});
     }, 250);
 }
 
