@@ -403,7 +403,7 @@
             <table class="totals-table">
                 <tr>
                     <td class="label">Subtotal:</td>
-                    <td class="amount">Rs.{{ number_format($order->subtotal_price ?: $order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
+                    <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
                 </tr>
                 @if($order->discount_total && $order->discount_total > 0)
                 <tr>

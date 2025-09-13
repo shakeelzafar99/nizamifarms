@@ -899,9 +899,8 @@ function viewOrderDetails(orderId) {
                 }
                 html += '</tbody>';
                 html += '<tfoot>';
-                // Use the same subtotal as the invoice: prefer order.subtotal_price, fallback to calculated
-                var displaySubtotal = order.subtotal_price || itemsSubtotal;
-                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(displaySubtotal, order.currency) + '</td></tr>';
+                // Use calculated subtotal from line items only (exclude shipping/fees)
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(itemsSubtotal, order.currency) + '</td></tr>';
                 if (order.discount_total) {
                     html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Discount</td><td style="padding: 8px; text-align:right;">-' + formatCurrency(order.discount_total, order.currency) + '</td></tr>';
                 }
