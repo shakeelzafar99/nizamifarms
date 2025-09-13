@@ -107,6 +107,13 @@ window.viewCustomer = function(id) {
                 </div>
                 
                 <div style="margin-top: 24px;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Notes</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+                        <p style="margin: 0; color: #374151; white-space: pre-wrap;">${customer.notes || 'No notes available'}</p>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 24px;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Recent Orders (Last 10)</h4>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                         ${customer.orders && customer.orders.length > 0 ? `
@@ -183,90 +190,215 @@ window.viewCustomer = function(id) {
     });
 };
 
+// Customer column management (reusing existing pattern)
+const defaultCustomerColumns = [
+    { id: 'id', visible: true, fixed: true },
+    { id: 'name', visible: true, fixed: true },
+    { id: 'contact', visible: true, fixed: false },
+    { id: 'location', visible: true, fixed: false },
+    { id: 'total_orders', visible: true, fixed: false },
+    { id: 'total_spent', visible: true, fixed: false },
+    { id: 'status', visible: true, fixed: false },
+    { id: 'first_order_date', visible: true, fixed: false },
+    { id: 'last_order_date', visible: true, fixed: false },
+    { id: 'actions', visible: true, fixed: true }
+];
+
+let currentCustomerColumns = JSON.parse(localStorage.getItem('customerTableColumns')) || defaultCustomerColumns;
+
+// Clean up any corrupted data on initialization
+currentCustomerColumns = currentCustomerColumns.filter(col => col && col.id && typeof col.id === 'string');
+
+const availableCustomerColumns = {
+    'id': { label: 'ID', fixed: true },
+    'name': { label: 'Customer', fixed: true },
+    'contact': { label: 'Contact', fixed: false },
+    'location': { label: 'Location', fixed: false },
+    'total_orders': { label: 'Orders', fixed: false },
+    'total_spent': { label: 'Total Spent', fixed: false },
+    'status': { label: 'Status', fixed: false },
+    'first_order_date': { label: 'First Order', fixed: false },
+    'last_order_date': { label: 'Last Order', fixed: false },
+    'first_name': { label: 'First Name', fixed: false },
+    'last_name': { label: 'Last Name', fixed: false },
+    'email': { label: 'Email', fixed: false },
+    'company': { label: 'Company', fixed: false },
+    'phone': { label: 'Phone', fixed: false },
+    'phone_original': { label: 'Original Phone', fixed: false },
+    'phone_normalized': { label: 'Normalized Phone', fixed: false },
+    'address1': { label: 'Address Line 1', fixed: false },
+    'address2': { label: 'Address Line 2', fixed: false },
+    'city': { label: 'City', fixed: false },
+    'province': { label: 'Province', fixed: false },
+    'postal_code': { label: 'Postal Code', fixed: false },
+    'country': { label: 'Country', fixed: false },
+    'notes': { label: 'Notes', fixed: false },
+    'latitude': { label: 'Latitude', fixed: false },
+    'longitude': { label: 'Longitude', fixed: false },
+    'external_customer_ids': { label: 'External IDs', fixed: false },
+    'is_active': { label: 'Active Status', fixed: false },
+    'created_at': { label: 'Created Date', fixed: false },
+    'updated_at': { label: 'Updated Date', fixed: false },
+    'created_by': { label: 'Created By', fixed: false },
+    'updated_by': { label: 'Updated By', fixed: false },
+    'actions': { label: 'Actions', fixed: true }
+};
+
 window.openColumnSettings = function() {
-    console.log('Opening column settings...');
     const modal = document.getElementById('columnSettingsModal');
     const columnList = document.getElementById('columnList');
     
-    if (!modal) {
-        console.error('Column settings modal not found');
+    if (!modal || !columnList) {
+        console.error('Column settings modal elements not found');
         return;
     }
     
-    if (!columnList) {
-        console.error('Column list element not found');
-        return;
-    }
-    
-    // Complete column list with all available fields
-    const availableColumns = {
-        'id': { label: 'ID', width: 'w-16' },
-        'name': { label: 'Customer', width: 'min-w-[200px]' },
-        'contact': { label: 'Contact', width: 'w-40' },
-        'location': { label: 'Location', width: 'w-32' },
-        'total_orders': { label: 'Orders', width: 'w-20' },
-        'total_spent': { label: 'Total Spent', width: 'w-32' },
-        'status': { label: 'Status', width: 'w-24' },
-        'first_order_date': { label: 'First Order', width: 'w-32' },
-        'last_order_date': { label: 'Last Order', width: 'w-32' },
-        
-        // Personal Information
-        'first_name': { label: 'First Name', width: 'w-32' },
-        'last_name': { label: 'Last Name', width: 'w-32' },
-        'email': { label: 'Email', width: 'w-40' },
-        'company': { label: 'Company', width: 'w-32' },
-        
-        // Phone Numbers
-        'phone': { label: 'Phone', width: 'w-32' },
-        'phone_original': { label: 'Original Phone', width: 'w-32' },
-        'phone_normalized': { label: 'Normalized Phone', width: 'w-32' },
-        
-        // Address Information
-        'address1': { label: 'Address Line 1', width: 'w-48' },
-        'address2': { label: 'Address Line 2', width: 'w-32' },
-        'city': { label: 'City', width: 'w-24' },
-        'province': { label: 'Province', width: 'w-24' },
-        'postal_code': { label: 'Postal Code', width: 'w-24' },
-        'country': { label: 'Country', width: 'w-24' },
-        
-        // Additional Fields
-        'notes': { label: 'Notes', width: 'w-64' },
-        'latitude': { label: 'Latitude', width: 'w-24' },
-        'longitude': { label: 'Longitude', width: 'w-24' },
-        'external_customer_ids': { label: 'External IDs', width: 'w-32' },
-        'is_active': { label: 'Active Status', width: 'w-24' },
-        
-        // Timestamps
-        'created_at': { label: 'Created Date', width: 'w-32' },
-        'updated_at': { label: 'Updated Date', width: 'w-32' },
-        'created_by': { label: 'Created By', width: 'w-24' },
-        'updated_by': { label: 'Updated By', width: 'w-24' }
-    };
-    
-    let html = '';
-    Object.keys(availableColumns).forEach(columnId => {
-        const column = availableColumns[columnId];
-        html += `
-            <div class="flex items-center justify-between p-3 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors">
-                <div class="flex items-center gap-3">
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                        <span class="text-sm font-medium">${column.label}</span>
-                    </label>
-                </div>
-            </div>
-        `;
-    });
-    
-    columnList.innerHTML = html;
+    renderCustomerColumnSettings();
     modal.style.display = 'block';
-    console.log('Column settings modal opened');
 };
 
-window.toggleColumn = function(columnId) {
-    console.log('toggleColumn called with:', columnId);
-    // TODO: Implement column toggling
-};
+function renderCustomerColumnSettings() {
+    const columnList = document.getElementById('columnList');
+    columnList.innerHTML = '';
+    
+    // First render columns in the order they appear in currentCustomerColumns
+    currentCustomerColumns.forEach(column => {
+        if (!column || !column.id) return;
+        
+        const columnConfig = availableCustomerColumns[column.id];
+        if (!columnConfig) return;
+        
+        renderColumnItem(column.id, columnConfig, column.visible, columnList);
+    });
+    
+    // Then render any remaining columns that aren't in currentCustomerColumns yet
+    Object.keys(availableCustomerColumns).forEach(columnId => {
+        const columnConfig = availableCustomerColumns[columnId];
+        if (!columnConfig) return;
+        
+        // Skip if already rendered above
+        const alreadyRendered = currentCustomerColumns.find(col => col && col.id === columnId);
+        if (alreadyRendered) return;
+        
+        renderColumnItem(columnId, columnConfig, false, columnList);
+    });
+}
+
+function renderColumnItem(columnId, columnConfig, isVisible, columnList) {
+    const item = document.createElement('div');
+    item.className = 'column-item';
+    item.draggable = !columnConfig.fixed;
+    item.dataset.columnId = columnId;
+    item.style.cssText = `
+        display: flex; 
+        align-items: center; 
+        padding: 12px; 
+        margin-bottom: 8px; 
+        background: white; 
+        border: 1px solid #e5e7eb; 
+        border-radius: 6px; 
+        cursor: ${columnConfig.fixed ? 'default' : 'grab'};
+        user-select: none;
+    `;
+    
+    item.innerHTML = `
+        <div style="display: flex; align-items: center; width: 100%;">
+            ${!columnConfig.fixed ? '<div style="margin-right: 12px; color: #9ca3af;"><svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20"><path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path></svg></div>' : ''}
+            <input type="checkbox" ${isVisible ? 'checked' : ''} ${columnConfig.fixed ? 'disabled' : ''} 
+                   onchange="toggleCustomerColumnVisibility('${columnId}')" 
+                   style="margin-right: 12px;">
+            <label style="flex: 1; font-weight: 500; color: ${columnConfig.fixed ? '#9ca3af' : '#374151'};">
+                ${columnConfig.label} ${columnConfig.fixed ? '(Fixed)' : ''}
+            </label>
+        </div>
+    `;
+    
+    if (!columnConfig.fixed) {
+        item.addEventListener('dragstart', handleCustomerDragStart);
+        item.addEventListener('dragover', handleCustomerDragOver);
+        item.addEventListener('drop', handleCustomerDrop);
+        item.addEventListener('dragend', handleCustomerDragEnd);
+    }
+    
+    columnList.appendChild(item);
+}
+
+function toggleCustomerColumnVisibility(columnId) {
+    // Don't allow toggling fixed columns
+    if (availableCustomerColumns[columnId] && availableCustomerColumns[columnId].fixed) return;
+    
+    // Clean up any null entries first
+    currentCustomerColumns = currentCustomerColumns.filter(col => col && col.id);
+    
+    const column = currentCustomerColumns.find(col => col && col.id === columnId);
+    
+    if (column) {
+        // Column exists, toggle visibility
+        column.visible = !column.visible;
+    } else {
+        // Column doesn't exist in current settings, add it as visible
+        currentCustomerColumns.push({ id: columnId, visible: true, fixed: availableCustomerColumns[columnId] ? availableCustomerColumns[columnId].fixed : false });
+    }
+    
+    saveCustomerColumnSettings();
+}
+
+function saveCustomerColumnSettings() {
+    // Ensure we're saving valid data
+    const validColumns = currentCustomerColumns.filter(col => col && col.id && typeof col.id === 'string');
+    localStorage.setItem('customerTableColumns', JSON.stringify(validColumns));
+    console.log('Customer column settings saved');
+}
+
+function resetCustomerColumnSettings() {
+    currentCustomerColumns = [...defaultCustomerColumns];
+    localStorage.removeItem('customerTableColumns');
+    console.log('Customer column settings reset to default');
+}
+
+function applyCustomerColumnChanges() {
+    saveCustomerColumnSettings();
+    closeModal('columnSettingsModal');
+    // Apply changes immediately without page reload
+    renderCustomersTable();
+}
+
+// Drag and drop handlers for customer columns
+let draggedCustomerItem = null;
+
+function handleCustomerDragStart(e) {
+    draggedCustomerItem = this;
+    this.style.opacity = '0.5';
+}
+
+function handleCustomerDragOver(e) {
+    e.preventDefault();
+}
+
+function handleCustomerDrop(e) {
+    e.preventDefault();
+    if (this !== draggedCustomerItem) {
+        const allItems = Array.from(document.querySelectorAll('.column-item'));
+        const draggedIndex = allItems.indexOf(draggedCustomerItem);
+        const targetIndex = allItems.indexOf(this);
+        
+        // Reorder in currentCustomerColumns array
+        const draggedColumn = currentCustomerColumns[draggedIndex];
+        currentCustomerColumns.splice(draggedIndex, 1);
+        currentCustomerColumns.splice(targetIndex, 0, draggedColumn);
+        
+        // Re-render
+        renderCustomerColumnSettings();
+        saveCustomerColumnSettings();
+    }
+}
+
+function handleCustomerDragEnd(e) {
+    this.style.opacity = '';
+    draggedCustomerItem = null;
+}
+
+// Legacy function - now handled by toggleCustomerColumnVisibility
 
 window.closeModal = function(modalId) {
     console.log('closeModal called with:', modalId);
@@ -556,6 +688,31 @@ function fetchFilteredCustomers() {
 }
 
 function renderCustomersTable() {
+    renderCustomerTableHeader();
+    renderCustomerTableBody();
+}
+
+function renderCustomerTableHeader() {
+    const thead = document.getElementById('table-header');
+    if (!thead) return;
+    
+    let html = '<tr>';
+    
+    currentCustomerColumns.forEach(column => {
+        if (!column.visible) return;
+        
+        const columnConfig = availableCustomerColumns[column.id];
+        if (!columnConfig) return;
+        
+        const widthClass = getCustomerColumnWidth(column.id);
+        html += '<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ' + widthClass + '">' + columnConfig.label + '</th>';
+    });
+    
+    html += '</tr>';
+    thead.innerHTML = html;
+}
+
+function renderCustomerTableBody() {
     const tbody = document.getElementById('table-body');
     const noResultsState = document.getElementById('no-results-state');
     
@@ -566,97 +723,176 @@ function renderCustomersTable() {
         noResultsState.classList.add('hidden');
         tbody.style.display = '';
         
-        // Render customer rows
         let html = '';
         window.filteredCustomers.forEach(customer => {
-            html += `
-                <tr class="hover:bg-gray-50 transition-colors duration-150 cursor-pointer" onclick="viewCustomer(${customer.id})">
-                    <td class="px-6 py-4 whitespace-nowrap text-center">
-                        <span class="text-sm font-medium text-gray-500">#${customer.id}</span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex flex-col">
-                            <span class="text-sm font-medium text-gray-900">
-                                ${customer.first_name} ${customer.last_name}
-                            </span>
-                            ${customer.company ? `<span class="text-xs text-gray-500">${customer.company}</span>` : ''}
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex flex-col text-sm">
-                            ${customer.email ? `<span class="text-gray-600 truncate max-w-[150px]" title="${customer.email}">${customer.email}</span>` : ''}
-                            ${customer.phone_original || customer.phone ? `<span class="text-gray-500">${customer.phone_original || customer.phone}</span>` : ''}
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        <div class="flex flex-col text-sm">
-                            ${customer.city ? `<span class="text-gray-600">${customer.city}</span>` : ''}
-                            ${customer.province ? `<span class="text-gray-500">${customer.province}</span>` : ''}
-                        </div>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-center">
-                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(${customer.id}, '${customer.first_name} ${customer.last_name}')" title="Click to view customer orders">${customer.total_orders || 0}</span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right">
-                        <span class="text-sm font-medium text-gray-900">
-                            PKR ${(customer.total_spent || 0).toLocaleString()}
-                        </span>
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        ${customer.is_active ? 
-                            `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                <div class="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5"></div>
-                                Active
-                            </span>` :
-                            `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                <div class="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5"></div>
-                                Inactive
-                            </span>`
-                        }
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        ${customer.first_order_date ? 
-                            `<span class="text-sm text-gray-600">${window.formatDateLocal(customer.first_order_date)}</span>` :
-                            `<span class="text-sm text-gray-400">Never</span>`
-                        }
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-                        ${customer.last_order_date ? 
-                            `<span class="text-sm text-gray-600">${window.formatDateLocal(customer.last_order_date)}</span>` :
-                            `<span class="text-sm text-gray-400">Never</span>`
-                        }
-                    </td>
-                    <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
-                        <div class="flex items-center gap-1">
-                            <button onclick="addCustomerNote(${customer.id})" 
-                                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
-                                    title="Add Notes">
-                                <i class="ki-filled ki-note text-sm"></i>
-                            </button>
-                            <button onclick="createOrderForCustomer(${customer.id})" 
-                                    class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" 
-                                    title="Create Order">
-                                <i class="ki-filled ki-plus text-sm"></i>
-                            </button>
-                            <button onclick="editCustomer(${customer.id})" 
-                                    class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
-                                    title="Edit">
-                                <i class="ki-filled ki-pencil text-sm"></i>
-                            </button>
-                            ${customer.total_orders == 0 ? 
-                                `<button onclick="deleteCustomer(${customer.id})" 
-                                        class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-red-400 hover:text-red-500 hover:bg-red-50 transition-colors duration-150" 
-                                        title="Delete">
-                                    <i class="ki-filled ki-trash text-sm"></i>
-                                </button>` : ''
-                            }
-                        </div>
-                    </td>
-                </tr>
-            `;
+            html += '<tr class="hover:bg-gray-50 transition-colors duration-150 cursor-pointer" onclick="viewCustomer(' + customer.id + ')">';
+            
+            currentCustomerColumns.forEach(column => {
+                if (!column.visible) return;
+                
+                html += '<td class="px-6 py-4 whitespace-nowrap">';
+                html += getCustomerCellContent(customer, column.id);
+                html += '</td>';
+            });
+            
+            html += '</tr>';
         });
         
         tbody.innerHTML = html;
+    }
+}
+
+function getCustomerCellContent(customer, columnId) {
+    switch (columnId) {
+        case 'id':
+            return '<span class="text-sm font-medium text-gray-500">#' + customer.id + '</span>';
+            
+        case 'name':
+            let nameHtml = '<div class="flex flex-col">';
+            nameHtml += '<span class="text-sm font-medium text-gray-900">' + customer.first_name + ' ' + customer.last_name + '</span>';
+            if (customer.company) {
+                nameHtml += '<span class="text-xs text-gray-500">' + customer.company + '</span>';
+            }
+            nameHtml += '</div>';
+            return nameHtml;
+            
+        case 'contact':
+            let contactHtml = '<div class="flex flex-col text-sm">';
+            if (customer.email) {
+                contactHtml += '<span class="text-gray-600 truncate max-w-[150px]" title="' + customer.email + '">' + customer.email + '</span>';
+            }
+            if (customer.phone_original || customer.phone) {
+                contactHtml += '<span class="text-gray-500">' + (customer.phone_original || customer.phone) + '</span>';
+            }
+            contactHtml += '</div>';
+            return contactHtml;
+            
+        case 'location':
+            let locationHtml = '<div class="flex flex-col text-sm">';
+            if (customer.city) {
+                locationHtml += '<span class="text-gray-600">' + customer.city + '</span>';
+            }
+            if (customer.province) {
+                locationHtml += '<span class="text-gray-500">' + customer.province + '</span>';
+            }
+            locationHtml += '</div>';
+            return locationHtml || '<span class="text-sm text-gray-500">N/A</span>';
+            
+        case 'total_orders':
+            return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(' + customer.id + ', \'' + customer.first_name + ' ' + customer.last_name + '\')" title="Click to view customer orders">' + (customer.total_orders || 0) + '</span>';
+            
+        case 'total_spent':
+            return '<span class="text-sm font-medium text-gray-900">PKR ' + (customer.total_spent || 0).toLocaleString() + '</span>';
+            
+        case 'status':
+            const isActive = customer.is_active;
+            return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ' + (isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800') + '"><div class="w-1.5 h-1.5 ' + (isActive ? 'bg-green-400' : 'bg-red-400') + ' rounded-full mr-1.5"></div>' + (isActive ? 'Active' : 'Inactive') + '</span>';
+            
+        case 'first_order_date':
+            return customer.first_order_date ? '<span class="text-sm text-gray-600">' + window.formatDateLocal(customer.first_order_date) + '</span>' : '<span class="text-sm text-gray-400">Never</span>';
+            
+        case 'last_order_date':
+            return customer.last_order_date ? '<span class="text-sm text-gray-600">' + window.formatDateLocal(customer.last_order_date) + '</span>' : '<span class="text-sm text-gray-400">Never</span>';
+            
+        case 'first_name':
+            return '<span class="text-sm text-gray-900">' + (customer.first_name || 'N/A') + '</span>';
+            
+        case 'last_name':
+            return '<span class="text-sm text-gray-900">' + (customer.last_name || 'N/A') + '</span>';
+            
+        case 'email':
+            return '<span class="text-sm text-gray-600">' + (customer.email || 'N/A') + '</span>';
+            
+        case 'company':
+            return '<span class="text-sm text-gray-900">' + (customer.company || 'N/A') + '</span>';
+            
+        case 'phone':
+            return '<span class="text-sm text-gray-500">' + (customer.phone || 'N/A') + '</span>';
+            
+        case 'phone_original':
+            return '<span class="text-sm text-gray-500">' + (customer.phone_original || 'N/A') + '</span>';
+            
+        case 'phone_normalized':
+            return '<span class="text-sm text-gray-500">' + (customer.phone_normalized || 'N/A') + '</span>';
+            
+        case 'address1':
+            return '<span class="text-sm text-gray-900">' + (customer.address1 || 'N/A') + '</span>';
+            
+        case 'address2':
+            return '<span class="text-sm text-gray-900">' + (customer.address2 || 'N/A') + '</span>';
+            
+        case 'city':
+            return '<span class="text-sm text-gray-900">' + (customer.city || 'N/A') + '</span>';
+            
+        case 'province':
+            return '<span class="text-sm text-gray-900">' + (customer.province || 'N/A') + '</span>';
+            
+        case 'postal_code':
+            return '<span class="text-sm text-gray-900">' + (customer.postal_code || 'N/A') + '</span>';
+            
+        case 'country':
+            return '<span class="text-sm text-gray-900">' + (customer.country || 'N/A') + '</span>';
+            
+        case 'notes':
+            const notes = customer.notes || '';
+            const truncatedNotes = notes.length > 50 ? notes.substring(0, 50) + '...' : notes;
+            return '<span class="text-sm text-gray-600" title="' + notes + '">' + (truncatedNotes || 'No notes') + '</span>';
+            
+        case 'latitude':
+            return '<span class="text-sm text-gray-500">' + (customer.latitude || 'N/A') + '</span>';
+            
+        case 'longitude':
+            return '<span class="text-sm text-gray-500">' + (customer.longitude || 'N/A') + '</span>';
+            
+        case 'external_customer_ids':
+            return '<span class="text-sm text-gray-500">' + (customer.external_customer_ids || 'N/A') + '</span>';
+            
+        case 'is_active':
+            return '<span class="text-sm text-gray-900">' + (customer.is_active ? 'Yes' : 'No') + '</span>';
+            
+        case 'created_at':
+            return '<span class="text-sm text-gray-500">' + (customer.created_at ? window.formatDateLocal(customer.created_at) : 'N/A') + '</span>';
+            
+        case 'updated_at':
+            return '<span class="text-sm text-gray-500">' + (customer.updated_at ? window.formatDateLocal(customer.updated_at) : 'N/A') + '</span>';
+            
+        case 'created_by':
+            return '<span class="text-sm text-gray-500">' + (customer.created_by || 'N/A') + '</span>';
+            
+        case 'updated_by':
+            return '<span class="text-sm text-gray-500">' + (customer.updated_by || 'N/A') + '</span>';
+            
+        case 'actions':
+            let actionsHtml = '<div class="flex items-center gap-1" onclick="event.stopPropagation()">';
+            actionsHtml += '<button onclick="addCustomerNote(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" title="Add Notes"><i class="ki-filled ki-note text-sm"></i></button>';
+            actionsHtml += '<button onclick="createOrderForCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" title="Create Order"><i class="ki-filled ki-plus text-sm"></i></button>';
+            actionsHtml += '<button onclick="editCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" title="Edit"><i class="ki-filled ki-pencil text-sm"></i></button>';
+            if (customer.total_orders == 0) {
+                actionsHtml += '<button onclick="deleteCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-red-400 hover:text-red-500 hover:bg-red-50 transition-colors duration-150" title="Delete"><i class="ki-filled ki-trash text-sm"></i></button>';
+            }
+            actionsHtml += '</div>';
+            return actionsHtml;
+            
+        default:
+            return '<span class="text-sm text-gray-500">N/A</span>';
+    }
+}
+
+function getCustomerColumnWidth(columnId) {
+    switch (columnId) {
+        case 'id': return 'w-16';
+        case 'name': return 'min-w-[200px]';
+        case 'contact': return 'w-40';
+        case 'location': return 'w-32';
+        case 'total_orders': return 'w-20';
+        case 'total_spent': return 'w-32';
+        case 'status': return 'w-24';
+        case 'first_order_date': return 'w-32';
+        case 'last_order_date': return 'w-32';
+        case 'notes': return 'w-64';
+        case 'address1': return 'w-48';
+        case 'actions': return 'w-24';
+        default: return 'w-32';
     }
 }
 
@@ -673,6 +909,9 @@ function hideCustomerLoadingState() {
 
 // Initialize customer search functionality
 document.addEventListener('DOMContentLoaded', function() {
+    // Apply saved column settings on page load
+    renderCustomersTable();
+    
     const searchInput = document.getElementById('customerSearchInput');
     const cityFilter = document.getElementById('customerCityFilter');
     const statusFilter = document.getElementById('customerStatusFilter');
@@ -1362,6 +1601,9 @@ window.viewOrderDetails = function(orderId) {
         <div style="padding: 20px; border-top: 1px solid #e5e7eb; flex-shrink: 0; display: flex; justify-content: flex-end; gap: 12px;">
             <button onclick="closeModal('columnSettingsModal')" style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px;">
                 Cancel
+            </button>
+            <button onclick="applyCustomerColumnChanges()" style="padding: 8px 16px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                Apply Changes
             </button>
         </div>
     </div>
