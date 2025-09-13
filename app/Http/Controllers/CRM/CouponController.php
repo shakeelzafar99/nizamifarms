@@ -459,30 +459,50 @@ class CouponController extends Controller
     }
 
     /**
-     * Search coupons
+     * Search coupons for dropdown
      */
     public function search(Request $request)
     {
         try {
-            $validated = $request->validate([
-                'q' => 'required|string|min:1'
-            ]);
-
-            $searchTerm = $validated['q'];
-
-            $coupons = CouponModel::where('is_active', true)
-                ->where(function ($query) use ($searchTerm) {
-                    $query->where('title', 'LIKE', "%{$searchTerm}%")
-                          ->orWhere('code', 'LIKE', "%{$searchTerm}%");
+            $search = $request->get('q', '');
+            
+            $query = CouponModel::where('is_active', true)
+                ->where('status', 'active')
+                ->where(function ($query) {
+                    $query->whereNull('starts_at')
+                        ->orWhere('starts_at', '<=', now());
                 })
-                ->limit(10)
-                ->get(['id', 'title', 'code', 'discount_type', 'value_type', 'value']);
-
+                ->where(function ($query) {
+                    $query->whereNull('ends_at')
+                        ->orWhere('ends_at', '>=', now());
+                });
+            
+            if (!empty($search)) {
+                $query->where(function ($q) use ($search) {
+                    $q->where('title', 'LIKE', "%{$search}%")
+                      ->orWhere('code', 'LIKE', "%{$search}%");
+                });
+            }
+            
+            $coupons = $query->limit(10)->get();
+            
             return response()->json([
                 'success' => true,
-                'data' => $coupons
+                'data' => $coupons->map(function ($coupon) {
+                    return [
+                        'id' => $coupon->id,
+                        'title' => $coupon->title,
+                        'code' => $coupon->code,
+                        'discount_type' => $coupon->discount_type,
+                        'value_type' => $coupon->value_type,
+                        'value' => $coupon->value,
+                        'minimum_amount' => $coupon->minimum_amount,
+                        'display' => $coupon->code . ' - ' . $coupon->title . ' (' . 
+                                   ($coupon->value_type === 'percentage' ? $coupon->value . '%' : 'PKR ' . $coupon->value) . ')'
+                    ];
+                })
             ]);
-
+            
         } catch (\Exception $e) {
             Log::error('Error searching coupons: ' . $e->getMessage());
             return response()->json([

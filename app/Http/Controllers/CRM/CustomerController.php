@@ -50,11 +50,14 @@ class CustomerController extends Controller
                               ->values();
         
         // Get statistics
+        $now = now();
+        $thirtyDaysAgo = $now->copy()->subDays(30);
+        $ninetyDaysAgo = $now->copy()->subDays(90);
+        
         $stats = [
             'total_customers' => CustomerModel::count(),
-            'active_customers' => CustomerModel::where('is_active', 1)->count(),
-            'total_orders' => CustomerModel::sum('total_orders'),
-            'total_revenue' => CustomerModel::sum('total_spent')
+            'active_30_days' => CustomerModel::where('last_order_date', '>=', $thirtyDaysAgo)->count(),
+            'active_90_days' => CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)->count()
         ];
         
         return view('pages.customers.index', compact('customers', 'cities', 'stats'));

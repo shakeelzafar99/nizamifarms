@@ -1307,7 +1307,11 @@ window.viewOrderDetails = function(orderId) {
             <div class="flex items-center gap-4 text-sm">
                 <div class="flex items-center gap-2">
                     <div class="w-3 h-3 bg-green-500 rounded-full"></div>
-                    <span>{{ $stats['active_customers'] }} Active</span>
+                    <span>{{ $stats['active_30_days'] }} 30-Day Active</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 bg-orange-500 rounded-full"></div>
+                    <span>{{ $stats['active_90_days'] }} 90-Day Active</span>
                 </div>
                 <div class="flex items-center gap-2">
                     <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
@@ -1335,29 +1339,20 @@ window.viewOrderDetails = function(orderId) {
                     </div>
                     <div class="flex items-center gap-2">
                         <div class="w-7 h-7 bg-green-100 rounded-lg flex items-center justify-center">
-                            <i class="ki-filled ki-check-circle text-green-600 text-sm"></i>
+                            <i class="ki-filled ki-calendar text-green-600 text-sm"></i>
                         </div>
                         <div>
-                            <span class="text-xs text-gray-500">Active</span>
-                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['active_customers']) }}</span>
+                            <span class="text-xs text-gray-500">30-Day Active</span>
+                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['active_30_days']) }}</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-2">
                         <div class="w-7 h-7 bg-orange-100 rounded-lg flex items-center justify-center">
-                            <i class="ki-filled ki-dollar text-orange-600 text-sm"></i>
+                            <i class="ki-filled ki-timer text-orange-600 text-sm"></i>
                         </div>
                         <div>
-                            <span class="text-xs text-gray-500">Revenue</span>
-                            <span class="text-base font-bold text-gray-900 ml-1">PKR {{ number_format($stats['total_revenue'], 0) }}</span>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <div class="w-7 h-7 bg-purple-100 rounded-lg flex items-center justify-center">
-                            <i class="ki-filled ki-shopping-cart text-purple-600 text-sm"></i>
-                        </div>
-                        <div>
-                            <span class="text-xs text-gray-500">Orders</span>
-                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['total_orders']) }}</span>
+                            <span class="text-xs text-gray-500">90-Day Active</span>
+                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['active_90_days']) }}</span>
                         </div>
                     </div>
                 </div>

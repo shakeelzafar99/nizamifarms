@@ -49,6 +49,7 @@ class OrderModel extends BaseModel
         'payment_method',
         'note',
         'raw_products_text',
+        'converted',
         'created_by',
         'updated_by'
     ];
@@ -59,14 +60,16 @@ class OrderModel extends BaseModel
         'shipping_total' => 'decimal:2',
         'total_tax' => 'decimal:2',
         'total_price' => 'decimal:2',
-        'total_weight' => 'integer'
+        'total_weight' => 'integer',
+        'converted' => 'boolean'
     ];
 
     // Mutator to format order_date for MySQL
     public function setOrderDateAttribute($value)
     {
-        if (!$value) {
-            $this->attributes['order_date'] = null;
+        if (!$value || trim($value) === '') {
+            // Don't set to null if value is empty - let validation handle it
+            // For updates, preserve existing value if no new value provided
             return;
         }
         
@@ -75,7 +78,10 @@ class OrderModel extends BaseModel
             $date = \Carbon\Carbon::parse($value);
             $this->attributes['order_date'] = $date->format('Y-m-d H:i:s');
         } catch (\Exception $e) {
-            $this->attributes['order_date'] = null;
+            // Log the error for debugging
+            \Log::warning('Invalid order_date format: ' . $value . ' - Error: ' . $e->getMessage());
+            // Don't set to null, let validation handle the error
+            return;
         }
     }
 

@@ -907,9 +907,6 @@ function viewOrderDetails(orderId) {
                 if (order.shipping_total) {
                     html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Shipping</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.shipping_total, order.currency) + '</td></tr>';
                 }
-                if (order.total_tax) {
-                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Tax</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.total_tax, order.currency) + '</td></tr>';
-                }
                 html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#111827; font-weight:700;">Total</td><td style="padding: 8px; text-align:right; font-weight:700;">' + formatCurrency(order.total_price, order.currency) + '</td></tr>';
                 html += '</tfoot>';
                 html += '</table>';
@@ -966,6 +963,62 @@ function viewInvoice() {
 }
 
 // Edit Order Details
+function convertOrder(orderId) {
+    if (!confirm('Are you sure you want to convert this Shopify order to a webapp invoice? This will create a duplicate order with source "webapp" and mark the original as converted.')) {
+        return;
+    }
+    
+    fetch(`/orders/${orderId}/convert`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(`Order converted successfully! New invoice order #${data.converted_order.order_number} created.`);
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error converting order: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error converting order:', error);
+        alert('Error converting order. Please try again.');
+    });
+}
+
+function ignoreOrder(orderId) {
+    if (!confirm('Are you sure you want to ignore this Shopify order? This will mark it as ignored and no invoice will be created.')) {
+        return;
+    }
+    
+    fetch(`/orders/${orderId}/ignore`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Order marked as ignored successfully!');
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error ignoring order: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error ignoring order:', error);
+        alert('Error ignoring order. Please try again.');
+    });
+}
+
 function editOrderDetails(orderId) {
     console.log('Edit order details clicked for order:', orderId);
     const modal = document.getElementById('editOrderModal');
@@ -1016,6 +1069,22 @@ function loadEditForm(order) {
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Order Status</label>
+                            <select name="order_status" required style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                                <option value="pending" ${order.order_status === 'pending' ? 'selected' : ''}>Pending</option>
+                                <option value="processing" ${order.order_status === 'processing' ? 'selected' : ''}>Processing</option>
+                                <option value="completed" ${order.order_status === 'completed' ? 'selected' : ''}>Completed</option>
+                                <option value="on-hold" ${order.order_status === 'on-hold' ? 'selected' : ''}>On Hold</option>
+                                <option value="cancelled" ${order.order_status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+                                <option value="refunded" ${order.order_status === 'refunded' ? 'selected' : ''}>Refunded</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Order Date & Time</label>
+                            <input type="datetime-local" name="order_date" required value="${order.order_date ? order.order_date.replace(' ', 'T').slice(0, 16) : getCurrentLocalDateTime()}" 
+                                   style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                        </div>
+                        <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Contact Email</label>
                             <input type="email" name="contact_email" value="${order.contact_email || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
@@ -1054,8 +1123,60 @@ function loadEditForm(order) {
                             <input type="text" name="address_phone" value="${order.address_phone || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Address Line 1</label>
+                                <input type="text" name="address_line1" value="${order.address_line1 || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Address Line 2</label>
+                                <input type="text" name="address_line2" value="${order.address_line2 || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">City</label>
+                                <input type="text" name="address_city" value="${order.address_city || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Province</label>
+                                <input type="text" name="address_province" value="${order.address_province || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Postal Code</label>
+                                <input type="text" name="address_postal_code" value="${order.address_postal_code || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Country</label>
+                                <input type="text" name="address_country" value="${order.address_country || 'Pakistan'}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Payment Method</label>
+                                <select name="payment_method" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                                    <option value="">Select Payment Method</option>
+                                    <option value="cash_on_delivery" ${order.payment_method === 'cash_on_delivery' ? 'selected' : ''}>Cash on Delivery</option>
+                                    <option value="bank_transfer" ${order.payment_method === 'bank_transfer' ? 'selected' : ''}>Bank Transfer</option>
+                                    <option value="card" ${order.payment_method === 'card' ? 'selected' : ''}>Card Payment</option>
+                                    <option value="online" ${order.payment_method === 'online' ? 'selected' : ''}>Online Payment</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                 </div>
+            </div>
+            
+            <!-- Notes Section -->
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Order Notes</label>
+                <textarea name="note" rows="3" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="Order notes...">${order.note || ''}</textarea>
             </div>
 
             <!-- Line Items Section -->
@@ -1105,21 +1226,38 @@ function loadEditForm(order) {
             <!-- Order Totals -->
             <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
                 <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Totals</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Subtotal</label>
                         <input type="number" step="0.01" name="subtotal_price" value="${order.subtotal_price || 0}" 
                                style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" readonly>
                     </div>
                     <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Total Tax</label>
-                        <input type="number" step="0.01" name="total_tax" value="${order.total_tax || 0}" 
-                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()">
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Discount</label>
+                        <div style="display: flex; gap: 8px;">
+                            <div style="flex: 1; position: relative;">
+                                <input type="text" id="couponSearch" name="coupon_code" value="${order.coupon_code || ''}" 
+                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" 
+                                       placeholder="Search coupon code..." onkeyup="searchCoupons(this.value)" onfocus="showCouponDropdown()" onblur="hideCouponDropdown()">
+                                <div id="couponDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                            </div>
+                            <input type="number" step="0.01" name="discount_total" value="${order.discount_total || 0}" 
+                                   style="flex: 1; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()" placeholder="Discount amount">
+                        </div>
                     </div>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Shipping</label>
+                        <input type="number" step="0.01" name="shipping_total" value="${order.shipping_total || 0}" 
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()" placeholder="Enter shipping cost">
+                    </div>
+                </div>
+                <div style="padding-top: 12px; border-top: 1px solid #e5e7eb;">
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Total Price</label>
                         <input type="number" step="0.01" name="total_price" value="${order.total_price || 0}" 
-                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; font-weight: 600;" readonly>
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; font-weight: 600; background-color: #f3f4f6;" readonly>
                     </div>
                 </div>
             </div>
@@ -1267,16 +1405,81 @@ function saveOrderChanges(orderId) {
     submitBtn.textContent = 'Saving...';
     submitBtn.disabled = true;
     
-    const data = {};
-    formData.forEach((value, key) => data[key] = value);
+    // Collect line items
+    const items = [];
+    document.querySelectorAll('.line-item').forEach((item) => {
+        const name = item.querySelector('input[name*="[name]"]')?.value;
+        const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
+        const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+        
+        if (name && quantity > 0 && unitPrice >= 0) {
+            items.push({
+                name: name,
+                quantity: quantity,
+                unit_price: unitPrice,
+                line_total: quantity * unitPrice
+            });
+        }
+    });
     
-    // For now, just show success message - you can implement actual save later
-    setTimeout(() => {
-        alert('Order updated successfully! (Demo - actual save not implemented yet)');
-        closeModal('editOrderModal');
+    // Prepare data for update (matching the existing update endpoint structure)
+    const rawOrderDate = formData.get('order_date');
+    const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
+    
+    const orderData = {
+        order_status: formData.get('order_status'),
+        order_date: formattedOrderDate,
+        contact_email: formData.get('contact_email'),
+        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+        discount_total: parseFloat(formData.get('discount_total')) || 0,
+        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+        total_price: parseFloat(formData.get('total_price')) || 0,
+        coupon_code: formData.get('coupon_code'),
+        payment_method: formData.get('payment_method'),
+        note: formData.get('note'),
+        items: items,
+        // Address fields
+        address_first_name: formData.get('address_first_name'),
+        address_last_name: formData.get('address_last_name'),
+        address_email: formData.get('address_email'),
+        address_phone: formData.get('address_phone'),
+        address_line1: formData.get('address_line1'),
+        address_line2: formData.get('address_line2'),
+        address_city: formData.get('address_city'),
+        address_province: formData.get('address_province'),
+        address_postal_code: formData.get('address_postal_code'),
+        address_country: formData.get('address_country')
+    };
+    
+    // Submit to existing update endpoint
+    fetch(`/orders/${orderId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(orderData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Order updated successfully!');
+            closeModal('editOrderModal');
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error updating order: ' + (data.message || 'Unknown error'));
+            submitBtn.textContent = 'Save Changes';
+            submitBtn.disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Error updating order:', error);
+        alert('Error updating order. Please try again.');
         submitBtn.textContent = 'Save Changes';
         submitBtn.disabled = false;
-    }, 1000);
+    });
 }
 
 // Import modal functions
@@ -1395,18 +1598,187 @@ function selectProduct(index, productId, productName, price) {
     hideProductDropdown(index);
 }
 
+// Get current local datetime in format suitable for datetime-local input
+function getCurrentLocalDateTime() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 // Update order total calculations
 function updateOrderTotal() {
     const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
     const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
     const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
-    const tax = parseFloat(document.querySelector('input[name="total_tax"]')?.value) || 0;
     
-    const total = subtotal - discount + shipping + tax;
+    const total = subtotal - discount + shipping;
     const totalInput = document.querySelector('input[name="total_price"]');
     if (totalInput) {
         totalInput.value = total.toFixed(2);
     }
+}
+
+// Coupon search functionality
+let couponSearchTimeout;
+function searchCoupons(query) {
+    clearTimeout(couponSearchTimeout);
+    
+    couponSearchTimeout = setTimeout(() => {
+        if (query.length < 1) {
+            document.getElementById('couponDropdown').style.display = 'none';
+            return;
+        }
+        
+        fetch(`/coupons/search?q=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                const dropdown = document.getElementById('couponDropdown');
+                
+                if (data.success && data.data.length > 0) {
+                    dropdown.innerHTML = data.data.map(coupon => `
+                        <div style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6;" 
+                             onclick="selectCoupon('${coupon.code}', ${coupon.value}, '${coupon.value_type}', ${coupon.minimum_amount || 0})"
+                             onmouseover="this.style.backgroundColor='#f3f4f6'" 
+                             onmouseout="this.style.backgroundColor='white'">
+                            <div style="font-weight: 500; color: #374151;">${coupon.display}</div>
+                            ${coupon.minimum_amount ? `<div style="font-size: 12px; color: #6b7280;">Min order: PKR ${coupon.minimum_amount}</div>` : ''}
+                        </div>
+                    `).join('');
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.innerHTML = '<div style="padding: 8px 12px; color: #6b7280;">No coupons found</div>';
+                    dropdown.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error searching coupons:', error);
+                document.getElementById('couponDropdown').style.display = 'none';
+            });
+    }, 300);
+}
+
+function showCouponDropdown() {
+    const query = document.getElementById('couponSearch').value;
+    if (query.length > 0) {
+        searchCoupons(query);
+    }
+}
+
+function hideCouponDropdown() {
+    setTimeout(() => {
+        document.getElementById('couponDropdown').style.display = 'none';
+    }, 200);
+}
+
+function selectCoupon(code, value, valueType, minimumAmount) {
+    // Set coupon code
+    document.getElementById('couponSearch').value = code;
+    document.querySelector('input[name="coupon_code"]').value = code;
+    
+    // Calculate discount based on subtotal
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    let discountAmount = 0;
+    
+    if (subtotal >= minimumAmount) {
+        if (valueType === 'percentage') {
+            discountAmount = (subtotal * value) / 100;
+        } else {
+            discountAmount = value;
+        }
+    }
+    
+    // Set discount amount
+    document.querySelector('input[name="discount_total"]').value = discountAmount.toFixed(2);
+    
+    // Update total
+    updateOrderTotal();
+    
+    // Hide dropdown
+    document.getElementById('couponDropdown').style.display = 'none';
+}
+
+// New order coupon search functionality
+let newOrderCouponSearchTimeout;
+function searchNewOrderCoupons(query) {
+    clearTimeout(newOrderCouponSearchTimeout);
+    
+    newOrderCouponSearchTimeout = setTimeout(() => {
+        if (query.length < 1) {
+            document.getElementById('newOrderCouponDropdown').style.display = 'none';
+            return;
+        }
+        
+        fetch(`/coupons/search?q=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                const dropdown = document.getElementById('newOrderCouponDropdown');
+                
+                if (data.success && data.data.length > 0) {
+                    dropdown.innerHTML = data.data.map(coupon => `
+                        <div style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6;" 
+                             onclick="selectNewOrderCoupon('${coupon.code}', ${coupon.value}, '${coupon.value_type}', ${coupon.minimum_amount || 0})"
+                             onmouseover="this.style.backgroundColor='#f3f4f6'" 
+                             onmouseout="this.style.backgroundColor='white'">
+                            <div style="font-weight: 500; color: #374151;">${coupon.display}</div>
+                            ${coupon.minimum_amount ? `<div style="font-size: 12px; color: #6b7280;">Min order: PKR ${coupon.minimum_amount}</div>` : ''}
+                        </div>
+                    `).join('');
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.innerHTML = '<div style="padding: 8px 12px; color: #6b7280;">No coupons found</div>';
+                    dropdown.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error searching coupons:', error);
+                document.getElementById('newOrderCouponDropdown').style.display = 'none';
+            });
+    }, 300);
+}
+
+function showNewOrderCouponDropdown() {
+    const query = document.getElementById('newOrderCouponSearch').value;
+    if (query.length > 0) {
+        searchNewOrderCoupons(query);
+    }
+}
+
+function hideNewOrderCouponDropdown() {
+    setTimeout(() => {
+        document.getElementById('newOrderCouponDropdown').style.display = 'none';
+    }, 200);
+}
+
+function selectNewOrderCoupon(code, value, valueType, minimumAmount) {
+    // Set coupon code
+    document.getElementById('newOrderCouponSearch').value = code;
+    document.querySelector('input[name="coupon_code"]').value = code;
+    
+    // Calculate discount based on subtotal
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    let discountAmount = 0;
+    
+    if (subtotal >= minimumAmount) {
+        if (valueType === 'percentage') {
+            discountAmount = (subtotal * value) / 100;
+        } else {
+            discountAmount = value;
+        }
+    }
+    
+    // Set discount amount
+    document.querySelector('input[name="discount_total"]').value = discountAmount.toFixed(2);
+    
+    // Update total
+    updateOrderTotal();
+    
+    // Hide dropdown
+    document.getElementById('newOrderCouponDropdown').style.display = 'none';
 }
 
 function showProductDropdown(index) {
@@ -1516,7 +1888,6 @@ const availableColumns = {
     subtotal_price: { label: 'Subtotal', width: 'w-[100px]', key: 'subtotal_price' },
     discount_total: { label: 'Discount', width: 'w-[100px]', key: 'discount_total' },
     shipping_total: { label: 'Shipping', width: 'w-[100px]', key: 'shipping_total' },
-    total_tax: { label: 'Tax', width: 'w-[100px]', key: 'total_tax' },
     total_price: { label: 'Total', width: 'w-[120px]', key: 'total_price' },
     total_weight: { label: 'Weight', width: 'w-[100px]', key: 'total_weight' },
     
@@ -1569,7 +1940,6 @@ const defaultColumns = [
     { id: 'subtotal_price', visible: false },
     { id: 'discount_total', visible: false },
     { id: 'shipping_total', visible: false },
-    { id: 'total_tax', visible: false },
     { id: 'total_weight', visible: false },
     { id: 'coupon_code', visible: false },
     { id: 'note', visible: false },
@@ -1895,8 +2265,6 @@ function getCellContent(order, columnId) {
             return formatCurrency(order.discount_total);
         case 'shipping_total':
             return formatCurrency(order.shipping_total);
-        case 'total_tax':
-            return formatCurrency(order.total_tax);
         case 'total_price':
             const totalPrice = formatCurrency(order.total_price);
             return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
@@ -2295,8 +2663,6 @@ function getCellContent(order, columnId) {
             return formatCurrency(order.discount_total);
         case 'shipping_total':
             return formatCurrency(order.shipping_total);
-        case 'total_tax':
-            return formatCurrency(order.total_tax);
         case 'total_price':
             const totalPrice = formatCurrency(order.total_price);
             return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
@@ -2330,14 +2696,31 @@ function getCellContent(order, columnId) {
             
         // Actions
         case 'actions':
-            return `
+            let actionButtons = `
                 <div class="flex items-center justify-center gap-1.5">
                     <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
                         <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
                         </svg>
+                    </button>`;
+            
+            // Add Convert and Ignore buttons only for Shopify orders that haven't been processed (converted == 0 or null)
+            if (order.external_source === 'shopify' && (order.converted == 0 || order.converted == null)) {
+                actionButtons += `
+                    <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-purple-600 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 hover:border-purple-300 hover:shadow-sm transition-all duration-200 group" title="Convert Order">
+                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                        </svg>
                     </button>
+                    <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-gray-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:border-gray-300 hover:shadow-sm transition-all duration-200 group" title="Ignore Order">
+                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636m12.728 12.728L18.364 5.636M5.636 18.364l12.728-12.728"></path>
+                        </svg>
+                    </button>`;
+            }
+            
+            actionButtons += `
                     <button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
                         <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
@@ -2350,6 +2733,7 @@ function getCellContent(order, columnId) {
                     </button>
                 </div>
             `;
+            return actionButtons;
         default:
             return '';
         }
@@ -2684,7 +3068,7 @@ function createNewOrder() {
                         </div>
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date & Time</label>
-                            <input type="datetime-local" name="order_date" required value="${new Date().toISOString().slice(0, 16)}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            <input type="datetime-local" name="order_date" required value="${getCurrentLocalDateTime()}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                         </div>
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Contact Email</label>
@@ -2712,15 +3096,19 @@ function createNewOrder() {
                         </div>
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Discount</label>
-                            <input type="number" step="0.01" name="discount_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            <div style="display: flex; gap: 8px;">
+                                <div style="flex: 1; position: relative;">
+                                    <input type="text" id="newOrderCouponSearch" name="coupon_code" value="" 
+                                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
+                                           placeholder="Search coupon code..." onkeyup="searchNewOrderCoupons(this.value)" onfocus="showNewOrderCouponDropdown()" onblur="hideNewOrderCouponDropdown()">
+                                    <div id="newOrderCouponDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                                </div>
+                                <input type="number" step="0.01" name="discount_total" value="0" onchange="updateOrderTotal()" placeholder="Discount amount" style="flex: 1; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            </div>
                         </div>
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Shipping</label>
                             <input type="number" step="0.01" name="shipping_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
-                        </div>
-                        <div style="margin-bottom: 12px;">
-                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Tax</label>
-                            <input type="number" step="0.01" name="total_tax" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                         </div>
                         <div>
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
@@ -2806,13 +3194,13 @@ function saveNewOrder() {
     const orderData = {
         customer_id: formData.get('customer_id'),
         order_status: formData.get('order_status'),
-        order_date: formData.get('order_date'),
+        order_date: formData.get('order_date') ? formData.get('order_date').replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00',
         contact_email: formData.get('contact_email'),
         subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
         discount_total: parseFloat(formData.get('discount_total')) || 0,
         shipping_total: parseFloat(formData.get('shipping_total')) || 0,
-        total_tax: parseFloat(formData.get('total_tax')) || 0,
         total_price: parseFloat(formData.get('total_price')) || 0,
+        coupon_code: formData.get('coupon_code'),
         payment_method: formData.get('payment_method'),
         note: formData.get('note'),
         items: items,

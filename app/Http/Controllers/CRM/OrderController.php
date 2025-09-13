@@ -105,15 +105,26 @@ class OrderController extends Controller
                 'subtotal_price' => 'required|numeric',
                 'discount_total' => 'nullable|numeric',
                 'shipping_total' => 'nullable|numeric',
-                'total_tax' => 'nullable|numeric',
                 'total_price' => 'required|numeric',
+                'coupon_code' => 'nullable|string',
                 'payment_method' => 'nullable|string',
                 'note' => 'nullable|string',
                 'items' => 'required|array',
                 'items.*.name' => 'required|string',
                 'items.*.quantity' => 'required|numeric|min:0.001',
                 'items.*.unit_price' => 'required|numeric|min:0',
-                'items.*.line_total' => 'required|numeric|min:0'
+                'items.*.line_total' => 'required|numeric|min:0',
+                // Address fields
+                'address_first_name' => 'nullable|string',
+                'address_last_name' => 'nullable|string',
+                'address_email' => 'nullable|email',
+                'address_phone' => 'nullable|string',
+                'address_line1' => 'nullable|string',
+                'address_line2' => 'nullable|string',
+                'address_city' => 'nullable|string',
+                'address_province' => 'nullable|string',
+                'address_postal_code' => 'nullable|string',
+                'address_country' => 'nullable|string'
             ]);
             
             // Update order
@@ -138,12 +149,19 @@ class OrderController extends Controller
                     ];
                 }
                 
-                // Use existing storeOrderFromApi method to handle line items
-                $orderData = array_merge($validated, [
-                    'line_items' => $formattedLineItems
-                ]);
+                // Update line items directly since this is an existing order
+                // Delete existing line items
+                $order->lineItems()->delete();
                 
-                $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData, $order->id);
+                // Create new line items
+                $lineItemModels = [];
+                foreach ($formattedLineItems as $lineItem) {
+                    $lineItem['order_id'] = $order->id;
+                    $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
+                    $lineItemModels[] = new \App\Models\CRM\OrderLineItemModel($lineItem);
+                }
+                
+                $order->lineItems()->saveMany($lineItemModels);
             }
             
             return response()->json([
@@ -172,8 +190,8 @@ class OrderController extends Controller
                 'subtotal_price' => 'required|numeric',
                 'discount_total' => 'nullable|numeric',
                 'shipping_total' => 'nullable|numeric',
-                'total_tax' => 'nullable|numeric',
                 'total_price' => 'required|numeric',
+                'coupon_code' => 'nullable|string',
                 'payment_method' => 'nullable|string',
                 'note' => 'nullable|string',
                 'items' => 'required|array',
@@ -444,6 +462,114 @@ class OrderController extends Controller
         }
     }
 
+
+    public function convertOrder($id)
+    {
+        try {
+            // Find the original Shopify order
+            $originalOrder = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                ->where('external_source', 'shopify')
+                ->findOrFail($id);
+            
+            // Check if already converted or ignored
+            if ($originalOrder->converted) {
+                $status = $originalOrder->converted == 1 ? 'converted' : 'ignored';
+                return response()->json([
+                    'success' => false,
+                    'message' => "Order has already been {$status}"
+                ], 400);
+            }
+            
+            // Prepare order data for conversion (exact replica but with webapp source)
+            $orderData = $originalOrder->toArray();
+            
+            // Remove fields that should not be duplicated
+            unset($orderData['id']);
+            unset($orderData['created_at']);
+            unset($orderData['updated_at']);
+            
+            // Change source to webapp and clear external IDs
+            $orderData['external_source'] = 'webapp';
+            $orderData['external_id'] = null;
+            $orderData['external_customer_id'] = null;
+            
+            // Generate new order number for webapp orders
+            $latestOrder = \App\Models\CRM\OrderModel::where('external_source', 'webapp')
+                ->orderBy('id', 'desc')
+                ->first();
+            
+            $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
+            $orderData['order_number'] = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+            
+            // Set current timestamp for order date
+            $orderData['order_date'] = now();
+            
+            // Prepare line items data
+            $lineItems = [];
+            foreach ($originalOrder->lineItems as $item) {
+                $lineItemData = $item->toArray();
+                unset($lineItemData['id']);
+                unset($lineItemData['order_id']);
+                unset($lineItemData['created_at']);
+                unset($lineItemData['updated_at']);
+                $lineItems[] = $lineItemData;
+            }
+            $orderData['line_items'] = $lineItems;
+            
+            // Use existing storeOrderFromApi method to create the converted order
+            $convertedOrder = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+            
+            // Mark original order as converted
+            $originalOrder->update(['converted' => 1]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order converted successfully',
+                'original_order_id' => $originalOrder->id,
+                'converted_order_id' => $convertedOrder->id,
+                'converted_order' => $convertedOrder->load(['customer', 'lineItems'])
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to convert order: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    public function ignoreOrder($id)
+    {
+        try {
+            // Find the original Shopify order
+            $originalOrder = \App\Models\CRM\OrderModel::where('external_source', 'shopify')
+                ->findOrFail($id);
+            
+            // Check if already converted or ignored
+            if ($originalOrder->converted) {
+                $status = $originalOrder->converted == 1 ? 'converted' : 'ignored';
+                return response()->json([
+                    'success' => false,
+                    'message' => "Order has already been {$status}"
+                ], 400);
+            }
+            
+            // Mark order as ignored
+            $originalOrder->update(['converted' => 2]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order marked as ignored - no invoice will be created',
+                'order_id' => $originalOrder->id
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to ignore order: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 
     public function filter(Request $request)
     {
