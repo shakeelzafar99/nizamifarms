@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SysAdmin\MenuController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\LogController;
 use App\Http\Controllers\CRM\OrderController;
 
 // Redirect root to demo1
@@ -41,6 +42,15 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/daily-analytics', [DashboardController::class, 'getDailyAnalytics']);
     Route::get('/dashboard/general-stats', [DashboardController::class, 'getGeneralStats']);
     Route::post('/dashboard/clear-cache', [DashboardController::class, 'clearCache']);
+    
+    // Log viewer routes
+    Route::get('/logs', [LogController::class, 'index']);
+    Route::get('/logs/data', [LogController::class, 'getLogs']);
+    Route::get('/logs/summary', [LogController::class, 'getSummary']);
+    Route::get('/logs/dates', [LogController::class, 'getAvailableDates']);
+    Route::get('/logs/info', [LogController::class, 'getLogInfo']);
+    Route::post('/logs/clear-old', [LogController::class, 'clearOldLogs']);
+    Route::get('/logs/export', [LogController::class, 'exportLogs']);
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');

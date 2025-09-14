@@ -26,6 +26,14 @@ class WooCommerceService
     {
         $orders = [];
         $page = 1;
+        $totalFetched = 0;
+        
+        \Log::info('WooCommerce fetchOrders started', [
+            'from_date' => $fromDate,
+            'to_date' => $toDate,
+            'base_url' => $this->baseUrl
+        ]);
+        
         do {
             $response = Http::withOptions(['verify' => $this->verifySsl])
                 ->get($this->baseUrl . '/orders', [
@@ -35,12 +43,27 @@ class WooCommerceService
                     'page' => $page,
                     'after' => (new \DateTime($fromDate))->format('Y-m-d\TH:i:s'),
                     'before' => (new \DateTime($toDate))->format('Y-m-d\TH:i:s'),
-                    'status' => 'processing,on-hold',
+                    'status' => 'processing,on-hold,completed,cancelled,refunded,failed',
                 ]);
+                
             if ($response->failed()) {
+                \Log::error('WooCommerce API request failed', [
+                    'page' => $page,
+                    'status_code' => $response->status(),
+                    'response' => $response->body()
+                ]);
                 break;
             }
+            
             $data = $response->json(); 
+            $pageCount = count($data);
+            $totalFetched += $pageCount;
+            
+            \Log::info('WooCommerce API page fetched', [
+                'page' => $page,
+                'orders_in_page' => $pageCount,
+                'total_so_far' => $totalFetched
+            ]);
 
             if (!empty($data)) {
                 $orders = array_merge($orders, $data);
@@ -48,6 +71,11 @@ class WooCommerceService
 
             $page++;
         } while (!empty($data));
+
+        \Log::info('WooCommerce fetchOrders completed', [
+            'total_orders_fetched' => $totalFetched,
+            'pages_processed' => $page - 1
+        ]);
 
         return $orders;
     }
