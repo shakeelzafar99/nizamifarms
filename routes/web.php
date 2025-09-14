@@ -37,6 +37,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/kpis', [DashboardController::class, 'getKPIs']);
     Route::get('/dashboard/revenue-chart', [DashboardController::class, 'getRevenueChart']);
     Route::get('/dashboard/customer-growth-chart', [DashboardController::class, 'getCustomerGrowthChart']);
+    Route::get('/dashboard/monthly-analytics', [DashboardController::class, 'getMonthlyAnalytics']);
+    Route::get('/dashboard/daily-analytics', [DashboardController::class, 'getDailyAnalytics']);
+    Route::get('/dashboard/general-stats', [DashboardController::class, 'getGeneralStats']);
     Route::post('/dashboard/clear-cache', [DashboardController::class, 'clearCache']);
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');

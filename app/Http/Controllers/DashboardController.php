@@ -21,12 +21,9 @@ class DashboardController extends Controller
     public function index(Request $request)
     {
         $user = Auth::user();
-        $timeRange = $request->get('range', '30'); // Default to 30 days
         
-        // Get dashboard KPIs
-        $kpis = $this->analyticsService->getDashboardKPIs($timeRange);
-        
-        return view('dashboard', compact('user', 'kpis', 'timeRange'));
+        // Use enhanced dashboard with multi-level analytics
+        return view('dashboard-enhanced', compact('user'));
     }
 
     /**
@@ -68,6 +65,48 @@ class DashboardController extends Controller
         return response()->json([
             'success' => true,
             'data' => $chartData
+        ]);
+    }
+
+    /**
+     * Get monthly analytics data
+     */
+    public function getMonthlyAnalytics(Request $request)
+    {
+        $months = $request->get('months', 12); // Default to 12 months
+        $data = $this->analyticsService->getMonthlyAnalytics($months);
+        
+        return response()->json([
+            'success' => true,
+            'data' => $data
+        ]);
+    }
+
+    /**
+     * Get daily analytics data for a specific month
+     */
+    public function getDailyAnalytics(Request $request)
+    {
+        $year = $request->get('year', date('Y'));
+        $month = $request->get('month', date('n'));
+        $data = $this->analyticsService->getDailyAnalytics($year, $month);
+        
+        return response()->json([
+            'success' => true,
+            'data' => $data
+        ]);
+    }
+
+    /**
+     * Get general statistics
+     */
+    public function getGeneralStats(Request $request)
+    {
+        $data = $this->analyticsService->getGeneralStats();
+        
+        return response()->json([
+            'success' => true,
+            'data' => $data
         ]);
     }
 

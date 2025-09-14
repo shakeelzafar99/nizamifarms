@@ -37,8 +37,10 @@ class DashboardAnalyticsService
     public function getRevenueKPIs($startDate, $endDate)
     {
         // Current period revenue (excluding Shopify)
-        $currentRevenue = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $currentRevenue = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->whereIn('order_status', ['completed', 'processing'])
             ->sum('total_price');
@@ -48,22 +50,28 @@ class DashboardAnalyticsService
         $previousStart = $startDate->copy()->subDays($daysDiff);
         $previousEnd = $startDate->copy()->subDay();
         
-        $previousRevenue = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $previousRevenue = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$previousStart, $previousEnd])
             ->whereIn('order_status', ['completed', 'processing'])
             ->sum('total_price');
 
         // Today's revenue
-        $todayRevenue = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $todayRevenue = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereDate('order_date', Carbon::today())
             ->whereIn('order_status', ['completed', 'processing'])
             ->sum('total_price');
 
         // Average Order Value
-        $avgOrderValue = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $avgOrderValue = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->whereIn('order_status', ['completed', 'processing'])
             ->avg('total_price');
@@ -83,8 +91,10 @@ class DashboardAnalyticsService
     public function getOrderKPIs($startDate, $endDate)
     {
         // Current period orders
-        $currentOrders = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $currentOrders = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->count();
 
@@ -93,20 +103,26 @@ class DashboardAnalyticsService
         $previousStart = $startDate->copy()->subDays($daysDiff);
         $previousEnd = $startDate->copy()->subDay();
         
-        $previousOrders = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $previousOrders = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$previousStart, $previousEnd])
             ->count();
 
         // Today's orders
-        $todayOrders = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $todayOrders = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereDate('order_date', Carbon::today())
             ->count();
 
         // Order status distribution
-        $statusDistribution = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $statusDistribution = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->select('order_status', DB::raw('count(*) as count'))
             ->groupBy('order_status')
@@ -114,8 +130,10 @@ class DashboardAnalyticsService
             ->toArray();
 
         // Source distribution (excluding Shopify)
-        $sourceDistribution = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $sourceDistribution = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->select('external_source', DB::raw('count(*) as count'))
             ->groupBy('external_source')
@@ -288,8 +306,10 @@ class DashboardAnalyticsService
         $startDate = $this->getStartDate($timeRange);
         $endDate = Carbon::now();
 
-        $data = OrderModel::where('external_source', '!=', 'shopify')
-            ->orWhereNull('external_source')
+        $data = OrderModel::where(function($query) {
+                $query->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+            })
             ->whereBetween('order_date', [$startDate, $endDate])
             ->whereIn('order_status', ['completed', 'processing'])
             ->select(
@@ -369,6 +389,218 @@ class DashboardAnalyticsService
     }
 
     /**
+     * Get monthly analytics data for the last N months
+     */
+    public function getMonthlyAnalytics($months = 12)
+    {
+        $cacheKey = "monthly_analytics_{$months}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($months) { // 10 minutes cache
+            $endDate = Carbon::now();
+            $startDate = $endDate->copy()->subMonths($months);
+            
+            // Generate monthly data
+            $monthlyData = [];
+            $currentMonth = $startDate->copy()->startOfMonth();
+            
+            while ($currentMonth <= $endDate) {
+                $monthStart = $currentMonth->copy()->startOfMonth();
+                $monthEnd = $currentMonth->copy()->endOfMonth();
+                
+                // Revenue for the month (excluding Shopify)
+                $revenue = OrderModel::where(function($query) {
+                        $query->where('external_source', '!=', 'shopify')
+                              ->orWhereNull('external_source');
+                    })
+                    ->whereBetween('order_date', [$monthStart, $monthEnd])
+                    ->whereIn('order_status', ['completed', 'processing'])
+                    ->sum('total_price');
+                
+                // Orders count
+                $orders = OrderModel::where(function($query) {
+                        $query->where('external_source', '!=', 'shopify')
+                              ->orWhereNull('external_source');
+                    })
+                    ->whereBetween('order_date', [$monthStart, $monthEnd])
+                    ->count();
+                
+                // New customers
+                $customers = CustomerModel::whereBetween('first_order_date', [$monthStart, $monthEnd])
+                    ->count();
+                
+                $monthlyData[] = [
+                    'month' => $currentMonth->format('Y-m'),
+                    'month_name' => $currentMonth->format('M Y'),
+                    'revenue' => round($revenue, 2),
+                    'orders' => $orders,
+                    'customers' => $customers,
+                ];
+                
+                $currentMonth->addMonth();
+            }
+            
+            return $monthlyData;
+        });
+    }
+
+    /**
+     * Get daily analytics data for a specific month
+     */
+    public function getDailyAnalytics($year, $month)
+    {
+        $cacheKey = "daily_analytics_{$year}_{$month}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($year, $month) {
+            $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
+            $endDate = $startDate->copy()->endOfMonth();
+            
+            // Generate daily data
+            $dailyData = [];
+            $currentDay = $startDate->copy();
+            
+            while ($currentDay <= $endDate) {
+                $dayStart = $currentDay->copy()->startOfDay();
+                $dayEnd = $currentDay->copy()->endOfDay();
+                
+                // Revenue for the day (excluding Shopify)
+                $revenue = OrderModel::where(function($query) {
+                        $query->where('external_source', '!=', 'shopify')
+                              ->orWhereNull('external_source');
+                    })
+                    ->whereBetween('order_date', [$dayStart, $dayEnd])
+                    ->whereIn('order_status', ['completed', 'processing'])
+                    ->sum('total_price');
+                
+                // Orders count
+                $orders = OrderModel::where(function($query) {
+                        $query->where('external_source', '!=', 'shopify')
+                              ->orWhereNull('external_source');
+                    })
+                    ->whereBetween('order_date', [$dayStart, $dayEnd])
+                    ->count();
+                
+                // New customers
+                $customers = CustomerModel::whereBetween('first_order_date', [$dayStart, $dayEnd])
+                    ->count();
+                
+                $dailyData[] = [
+                    'date' => $currentDay->format('Y-m-d'),
+                    'day_name' => $currentDay->format('M j'),
+                    'revenue' => round($revenue, 2),
+                    'orders' => $orders,
+                    'customers' => $customers,
+                ];
+                
+                $currentDay->addDay();
+            }
+            
+            return [
+                'month_name' => $startDate->format('F Y'),
+                'data' => $dailyData
+            ];
+        });
+    }
+
+    /**
+     * Get general statistics and KPIs
+     */
+    public function getGeneralStats()
+    {
+        $cacheKey = "general_stats";
+        
+        return Cache::remember($cacheKey, 300, function () {
+            $now = Carbon::now();
+            
+            // Customer stats
+            $totalCustomers = CustomerModel::count();
+            $active30Days = CustomerModel::where('last_order_date', '>=', $now->copy()->subDays(30))->count();
+            $active90Days = CustomerModel::where('last_order_date', '>=', $now->copy()->subDays(90))->count();
+            $active7Days = CustomerModel::where('last_order_date', '>=', $now->copy()->subDays(7))->count();
+            
+            // Order stats (excluding Shopify)
+            $totalOrders = OrderModel::where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->count();
+            
+            $completedOrders = OrderModel::where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->where('order_status', 'completed')
+                ->count();
+            
+            $pendingOrders = OrderModel::where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->where('order_status', 'pending')
+                ->count();
+            
+            // Revenue stats
+            $totalRevenue = OrderModel::where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->whereIn('order_status', ['completed', 'processing'])
+                ->sum('total_price');
+            
+            $avgOrderValue = OrderModel::where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->whereIn('order_status', ['completed', 'processing'])
+                ->avg('total_price');
+            
+            // Product stats
+            $totalProducts = ProductModel::where('is_active', true)->count();
+            
+            // Customer lifetime value (average total spent)
+            $avgCustomerValue = CustomerModel::where('total_spent', '>', 0)->avg('total_spent');
+            
+            // Conversion rate (customers who made more than one order)
+            $repeatCustomers = CustomerModel::where('total_orders', '>', 1)->count();
+            $conversionRate = $totalCustomers > 0 ? round(($repeatCustomers / $totalCustomers) * 100, 1) : 0;
+            
+            // Geographic distribution
+            $topCities = CustomerModel::whereNotNull('city')
+                ->where('city', '!=', '')
+                ->select('city', DB::raw('count(*) as count'))
+                ->groupBy('city')
+                ->orderBy('count', 'desc')
+                ->limit(10)
+                ->get();
+            
+            return [
+                'customers' => [
+                    'total' => $totalCustomers,
+                    'active_30_days' => $active30Days,
+                    'active_90_days' => $active90Days,
+                    'active_7_days' => $active7Days,
+                    'repeat_customers' => $repeatCustomers,
+                    'conversion_rate' => $conversionRate,
+                    'avg_lifetime_value' => round($avgCustomerValue, 2)
+                ],
+                'orders' => [
+                    'total' => $totalOrders,
+                    'completed' => $completedOrders,
+                    'pending' => $pendingOrders,
+                    'completion_rate' => $totalOrders > 0 ? round(($completedOrders / $totalOrders) * 100, 1) : 0
+                ],
+                'revenue' => [
+                    'total' => round($totalRevenue, 2),
+                    'avg_order_value' => round($avgOrderValue, 2)
+                ],
+                'products' => [
+                    'total' => $totalProducts
+                ],
+                'geographic' => $topCities
+            ];
+        });
+    }
+
+    /**
      * Clear dashboard cache
      */
     public function clearCache()
@@ -376,6 +608,18 @@ class DashboardAnalyticsService
         $timeRanges = ['1', '7', '30', '90'];
         foreach ($timeRanges as $range) {
             Cache::forget("dashboard_kpis_{$range}");
+        }
+        
+        // Clear new cache keys
+        Cache::forget('general_stats');
+        for ($i = 1; $i <= 24; $i++) {
+            Cache::forget("monthly_analytics_{$i}");
+        }
+        
+        // Clear daily analytics (current year)
+        $currentYear = date('Y');
+        for ($month = 1; $month <= 12; $month++) {
+            Cache::forget("daily_analytics_{$currentYear}_{$month}");
         }
     }
 }
