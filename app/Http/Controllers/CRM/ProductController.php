@@ -37,18 +37,18 @@ class ProductController extends Controller
             $query->where('status', $request->status);
         }
 
-        // Filter by vendor
-        if ($request->has('vendor') && $request->vendor) {
-            $query->where('vendor', $request->vendor);
+        // Filter by sync_status
+        if ($request->has('sync_status') && $request->sync_status) {
+            $query->where('sync_status', $request->sync_status);
         }
 
         $products = $query->orderBy('title')->paginate(20);
 
         // Get filter options
-        $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort();
+        $syncStatuses = ProductModel::distinct()->pluck('sync_status')->filter()->sort();
         $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort();
 
-        return view('pages.products.index', compact('products', 'vendors', 'productTypes'));
+        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes'));
     }
 
     public function show($id)

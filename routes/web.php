@@ -5,6 +5,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SysAdmin\MenuController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\LogController;
+use App\Http\Controllers\Webhook\AppSheetController;
 use App\Http\Controllers\CRM\OrderController;
 
 // Redirect root to demo1
@@ -32,6 +33,12 @@ Route::group([
     Route::post('/menu', [MenuController::class, 'list']);
 });
 
+
+// AppSheet Webhook Routes (no auth required)
+Route::prefix('webhook/appsheet')->group(function () {
+    Route::post('/order-converted', [AppSheetController::class, 'handleOrderConversion']);
+    Route::any('/test', [AppSheetController::class, 'test']); // For testing
+});
 
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index']);

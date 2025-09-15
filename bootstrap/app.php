@@ -12,7 +12,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        //
+        // Exclude AppSheet webhook routes from CSRF verification
+        $middleware->validateCsrfTokens(except: [
+            'webhook/appsheet/*'
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

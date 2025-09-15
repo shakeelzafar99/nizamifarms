@@ -54,18 +54,18 @@
                             <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
                         </select>
                         
-                        <!-- Vendor Filter -->
-                        <select name="vendor" class="select select-sm">
-                            <option value="">All Vendors</option>
-                            @foreach($vendors as $vendor)
-                                <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
-                                    {{ $vendor }}
+                        <!-- Sync Status Filter -->
+                        <select name="sync_status" class="select select-sm">
+                            <option value="">All Sources</option>
+                            @foreach($syncStatuses as $syncStatus)
+                                <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
+                                    {{ ucfirst($syncStatus) }}
                                 </option>
                             @endforeach
                         </select>
                         
                         <button type="submit" class="kt-btn kt-btn-sm kt-btn-light">Filter</button>
-                        @if(request()->hasAny(['search', 'status', 'vendor']))
+                        @if(request()->hasAny(['search', 'status', 'sync_status']))
                             <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light">Clear</a>
                         @endif
                     </form>

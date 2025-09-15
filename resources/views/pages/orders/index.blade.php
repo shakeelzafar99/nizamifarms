@@ -586,7 +586,19 @@ input:focus, select:focus, button:focus {
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Edit Invoice</h3>
-            <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <button id="popoutOrderBtn" onclick="popoutOrder()" 
+                        style="background: none; border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 12px; cursor: pointer; color: #374151; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                        title="Open in new tab">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15,3 21,3 21,9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                    </svg>
+                    Pop Out
+                </button>
+                <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            </div>
         </div>
         
         <!-- Modal Body -->
@@ -1199,7 +1211,7 @@ function loadEditForm(order) {
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
-                                <input type="number" step="0.001" name="items[${index}][quantity]" value="${item.quantity || 1}" min="0.001"
+                                <input type="number" step="0.01" name="items[${index}][quantity]" value="${item.quantity || 1}" min="0.01"
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
                             </div>
                             <div>
@@ -1269,8 +1281,12 @@ function loadEditForm(order) {
                     Cancel
                 </button>
                 <button type="submit" 
+                        style="padding: 10px 20px; background-color: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                    Save
+                </button>
+                <button type="button" onclick="saveAndCloseOrder(${order.id})" 
                         style="padding: 10px 20px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
-                    Save Changes
+                    Save & Close
                 </button>
             </div>
         </form>
@@ -1296,6 +1312,37 @@ function showEditError(message) {
             <p class="text-gray-500">${message}</p>
         </div>
     `;
+}
+
+function showSuccessMessage(message, duration = 3000) {
+    // Remove any existing success message
+    const existingMessage = document.querySelector('.order-success-message');
+    if (existingMessage) {
+        existingMessage.remove();
+    }
+    
+    // Create success message element
+    const successDiv = document.createElement('div');
+    successDiv.className = 'order-success-message fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 transition-all duration-300';
+    successDiv.innerHTML = `
+        <div class="flex items-center">
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            ${message}
+        </div>
+    `;
+    
+    document.body.appendChild(successDiv);
+    
+    // Auto-remove after duration
+    setTimeout(() => {
+        if (successDiv) {
+            successDiv.style.opacity = '0';
+            successDiv.style.transform = 'translateX(100%)';
+            setTimeout(() => successDiv.remove(), 300);
+        }
+    }, duration);
 }
 
 // Line item management functions
@@ -1326,7 +1373,7 @@ function addLineItem() {
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
-            <input type="number" step="0.001" name="items[${lineItemIndex}][quantity]" value="1" min="0.001"
+            <input type="number" step="0.01" name="items[${lineItemIndex}][quantity]" value="1" min="0.01"
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
         </div>
         <div>
@@ -1464,13 +1511,16 @@ function saveOrderChanges(orderId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Order updated successfully!');
-            closeModal('editOrderModal');
-            // Refresh the page to show updated data
-            window.location.reload();
+            showSuccessMessage('Order updated successfully!');
+            submitBtn.textContent = 'Save';
+            submitBtn.disabled = false;
+            // Refresh the orders table data after a short delay to show success message
+            setTimeout(() => {
+                window.location.reload();
+            }, 1500);
         } else {
             alert('Error updating order: ' + (data.message || 'Unknown error'));
-            submitBtn.textContent = 'Save Changes';
+            submitBtn.textContent = 'Save';
             submitBtn.disabled = false;
         }
     })
@@ -1480,6 +1530,143 @@ function saveOrderChanges(orderId) {
         submitBtn.textContent = 'Save Changes';
         submitBtn.disabled = false;
     });
+}
+
+function saveAndCloseOrder(orderId) {
+    const form = document.getElementById('editOrderForm');
+    const formData = new FormData(form);
+    const saveAndCloseBtn = event.target;
+    
+    saveAndCloseBtn.textContent = 'Saving...';
+    saveAndCloseBtn.disabled = true;
+    
+    // Collect line items (reuse same logic as saveOrderChanges)
+    const items = [];
+    document.querySelectorAll('.line-item').forEach((item) => {
+        const name = item.querySelector('input[name*="[name]"]')?.value;
+        const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
+        const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+        
+        if (name && quantity > 0 && unitPrice >= 0) {
+            items.push({
+                name: name,
+                quantity: quantity,
+                unit_price: unitPrice,
+                line_total: quantity * unitPrice
+            });
+        }
+    });
+    
+    // Prepare data for update (same as saveOrderChanges)
+    const rawOrderDate = formData.get('order_date');
+    const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
+    
+    const orderData = {
+        order_status: formData.get('order_status'),
+        order_date: formattedOrderDate,
+        contact_email: formData.get('contact_email'),
+        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+        discount_total: parseFloat(formData.get('discount_total')) || 0,
+        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+        total_price: parseFloat(formData.get('total_price')) || 0,
+        coupon_code: formData.get('coupon_code'),
+        payment_method: formData.get('payment_method'),
+        note: formData.get('note'),
+        items: items,
+        // Address fields
+        address_first_name: formData.get('address_first_name'),
+        address_last_name: formData.get('address_last_name'),
+        address_email: formData.get('address_email'),
+        address_phone: formData.get('address_phone'),
+        address_line1: formData.get('address_line1'),
+        address_line2: formData.get('address_line2'),
+        address_city: formData.get('address_city'),
+        address_province: formData.get('address_province'),
+        address_postal_code: formData.get('address_postal_code'),
+        address_country: formData.get('address_country')
+    };
+    
+    // Submit to existing update endpoint
+    fetch(`/orders/${orderId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(orderData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showSuccessMessage('Order updated successfully!');
+            closeModal('editOrderModal');
+            // Refresh the page to show updated data
+            window.location.reload();
+        } else {
+            alert('Error updating order: ' + (data.message || 'Unknown error'));
+            saveAndCloseBtn.textContent = 'Save & Close';
+            saveAndCloseBtn.disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Error updating order:', error);
+        alert('Error updating order. Please try again.');
+        saveAndCloseBtn.textContent = 'Save & Close';
+        saveAndCloseBtn.disabled = false;
+    });
+}
+
+function popoutOrder() {
+    const modalContent = document.getElementById('editOrderContent');
+    const modalTitle = document.querySelector('#editOrderModal h3').textContent;
+    
+    if (!modalContent) {
+        alert('No order data to open in new tab');
+        return;
+    }
+    
+    // Create a simple popup with basic functionality
+    const newWindow = window.open('', '_blank', 'width=1000,height=800,scrollbars=yes,resizable=yes');
+    
+    if (!newWindow) {
+        alert('Popup blocked. Please allow popups for this site.');
+        return;
+    }
+    
+    // Create a basic HTML page with the modal content
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    const currentOrigin = window.location.origin;
+    
+    newWindow.document.write('<!DOCTYPE html>');
+    newWindow.document.write('<html lang="en">');
+    newWindow.document.write('<head>');
+    newWindow.document.write('<meta charset="UTF-8">');
+    newWindow.document.write('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+    newWindow.document.write('<meta name="csrf-token" content="' + csrfToken + '">');
+    newWindow.document.write('<title>' + modalTitle + '</title>');
+    newWindow.document.write('<style>');
+    newWindow.document.write('body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background-color: #f9fafb; }');
+    newWindow.document.write('.container { max-width: 900px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }');
+    newWindow.document.write('.header { padding: 20px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }');
+    newWindow.document.write('.content { padding: 20px; }');
+    newWindow.document.write('.order-success-message { position: fixed; top: 20px; right: 20px; background-color: #10b981; color: white; padding: 12px 16px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 1000; transition: all 0.3s ease; }');
+    newWindow.document.write('</style>');
+    newWindow.document.write('</head>');
+    newWindow.document.write('<body>');
+    newWindow.document.write('<div class="container">');
+    newWindow.document.write('<div class="header">');
+    newWindow.document.write('<h1 style="margin: 0; font-size: 24px; font-weight: 600;">' + modalTitle + '</h1>');
+    newWindow.document.write('</div>');
+    newWindow.document.write('<div class="content">');
+    newWindow.document.write(modalContent.innerHTML);
+    newWindow.document.write('</div>');
+    newWindow.document.write('</div>');
+    // Avoid writing <script> tags inside this script block to prevent premature termination
+    newWindow.document.write('</body>');
+    newWindow.document.write('</html>');
+    
+    newWindow.document.close();
 }
 
 // Import modal functions
@@ -1589,7 +1776,15 @@ function selectProduct(index, productId, productName, price) {
     const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
     
     if (nameInput) nameInput.value = productName;
-    if (priceInput) priceInput.value = price;
+    if (priceInput) {
+        priceInput.value = price;
+        // Make price readonly when selected from product dropdown
+        priceInput.readOnly = true;
+        priceInput.style.backgroundColor = '#f3f4f6';
+        priceInput.style.cursor = 'not-allowed';
+        priceInput.setAttribute('data-from-product', 'true');
+        priceInput.title = 'Price is set from product catalog and cannot be edited';
+    }
     
     // Update the line total
     updateLineTotal(index);
