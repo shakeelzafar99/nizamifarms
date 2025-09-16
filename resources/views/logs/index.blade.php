@@ -252,8 +252,9 @@
 <script>
 // Log Viewer JavaScript
 document.addEventListener('DOMContentLoaded', function() {
-    const logViewer = new LogViewer();
-    logViewer.init();
+    // Expose globally so inline onclick handlers can access it
+    window.logViewer = new LogViewer();
+    window.logViewer.init();
 });
 
 class LogViewer {
@@ -428,15 +429,21 @@ class LogViewer {
     createCategoriesChart(categoryData) {
         const ctx = document.getElementById('categoriesChartCanvas');
         
-        if (this.charts.categories) {
-            this.charts.categories.destroy();
-        }
+        // Ensure previous chart instance is destroyed before reusing canvas
+        try {
+            if (this.charts.categories) {
+                this.charts.categories.destroy();
+            }
+            const existing = (window.Chart && Chart.getChart) ? Chart.getChart(ctx) : null;
+            if (existing) existing.destroy();
+        } catch (e) { /* noop */ }
 
         const labels = Object.keys(categoryData);
         const data = Object.values(categoryData);
         
         if (labels.length === 0) {
-            ctx.getContext('2d').clearRect(0, 0, ctx.width, ctx.height);
+            const g = ctx.getContext('2d');
+            if (g) g.clearRect(0, 0, ctx.width, ctx.height);
             return;
         }
 
@@ -467,12 +474,18 @@ class LogViewer {
     createDateChart(dateData) {
         const ctx = document.getElementById('dateChartCanvas');
         
-        if (this.charts.date) {
-            this.charts.date.destroy();
-        }
+        // Ensure previous chart instance is destroyed before reusing canvas
+        try {
+            if (this.charts.date) {
+                this.charts.date.destroy();
+            }
+            const existing = (window.Chart && Chart.getChart) ? Chart.getChart(ctx) : null;
+            if (existing) existing.destroy();
+        } catch (e) { /* noop */ }
 
         if (!dateData || dateData.length === 0) {
-            ctx.getContext('2d').clearRect(0, 0, ctx.width, ctx.height);
+            const g = ctx.getContext('2d');
+            if (g) g.clearRect(0, 0, ctx.width, ctx.height);
             return;
         }
 

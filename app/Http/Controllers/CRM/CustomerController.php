@@ -63,17 +63,20 @@ class CustomerController extends Controller
         return view('pages.customers.index', compact('customers', 'cities', 'stats'));
     }
     
-    public function show($id)
+    public function show(Request $request, $id)
     {
         try {
             $customer = CustomerModel::with(['orders' => function($query) {
                 $query->orderBy('order_date', 'desc')->limit(10);
             }])->findOrFail($id);
             
+            // Always return JSON for now to maintain existing functionality
+            // The existing viewCustomer function expects JSON response
             return response()->json([
                 'success' => true,
                 'customer' => $customer
             ]);
+            
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

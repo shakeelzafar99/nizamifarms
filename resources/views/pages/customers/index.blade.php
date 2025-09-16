@@ -912,6 +912,19 @@ document.addEventListener('DOMContentLoaded', function() {
     // Apply saved column settings on page load
     renderCustomersTable();
     
+    // Check if we need to open a specific customer modal from URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewCustomerId = urlParams.get('view_customer');
+    if (viewCustomerId) {
+        // Wait a moment for the table to render, then open the customer modal
+        setTimeout(function() {
+            viewCustomer(viewCustomerId);
+            // Clean up the URL parameter
+            const newUrl = window.location.pathname + (window.location.search.replace(/[?&]view_customer=\d+/, '').replace(/^&/, '?') || '');
+            window.history.replaceState({}, '', newUrl);
+        }, 500);
+    }
+    
     const searchInput = document.getElementById('customerSearchInput');
     const cityFilter = document.getElementById('customerCityFilter');
     const statusFilter = document.getElementById('customerStatusFilter');

@@ -175,7 +175,11 @@ class OrderModel extends BaseModel
     /**
      * Store order with line items and customer management
      */
-    public static function storeOrderFromApi(array $orderData): self
+    /**
+     * Store order (Shopify routes to ShopifyOrderModel).
+     * Returns the concrete Eloquent model instance that was created/updated.
+     */
+    public static function storeOrderFromApi(array $orderData): \Illuminate\Database\Eloquent\Model
     {
         DB::beginTransaction();
         

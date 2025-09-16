@@ -66,9 +66,9 @@
                             @endforeach
                         </select>
                         
-                        <button type="submit" class="kt-btn kt-btn-sm kt-btn-light">Filter</button>
+                        <button type="submit" class="kt-btn kt-btn-sm kt-btn-light" onclick="event.preventDefault(); performSearch();">Filter</button>
                         @if(request()->hasAny(['search', 'status', 'sync_status']))
-                            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light" id="clearFiltersBtn">Clear</a>
+                            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light" id="clearFiltersBtn" onclick="event.preventDefault(); clearAllFilters();">Clear</a>
                         @endif
                     </form>
                 </div>
@@ -356,8 +356,8 @@ function formatDateLocal(dateString) {
     }
 }
 
-// Product data from server
-const productsData = @json($products->items());
+// Product data from server (make it globally accessible)
+window.productsData = @json($products->items());
 
 // Available columns configuration
 const availableColumns = {
@@ -415,7 +415,6 @@ function initializeRealTimeSearch() {
 }
 
 function performSearch() {
-    const form = document.getElementById('productSearchForm');
     const searchValue = document.getElementById('productSearchInput').value;
     const statusValue = document.getElementById('statusFilter').value;
     const syncStatusValue = document.getElementById('syncStatusFilter').value;
@@ -426,12 +425,93 @@ function performSearch() {
     if (statusValue) params.set('status', statusValue);
     if (syncStatusValue) params.set('sync_status', syncStatusValue);
     
-    // Navigate to the filtered URL
-    const baseUrl = window.location.pathname;
-    const queryString = params.toString();
-    const newUrl = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    // Show loading state
+    showLoadingState();
     
-    window.location.href = newUrl;
+    // Make AJAX request to get filtered results
+    fetch(`${window.location.pathname}?${params.toString()}`, {
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Update the products data
+            window.productsData = data.products;
+            
+            // Re-render the table with new data
+            renderTable();
+            
+            // Update pagination info
+            updatePaginationInfo(data.pagination);
+            
+            // Update URL without page refresh
+            const newUrl = params.toString() ? `${window.location.pathname}?${params.toString()}` : window.location.pathname;
+            window.history.replaceState({}, '', newUrl);
+            
+            // Show/hide clear button
+            updateClearButton();
+        }
+        hideLoadingState();
+    })
+    .catch(error => {
+        console.error('Search error:', error);
+        hideLoadingState();
+    });
+}
+
+function showLoadingState() {
+    const tableBody = document.getElementById('tableBody');
+    if (tableBody) {
+        tableBody.innerHTML = '<tr><td colspan="100%" class="text-center py-8"><div class="flex items-center justify-center gap-2"><div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>Searching...</div></td></tr>';
+    }
+}
+
+function hideLoadingState() {
+    // Loading state will be hidden when renderTable() is called
+}
+
+function updatePaginationInfo(pagination) {
+    const paginationInfo = document.querySelector('.text-sm.text-gray-700');
+    if (paginationInfo && pagination) {
+        paginationInfo.textContent = `Showing ${pagination.from || 0} to ${pagination.to || 0} of ${pagination.total || 0} products`;
+    }
+}
+
+function updateClearButton() {
+    const searchValue = document.getElementById('productSearchInput').value;
+    const statusValue = document.getElementById('statusFilter').value;
+    const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    
+    const clearBtn = document.getElementById('clearFiltersBtn');
+    const hasFilters = searchValue.trim() || statusValue || syncStatusValue;
+    
+    if (hasFilters && !clearBtn) {
+        // Add clear button
+        const filterButton = document.querySelector('button[type="submit"]');
+        const clearButton = document.createElement('a');
+        clearButton.href = window.location.pathname;
+        clearButton.className = 'kt-btn kt-btn-sm kt-btn-light';
+        clearButton.id = 'clearFiltersBtn';
+        clearButton.textContent = 'Clear';
+        clearButton.onclick = function(e) {
+            e.preventDefault();
+            clearAllFilters();
+        };
+        filterButton.parentNode.insertBefore(clearButton, filterButton.nextSibling);
+    } else if (!hasFilters && clearBtn) {
+        // Remove clear button
+        clearBtn.remove();
+    }
+}
+
+function clearAllFilters() {
+    document.getElementById('productSearchInput').value = '';
+    document.getElementById('statusFilter').value = '';
+    document.getElementById('syncStatusFilter').value = '';
+    performSearch();
 }
 
 function renderTable() {
@@ -460,8 +540,8 @@ function renderTableHeaders() {
 function renderTableBody() {
     const tbody = document.getElementById('tableBody');
     tbody.innerHTML = '';
-    
-    productsData.forEach(product => {
+
+    window.productsData.forEach(product => {
         const row = document.createElement('tr');
         row.className = 'hover:bg-gray-50';
         

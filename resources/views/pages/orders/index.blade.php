@@ -897,9 +897,29 @@ function viewOrderDetails(orderId) {
             html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Order Details</h3>';
             html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
             html += '<div>';
-            html += '<p><strong>Customer:</strong> ' + (order.name || 'N/A') + '</p>';
-            html += '<p><strong>Email:</strong> ' + (order.contact_email || 'N/A') + '</p>';
-            html += '<p><strong>Phone:</strong> ' + ((order.customer_phone || order.address_phone || '').toString() || 'N/A') + '</p>';
+            // Build customer name from address fields if order.name is not available
+            var customerName = order.name || 'N/A';
+            if ((!order.name || order.name === 'N/A') && (order.address_first_name || order.address_last_name)) {
+                customerName = ((order.address_first_name || '') + ' ' + (order.address_last_name || '')).trim();
+            }
+            
+            // Build address from address fields (excluding postal code and country)
+            var addressParts = [];
+            if (order.address_line1) addressParts.push(order.address_line1);
+            if (order.address_line2) addressParts.push(order.address_line2);
+            if (order.address_city) addressParts.push(order.address_city);
+            if (order.address_province) addressParts.push(order.address_province);
+            var fullAddress = addressParts.length > 0 ? addressParts.join(', ') : 'N/A';
+            
+            // Make customer name clickable if customer_id exists
+            var customerDisplay = customerName;
+            if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
+                customerDisplay = '<span onclick="openCustomerInNewTab(' + order.customer_id + ')" class="text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" title="View customer details">' + customerName + '</span>';
+            }
+            
+            html += '<p><strong>Customer:</strong> ' + customerDisplay + '</p>';
+            html += '<p><strong>Address:</strong> ' + fullAddress + '</p>';
+            html += '<p><strong>Phone:</strong> ' + (order.address_phone || order.customer_phone || 'N/A') + '</p>';
             html += '</div>';
             html += '<div>';
             html += '<p><strong>Status:</strong> ' + (order.order_status || 'N/A') + '</p>';
@@ -1037,6 +1057,13 @@ function downloadInvoiceImage() {
     } else {
         console.error('No order ID available for image download');
     }
+}
+
+// Open customer details in new tab
+function openCustomerInNewTab(customerId) {
+    // Open customers page in new tab and trigger the customer modal
+    const customerUrl = '/customers?view_customer=' + customerId;
+    window.open(customerUrl, '_blank');
 }
 
 // Edit Order Details

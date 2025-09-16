@@ -64,6 +64,28 @@ class ShopifyOrderModel extends BaseModel
         'converted' => 'boolean'
     ];
 
+    /**
+     * Normalize incoming order_date to MySQL format (Y-m-d H:i:s)
+     * Accepts ISO 8601 strings like 2025-09-15T08:39:18+05:00
+     */
+    public function setOrderDateAttribute($value): void
+    {
+        if (!$value || trim((string) $value) === '') {
+            return;
+        }
+
+        try {
+            $date = \Carbon\Carbon::parse($value);
+            $this->attributes['order_date'] = $date->format('Y-m-d H:i:s');
+        } catch (\Throwable $e) {
+            // Keep attribute unset to avoid SQL errors, but log for visibility
+            \Log::warning('ShopifyOrderModel: Invalid order_date format', [
+                'value' => $value,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function customer(): BelongsTo
     {
         return $this->belongsTo(CustomerModel::class, 'customer_id');

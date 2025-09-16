@@ -52,6 +52,22 @@ class ProductController extends Controller
         $syncStatuses = ProductModel::distinct()->pluck('sync_status')->filter()->sort();
         $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort();
 
+        // If this is an AJAX request, return JSON
+        if ($request->wantsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+            return response()->json([
+                'success' => true,
+                'products' => $products->items(),
+                'pagination' => [
+                    'current_page' => $products->currentPage(),
+                    'from' => $products->firstItem(),
+                    'to' => $products->lastItem(),
+                    'total' => $products->total(),
+                    'per_page' => $products->perPage(),
+                    'last_page' => $products->lastPage()
+                ]
+            ]);
+        }
+
         return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes'));
     }
 
