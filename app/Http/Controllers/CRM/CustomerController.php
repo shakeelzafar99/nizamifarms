@@ -195,8 +195,12 @@ class CustomerController extends Controller
         try {
             $customer = CustomerModel::findOrFail($id);
             
-            // Get customer orders with line items count
+            // Get customer orders with line items count (only non-Shopify orders to match customer statistics)
             $orders = OrderModel::where('customer_id', $id)
+                              ->where(function($query) {
+                                  $query->where('external_source', '!=', 'shopify')
+                                        ->orWhereNull('external_source');
+                              })
                               ->withCount('lineItems')
                               ->orderBy('order_date', 'desc')
                               ->get();

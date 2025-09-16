@@ -180,12 +180,21 @@ class OrderModel extends BaseModel
         DB::beginTransaction();
         
         try {
+            // If the source is Shopify, route to ShopifyOrderModel while keeping customer flow
+            $isShopify = isset($orderData['external_source']) && $orderData['external_source'] === 'shopify';
+
             // Check for existing order
             $existingOrder = null;
             if (isset($orderData['external_source']) && isset($orderData['external_id'])) {
-                $existingOrder = static::where('external_source', $orderData['external_source'])
-                    ->where('external_id', $orderData['external_id'])
-                    ->first();
+                if ($isShopify) {
+                    $existingOrder = \App\Models\CRM\ShopifyOrderModel::where('external_source', 'shopify')
+                        ->where('external_id', $orderData['external_id'])
+                        ->first();
+                } else {
+                    $existingOrder = static::where('external_source', $orderData['external_source'])
+                        ->where('external_id', $orderData['external_id'])
+                        ->first();
+                }
             }
 
             // Find or create customer by phone
@@ -209,29 +218,51 @@ class OrderModel extends BaseModel
             $lineItems = $orderAttributes['line_items'] ?? [];
             unset($orderAttributes['line_items']);
 
-            // Create or update order
-            if ($existingOrder) {
-                $existingOrder->update($orderAttributes);
-                $order = $existingOrder;
+            // Create or update order (route by source)
+            if ($isShopify) {
+                if ($existingOrder) {
+                    $existingOrder->update($orderAttributes);
+                    $order = $existingOrder;
+                } else {
+                    $order = \App\Models\CRM\ShopifyOrderModel::create($orderAttributes);
+                }
             } else {
-                $order = static::create($orderAttributes);
+                if ($existingOrder) {
+                    $existingOrder->update($orderAttributes);
+                    $order = $existingOrder;
+                } else {
+                    $order = static::create($orderAttributes);
+                }
             }
 
             // Store line items
             if (!empty($lineItems)) {
                 // Delete existing line items if updating
                 if ($existingOrder) {
-                    $order->lineItems()->delete();
+                    if ($isShopify) {
+                        $order->lineItems()->delete();
+                    } else {
+                        $order->lineItems()->delete();
+                    }
                 }
 
-                $lineItemModels = [];
-                foreach ($lineItems as $lineItem) {
-                    $lineItem['order_id'] = $order->id;
-                    $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
-                    $lineItemModels[] = new OrderLineItemModel($lineItem);
+                if ($isShopify) {
+                    $lineItemModels = [];
+                    foreach ($lineItems as $lineItem) {
+                        $lineItem['order_id'] = $order->id;
+                        $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
+                        $lineItemModels[] = new \App\Models\CRM\ShopifyOrderLineItemModel($lineItem);
+                    }
+                    $order->lineItems()->saveMany($lineItemModels);
+                } else {
+                    $lineItemModels = [];
+                    foreach ($lineItems as $lineItem) {
+                        $lineItem['order_id'] = $order->id;
+                        $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
+                        $lineItemModels[] = new OrderLineItemModel($lineItem);
+                    }
+                    $order->lineItems()->saveMany($lineItemModels);
                 }
-                
-                $order->lineItems()->saveMany($lineItemModels);
             }
 
             DB::commit();

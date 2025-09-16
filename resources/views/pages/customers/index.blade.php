@@ -1695,15 +1695,678 @@ window.viewOrderDetails = function(orderId) {
         </div>
     </div>
 </div>
+
+<!-- Create Order Modal -->
+<div id="createOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <!-- Modal Header -->
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Create New Order</h3>
+            <button onclick="closeCreateOrderModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div id="createOrderContent" style="padding: 20px;">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
 <script>
-// Create order for specific customer
+// ==================== ORDER CREATION FUNCTIONALITY ====================
+// Define order creation functions first to avoid "not defined" errors
+
+// Global variables for order creation
+let lineItemIndex = 0;
+
+// Create order for specific customer - now opens modal instead of redirecting
 window.createOrderForCustomer = function(customerId) {
-    // Store customer ID in localStorage for the orders page
-    localStorage.setItem('preloadCustomerId', customerId);
+    console.log('Creating order for customer ID:', customerId);
     
-    // Navigate to orders page
-    window.location.href = '/orders';
+    // Fetch customer details first
+    fetch(`/customers/${customerId}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            openCreateOrderModal(data.customer);
+        } else {
+            console.error('Failed to fetch customer details');
+            openCreateOrderModal();
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching customer:', error);
+        openCreateOrderModal();
+    });
 };
+
+// Customer search functionality (for the modal) - reusing existing customerSearchTimeout variable
+function searchCustomers(input) {
+    const query = input.value;
+    if (query.length < 2) {
+        const dropdown = document.getElementById('customerDropdown');
+        if (dropdown) dropdown.style.display = 'none';
+        return;
+    }
+    
+    clearTimeout(customerSearchTimeout);
+    customerSearchTimeout = setTimeout(() => {
+        fetch(`/customers/search?q=${encodeURIComponent(query)}`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            const dropdown = document.getElementById('customerDropdown');
+            if (!dropdown) {
+                console.error('Customer dropdown element not found');
+                return;
+            }
+            
+            if (data.length > 0) {
+                dropdown.innerHTML = data.map(customer => `
+                    <div onclick="selectCustomer(${customer.id}, '${customer.first_name} ${customer.last_name}', '${customer.phone_original || customer.phone || ''}')" 
+                         style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
+                         onmouseover="this.style.backgroundColor='#f3f4f6'" 
+                         onmouseout="this.style.backgroundColor='white'">
+                        <div style="font-weight: 500;">${customer.first_name} ${customer.last_name}</div>
+                        <div style="font-size: 12px; color: #6b7280;">${customer.phone_original || customer.phone || ''} • ${customer.email || 'No email'}</div>
+                    </div>
+                `).join('');
+                dropdown.style.display = 'block';
+            } else {
+                dropdown.innerHTML = '<div style="padding: 8px 12px; color: #6b7280;">No customers found</div>';
+                dropdown.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            console.error('Error searching customers:', error);
+            const dropdown = document.getElementById('customerDropdown');
+            if (dropdown) {
+                dropdown.innerHTML = '<div style="padding: 8px 12px; color: #dc2626;">Error loading customers</div>';
+                dropdown.style.display = 'block';
+            }
+        });
+    }, 300);
+}
+
+function showCustomerDropdown() {
+    const input = document.getElementById('customerSearch');
+    if (input && input.value.length >= 2) {
+        searchCustomers(input);
+    }
+}
+
+function selectCustomer(id, name, phone) {
+    const searchInput = document.getElementById('customerSearch');
+    const hiddenInput = document.getElementById('selectedCustomerId');
+    
+    if (searchInput) searchInput.value = `${name} (${phone})`;
+    if (hiddenInput) hiddenInput.value = id;
+    
+    const dropdown = document.getElementById('customerDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+}
+
+function openCreateOrderModal(customer = null) {
+    const modal = document.getElementById('createOrderModal');
+    const content = document.getElementById('createOrderContent');
+    
+    // Load the order creation form (simplified version)
+    content.innerHTML = `
+        <form id="createOrderForm">
+            <!-- Customer pre-filled section -->
+            <div style="background-color: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; margin-bottom: 20px; padding: 16px;">
+                <h4 style="color: #0369a1; margin: 0 0 12px 0;">Selected Customer</h4>
+                <p style="margin: 0; font-weight: 500;">${customer ? customer.first_name + ' ' + customer.last_name : 'No customer selected'}</p>
+                ${customer ? `<p style="margin: 4px 0 0 0; color: #6b7280; font-size: 14px;">${customer.phone_original || customer.phone || ''} • ${customer.email || 'No email'}</p>` : ''}
+                <input type="hidden" name="customer_id" value="${customer ? customer.id : ''}">
+            </div>
+
+            <!-- Order Information -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
+                <div>
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Details</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Status</label>
+                            <select name="order_status" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="pending">Pending</option>
+                                <option value="processing">Processing</option>
+                                <option value="completed">Completed</option>
+                                <option value="on-hold">On Hold</option>
+                            </select>
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date & Time</label>
+                            <input type="datetime-local" name="order_date" required value="${getCurrentLocalDateTime()}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Contact Email</label>
+                            <input type="email" name="contact_email" value="${customer ? (customer.email || '') : ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                    </div>
+                </div>
+                
+                <div>
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Pricing</h4>
+                    <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Subtotal</label>
+                            <input type="number" step="0.01" name="subtotal_price" value="0" readonly style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Discount</label>
+                            <div style="display: flex; gap: 8px;">
+                                <div style="flex: 1; position: relative;">
+                                    <input type="text" id="newOrderCouponSearch" name="coupon_code" value="" 
+                                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
+                                           placeholder="Search coupon code..." onkeyup="searchNewOrderCoupons(this.value)" onfocus="showNewOrderCouponDropdown()" onblur="hideNewOrderCouponDropdown()">
+                                    <div id="newOrderCouponDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                                </div>
+                                <input type="number" step="0.01" name="discount_total" value="0" onchange="updateOrderTotal()" placeholder="Discount amount" style="flex: 1; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Shipping</label>
+                            <input type="number" step="0.01" name="shipping_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+                            <input type="number" step="0.01" name="total_price" value="0" readonly style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; font-weight: 600;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Line Items Section -->
+            <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
+                <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0;">Line Items</h4>
+                    <button type="button" onclick="addLineItem()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                        + Add Item
+                    </button>
+                </div>
+                <div id="lineItemsContainer" style="padding: 16px;">
+                    <div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>
+                </div>
+            </div>
+
+            <!-- Notes Section -->
+            <div style="margin-bottom: 24px;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Notes</label>
+                <textarea name="note" rows="3" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="Order notes..."></textarea>
+            </div>
+
+            <!-- Form Actions -->
+            <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+                <button type="button" onclick="closeCreateOrderModal()" style="padding: 10px 20px; border: 1px solid #d1d5db; background-color: white; color: #374151; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    Cancel
+                </button>
+                <button type="submit" style="padding: 10px 20px; background-color: #059669; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    Create Order
+                </button>
+            </div>
+        </form>
+    `;
+    
+    // Reset line item index for new order
+    lineItemIndex = 0;
+    
+    // Load default shipping price
+    loadDefaultShippingPrice();
+    
+    // Set up form submission for new order
+    document.getElementById('createOrderForm').onsubmit = function(e) {
+        e.preventDefault();
+        saveNewOrder();
+    };
+    
+    modal.style.display = 'block';
+}
+
+function closeCreateOrderModal() {
+    document.getElementById('createOrderModal').style.display = 'none';
+}
+
+// Get current local datetime in format suitable for datetime-local input
+function getCurrentLocalDateTime() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+// Load default shipping price for order forms
+function loadDefaultShippingPrice() {
+    fetch('/api/shipping/price')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.shipping_price) {
+                const shippingInput = document.querySelector('input[name="shipping_total"]');
+                if (shippingInput) {
+                    shippingInput.value = data.shipping_price;
+                    // Try to update total if function exists
+                    if (typeof updateOrderTotal === 'function') {
+                        updateOrderTotal();
+                    }
+                }
+            }
+        })
+        .catch(error => {
+            console.log('Could not load default shipping price:', error);
+        });
+}
+
+// Customer selection mode switching (for when implementing full modal)
+function selectCustomerMode(mode) {
+    const existingSection = document.getElementById('existingCustomerSection');
+    const newSection = document.getElementById('newCustomerSection');
+    const existingBtn = document.getElementById('existingCustomerBtn');
+    const newBtn = document.getElementById('newCustomerBtn');
+
+    if (!existingSection || !newSection || !existingBtn || !newBtn) return;
+
+    if (mode === 'existing') {
+        existingSection.style.display = '';
+        newSection.style.display = 'none';
+        existingBtn.style.backgroundColor = '#10b981';
+        existingBtn.style.color = '#ffffff';
+        existingBtn.style.borderColor = '#10b981';
+        newBtn.style.backgroundColor = '#f9fafb';
+        newBtn.style.color = '#374151';
+        newBtn.style.borderColor = '#d1d5db';
+    } else {
+        existingSection.style.display = 'none';
+        newSection.style.display = '';
+        newBtn.style.backgroundColor = '#10b981';
+        newBtn.style.color = '#ffffff';
+        newBtn.style.borderColor = '#10b981';
+        existingBtn.style.backgroundColor = '#f9fafb';
+        existingBtn.style.color = '#374151';
+        existingBtn.style.borderColor = '#d1d5db';
+    }
+}
+
+// Line item management
+function addLineItem() {
+    const container = document.getElementById('lineItemsContainer');
+    
+    // Remove "no items" message if it exists
+    if (container.innerHTML.includes('No line items')) {
+        container.innerHTML = '';
+    }
+    
+    const itemHtml = `
+        <div class="line-item" style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 12px; background-color: #fefefe;">
+            <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end;">
+                <div style="position: relative;">
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Product Name</label>
+                    <input type="text" name="items[${lineItemIndex}][name]" 
+                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                           placeholder="Type to search products..."
+                           onkeyup="searchProducts(this, ${lineItemIndex})" 
+                           onfocus="showProductDropdown(${lineItemIndex})"
+                           onblur="hideProductDropdown(${lineItemIndex})">
+                    <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                    <input type="hidden" name="items[${lineItemIndex}][id]" value="">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+                    <input type="number" name="items[${lineItemIndex}][quantity]" step="0.01" min="0" value="1" 
+                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                           onchange="updateLineTotal(${lineItemIndex})">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+                    <input type="number" name="items[${lineItemIndex}][unit_price]" step="0.01" min="0" value="0" 
+                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                           onchange="updateLineTotal(${lineItemIndex})">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Line Total</label>
+                    <input type="number" step="0.01" readonly value="0" 
+                           style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; font-weight: 500;"
+                           id="lineTotal_${lineItemIndex}">
+                </div>
+                <div>
+                    <button type="button" onclick="removeLineItem(this)" 
+                            style="padding: 8px; background-color: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                        ✕
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    container.insertAdjacentHTML('beforeend', itemHtml);
+    lineItemIndex++;
+}
+
+function removeLineItem(button) {
+    button.closest('.line-item').remove();
+    updateOrderSubtotal();
+    
+    // If no line items left, show the "no items" message
+    const container = document.getElementById('lineItemsContainer');
+    if (!container.querySelector('.line-item')) {
+        container.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>';
+    }
+}
+
+function updateLineTotal(index) {
+    const quantityInput = document.querySelector(`input[name="items[${index}][quantity]"]`);
+    const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
+    const totalInput = document.getElementById(`lineTotal_${index}`);
+    
+    if (quantityInput && priceInput && totalInput) {
+        const quantity = parseFloat(quantityInput.value) || 0;
+        const price = parseFloat(priceInput.value) || 0;
+        const total = quantity * price;
+        
+        totalInput.value = total.toFixed(2);
+        updateOrderSubtotal();
+    }
+}
+
+function updateOrderSubtotal() {
+    let subtotal = 0;
+    document.querySelectorAll('.line-item').forEach((item, index) => {
+        const totalInput = item.querySelector('input[readonly]');
+        if (totalInput) {
+            subtotal += parseFloat(totalInput.value) || 0;
+        }
+    });
+    
+    const subtotalInput = document.querySelector('input[name="subtotal_price"]');
+    if (subtotalInput) {
+        subtotalInput.value = subtotal.toFixed(2);
+        updateOrderTotal();
+    }
+}
+
+function updateOrderTotal() {
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
+    const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
+    
+    const total = subtotal - discount + shipping;
+    const totalInput = document.querySelector('input[name="total_price"]');
+    if (totalInput) {
+        totalInput.value = total.toFixed(2);
+    }
+}
+
+// Save new order
+function saveNewOrder() {
+    const form = document.getElementById('createOrderForm');
+    const formData = new FormData(form);
+    
+    // Collect line items
+    const items = [];
+    document.querySelectorAll('.line-item').forEach((item, index) => {
+        const name = item.querySelector(`input[name*="[name]"]`)?.value;
+        const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`)?.value) || 0;
+        const unitPrice = parseFloat(item.querySelector(`input[name*="[unit_price]"]`)?.value) || 0;
+        
+        if (name && quantity > 0 && unitPrice >= 0) {
+            items.push({
+                name: name,
+                quantity: quantity,
+                unit_price: unitPrice,
+                line_total: quantity * unitPrice
+            });
+        }
+    });
+    
+    if (items.length === 0) {
+        alert('Please add at least one line item');
+        return;
+    }
+    
+    // Prepare data
+    const orderData = {
+        customer_id: formData.get('customer_id'),
+        order_status: formData.get('order_status'),
+        order_date: formData.get('order_date') ? formData.get('order_date').replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00',
+        contact_email: formData.get('contact_email'),
+        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+        discount_total: parseFloat(formData.get('discount_total')) || 0,
+        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+        total_price: parseFloat(formData.get('total_price')) || 0,
+        payment_method: formData.get('payment_method'),
+        note: formData.get('note'),
+        items: items
+    };
+    
+    // Submit to server
+    fetch('/orders', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(orderData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Order created successfully!');
+            closeCreateOrderModal();
+            // Refresh the customers page to show updated customer stats
+            location.reload();
+        } else {
+            alert('Error creating order: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error creating order');
+    });
+}
+
+// Product search functionality
+let productSearchTimeout = null;
+
+function searchProducts(input, index) {
+    clearTimeout(productSearchTimeout);
+    const query = input.value.trim();
+    
+    if (query.length < 2) {
+        hideProductDropdown(index);
+        return;
+    }
+    
+    productSearchTimeout = setTimeout(() => {
+        fetch(`/products/search?q=${encodeURIComponent(query)}&limit=10`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showProductResults(data.products, index);
+            }
+        })
+        .catch(error => {
+            console.error('Product search error:', error);
+        });
+    }, 300);
+}
+
+function showProductResults(products, index) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (!dropdown) return;
+    
+    if (!Array.isArray(products) || products.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 8px; color: #6b7280; font-size: 12px;">No products found</div>';
+    } else {
+        dropdown.innerHTML = products.map(product => {
+            const displayName = (product.name || product.title || '').toString();
+            const safeName = displayName.replace(/'/g, "\\'");
+            const price = (product.price ?? product.price_min ?? 0);
+            const inventory = (product.inventory ?? product.total_inventory ?? 0);
+            return `
+            <div onclick="selectProduct(${index}, '${product.id}', '${safeName}', ${price})" 
+                 style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6;"
+                 onmouseover="this.style.backgroundColor='#f9fafb'" 
+                 onmouseout="this.style.backgroundColor='white'">
+                <div style="font-weight: 500; font-size: 13px;">${displayName}</div>
+                <div style="font-size: 11px; color: #6b7280;">Price: PKR ${price} | Stock: ${inventory}</div>
+            </div>`;
+        }).join('');
+    }
+    
+    dropdown.style.display = 'block';
+}
+
+function showProductDropdown(index) {
+    // Hide other dropdowns
+    document.querySelectorAll('.product-dropdown').forEach(dropdown => {
+        if (dropdown.id !== `productDropdown_${index}`) {
+            dropdown.style.display = 'none';
+        }
+    });
+}
+
+function hideProductDropdown(index) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (dropdown) {
+        setTimeout(() => {
+            dropdown.style.display = 'none';
+        }, 200);
+    }
+}
+
+function selectProduct(index, productId, productName, price) {
+    // Fill in the product details
+    const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
+    const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
+    const hiddenInput = document.querySelector(`input[name="items[${index}][id]"]`);
+    
+    if (nameInput) nameInput.value = productName;
+    if (priceInput) {
+        priceInput.value = price;
+        // Make price readonly when selected from product dropdown
+        priceInput.readOnly = true;
+        priceInput.style.backgroundColor = '#f3f4f6';
+        priceInput.style.cursor = 'not-allowed';
+        priceInput.setAttribute('data-from-product', 'true');
+        priceInput.title = 'Price is set from product catalog and cannot be edited';
+    }
+    if (hiddenInput) hiddenInput.value = productId;
+    
+    // Update the line total
+    updateLineTotal(index);
+    
+    // Hide dropdown
+    hideProductDropdown(index);
+}
+
+// Coupon search functionality
+let couponSearchTimeout;
+function searchNewOrderCoupons(query) {
+    clearTimeout(couponSearchTimeout);
+    
+    if (query.length < 2) {
+        document.getElementById('newOrderCouponDropdown').style.display = 'none';
+        return;
+    }
+    
+    couponSearchTimeout = setTimeout(() => {
+        fetch(`/coupons/search?q=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                const dropdown = document.getElementById('newOrderCouponDropdown');
+                if (data.length > 0) {
+                    dropdown.innerHTML = data.map(coupon => `
+                        <div onclick="selectNewOrderCoupon('${coupon.code}', ${coupon.value}, '${coupon.value_type}', ${coupon.minimum_amount})" 
+                             style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
+                             onmouseover="this.style.backgroundColor='#f3f4f6'" 
+                             onmouseout="this.style.backgroundColor='white'">
+                            <div style="font-weight: 500;">${coupon.code}</div>
+                            <div style="font-size: 12px; color: #6b7280;">
+                                ${coupon.value_type === 'percentage' ? coupon.value + '%' : 'PKR ' + coupon.value} off
+                                ${coupon.minimum_amount > 0 ? ' (Min: PKR ' + coupon.minimum_amount + ')' : ''}
+                            </div>
+                        </div>
+                    `).join('');
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.innerHTML = '<div style="padding: 8px 12px; color: #6b7280;">No coupons found</div>';
+                    dropdown.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error searching coupons:', error);
+            });
+    }, 300);
+}
+
+function showNewOrderCouponDropdown() {
+    const query = document.getElementById('newOrderCouponSearch').value;
+    if (query.length > 0) {
+        searchNewOrderCoupons(query);
+    }
+}
+
+function hideNewOrderCouponDropdown() {
+    setTimeout(() => {
+        document.getElementById('newOrderCouponDropdown').style.display = 'none';
+    }, 200);
+}
+
+function selectNewOrderCoupon(code, value, valueType, minimumAmount) {
+    // Set coupon code
+    document.getElementById('newOrderCouponSearch').value = code;
+    
+    // Calculate discount based on subtotal
+    const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+    let discountAmount = 0;
+    
+    if (subtotal >= minimumAmount) {
+        if (valueType === 'percentage') {
+            discountAmount = (subtotal * value) / 100;
+        } else {
+            discountAmount = value;
+        }
+    }
+    
+    // Set discount amount
+    document.querySelector('input[name="discount_total"]').value = discountAmount.toFixed(2);
+    
+    // Update total
+    updateOrderTotal();
+    
+    // Hide dropdown
+    document.getElementById('newOrderCouponDropdown').style.display = 'none';
+}
+
+// Close modal on escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeCreateOrderModal();
+    }
+});
 </script>
 
 @endsection

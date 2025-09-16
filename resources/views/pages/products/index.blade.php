@@ -41,13 +41,15 @@
                 
                 <div class="flex flex-wrap gap-2 lg:gap-5">
                     <!-- Search -->
-                    <form method="GET" class="flex items-center gap-2">
+                    <form method="GET" class="flex items-center gap-2" id="productSearchForm">
                         <input type="text" name="search" value="{{ request('search') }}" 
-                               placeholder="Search products..." 
-                               class="input input-sm w-48">
+                               placeholder="Search products, SKUs..." 
+                               class="input input-sm w-48"
+                               id="productSearchInput"
+                               autocomplete="off">
                         
                         <!-- Status Filter -->
-                        <select name="status" class="select select-sm">
+                        <select name="status" class="select select-sm" id="statusFilter">
                             <option value="">All Status</option>
                             <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
                             <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
@@ -55,7 +57,7 @@
                         </select>
                         
                         <!-- Sync Status Filter -->
-                        <select name="sync_status" class="select select-sm">
+                        <select name="sync_status" class="select select-sm" id="syncStatusFilter">
                             <option value="">All Sources</option>
                             @foreach($syncStatuses as $syncStatus)
                                 <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
@@ -66,7 +68,7 @@
                         
                         <button type="submit" class="kt-btn kt-btn-sm kt-btn-light">Filter</button>
                         @if(request()->hasAny(['search', 'status', 'sync_status']))
-                            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light">Clear</a>
+                            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light" id="clearFiltersBtn">Clear</a>
                         @endif
                     </form>
                 </div>
@@ -382,7 +384,55 @@ let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || JS
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
     renderTable();
+    initializeRealTimeSearch();
 });
+
+// Real-time search functionality
+let searchTimeout = null;
+
+function initializeRealTimeSearch() {
+    const searchInput = document.getElementById('productSearchInput');
+    const statusFilter = document.getElementById('statusFilter');
+    const syncStatusFilter = document.getElementById('syncStatusFilter');
+    
+    if (!searchInput) return;
+    
+    // Search as user types
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            performSearch();
+        }, 300); // Wait 300ms after user stops typing
+    });
+    
+    // Also trigger search on filter changes
+    if (statusFilter) {
+        statusFilter.addEventListener('change', performSearch);
+    }
+    if (syncStatusFilter) {
+        syncStatusFilter.addEventListener('change', performSearch);
+    }
+}
+
+function performSearch() {
+    const form = document.getElementById('productSearchForm');
+    const searchValue = document.getElementById('productSearchInput').value;
+    const statusValue = document.getElementById('statusFilter').value;
+    const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    
+    // Build query parameters
+    const params = new URLSearchParams();
+    if (searchValue.trim()) params.set('search', searchValue.trim());
+    if (statusValue) params.set('status', statusValue);
+    if (syncStatusValue) params.set('sync_status', syncStatusValue);
+    
+    // Navigate to the filtered URL
+    const baseUrl = window.location.pathname;
+    const queryString = params.toString();
+    const newUrl = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    
+    window.location.href = newUrl;
+}
 
 function renderTable() {
     renderTableHeaders();

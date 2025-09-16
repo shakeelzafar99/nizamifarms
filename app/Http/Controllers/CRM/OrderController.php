@@ -26,19 +26,28 @@ class OrderController extends Controller
 
     public function index(Request $request)
     {
-        $source = $request->get('source', 'other'); // default to 'other' (non-shopify)
-        
-        // Filter orders based on source using new table structure
-        $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems']);
-        
+        $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
+        $tab = $request->get('tab', 'all'); // 'all' or 'approvals'
+
+        // Build query per source
         if ($source === 'shopify') {
-            $query->where('external_source', 'shopify');
+            // Read from new Shopify tables
+            $query = \App\Models\CRM\ShopifyOrderModel::with(['customer', 'lineItems']);
+            
+            // If specifically viewing approvals tab, filter to unconverted only
+            if ($tab === 'approvals') {
+                $query->where(function($q){
+                    $q->whereNull('converted')->orWhere('converted', 0);
+                });
+            }
+            // Otherwise show ALL Shopify orders
         } else {
-            // Show all non-shopify sources (woocommerce, manual, etc.)
-            $query->where(function($q) {
-                $q->where('external_source', '!=', 'shopify')
-                  ->orWhereNull('external_source');
-            });
+            // Non-shopify from prod orders
+            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                ->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+                });
         }
         
         // Handle per_page parameter
@@ -48,16 +57,29 @@ class OrderController extends Controller
         $orders = $query->orderBy('order_date', 'desc')->paginate($perPage);
         
         // Append parameters to pagination links
-        $orders->appends(['source' => $source, 'per_page' => $perPage]);
+        $orders->appends(['source' => $source, 'per_page' => $perPage, 'tab' => $tab]);
         
-        // Get counts for tab badges using new structure
-        $shopifyCount = \App\Models\CRM\OrderModel::where('external_source', 'shopify')->count();
-        $otherCount = \App\Models\CRM\OrderModel::where(function($q) {
-            $q->where('external_source', '!=', 'shopify')
-              ->orWhereNull('external_source');
-        })->count();
+        // Counts for badges
+        if ($source === 'shopify') {
+            // For Shopify page: count all orders and approvals separately
+            $shopifyCount = \App\Models\CRM\ShopifyOrderModel::count(); // All Shopify orders
+            $approvalsCount = \App\Models\CRM\ShopifyOrderModel::where(function($q){
+                $q->whereNull('converted')->orWhere('converted', 0);
+            })->count(); // Only unconverted
+            $otherCount = 0; // Not relevant for Shopify page
+        } else {
+            // For main Invoices page: count as before
+            $shopifyCount = \App\Models\CRM\ShopifyOrderModel::where(function($q){
+                $q->whereNull('converted')->orWhere('converted', 0);
+            })->count();
+            $approvalsCount = 0; // Not relevant for main page
+            $otherCount = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->count();
+        }
 
-        return view('pages.orders.index', compact('orders', 'source', 'shopifyCount', 'otherCount'));
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount'));
     }
 
     public function show($id)
@@ -107,8 +129,13 @@ class OrderController extends Controller
             
             // Check if user wants auto PDF download
             if (request()->has('auto_pdf')) {
-                return view('pages.orders.invoice-print', compact('order', 'filename'))
-                       ->with('auto_pdf', true);
+                // Check if user wants direct PDF download (bypass browser display)
+                if (request()->has('direct_download')) {
+                    return $this->generateServerPDF($order, $filename);
+                }
+                
+                // Otherwise, use JavaScript-enhanced auto-download page
+                return $this->createJavaScriptPDFDownload($order, $filename);
             }
             
             // Check if user wants direct server-generated PDF download
@@ -182,10 +209,47 @@ class OrderController extends Controller
     private function generateServerPDF($order, $filename)
     {
         try {
+            // Method 1: Try Laravel's dompdf (most reliable)
+            try {
+                $pdf = \PDF::loadView('pages.orders.invoice-image', compact('order'))
+                    ->setOptions([
+                        'isHtml5ParserEnabled' => true,
+                        'isRemoteEnabled' => true,
+                        'defaultFont' => 'Times-Roman'
+                    ])
+                    ->setPaper('A4', 'portrait');
+                
+                // Force download with proper headers
+                return response($pdf->output(), 200, [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="' . $filename . '.pdf"',
+                    'Content-Length' => strlen($pdf->output()),
+                    'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                    'Pragma' => 'no-cache',
+                    'Expires' => '0'
+                ]);
+                
+            } catch (\Exception $dompdfError) {
+                \Log::info('Dompdf failed, trying wkhtmltopdf: ' . $dompdfError->getMessage());
+                
+                // Method 2: Try wkhtmltopdf as fallback
+                return $this->tryWkhtmltopdf($order, $filename);
+            }
+            
+        } catch (\Exception $e) {
+            \Log::error('All PDF generation methods failed: ' . $e->getMessage());
+            
+            // Final fallback: Return a view that auto-downloads via JavaScript
+            return $this->createJavaScriptPDFDownload($order, $filename);
+        }
+    }
+    
+    private function tryWkhtmltopdf($order, $filename)
+    {
+        try {
             // Use the clean invoice-image view for PDF generation
             $html = view('pages.orders.invoice-image', compact('order'))->render();
             
-            // Try wkhtmltopdf for better PDF generation
             $tempDir = storage_path('app/temp');
             if (!file_exists($tempDir)) {
                 mkdir($tempDir, 0755, true);
@@ -216,16 +280,18 @@ class OrderController extends Controller
                 unlink($pdfPath);
             }
             
-            // Fallback to browser-based PDF
-            return view('pages.orders.invoice-print', compact('order', 'filename'))
-                   ->with('auto_pdf', true)
-                   ->with('fallback_message', 'Server PDF generation not available. Using browser print.');
-                   
+            throw new \Exception('wkhtmltopdf command failed');
+            
         } catch (\Exception $e) {
-            // Fallback to browser-based PDF
-            return view('pages.orders.invoice-print', compact('order', 'filename'))
-                   ->with('auto_pdf', true);
+            \Log::info('wkhtmltopdf failed: ' . $e->getMessage());
+            throw $e;
         }
+    }
+    
+    private function createJavaScriptPDFDownload($order, $filename)
+    {
+        // Create a special view that uses JavaScript to trigger automatic PDF download
+        return view('pages.orders.invoice-auto-download', compact('order', 'filename'));
     }
 
     // Open edit order in a dedicated tab with full assets loaded
@@ -364,35 +430,11 @@ class OrderController extends Controller
             $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
             $orderNumber = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
             
-            // Handle customer creation/selection
+            // Handle customer selection/population
             $customerId = $validated['customer_id'];
             if (!$customerId && $validated['customer_phone']) {
-                // Create new customer from provided data
-                $customerData = [
-                    'external_source' => 'webapp',
-                    'address_first_name' => $validated['customer_first_name'],
-                    'address_last_name' => $validated['customer_last_name'],
-                    'address_company' => $validated['customer_company'],
-                    'address_email' => $validated['contact_email'],
-                    'address_line1' => $validated['customer_address1'],
-                    'address_line2' => $validated['customer_address2'],
-                    'address_city' => $validated['customer_city'],
-                    'address_province' => $validated['customer_province'],
-                    'address_postal_code' => $validated['customer_postal_code'],
-                    'address_country' => $validated['customer_country'] ?: 'Pakistan'
-                ];
-                
-                // Use the customer model's method to create/update customer with KPIs
-                $customer = \App\Models\CRM\CustomerModel::findOrCreateByPhone(
-                    $validated['customer_phone'],
-                    $customerData,
-                    $validated['order_date'],
-                    $validated['total_price']
-                );
-                
-                $customerId = $customer->id;
-                
-                // Set address fields from customer data
+                // Don't create customer here - let storeOrderFromApi handle it to avoid double counting
+                // Just populate address fields for the order
                 $validated['address_first_name'] = $validated['customer_first_name'];
                 $validated['address_last_name'] = $validated['customer_last_name'];
                 $validated['address_company'] = $validated['customer_company'];
@@ -427,7 +469,7 @@ class OrderController extends Controller
             
             // Create order
             $orderData = array_merge($validated, [
-                'customer_id' => $customerId,
+                'customer_id' => $customerId, // Will be null for new customers, storeOrderFromApi will handle it
                 'external_source' => 'webapp',
                 'order_number' => $orderNumber,
                 'currency' => 'PKR',

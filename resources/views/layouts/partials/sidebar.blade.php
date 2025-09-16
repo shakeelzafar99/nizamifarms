@@ -46,6 +46,18 @@
                       </a>
                   </div>
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/orders?source=shopify">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px]" tabindex="0">
+                              <span class="kt-menu-icon items-start text-muted-foreground w-[20px]">
+                                  <i class="ki-filled ki-shop text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
+                                  Shopify
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/customers">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px]" tabindex="0">
                               <span class="kt-menu-icon items-start text-muted-foreground w-[20px]">
@@ -87,6 +99,19 @@
                               </span>
                               <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
                                   Coupons
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/shipping">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px]" tabindex="0">
+                              <span class="kt-menu-icon items-start text-muted-foreground w-[20px]">
+                                  <i class="ki-filled ki-delivery text-lg">
+                                  </i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-foreground kt-menu-item-active:text-primary kt-menu-link-hover:!text-primary">
+                                  Shipping
                               </span>
                           </div>
                       </a>

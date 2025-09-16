@@ -281,16 +281,31 @@ input:focus, select:focus, button:focus {
                     
                     <!-- Compact Tabs -->
                     <div class="flex bg-gray-100 rounded-lg p-1">
-                        <a href="{{ url('/orders') }}?source=other" 
-                           class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
-                            Invoices
-                            <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $otherCount }}</span>
-                        </a>
-                        <a href="{{ url('/orders') }}?source=shopify" 
-                           class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
-                            Shopify
-                            <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
-                        </a>
+                        @if($source === 'shopify')
+                            <!-- Shopify page tabs -->
+                            <a href="{{ url('/orders') }}?source=shopify&tab=all" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                All Orders
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
+                            </a>
+                            <a href="{{ url('/orders') }}?source=shopify&tab=approvals" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'approvals' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                Approvals
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $approvalsCount }}</span>
+                            </a>
+                        @else
+                            <!-- Main invoices page tabs -->
+                            <a href="{{ url('/orders') }}?source=other" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                Invoices
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $otherCount }}</span>
+                            </a>
+                            <a href="{{ url('/orders') }}?source=shopify&tab=approvals" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                Shopify Approvals
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
+                            </a>
+                        @endif
                     </div>
                     
                     <!-- Quick Stats -->
@@ -2413,7 +2428,7 @@ const availableColumns = {
     line_items_count: { label: 'Items', width: 'w-[80px]', key: 'line_items_count' },
     
     // Actions column
-    actions: { label: 'Actions', width: 'w-[120px]', key: 'actions', fixed: true }
+    actions: { label: '{{ $source === "shopify" && ($tab ?? "all") === "approvals" ? "Approve / Ignore" : "Actions" }}', width: 'w-[160px]', key: 'actions', fixed: true }
 };
 
 // DUPLICATE SECTION REMOVED - Proper definitions exist later in file
@@ -3207,44 +3222,34 @@ function getCellContent(order, columnId) {
             
         // Actions
         case 'actions':
-            let actionButtons = `
+            // If we're on Shopify Approvals tab specifically, restrict to Approve/Ignore/View
+            if ('{{ $source }}' === 'shopify' && '{{ $tab ?? "all" }}' === 'approvals') {
+                return `
+                    <div class="flex items-center justify-center gap-1.5">
+                        <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                        </button>
+                        <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                        <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        </button>
+                    </div>`;
+            }
+            // Default full actions for non-shopify tab
+            return `
                 <div class="flex items-center justify-center gap-1.5">
                     <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
-                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
-                        </svg>
-                    </button>`;
-            
-            // Add Convert and Ignore buttons only for Shopify orders that haven't been processed (converted == 0 or null)
-            if (order.external_source === 'shopify' && (order.converted == 0 || order.converted == null)) {
-                actionButtons += `
-                    <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-purple-600 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 hover:border-purple-300 hover:shadow-sm transition-all duration-200 group" title="Convert Order">
-                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
-                        </svg>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-gray-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 hover:border-gray-300 hover:shadow-sm transition-all duration-200 group" title="Ignore Order">
-                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636m12.728 12.728L18.364 5.636M5.636 18.364l12.728-12.728"></path>
-                        </svg>
-                    </button>`;
-            }
-            
-            actionButtons += `
                     <button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
-                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
-                        </svg>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                     </button>
                     <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="View Invoice (PDF)">
-                        <svg class="w-4 h-4 group-hover:scale-110 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-                        </svg>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
-                </div>
-            `;
-            return actionButtons;
+                </div>`;
         default:
             return '';
         }
@@ -3663,6 +3668,9 @@ function createNewOrder() {
     // Reset line item index for new order
     lineItemIndex = 0;
     
+    // Load default shipping price
+    loadDefaultShippingPrice('editOrderModal');
+    
     // Set up form submission for new order
     document.getElementById('editOrderForm').onsubmit = function(e) {
         e.preventDefault();
@@ -3753,6 +3761,33 @@ function saveNewOrder() {
         console.error('Error:', error);
         alert('Error creating order');
     });
+}
+
+// Load default shipping price for order forms
+function loadDefaultShippingPrice(modalId = null) {
+    fetch('/api/shipping/price')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.shipping_price) {
+                let shippingInput;
+                if (modalId) {
+                    shippingInput = document.querySelector(`#${modalId} input[name="shipping_total"]`);
+                } else {
+                    shippingInput = document.querySelector('input[name="shipping_total"]');
+                }
+                
+                if (shippingInput) {
+                    shippingInput.value = data.shipping_price;
+                    // Try to update total if function exists
+                    if (typeof updateOrderTotal === 'function') {
+                        updateOrderTotal();
+                    }
+                }
+            }
+        })
+        .catch(error => {
+            console.log('Could not load default shipping price:', error);
+        });
 }
 
 // ==================== CUSTOMER SELECTION HELPERS (single source of truth) ====================
