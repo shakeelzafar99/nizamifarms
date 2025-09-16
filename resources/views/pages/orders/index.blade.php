@@ -277,7 +277,7 @@ input:focus, select:focus, button:focus {
             <div class="flex items-center justify-between py-4">
                 <!-- Left: Title + Tabs + Quick Stats -->
                 <div class="flex items-center gap-6">
-                    <h1 class="text-xl font-semibold text-gray-900">Orders</h1>
+                    <h1 class="text-xl font-semibold text-gray-900">{{ $source === 'shopify' ? 'Shopify' : 'Orders' }}</h1>
                     
                     <!-- Compact Tabs -->
                     <div class="flex bg-gray-100 rounded-lg p-1">
@@ -362,11 +362,13 @@ input:focus, select:focus, button:focus {
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                             Import
                         </button>
+                        @if($source !== 'shopify')
                         <button onclick="createNewOrder()" 
                                 class="flex items-center px-3 py-2 rounded-lg transition-all-smooth text-sm border border-emerald-500 text-emerald-700 hover:bg-emerald-50 font-medium" title="Create Order">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                             Create Order
                         </button>
+                        @endif
                     </div>
                     </div>
             </div>

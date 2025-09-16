@@ -37,6 +37,7 @@ Route::group([
 // AppSheet Webhook Routes (no auth required)
 Route::prefix('webhook/appsheet')->group(function () {
     Route::post('/order-converted', [AppSheetController::class, 'handleOrderConversion']);
+    Route::post('/flag-update', [AppSheetController::class, 'handleFlagUpdate']);
     Route::any('/test', [AppSheetController::class, 'test']); // For testing
 });
 

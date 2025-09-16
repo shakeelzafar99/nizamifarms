@@ -268,4 +268,103 @@ class AppSheetController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Handle generic flag update coming from AppSheet for Shopify orders.
+     * Expects: { "order_id": <number>, "flag": <number> }
+     * Behavior: Adds 1000 to order_id to form the Shopify order_number, then
+     * - if flag == 3 -> set converted = 1 (approved/converted)
+     * - otherwise   -> set converted = 2 (ignored)
+     * This does NOT create a webapp order; it only updates the Shopify record.
+     */
+    public function handleFlagUpdate(Request $request)
+    {
+        try {
+            // Log raw payload
+            $this->createLog($request->all(), 'json', 'request', 'appsheet_flag_update');
+
+            $payload = $request->all();
+
+            // Accept multiple input shapes from AppSheet
+            // - Preferred: Customer Email holds the short order number directly
+            // - Fallbacks: order_id or "Order ID" then +1000 as per prior rule
+            $flag = isset($payload['flag']) ? (int) $payload['flag'] : null;
+            $customerEmailAsOrderNumber = $payload['Customer Email'] ?? null;
+            $orderIdRaw = $payload['order_id'] ?? ($payload['Order ID'] ?? null);
+
+            if ($flag === null || ($customerEmailAsOrderNumber === null && $orderIdRaw === null)) {
+                \Log::warning('AppSheet flag update missing required fields', ['payload' => $payload]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Missing required fields: provide either Customer Email (order number) OR order_id / Order ID, and flag'
+                ], 400);
+            }
+
+            // Determine the Shopify order_number to lookup
+            if ($customerEmailAsOrderNumber !== null && trim((string)$customerEmailAsOrderNumber) !== '') {
+                // If Customer Email is numeric, add 1000 as per requirement; otherwise use as-is
+                $raw = trim((string)$customerEmailAsOrderNumber);
+                if (ctype_digit($raw)) {
+                    $shopifyOrderNumber = (string) (((int) $raw) + 1000);
+                } else {
+                    $shopifyOrderNumber = $raw;
+                }
+            } else {
+                // Use numeric id + 1000
+                $baseOrderId = (int) $orderIdRaw;
+                $shopifyOrderNumber = (string) ($baseOrderId + 1000);
+            }
+
+            // Find the Shopify order by order_number
+            $shopifyOrder = \App\Models\CRM\ShopifyOrderModel::where('order_number', $shopifyOrderNumber)->first();
+            if (!$shopifyOrder) {
+                \Log::error('AppSheet flag update - Shopify order not found', [
+                    'computed_order_number' => $shopifyOrderNumber,
+                    'payload' => $payload
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Shopify order not found for order_number ' . $shopifyOrderNumber
+                ], 404);
+            }
+
+            // Determine converted value
+            // 1 = converted/approved, 2 = ignored (kept consistent with existing ignore behavior)
+            $newConverted = ($flag === 3) ? 1 : 2;
+
+            $shopifyOrder->update(['converted' => $newConverted]);
+
+            \Log::info('AppSheet flag update applied', [
+                'shopify_order_id' => $shopifyOrder->id,
+                'order_number' => $shopifyOrder->order_number,
+                'new_converted' => $newConverted,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Flag update applied to Shopify order',
+                'order_id' => $shopifyOrder->id,
+                'order_number' => $shopifyOrder->order_number,
+                'converted' => $newConverted,
+            ], 200);
+
+        } catch (\Exception $e) {
+            \Log::error('AppSheet flag update error', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'payload' => $request->all()
+            ]);
+
+            $this->createLog([
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'payload' => $request->all()
+            ], 'json', 'error', 'appsheet_flag_update_error');
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Internal server error processing AppSheet flag update'
+            ], 500);
+        }
+    }
 }
