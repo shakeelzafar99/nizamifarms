@@ -569,6 +569,28 @@ input:focus, select:focus, button:focus {
                     </svg>
                     View Invoice
                 </button>
+                <div style="display: flex; gap: 8px;">
+                    <button onclick="downloadInvoicePdf()" 
+                            style="background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14,2 14,8 20,8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10,9 9,9 8,9"/>
+                        </svg>
+                        📄 PDF
+                    </button>
+                    <button onclick="downloadInvoiceImage()" 
+                            style="background: #059669; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        📷 Image
+                    </button>
+                </div>
                 <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
@@ -587,7 +609,7 @@ input:focus, select:focus, button:focus {
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Edit Invoice</h3>
             <div style="display: flex; align-items: center; gap: 8px;">
-                <button id="popoutOrderBtn" onclick="popoutOrder()" 
+                <a id="popoutOrderBtn" href="#" onclick="openEditInTab()" 
                         style="background: none; border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 12px; cursor: pointer; color: #374151; font-size: 12px; display: flex; align-items: center; gap: 4px;"
                         title="Open in new tab">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -596,7 +618,7 @@ input:focus, select:focus, button:focus {
                         <line x1="10" y1="14" x2="21" y2="3"></line>
                     </svg>
                     Pop Out
-                </button>
+                </a>
                 <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
@@ -928,6 +950,16 @@ function viewOrderDetails(orderId) {
             }
             html += '</div>';
 
+            // Order Notes Section (if notes exist)
+            if (order.note && order.note.trim() !== '') {
+                html += '<div style="padding: 20px; background-color: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; margin: 20px 0 0 0;">';
+                html += '<h3 style="margin: 0 0 12px 0; color: #111827; font-size: 16px;">Order Notes</h3>';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px; border-left: 4px solid #3b82f6;">';
+                html += '<p style="margin: 0; color: #374151; line-height: 1.5; white-space: pre-wrap;">' + (order.note || '') + '</p>';
+                html += '</div>';
+                html += '</div>';
+            }
+
             html += '</div>';
             html += '</div>';
             html += '</div>';
@@ -971,6 +1003,24 @@ function viewInvoice() {
         window.open('/orders/' + currentOrderId + '/invoice', '_blank');
     } else {
         console.error('No order ID available for invoice');
+    }
+}
+
+function downloadInvoicePdf() {
+    if (currentOrderId) {
+        // Open invoice page with auto PDF download enabled
+        window.open('/orders/' + currentOrderId + '/invoice?auto_pdf=1', '_blank');
+    } else {
+        console.error('No order ID available for PDF download');
+    }
+}
+
+function downloadInvoiceImage() {
+    if (currentOrderId) {
+        // Direct image download
+        window.open('/orders/' + currentOrderId + '/invoice?download_image=1', '_blank');
+    } else {
+        console.error('No order ID available for image download');
     }
 }
 
@@ -1033,6 +1083,8 @@ function ignoreOrder(orderId) {
 
 function editOrderDetails(orderId) {
     console.log('Edit order details clicked for order:', orderId);
+    // Ensure the pop-out in-tab handler has the order id
+    try { currentOrderId = orderId; } catch (e) {}
     const modal = document.getElementById('editOrderModal');
     const content = document.getElementById('editOrderContent');
     
@@ -1195,7 +1247,7 @@ function loadEditForm(order) {
             <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
                 <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0;">Line Items</h4>
-                    <button type="button" onclick="addLineItem()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    <button type="button" onclick="(window.addLineItem||addLineItem)()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
                         + Add Item
                     </button>
                 </div>
@@ -1514,10 +1566,7 @@ function saveOrderChanges(orderId) {
             showSuccessMessage('Order updated successfully!');
             submitBtn.textContent = 'Save';
             submitBtn.disabled = false;
-            // Refresh the orders table data after a short delay to show success message
-            setTimeout(() => {
-                window.location.reload();
-            }, 1500);
+            // Keep modal open for regular save - no page reload
         } else {
             alert('Error updating order: ' + (data.message || 'Unknown error'));
             submitBtn.textContent = 'Save';
@@ -1601,8 +1650,13 @@ function saveAndCloseOrder(orderId) {
         if (data.success) {
             showSuccessMessage('Order updated successfully!');
             closeModal('editOrderModal');
-            // Refresh the page to show updated data
-            window.location.reload();
+            // If this editor is running in its own tab, close the tab; otherwise just refresh
+            if (window.opener && !window.opener.closed) {
+                window.opener.location.reload();
+                window.close();
+            } else {
+                window.location.reload();
+            }
         } else {
             alert('Error updating order: ' + (data.message || 'Unknown error'));
             saveAndCloseBtn.textContent = 'Save & Close';
@@ -1634,39 +1688,292 @@ function popoutOrder() {
         return;
     }
     
-    // Create a basic HTML page with the modal content
+    // Create a functional HTML page with editing capabilities
     const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     const currentOrigin = window.location.origin;
     
-    newWindow.document.write('<!DOCTYPE html>');
-    newWindow.document.write('<html lang="en">');
-    newWindow.document.write('<head>');
-    newWindow.document.write('<meta charset="UTF-8">');
-    newWindow.document.write('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
-    newWindow.document.write('<meta name="csrf-token" content="' + csrfToken + '">');
-    newWindow.document.write('<title>' + modalTitle + '</title>');
-    newWindow.document.write('<style>');
-    newWindow.document.write('body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background-color: #f9fafb; }');
-    newWindow.document.write('.container { max-width: 900px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }');
-    newWindow.document.write('.header { padding: 20px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }');
-    newWindow.document.write('.content { padding: 20px; }');
-    newWindow.document.write('.order-success-message { position: fixed; top: 20px; right: 20px; background-color: #10b981; color: white; padding: 12px 16px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 1000; transition: all 0.3s ease; }');
-    newWindow.document.write('</style>');
-    newWindow.document.write('</head>');
-    newWindow.document.write('<body>');
-    newWindow.document.write('<div class="container">');
-    newWindow.document.write('<div class="header">');
-    newWindow.document.write('<h1 style="margin: 0; font-size: 24px; font-weight: 600;">' + modalTitle + '</h1>');
-    newWindow.document.write('</div>');
-    newWindow.document.write('<div class="content">');
-    newWindow.document.write(modalContent.innerHTML);
-    newWindow.document.write('</div>');
-    newWindow.document.write('</div>');
-    // Avoid writing <script> tags inside this script block to prevent premature termination
-    newWindow.document.write('</body>');
-    newWindow.document.write('</html>');
+    // Build the complete HTML as a string first
+    let htmlContent = '<!DOCTYPE html>';
+    htmlContent += '<html lang="en">';
+    htmlContent += '<head>';
+    htmlContent += '<meta charset="UTF-8">';
+    htmlContent += '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+    htmlContent += '<meta name="csrf-token" content="' + csrfToken + '">';
+    htmlContent += '<title>' + modalTitle + '</title>';
+    htmlContent += '<style>';
+    htmlContent += 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background-color: #f9fafb; }';
+    htmlContent += '.container { max-width: 900px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }';
+    htmlContent += '.header { padding: 20px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }';
+    htmlContent += '.content { padding: 20px; }';
+    htmlContent += '.order-success-message { position: fixed; top: 20px; right: 20px; background-color: #10b981; color: white; padding: 12px 16px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); z-index: 1000; transition: all 0.3s ease; }';
+    htmlContent += '</style>';
+    htmlContent += '</head>';
+    htmlContent += '<body>';
+    htmlContent += '<div class="container">';
+    htmlContent += '<div class="header">';
+    htmlContent += '<h1 style="margin: 0; font-size: 24px; font-weight: 600;">' + modalTitle + '</h1>';
+    htmlContent += '</div>';
+    htmlContent += '<div class="content">';
+    htmlContent += modalContent.innerHTML;
+    htmlContent += '</div>';
+    htmlContent += '</div>';
+    htmlContent += '</body>';
+    htmlContent += '</html>';
     
+    newWindow.document.write(htmlContent);
     newWindow.document.close();
+    
+    // Early guard: intercept clicks on "+ Add Item" buttons before inline onclick executes
+    try {
+        const doc = newWindow.document;
+        doc.addEventListener('click', function(ev) {
+            const btn = ev.target && (ev.target.matches('button[onclick*="addLineItem"]') ? ev.target : (ev.target.closest ? ev.target.closest('button[onclick*="addLineItem"]') : null));
+            if (btn) {
+                // Prevent inline onclick from firing
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+                // Defer to allow DOM to settle, then call (will be bound in onload below)
+                setTimeout(() => {
+                    if (typeof newWindow.addLineItem === 'function') {
+                        newWindow.addLineItem();
+                    } else {
+                        // Fallback minimal handler: add an empty line and let user fill
+                        const container = doc.getElementById('lineItemsContainer');
+                        if (container) {
+                            const div = doc.createElement('div');
+                            div.className = 'line-item';
+                            const idx = Date.now();
+                            div.setAttribute('data-index', idx);
+                            div.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+                            div.innerHTML = `
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
+                                    <input type="text" name="items[${idx}][name]" placeholder="Product name..." style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+                                    <input type="number" step="0.01" name="items[${idx}][quantity]" value="1" min="0.01" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+                                    <input type="number" step="0.01" name="items[${idx}][unit_price]" value="0" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                </div>
+                                <div>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+                                    <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+                                </div>
+                                <div>
+                                    <button type="button" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                                </div>`;
+                            container.appendChild(div);
+                        }
+                    }
+                }, 0);
+            }
+        }, true);
+    } catch (e) {}
+
+    // Add functionality to the new window after it loads
+    newWindow.onload = function() {
+        // Copy essential functions to the new window
+        newWindow.formatCurrency = formatCurrency;
+        newWindow.getCurrentLocalDateTime = getCurrentLocalDateTime;
+        newWindow.updateLineTotal = updateLineTotal;
+        newWindow.updateOrderSubtotal = updateOrderSubtotal;
+        newWindow.showSuccessMessage = showSuccessMessage;
+        newWindow.updateOrderTotal = updateOrderTotal;
+        
+        // Line item management functions
+        newWindow.lineItemIndex = 1000; // Initialize line item index
+        
+        newWindow.addLineItem = function() {
+            const container = newWindow.document.getElementById('lineItemsContainer');
+            const emptyMessage = container.querySelector('div[style*="text-align: center"]');
+            if (emptyMessage) {
+                emptyMessage.remove();
+            }
+            
+            const newItem = newWindow.document.createElement('div');
+            newItem.className = 'line-item';
+            newItem.setAttribute('data-index', newWindow.lineItemIndex);
+            newItem.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+            
+            newItem.innerHTML = `
+                <div style="position: relative;">
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
+                    <input type="text" name="items[${newWindow.lineItemIndex}][name]" value="" 
+                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
+                           onkeyup="searchProducts(this, ${newWindow.lineItemIndex})" 
+                           onfocus="showProductDropdown(${newWindow.lineItemIndex})"
+                           placeholder="Type to search products...">
+                    <div id="productDropdown_${newWindow.lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                    <input type="hidden" name="items[${newWindow.lineItemIndex}][id]" value="">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+                    <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][quantity]" value="1" min="0.01"
+                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex})">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+                    <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][unit_price]" value="0" 
+                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex})">
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
+                    <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+                </div>
+                <div>
+                    <button type="button" onclick="removeLineItem(${newWindow.lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                        Remove
+                    </button>
+                </div>
+            `;
+            
+            container.appendChild(newItem);
+            newWindow.lineItemIndex++;
+        };
+        try { newWindow.window.addLineItem = newWindow.addLineItem; } catch (e) {}
+        
+        newWindow.removeLineItem = function(index) {
+            const item = newWindow.document.querySelector(`.line-item[data-index="${index}"]`);
+            if (item) {
+                item.remove();
+                newWindow.updateOrderSubtotal();
+                
+                // Check if no items left
+                const container = newWindow.document.getElementById('lineItemsContainer');
+                const items = container.querySelectorAll('.line-item');
+                if (items.length === 0) {
+                    container.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>';
+                }
+            }
+        };
+        try { newWindow.window.removeLineItem = newWindow.removeLineItem; } catch (e) {}
+
+        // Ensure existing "+ Add Item" buttons in copied HTML work in the popout
+        try {
+            const addItemButtons = newWindow.document.querySelectorAll('button[onclick*="addLineItem"]');
+            newWindow.console && newWindow.console.log && newWindow.console.log('Popout: found add buttons', addItemButtons.length);
+            addItemButtons.forEach((btn) => {
+                btn.addEventListener('click', (ev) => { ev.preventDefault(); newWindow.addLineItem(); });
+            });
+        } catch (e) {}
+        
+        // Override save functions for popup behavior
+        newWindow.saveOrderChanges = function(orderId) {
+            const form = newWindow.document.getElementById('editOrderForm');
+            if (!form) return;
+            
+            const formData = new FormData(form);
+            const submitBtn = form.querySelector('button[type="submit"]');
+            
+            if (submitBtn) {
+                submitBtn.textContent = 'Saving...';
+                submitBtn.disabled = true;
+            }
+            
+            // Collect line items
+            const items = [];
+            newWindow.document.querySelectorAll('.line-item').forEach((item) => {
+                const name = item.querySelector('input[name*="[name]"]')?.value;
+                const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
+                const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+                
+                if (name && quantity > 0 && unitPrice >= 0) {
+                    items.push({
+                        name: name,
+                        quantity: quantity,
+                        unit_price: unitPrice,
+                        line_total: quantity * unitPrice
+                    });
+                }
+            });
+            
+            const rawOrderDate = formData.get('order_date');
+            const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : newWindow.getCurrentLocalDateTime().replace('T', ' ') + ':00';
+            
+            const orderData = {
+                order_status: formData.get('order_status'),
+                order_date: formattedOrderDate,
+                contact_email: formData.get('contact_email'),
+                subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+                discount_total: parseFloat(formData.get('discount_total')) || 0,
+                shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+                total_price: parseFloat(formData.get('total_price')) || 0,
+                coupon_code: formData.get('coupon_code'),
+                payment_method: formData.get('payment_method'),
+                note: formData.get('note'),
+                items: items,
+                address_first_name: formData.get('address_first_name'),
+                address_last_name: formData.get('address_last_name'),
+                address_email: formData.get('address_email'),
+                address_phone: formData.get('address_phone'),
+                address_line1: formData.get('address_line1'),
+                address_line2: formData.get('address_line2'),
+                address_city: formData.get('address_city'),
+                address_province: formData.get('address_province'),
+                address_postal_code: formData.get('address_postal_code'),
+                address_country: formData.get('address_country')
+            };
+            
+            fetch(currentOrigin + '/orders/' + orderId, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(orderData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    newWindow.showSuccessMessage('Order updated successfully!');
+                    if (submitBtn) {
+                        submitBtn.textContent = 'Save';
+                        submitBtn.disabled = false;
+                    }
+                } else {
+                    alert('Error updating order: ' + (data.message || 'Unknown error'));
+                    if (submitBtn) {
+                        submitBtn.textContent = 'Save';
+                        submitBtn.disabled = false;
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error updating order:', error);
+                alert('Error updating order. Please try again.');
+                if (submitBtn) {
+                    submitBtn.textContent = 'Save';
+                    submitBtn.disabled = false;
+                }
+            });
+        };
+        
+        newWindow.saveAndCloseOrder = function(orderId) {
+            // Same as saveOrderChanges but closes window on success
+            newWindow.saveOrderChanges(orderId);
+            // For save and close, we'll close after a short delay
+            setTimeout(() => {
+                if (window.opener) {
+                    window.opener.location.reload();
+                }
+                newWindow.close();
+            }, 2000);
+        };
+    };
+}
+
+// Open edit in a proper tab that loads full assets
+function openEditInTab() {
+    if (currentOrderId) {
+        const url = '/orders/' + currentOrderId + '/edit-tab';
+        // Keep opener so Save & Close can refresh the parent and close this tab
+        window.open(url, '_blank');
+    }
 }
 
 // Import modal functions
@@ -1706,6 +2013,15 @@ document.addEventListener('DOMContentLoaded', function() {
         // Open create order modal with preloaded customer
         createNewOrderWithCustomer(preloadCustomerId);
     }
+
+    // If opened with an edit_order_id in query string, auto-open edit modal
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const editId = params.get('edit_order_id');
+        if (editId) {
+            editOrderDetails(editId);
+        }
+    } catch (e) {}
 });
 
 // Debug function to reset columns (can be called from browser console)
@@ -3317,7 +3633,7 @@ function createNewOrder() {
             <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
                 <div style="padding: 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0;">Line Items</h4>
-                    <button type="button" onclick="addLineItem()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
+                    <button type="button" onclick="(window.addLineItem||addLineItem)()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
                         + Add Item
                     </button>
                 </div>

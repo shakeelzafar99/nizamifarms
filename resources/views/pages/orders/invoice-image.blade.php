@@ -3,153 +3,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Invoice #{{ $order->order_number }}</title>
+    <title>Invoice</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        @page { margin: 3mm 8mm 8mm 8mm; }
         
         body {
-            font-family: 'Inter', Arial, sans-serif;
-            background-color: #f5f5f5;
-            padding: 20px;
-        }
-        /* PDF-specific complete override */
-        @if(!empty($isPdf))
-        body {
-            background: #ffffff !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            font-family: 'DejaVu Sans', Arial, sans-serif !important;
-        }
-        .invoice-container {
-            box-shadow: none !important;
-            max-width: 100% !important;
-            margin: 0 !important;
-        }
-        .invoice-header {
-            padding: 4px 12px !important;
-            margin-bottom: 4px !important;
-            display: flex !important;
-            justify-content: space-between !important;
-            align-items: flex-start !important;
-        }
-        .logo-section {
-            flex: 1 !important;
-            display: flex !important;
-            align-items: flex-start !important;
-        }
-        .logo {
-            width: auto !important;
-            height: auto !important;
-            padding: 0 !important;
-            box-shadow: none !important;
-            border-radius: 0 !important;
-            background: none !important;
-        }
-        .logo img {
-            height: 40px !important;
-            width: auto !important;
-            display: block !important;
-        }
-        .company-details {
-            flex: 1 !important;
-            text-align: right !important;
-            font-size: 10px !important;
-            line-height: 1.2 !important;
-            margin-top: 0 !important;
-            align-self: flex-start !important;
-        }
-        .invoice-title {
-            padding: 4px 12px !important;
-            margin-bottom: 8px !important;
-            text-align: center !important;
-        }
-        .invoice-title h2 {
-            margin: 0 !important;
-            font-size: 20px !important;
-            text-align: center !important;
-        }
-        .invoice-info {
-            padding: 8px 12px !important;
-        }
-        .invoice-columns {
-            display: flex !important;
-            justify-content: space-between !important;
-            align-items: flex-start !important;
-        }
-        .customer-info h3, .order-info h3 {
-            margin: 0 0 6px 0 !important;
-            font-size: 12px !important;
-        }
-        .customer-details, .order-details {
-            font-size: 11px !important;
-            line-height: 1.4 !important;
-        }
-        .order-details {
-            text-align: right !important;
-        }
-        @endif
-        
-        .invoice-container {
-            max-width: 800px;
-            margin: 0 auto;
-            background-color: white;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            font-family: 'Times New Roman', serif;
+            background-color: #ffffff;
+            padding: 0;
+            margin: 0;
+            width: 800px;
+            min-height: 1200px;
         }
         
-        .invoice-header {
+        .invoice-container {
+            width: 800px;
             background-color: white;
-            color: #2d3748;
-            padding: 25px 30px;
+            margin: 0;
+            padding: 0;
+        }
+        
+        /* Header Section */
+        .invoice-header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            border-bottom: 1px solid #e2e8f0;
+            padding: 20px 30px;
+            border-bottom: 2px solid #e2e8f0;
         }
         
         .logo-section {
+            flex: 1;
             display: flex;
-            align-items: center;
-            gap: 15px;
+            align-items: flex-start;
         }
         
         .logo {
-            width: 180px;
-            height: 120px;
-            background-color: white;
-            border-radius: 8px;
             display: flex;
             align-items: center;
-            justify-content: center;
-            padding: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            justify-content: flex-start;
         }
         
         .logo img {
-            width: 100%;
-            height: 100%;
+            height: 60px;
+            width: auto;
             object-fit: contain;
         }
         
-        .company-info h1 {
-            font-size: 28px;
-            font-weight: bold;
-            margin-bottom: 5px;
-            letter-spacing: 1px;
-            color: #2d3748;
-        }
-        
-        .company-tagline {
-            font-size: 13px;
-            color: #4a5568;
-            font-style: italic;
-        }
-        
         .company-details {
+            flex: 1;
             text-align: right;
             font-size: 12px;
             line-height: 1.4;
@@ -157,48 +63,58 @@
         }
         
         .company-details div {
-            margin-bottom: 2px;
+            margin-bottom: 3px;
         }
         
         .company-details strong {
             color: #2d3748;
+            font-weight: bold;
         }
         
+        /* Invoice Title */
         .invoice-title {
-            background-color: white;
-            padding: 12px 24px 10px 24px;
+            text-align: center;
+            padding: 15px 30px;
             border-bottom: 1px solid #e2e8f0;
         }
         
         .invoice-title h2 {
-            font-size: 28px;
+            font-size: 32px;
             font-weight: bold;
             color: #2d3748;
-            text-align: center;
+            margin: 0;
+            font-family: 'Times New Roman', serif;
         }
         
-        .invoice-info { padding: 30px; }
-        .invoice-columns { display: flex; gap: 40px; }
-        .invoice-col { flex: 1; }
+        /* Invoice Info Section */
+        .invoice-info {
+            padding: 25px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
         
-        .customer-info h3,
-        .order-info h3 {
-            font-size: 14px;
+        .customer-section, .order-section {
+            flex: 1;
+        }
+        
+        .customer-section h3, .order-section h3 {
+            font-size: 16px;
             font-weight: bold;
             color: #2d3748;
-            margin-bottom: 10px;
+            margin-bottom: 12px;
+            font-family: 'Times New Roman', serif;
         }
         
-        .customer-details,
-        .order-details {
+        .customer-details, .order-details {
             font-size: 14px;
             line-height: 1.6;
             color: #4a5568;
+            font-family: 'Times New Roman', serif;
         }
         
-        .customer-details div,
-        .order-details div {
-            margin-bottom: 5px;
+        .customer-details div, .order-details div {
+            margin-bottom: 6px;
         }
         
         .customer-name {
@@ -206,11 +122,15 @@
             color: #2d3748;
         }
         
+        .order-section {
+            text-align: right;
+        }
+        
+        /* Products Table */
         .products-table {
-            margin: 0 30px;
-            border-collapse: collapse;
             width: calc(100% - 60px);
-            margin-bottom: 30px;
+            margin: 0 30px 30px 30px;
+            border-collapse: collapse;
         }
         
         .products-table thead {
@@ -219,11 +139,12 @@
         }
         
         .products-table th {
-            padding: 15px 10px;
+            padding: 15px 12px;
             text-align: left;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: bold;
             text-transform: uppercase;
+            font-family: 'Times New Roman', serif;
         }
         
         .products-table th:nth-child(2),
@@ -244,9 +165,10 @@
         }
         
         .products-table td {
-            padding: 15px 10px;
-            font-size: 13px;
+            padding: 15px 12px;
+            font-size: 14px;
             color: #4a5568;
+            font-family: 'Times New Roman', serif;
         }
         
         .products-table td:nth-child(2),
@@ -262,28 +184,30 @@
         .product-name {
             font-weight: bold;
             color: #2d3748;
-            margin-bottom: 3px;
+            margin-bottom: 4px;
         }
         
         .product-sku {
-            font-size: 11px;
+            font-size: 12px;
             color: #718096;
         }
         
+        /* Totals Section */
         .totals-section {
             padding: 0 30px 30px 30px;
         }
         
         .totals-table {
             width: 100%;
-            max-width: 300px;
+            max-width: 350px;
             margin-left: auto;
             border-collapse: collapse;
         }
         
         .totals-table td {
-            padding: 8px 15px;
-            font-size: 14px;
+            padding: 10px 20px;
+            font-size: 15px;
+            font-family: 'Times New Roman', serif;
         }
         
         .totals-table .label {
@@ -300,46 +224,37 @@
         }
         
         .totals-table .total-row {
-            border-top: 2px solid #2d3748;
+            border-top: 3px solid #2d3748;
             background-color: #f7fafc;
         }
         
         .totals-table .total-row .label,
         .totals-table .total-row .amount {
-            font-size: 16px;
+            font-size: 18px;
             font-weight: bold;
             color: #2d3748;
         }
         
+        /* Footer */
         .footer {
             background-color: #f7fafc;
-            padding: 30px;
+            padding: 25px 30px;
             text-align: center;
             border-top: 1px solid #e2e8f0;
         }
         
         .footer-message {
-            font-size: 14px;
+            font-size: 15px;
             color: #4a5568;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
+            font-family: 'Times New Roman', serif;
         }
         
         .footer-contact {
-            font-size: 12px;
+            font-size: 13px;
             color: #718096;
             line-height: 1.5;
-        }
-        
-        @media print {
-            body {
-                padding: 0;
-                background-color: white;
-            }
-            
-            .invoice-container {
-                box-shadow: none;
-                max-width: none;
-            }
+            font-family: 'Times New Roman', serif;
         }
     </style>
 </head>
@@ -347,56 +262,37 @@
     <div class="invoice-container">
         <!-- Header -->
         <div class="invoice-header">
-            <div class="logo-section" style="flex:1; display:flex; align-items:flex-start;">
+            <div class="logo-section">
                 <div class="logo">
-                    <!-- Try multiple logo paths with debugging -->
-                <div id="logoContainer" style="width: 100%; height: 100%; position: relative;">
-@php
-    // Determine a valid logo path and embed as base64 for PDF reliability
-    $webLogo = asset('assets/media/logos/nizami-farms-logo.png');
-    $paths = [
-        public_path('assets/media/logos/nizami-farms-logo.png'),
-        public_path('assets/media/logos/nizami-farms-logo.jpg'),
-        public_path('assets/media/logos/nizami-farms-logo.png.jpg'),
-    ];
-    $logoDataUri = null;
-    foreach ($paths as $p) {
-        if (is_file($p)) {
-            $ext = strtolower(pathinfo($p, PATHINFO_EXTENSION));
-            $mime = $ext === 'jpg' || $ext === 'jpeg' ? 'image/jpeg' : 'image/png';
-            $logoDataUri = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($p));
-            break;
-        }
-    }
-@endphp
-                    @if(!empty($isPdf) && $logoDataUri)
-                        <img src="{{ $logoDataUri }}" alt="Nizami Farms" style="height: 42px; width: auto; display: block;">
-                    @else
-                        <!-- Preserve robust web fallback with JS as it was working -->
-                        <img id="logoImage" src="{{ $webLogo }}" alt="Nizami Farms" 
-                             style="border-radius: 6px; max-width: 100%; max-height: 100%;"
-                             onerror="tryNextLogo(this)">
-                        <script>
-                        const logoPaths = [
-                            '{{ asset('assets/media/logos/nizami-farms-logo.png') }}',
-                            '{{ asset('assets/media/logos/nizami-farms-logo.jpg') }}',
-                            '{{ asset('assets/media/logos/nizami-farms-logo.png.jpg') }}',
-                            '{{ asset('assets/media/app/nizami-logo.png') }}',
-                            '{{ asset('assets/media/logos/logo.png') }}',
-                            '{{ asset('logo.png') }}'
-                        ];
-                        let currentLogoIndex = 0;
-                        function tryNextLogo(img){
-                            currentLogoIndex++;
-                            if(currentLogoIndex < logoPaths.length){ img.src = logoPaths[currentLogoIndex]; }
+                    @php
+                        // Try to find logo with base64 encoding for reliable image generation
+                        $logoPath = public_path('assets/media/logos/nizami-farms-logo.png');
+                        if (!file_exists($logoPath)) {
+                            $logoPath = public_path('assets/media/logos/nizami-farms-logo.jpg');
                         }
-                        </script>
+                        if (!file_exists($logoPath)) {
+                            $logoPath = public_path('assets/media/logos/nizami-farms-logo.png.jpg');
+                        }
+                        
+                        $logoDataUri = null;
+                        if (file_exists($logoPath)) {
+                            $ext = strtolower(pathinfo($logoPath, PATHINFO_EXTENSION));
+                            $mime = $ext === 'jpg' || $ext === 'jpeg' ? 'image/jpeg' : 'image/png';
+                            $logoDataUri = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($logoPath));
+                        }
+                    @endphp
+                    
+                    @if($logoDataUri)
+                        <img src="{{ $logoDataUri }}" alt="Nizami Farms">
+                    @else
+                        <div style="text-align: center; padding: 10px;">
+                            <div style="color: #059669; font-size: 20px; font-weight: bold; margin-bottom: 4px; font-family: 'Times New Roman', serif;">NIZAMI FARMS</div>
+                            <div style="color: #6b7280; font-size: 12px; font-family: 'Times New Roman', serif;">Where quality meat's expectation</div>
+                        </div>
                     @endif
                 </div>
-                </div>
-                <!-- Company info should come from logo image, not hardcoded text -->
             </div>
-            <div class="company-details" style="flex:1; text-align:right; align-self:flex-start; margin-top:0;">
+            <div class="company-details">
                 <div><strong>NTN: A02148-1</strong></div>
                 <div>F-12, Rehman Arcade</div>
                 <div>Azizpura Market, G-6/1</div>
@@ -413,11 +309,9 @@
         
         <!-- Invoice Information -->
         <div class="invoice-info">
-            <div class="invoice-columns">
-            <div class="customer-section invoice-col">
-                <div class="customer-info">
-                    <h3>Bill To:</h3>
-                    <div class="customer-details">
+            <div class="customer-section">
+                <h3>Bill To:</h3>
+                <div class="customer-details">
                     <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
                     @if($order->customer && $order->customer->address1)
                         <div>{{ $order->customer->address1 }}</div>
@@ -432,19 +326,15 @@
                     @if($order->customer && $order->customer->phone_original)
                         <div>{{ $order->customer->phone_original }}</div>
                     @endif
-                    </div>
                 </div>
             </div>
-            <div class="order-section invoice-col">
-                <div class="order-info">
-                    <h3>&nbsp;</h3> <!-- Empty header to align with "Bill To:" -->
-                    <div class="order-details" style="text-align:right;">
-                        <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
-                        <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
-                        <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
-                    </div>
+            <div class="order-section">
+                <h3>&nbsp;</h3>
+                <div class="order-details">
+                    <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                    <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
+                    <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
                 </div>
-            </div>
             </div>
         </div>
         

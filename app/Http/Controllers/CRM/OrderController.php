@@ -91,6 +91,150 @@ class OrderController extends Controller
         }
     }
 
+    public function invoicePdf($id)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                        ->findOrFail($id);
+            
+            // Generate filename for download
+            $filename = 'Invoice-' . ($order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
+            
+            // Check if user wants direct image download
+            if (request()->has('download_image')) {
+                return $this->generateInvoiceImage($order, $filename);
+            }
+            
+            // Check if user wants auto PDF download
+            if (request()->has('auto_pdf')) {
+                return view('pages.orders.invoice-print', compact('order', 'filename'))
+                       ->with('auto_pdf', true);
+            }
+            
+            // Check if user wants direct server-generated PDF download
+            if (request()->has('force_pdf')) {
+                return $this->generateServerPDF($order, $filename);
+            }
+            
+            // Return a clean, print-ready view that can be saved as image or PDF
+            return view('pages.orders.invoice-print', compact('order', 'filename'));
+            
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Failed to generate invoice: ' . $e->getMessage());
+        }
+    }
+    
+    private function generateInvoiceImage($order, $filename)
+    {
+        // Create HTML content for image generation
+        $html = view('pages.orders.invoice-image', compact('order'))->render();
+        
+        // Try to use Puppeteer or wkhtmltoimage if available
+        $imagePath = $this->createInvoiceImage($html, $filename);
+        
+        if ($imagePath && file_exists($imagePath)) {
+            return response()->download($imagePath, $filename . '.png')->deleteFileAfterSend(true);
+        }
+        
+        // Fallback: Return HTML view with auto-download instructions
+        return view('pages.orders.invoice-print', compact('order', 'filename'))
+               ->with('auto_download', true);
+    }
+    
+    private function createInvoiceImage($html, $filename)
+    {
+        $tempDir = storage_path('app/temp');
+        if (!file_exists($tempDir)) {
+            mkdir($tempDir, 0755, true);
+        }
+        
+        $htmlPath = $tempDir . '/' . $filename . '.html';
+        $imagePath = $tempDir . '/' . $filename . '.png';
+        
+        file_put_contents($htmlPath, $html);
+        
+        // Try different methods to generate image
+        $methods = [
+            // Method 1: wkhtmltoimage
+            "wkhtmltoimage --width 800 --height 1200 --quality 100 --format png \"{$htmlPath}\" \"{$imagePath}\"",
+            // Method 2: Chrome headless (if available)
+            "google-chrome --headless --disable-gpu --window-size=800,1200 --screenshot=\"{$imagePath}\" \"{$htmlPath}\"",
+            // Method 3: Puppeteer (if available)
+            "node -e \"const puppeteer = require('puppeteer'); (async () => { const browser = await puppeteer.launch(); const page = await browser.newPage(); await page.setViewport({width: 800, height: 1200}); await page.goto('file://{$htmlPath}'); await page.screenshot({path: '{$imagePath}'}); await browser.close(); })();\"",
+        ];
+        
+        foreach ($methods as $command) {
+            exec($command . ' 2>&1', $output, $returnCode);
+            if ($returnCode === 0 && file_exists($imagePath)) {
+                unlink($htmlPath); // Clean up HTML file
+                return $imagePath;
+            }
+        }
+        
+        // Clean up HTML file if image generation failed
+        if (file_exists($htmlPath)) {
+            unlink($htmlPath);
+        }
+        
+        return null;
+    }
+    
+    private function generateServerPDF($order, $filename)
+    {
+        try {
+            // Use the clean invoice-image view for PDF generation
+            $html = view('pages.orders.invoice-image', compact('order'))->render();
+            
+            // Try wkhtmltopdf for better PDF generation
+            $tempDir = storage_path('app/temp');
+            if (!file_exists($tempDir)) {
+                mkdir($tempDir, 0755, true);
+            }
+            
+            $htmlPath = $tempDir . '/' . $filename . '.html';
+            $pdfPath = $tempDir . '/' . $filename . '.pdf';
+            
+            file_put_contents($htmlPath, $html);
+            
+            // Try wkhtmltopdf command
+            $command = "wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --enable-local-file-access \"{$htmlPath}\" \"{$pdfPath}\"";
+            exec($command . ' 2>&1', $output, $returnCode);
+            
+            if ($returnCode === 0 && file_exists($pdfPath)) {
+                // Clean up HTML file
+                unlink($htmlPath);
+                
+                // Return PDF download
+                return response()->download($pdfPath, $filename . '.pdf')->deleteFileAfterSend(true);
+            }
+            
+            // Clean up files if generation failed
+            if (file_exists($htmlPath)) {
+                unlink($htmlPath);
+            }
+            if (file_exists($pdfPath)) {
+                unlink($pdfPath);
+            }
+            
+            // Fallback to browser-based PDF
+            return view('pages.orders.invoice-print', compact('order', 'filename'))
+                   ->with('auto_pdf', true)
+                   ->with('fallback_message', 'Server PDF generation not available. Using browser print.');
+                   
+        } catch (\Exception $e) {
+            // Fallback to browser-based PDF
+            return view('pages.orders.invoice-print', compact('order', 'filename'))
+                   ->with('auto_pdf', true);
+        }
+    }
+
+    // Open edit order in a dedicated tab with full assets loaded
+    public function editTab($id)
+    {
+        // Open the main Orders page with an instruction to auto-open the edit modal for this order.
+        return redirect('/orders?edit_order_id=' . urlencode((string) $id));
+    }
+
     public function update(Request $request, $id)
     {
         try {
