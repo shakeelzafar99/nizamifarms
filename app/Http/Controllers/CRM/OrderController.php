@@ -85,8 +85,7 @@ class OrderController extends Controller
     public function show($id)
     {
         try {
-            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
-                        ->findOrFail($id);
+            $order = $this->findOrder($id);
             
             return response()->json([
                 'success' => true,
@@ -104,8 +103,7 @@ class OrderController extends Controller
     public function invoice($id)
     {
         try {
-            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
-                        ->findOrFail($id);
+            $order = $this->findOrder($id);
             
             return view('pages.orders.invoice', compact('order'));
         } catch (\Exception $e) {
@@ -116,8 +114,7 @@ class OrderController extends Controller
     public function invoicePdf($id)
     {
         try {
-            $order = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
-                        ->findOrFail($id);
+            $order = $this->findOrder($id);
             
             // Generate filename for download
             $filename = 'Invoice-' . ($order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
@@ -304,7 +301,7 @@ class OrderController extends Controller
     public function update(Request $request, $id)
     {
         try {
-            $order = \App\Models\CRM\OrderModel::findOrFail($id);
+            $order = $this->findOrder($id, []);
             
             // Validate request
             $validated = $request->validate([
@@ -652,9 +649,8 @@ class OrderController extends Controller
     public function convertOrder($id)
     {
         try {
-            // Find the original Shopify order
-            $originalOrder = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
-                ->where('external_source', 'shopify')
+            // Find the original Shopify order in the new Shopify table
+            $originalOrder = \App\Models\CRM\ShopifyOrderModel::with(['customer', 'lineItems'])
                 ->findOrFail($id);
             
             // Check if already converted or ignored
@@ -727,9 +723,8 @@ class OrderController extends Controller
     public function ignoreOrder($id)
     {
         try {
-            // Find the original Shopify order
-            $originalOrder = \App\Models\CRM\OrderModel::where('external_source', 'shopify')
-                ->findOrFail($id);
+            // Find the original Shopify order in the new Shopify table
+            $originalOrder = \App\Models\CRM\ShopifyOrderModel::findOrFail($id);
             
             // Check if already converted or ignored
             if ($originalOrder->converted) {
@@ -757,6 +752,22 @@ class OrderController extends Controller
         }
     }
 
+    /**
+     * Helper method to find order from either Shopify or main orders table
+     */
+    private function findOrder($id, $withRelations = ['customer', 'lineItems'])
+    {
+        // First try to find in Shopify orders table
+        $order = \App\Models\CRM\ShopifyOrderModel::with($withRelations)->find($id);
+        
+        // If not found in Shopify table, try the main orders table
+        if (!$order) {
+            $order = \App\Models\CRM\OrderModel::with($withRelations)->findOrFail($id);
+        }
+        
+        return $order;
+    }
+
     public function filter(Request $request)
     {
         try {
@@ -765,17 +776,17 @@ class OrderController extends Controller
             $status = $request->get('status', '');
             $date = $request->get('date', '');
             
-            // Start with base query
-            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems']);
-            
-            // Filter by source
+            // Start with base query based on source
             if ($source === 'shopify') {
-                $query->where('external_source', 'shopify');
+                // Use Shopify orders table
+                $query = \App\Models\CRM\ShopifyOrderModel::with(['customer', 'lineItems']);
             } else {
-                $query->where(function($q) {
-                    $q->where('external_source', '!=', 'shopify')
-                      ->orWhereNull('external_source');
-                });
+                // Use main orders table (non-Shopify)
+                $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                    ->where(function($q) {
+                        $q->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                    });
             }
             
             // Apply search filter
