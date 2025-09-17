@@ -116,24 +116,20 @@ class ProductController extends Controller
             
             $results = [];
             foreach ($products as $product) {
-                // Add main product
-                $results[] = [
-                    'id' => 'product_' . $product->id,
-                    'type' => 'product',
-                    'name' => $product->title,
-                    'sku' => null,
-                    'price' => $product->price_min,
-                    'inventory' => $product->total_inventory,
-                    'vendor' => $product->vendor
-                ];
-                
-                // Add variants
+                // Only add variants, not the parent product (to avoid duplicates)
                 foreach ($product->variants as $variant) {
                     if ($variant->available) {
+                        // For single variants, use just the product title
+                        // For multiple variants, append variant title if it's different
+                        $displayName = $product->title;
+                        if (count($product->variants) > 1 && $variant->title && $variant->title !== $product->title) {
+                            $displayName .= ' - ' . $variant->title;
+                        }
+                        
                         $results[] = [
                             'id' => 'variant_' . $variant->id,
                             'type' => 'variant',
-                            'name' => $product->title . ($variant->title ? ' - ' . $variant->title : ''),
+                            'name' => $displayName,
                             'sku' => $variant->sku,
                             'price' => $variant->price,
                             'inventory' => $variant->inventory_quantity,
