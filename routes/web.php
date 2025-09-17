@@ -92,6 +92,7 @@ Route::middleware(['auth'])->group(function () {
     // Product Management Routes
     Route::get('/products', [\App\Http\Controllers\CRM\ProductController::class, 'index'])->name('products.index');
     Route::get('/products/search', [\App\Http\Controllers\CRM\ProductController::class, 'search'])->name('products.search.alt');
+    Route::post('/products/bulk-adjust-prices', [\App\Http\Controllers\CRM\ProductController::class, 'bulkAdjustPrices'])->name('products.bulk_adjust_prices');
     Route::get('/products/create', [\App\Http\Controllers\CRM\ProductController::class, 'create'])->name('products.create');
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');

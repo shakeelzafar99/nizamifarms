@@ -21,6 +21,10 @@
                 <i class="ki-filled ki-setting-2"></i>
                 Columns
             </button>
+            <button onclick="openBulkAdjustPricesModal()" class="kt-btn kt-btn-light">
+                <i class="ki-filled ki-price-tag"></i>
+                Adjust Prices
+            </button>
             <button onclick="openImportModal()" class="kt-btn kt-btn-primary">
                 <i class="ki-filled ki-cloud-download"></i>
                 Import Products
@@ -51,6 +55,52 @@
                             <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
                             <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
                         </select>
+
+                        <!-- Category Filter -->
+                        <select name="product_type" class="select select-sm" id="categoryFilter">
+                            <option value="">All Categories</option>
+                            @foreach($productTypes as $type)
+                                <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
+                                    {{ $type }}
+                                </option>
+                            @endforeach
+                        </select>
+
+                        <!-- Vendor Filter -->
+                        <select name="vendor" class="select select-sm" id="vendorFilter">
+                            <option value="">All Vendors</option>
+                            @foreach($vendors as $vendor)
+                                <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
+                                    {{ $vendor }}
+                                </option>
+                            @endforeach
+                        </select>
+
+                        <!-- Attribute Filters - Hidden for now -->
+                        <select name="attribute_1" class="select select-sm" id="attr1Filter" style="display: none;">
+                            <option value="">Attribute 1</option>
+                            @foreach($attribute1s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
+                            <option value="">Attribute 2</option>
+                            @foreach($attribute2s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
+                            <option value="">Attribute 3</option>
+                            @foreach($attribute3s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
                         
                         <!-- Sync Status Filter -->
                         <select name="sync_status" class="select select-sm" id="syncStatusFilter">
@@ -63,7 +113,7 @@
                         </select>
                         
                         <button type="submit" class="kt-btn kt-btn-sm kt-btn-light" onclick="event.preventDefault(); performSearch();">Filter</button>
-                        @if(request()->hasAny(['search', 'status', 'sync_status']))
+                        @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
                             <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light" id="clearFiltersBtn" onclick="event.preventDefault(); clearAllFilters();">Clear</a>
                         @endif
                     </form>
@@ -199,6 +249,91 @@
         </div>
     </div>
 </div>
+
+<!-- Bulk Adjust Prices Modal -->
+<div id="bulkAdjustPricesModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 90vw; max-height: 90vh; overflow-y: auto; width: 520px;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">Bulk Adjust Prices</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;">Choose a filter and apply an increase or decrease to variant prices.</p>
+        </div>
+        <div style="padding: 20px; display: grid; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div>
+                    <label class="form-label">Category</label>
+                    <select id="bulkCategory" class="select select-sm">
+                        <option value="">Any</option>
+                        @foreach($productTypes as $type)
+                            <option value="{{ $type }}">{{ $type }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Vendor</label>
+                    <select id="bulkVendor" class="select select-sm">
+                        <option value="">Any</option>
+                        @foreach($vendors as $vendor)
+                            <option value="{{ $vendor }}">{{ $vendor }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                <div>
+                    <label class="form-label">Attribute 1</label>
+                    <select id="bulkAttr1" class="select select-sm">
+                        <option value="">Any</option>
+                        @foreach($attribute1s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Attribute 2</label>
+                    <select id="bulkAttr2" class="select select-sm">
+                        <option value="">Any</option>
+                        @foreach($attribute2s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Attribute 3</label>
+                    <select id="bulkAttr3" class="select select-sm">
+                        <option value="">Any</option>
+                        @foreach($attribute3s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div>
+                    <label class="form-label">Operation</label>
+                    <select id="bulkOperation" class="select select-sm">
+                        <option value="increase">Increase</option>
+                        <option value="decrease">Decrease</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Mode</label>
+                    <select id="bulkMode" class="select select-sm">
+                        <option value="percent">Percentage (%)</option>
+                        <option value="fixed">Fixed (PKR)</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="form-label">Amount</label>
+                <input type="number" id="bulkAmount" class="input input-sm" placeholder="e.g., 10 for 10% or 100 for PKR 100" step="0.01" min="0">
+            </div>
+        </div>
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
+            <button onclick="closeModal('bulkAdjustPricesModal')" class="kt-btn kt-btn-light">Cancel</button>
+            <button onclick="submitBulkAdjustPrices()" class="kt-btn kt-btn-primary">Apply</button>
+        </div>
+    </div>
+ </div>
 
 <script>
 // Open unified import modal
@@ -453,6 +588,11 @@ function initializeRealTimeSearch() {
     const searchInput = document.getElementById('productSearchInput');
     const statusFilter = document.getElementById('statusFilter');
     const syncStatusFilter = document.getElementById('syncStatusFilter');
+    const categoryFilter = document.getElementById('categoryFilter');
+    const vendorFilter = document.getElementById('vendorFilter');
+    const attr1Filter = document.getElementById('attr1Filter');
+    const attr2Filter = document.getElementById('attr2Filter');
+    const attr3Filter = document.getElementById('attr3Filter');
     
     if (!searchInput) return;
     
@@ -471,18 +611,33 @@ function initializeRealTimeSearch() {
     if (syncStatusFilter) {
         syncStatusFilter.addEventListener('change', performSearch);
     }
+    if (categoryFilter) categoryFilter.addEventListener('change', performSearch);
+    if (vendorFilter) vendorFilter.addEventListener('change', performSearch);
+    if (attr1Filter) attr1Filter.addEventListener('change', performSearch);
+    if (attr2Filter) attr2Filter.addEventListener('change', performSearch);
+    if (attr3Filter) attr3Filter.addEventListener('change', performSearch);
 }
 
 function performSearch() {
     const searchValue = document.getElementById('productSearchInput').value;
     const statusValue = document.getElementById('statusFilter').value;
     const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    const categoryValue = document.getElementById('categoryFilter').value;
+    const vendorValue = document.getElementById('vendorFilter').value;
+    const attr1Value = document.getElementById('attr1Filter').value;
+    const attr2Value = document.getElementById('attr2Filter').value;
+    const attr3Value = document.getElementById('attr3Filter').value;
     
     // Build query parameters
     const params = new URLSearchParams();
     if (searchValue.trim()) params.set('search', searchValue.trim());
     if (statusValue) params.set('status', statusValue);
     if (syncStatusValue) params.set('sync_status', syncStatusValue);
+    if (categoryValue) params.set('product_type', categoryValue);
+    if (vendorValue) params.set('vendor', vendorValue);
+    if (attr1Value) params.set('attribute_1', attr1Value);
+    if (attr2Value) params.set('attribute_2', attr2Value);
+    if (attr3Value) params.set('attribute_3', attr3Value);
     
     // Show loading state
     showLoadingState();
@@ -543,9 +698,14 @@ function updateClearButton() {
     const searchValue = document.getElementById('productSearchInput').value;
     const statusValue = document.getElementById('statusFilter').value;
     const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    const categoryValue = document.getElementById('categoryFilter').value;
+    const vendorValue = document.getElementById('vendorFilter').value;
+    const attr1Value = document.getElementById('attr1Filter').value;
+    const attr2Value = document.getElementById('attr2Filter').value;
+    const attr3Value = document.getElementById('attr3Filter').value;
     
     const clearBtn = document.getElementById('clearFiltersBtn');
-    const hasFilters = searchValue.trim() || statusValue || syncStatusValue;
+    const hasFilters = searchValue.trim() || statusValue || syncStatusValue || categoryValue || vendorValue || attr1Value || attr2Value || attr3Value;
     
     if (hasFilters && !clearBtn) {
         // Add clear button
@@ -570,6 +730,16 @@ function clearAllFilters() {
     document.getElementById('productSearchInput').value = '';
     document.getElementById('statusFilter').value = '';
     document.getElementById('syncStatusFilter').value = '';
+    const categoryFilter = document.getElementById('categoryFilter');
+    const vendorFilter = document.getElementById('vendorFilter');
+    const attr1Filter = document.getElementById('attr1Filter');
+    const attr2Filter = document.getElementById('attr2Filter');
+    const attr3Filter = document.getElementById('attr3Filter');
+    if (categoryFilter) categoryFilter.value = '';
+    if (vendorFilter) vendorFilter.value = '';
+    if (attr1Filter) attr1Filter.value = '';
+    if (attr2Filter) attr2Filter.value = '';
+    if (attr3Filter) attr3Filter.value = '';
     performSearch();
 }
 
@@ -742,6 +912,56 @@ function openColumnSettings() {
     
     content.appendChild(list);
     document.getElementById('columnSettingsModal').style.display = 'block';
+}
+
+function openBulkAdjustPricesModal() {
+    document.getElementById('bulkAdjustPricesModal').style.display = 'block';
+}
+
+function submitBulkAdjustPrices() {
+    const payload = {
+        mode: document.getElementById('bulkMode').value,
+        operation: document.getElementById('bulkOperation').value,
+        amount: parseFloat(document.getElementById('bulkAmount').value || '0'),
+        product_type: document.getElementById('bulkCategory').value || '',
+        vendor: document.getElementById('bulkVendor').value || '',
+        attribute_1: document.getElementById('bulkAttr1').value || '',
+        attribute_2: document.getElementById('bulkAttr2').value || '',
+        attribute_3: document.getElementById('bulkAttr3').value || ''
+    };
+
+    if (!payload.amount || payload.amount <= 0) {
+        alert('Please enter a valid amount.');
+        return;
+    }
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                      document.querySelector('input[name="_token"]').value || '';
+
+    fetch('/products/bulk-adjust-prices', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            closeModal('bulkAdjustPricesModal');
+            performSearch(); // refresh table
+        } else {
+            alert('Bulk update failed: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => {
+        console.error('Bulk adjust error', err);
+        alert('Network error.');
+    });
 }
 
 function toggleColumn(columnKey) {

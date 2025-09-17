@@ -44,6 +44,23 @@ class ProductController extends Controller
             $query->where('status', $request->status);
         }
 
+        // Filter by product category (product_type)
+        if ($request->has('product_type') && $request->product_type) {
+            $query->where('product_type', $request->product_type);
+        }
+
+        // Filter by attributes
+        foreach (['attribute_1', 'attribute_2', 'attribute_3'] as $attr) {
+            if ($request->has($attr) && $request->$attr) {
+                $query->where($attr, $request->$attr);
+            }
+        }
+
+        // Filter by vendor
+        if ($request->has('vendor') && $request->vendor) {
+            $query->where('vendor', $request->vendor);
+        }
+
         // Filter by sync_status
         if ($request->has('sync_status') && $request->sync_status) {
             $query->where('sync_status', $request->sync_status);
@@ -54,6 +71,10 @@ class ProductController extends Controller
         // Get filter options
         $syncStatuses = ProductModel::distinct()->pluck('sync_status')->filter()->sort();
         $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort();
+        $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort();
+        $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort();
+        $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort();
+        $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort();
 
         // If this is an AJAX request, return JSON
         if ($request->wantsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
@@ -71,7 +92,82 @@ class ProductController extends Controller
             ]);
         }
 
-        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes'));
+        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes', 'vendors', 'attribute1s', 'attribute2s', 'attribute3s'));
+    }
+
+    /**
+     * Bulk adjust variant prices by filter and mode
+     */
+    public function bulkAdjustPrices(Request $request)
+    {
+        $validated = $request->validate([
+            'mode' => 'required|in:percent,fixed',
+            'operation' => 'required|in:increase,decrease',
+            'amount' => 'required|numeric|min:0',
+            // Optional filters
+            'product_type' => 'nullable|string',
+            'vendor' => 'nullable|string',
+            'attribute_1' => 'nullable|string',
+            'attribute_2' => 'nullable|string',
+            'attribute_3' => 'nullable|string',
+        ]);
+
+        $query = ProductModel::query();
+        foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
+            if ($request->$f) $query->where($f, $request->$f);
+        }
+
+        $products = $query->with('variants')->get();
+        $affectedVariants = 0;
+        $affectedProducts = 0;
+
+        foreach ($products as $product) {
+            $productUpdated = false;
+            foreach ($product->variants as $variant) {
+                $old = (float) $variant->price;
+                $new = $old;
+
+                if ($validated['mode'] === 'percent') {
+                    $delta = $old * ($validated['amount'] / 100);
+                    $new = $validated['operation'] === 'increase' ? $old + $delta : $old - $delta;
+                } else {
+                    $new = $validated['operation'] === 'increase' ? $old + $validated['amount'] : $old - $validated['amount'];
+                }
+
+                // Guardrails: never below zero
+                $new = max(0, round($new, 2));
+
+                if ($new !== $old) {
+                    $variant->price = $new;
+                    $variant->save();
+                    $affectedVariants++;
+                    $productUpdated = true;
+                }
+            }
+
+            if ($productUpdated) {
+                $affectedProducts++;
+                // Update cached price range on product
+                $prices = $product->variants()->pluck('price')->toArray();
+                if (!empty($prices)) {
+                    $product->price_min = min($prices);
+                    $product->price_max = max($prices);
+                    $product->save();
+                }
+            }
+        }
+
+        $message = "Updated {$affectedProducts} products ({$affectedVariants} variants)";
+        if ($affectedProducts !== $affectedVariants) {
+            $message .= " - Some products have multiple variants";
+        }
+
+        return response()->json([
+            'success' => true,
+            'affected_variants' => $affectedVariants,
+            'affected_products' => $affectedProducts,
+            'message' => $message
+        ]);
     }
 
     public function show($id)
