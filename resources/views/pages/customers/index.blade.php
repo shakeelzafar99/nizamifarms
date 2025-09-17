@@ -2244,7 +2244,9 @@ function showProductResults(products, index) {
                  onmouseover="this.style.backgroundColor='#f9fafb'" 
                  onmouseout="this.style.backgroundColor='white'">
                 <div style="font-weight: 500; font-size: 13px;">${displayName}</div>
-                <div style="font-size: 11px; color: #6b7280;">Price: PKR ${price} | Stock: ${inventory}</div>
+                <div style="font-size: 11px; color: #6b7280;">
+                    ${product.sku ? 'SKU: ' + product.sku + ' | ' : ''}Price: PKR ${price}${product.sku ? '' : ' | Stock: ' + inventory}
+                </div>
             </div>`;
         }).join('');
     }

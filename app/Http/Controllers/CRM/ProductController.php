@@ -97,10 +97,15 @@ class ProductController extends Controller
             $products = \App\Models\CRM\ProductModel::with('variants')
                 ->where('is_active', true)
                 ->where(function($q) use ($query) {
+                    // Create hyphen-less version for flexible SKU search
+                    $queryNoHyphens = str_replace(['-', ' '], '', $query);
+                    
                     $q->where('title', 'LIKE', "%{$query}%")
-                      ->orWhereHas('variants', function($vq) use ($query) {
+                      ->orWhereHas('variants', function($vq) use ($query, $queryNoHyphens) {
                           $vq->where('sku', 'LIKE', "%{$query}%")
-                            ->orWhere('title', 'LIKE', "%{$query}%");
+                            ->orWhere('title', 'LIKE', "%{$query}%")
+                            // Allow searching SKU without hyphens (e.g., "P12 DM" finds "P12-DM")
+                            ->orWhereRaw('REPLACE(REPLACE(sku, "-", ""), " ", "") LIKE ?', ["%{$queryNoHyphens}%"]);
                       });
                 })
                 ->limit($limit)
