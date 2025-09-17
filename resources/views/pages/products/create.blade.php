@@ -8,7 +8,10 @@
                 Create Product
             </h1>
             <div class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                Add a new product manually to your inventory
+                <span class="badge badge-light badge-outline">
+                    <i class="ki-filled ki-plus text-success"></i>
+                    New Manual Product
+                </span>
             </div>
         </div>
         
@@ -22,273 +25,377 @@
 </div>
 
 <div class="container-fixed">
-    <div class="grid gap-5 lg:gap-7.5">
-        <div class="card">
+    <form action="{{ route('products.store') }}" method="POST">
+        @csrf
+        
+        <!-- Main Product Information Card -->
+        <div class="card mb-5">
             <div class="card-header">
-                <h3 class="card-title">Product Information</h3>
+                <h3 class="card-title text-lg font-semibold flex items-center gap-2">
+                    📦 Product Information
+                </h3>
             </div>
             
             <div class="card-body">
-                <form action="{{ route('products.store') }}" method="POST" id="productForm">
-                    @csrf
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <!-- Product Title -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label required text-sm font-medium">Product Title</label>
+                        <input type="text" name="title" class="form-control" 
+                               value="{{ old('title') }}" required
+                               placeholder="Enter product name">
+                        @error('title')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+
+                    <!-- Status -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label required text-sm font-medium">Status</label>
+                        <select name="status" class="form-select" required>
+                            <option value="active" {{ old('status', 'active') === 'active' ? 'selected' : '' }}>🟢 Active</option>
+                            <option value="draft" {{ old('status') === 'draft' ? 'selected' : '' }}>🟡 Draft</option>
+                            <option value="archived" {{ old('status') === 'archived' ? 'selected' : '' }}>🔴 Archived</option>
+                        </select>
+                        @error('status')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                </div>
+
+                <!-- Description -->
+                <div class="flex flex-col gap-2 mt-5">
+                    <label class="form-label text-sm font-medium">Description</label>
+                    <textarea name="description" class="form-control" rows="4" 
+                              placeholder="Describe your product...">{{ old('description') }}</textarea>
+                    @error('description')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
+
+                <!-- Settings Checkboxes -->
+                <div class="flex items-center gap-8 mt-5 p-4 bg-gray-50 rounded-lg">
+                    <label class="checkbox flex items-center gap-2">
+                        <input type="checkbox" name="track_inventory" value="1" 
+                               {{ old('track_inventory', true) ? 'checked' : '' }}>
+                        <span class="checkbox-indicator"></span>
+                        <span class="text-sm font-medium">📊 Track Inventory</span>
+                    </label>
                     
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-7">
-                        <!-- Basic Information -->
-                        <div class="flex flex-col gap-5">
+                    <label class="checkbox flex items-center gap-2">
+                        <input type="checkbox" name="is_active" value="1" 
+                               {{ old('is_active', true) ? 'checked' : '' }}>
+                        <span class="checkbox-indicator"></span>
+                        <span class="text-sm font-medium">✅ Active Product</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Additional Information - Collapsible -->
+        <div class="card mb-5">
+            <div class="card-header cursor-pointer" onclick="toggleSection('additionalInfo')">
+                <h3 class="card-title text-lg font-semibold flex items-center gap-2">
+                    <span id="additionalInfoIcon">▶️</span>
+                    ⚙️ Additional Information
+                    <span class="text-xs text-gray-500 ml-2">(Optional - Click to expand)</span>
+                </h3>
+            </div>
+            
+            <div id="additionalInfo" class="card-body" style="display: none;">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <!-- Vendor -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">🏪 Vendor/Brand</label>
+                        <input type="text" name="vendor" class="form-control" 
+                               value="{{ old('vendor') }}" 
+                               placeholder="e.g., Nike, Apple, Local Supplier">
+                        @error('vendor')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+
+                    <!-- Product Type -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📂 Product Category</label>
+                        <input type="text" name="product_type" class="form-control" 
+                               value="{{ old('product_type') }}" 
+                               placeholder="e.g., Electronics, Clothing, Food">
+                        @error('product_type')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                </div>
+
+                <!-- Tags -->
+                <div class="flex flex-col gap-2 mt-5">
+                    <label class="form-label text-sm font-medium">🏷️ Tags</label>
+                    <input type="text" name="tags" class="form-control" 
+                           value="{{ old('tags') }}" 
+                           placeholder="organic, premium, bestseller (separate with commas)">
+                    <div class="form-hint text-xs text-gray-500">💡 Use tags to help customers find your product</div>
+                    @error('tags')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
+                    <!-- SEO Title -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">🔍 SEO Title</label>
+                        <input type="text" name="seo_title" class="form-control" 
+                               value="{{ old('seo_title') }}" 
+                               placeholder="Title for search engines">
+                        @error('seo_title')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+
+                    <!-- SEO Description -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📝 SEO Description</label>
+                        <textarea name="seo_description" class="form-control" rows="3" 
+                                  placeholder="Brief description for search results...">{{ old('seo_description') }}</textarea>
+                        @error('seo_description')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Product Variants -->
+        <div class="card mb-5">
+            <div class="card-header">
+                <h3 class="card-title text-lg font-semibold flex items-center gap-2">
+                    📋 Product Variants
+                    <span class="text-xs text-gray-500 ml-2">(Price, SKU, Inventory)</span>
+                </h3>
+                <button type="button" onclick="addVariant()" class="kt-btn kt-btn-sm kt-btn-primary">
+                    <i class="ki-filled ki-plus"></i>
+                    Add Variant
+                </button>
+            </div>
+            
+            <div class="card-body">
+                <div id="variantsContainer">
+                    <div class="variant-row p-4 border border-gray-200 rounded-lg mb-4" data-index="0">
+                        <div class="flex justify-between items-center mb-3">
+                            <h4 class="text-sm font-semibold text-gray-700">Variant #1</h4>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                             <div class="flex flex-col gap-2">
-                                <label class="form-label required">Product Title</label>
-                                <input type="text" name="title" class="input @error('title') input-error @enderror" 
-                                       placeholder="Enter product title" value="{{ old('title') }}" required>
-                                @error('title')
+                                <label class="form-label text-sm font-medium">
+                                    Variant Title
+                                    <span class="text-xs text-gray-500">(optional - defaults to product title)</span>
+                                </label>
+                                <input type="text" name="variants[0][title]" class="form-control" 
+                                       value="{{ old('variants.0.title') }}"
+                                       placeholder="Leave empty to use product title">
+                                @error('variants.0.title')
                                     <span class="form-hint text-danger">{{ $message }}</span>
                                 @enderror
                             </div>
-
+                            
                             <div class="flex flex-col gap-2">
-                                <label class="form-label">Description</label>
-                                <textarea name="description" class="input @error('description') input-error @enderror" 
-                                          placeholder="Enter product description" rows="4">{{ old('description') }}</textarea>
-                                @error('description')
+                                <label class="form-label text-sm font-medium">SKU</label>
+                                <input type="text" name="variants[0][sku]" class="form-control" 
+                                       value="{{ old('variants.0.sku') }}"
+                                       placeholder="e.g., PROD-001">
+                                @error('variants.0.sku')
                                     <span class="form-hint text-danger">{{ $message }}</span>
                                 @enderror
                             </div>
-
+                            
                             <div class="flex flex-col gap-2">
-                                <label class="form-label">Vendor</label>
-                                <input type="text" name="vendor" class="input @error('vendor') input-error @enderror" 
-                                       placeholder="Enter vendor name" value="{{ old('vendor') }}">
-                                @error('vendor')
+                                <label class="form-label required text-sm font-medium">💰 Price (PKR)</label>
+                                <input type="number" name="variants[0][price]" class="form-control" 
+                                       value="{{ old('variants.0.price', 0) }}" 
+                                       step="0.01" min="0" required>
+                                @error('variants.0.price')
                                     <span class="form-hint text-danger">{{ $message }}</span>
                                 @enderror
                             </div>
-
+                            
                             <div class="flex flex-col gap-2">
-                                <label class="form-label">Product Type</label>
-                                <input type="text" name="product_type" class="input @error('product_type') input-error @enderror" 
-                                       placeholder="e.g., Electronics, Clothing" value="{{ old('product_type') }}">
-                                @error('product_type')
+                                <label class="form-label required text-sm font-medium">📦 Stock</label>
+                                <input type="number" name="variants[0][inventory_quantity]" class="form-control" 
+                                       value="{{ old('variants.0.inventory_quantity', 0) }}" 
+                                       min="0" required>
+                                @error('variants.0.inventory_quantity')
                                     <span class="form-hint text-danger">{{ $message }}</span>
                                 @enderror
                             </div>
                         </div>
-
-                        <!-- Settings -->
-                        <div class="flex flex-col gap-5">
-                            <div class="flex flex-col gap-2">
-                                <label class="form-label required">Status</label>
-                                <select name="status" class="select @error('status') select-error @enderror" required>
-                                    <option value="">Select status</option>
-                                    <option value="active" {{ old('status') == 'active' ? 'selected' : '' }}>Active</option>
-                                    <option value="draft" {{ old('status') == 'draft' ? 'selected' : '' }}>Draft</option>
-                                    <option value="archived" {{ old('status') == 'archived' ? 'selected' : '' }}>Archived</option>
-                                </select>
-                                @error('status')
-                                    <span class="form-hint text-danger">{{ $message }}</span>
-                                @enderror
-                            </div>
-
-                            <div class="flex flex-col gap-2">
-                                <label class="form-label">Tags</label>
-                                <input type="text" name="tags" class="input @error('tags') input-error @enderror" 
-                                       placeholder="Enter tags separated by commas" value="{{ old('tags') }}">
-                                <span class="form-hint">Separate multiple tags with commas</span>
-                                @error('tags')
-                                    <span class="form-hint text-danger">{{ $message }}</span>
-                                @enderror
-                            </div>
-
-                            <div class="flex flex-col gap-2">
-                                <label class="form-label">SEO Title</label>
-                                <input type="text" name="seo_title" class="input @error('seo_title') input-error @enderror" 
-                                       placeholder="Enter SEO title" value="{{ old('seo_title') }}">
-                                @error('seo_title')
-                                    <span class="form-hint text-danger">{{ $message }}</span>
-                                @enderror
-                            </div>
-
-                            <div class="flex flex-col gap-2">
-                                <label class="form-label">SEO Description</label>
-                                <textarea name="seo_description" class="input @error('seo_description') input-error @enderror" 
-                                          placeholder="Enter SEO description" rows="4">{{ old('seo_description') }}</textarea>
-                                @error('seo_description')
-                                    <span class="form-hint text-danger">{{ $message }}</span>
-                                @enderror
-                            </div>
-
-                            <div class="flex items-center gap-2">
-                                <label class="switch">
-                                    <input type="checkbox" name="track_inventory" value="1" 
-                                           {{ old('track_inventory', '1') ? 'checked' : '' }}>
-                                    <span class="switch-slider"></span>
-                                </label>
-                                <label class="form-label">Track Inventory</label>
-                            </div>
-
-                            <div class="flex items-center gap-2">
-                                <label class="switch">
-                                    <input type="checkbox" name="is_active" value="1" 
-                                           {{ old('is_active', '1') ? 'checked' : '' }}>
-                                    <span class="switch-slider"></span>
-                                </label>
-                                <label class="form-label">Active</label>
+                        
+                        <!-- Advanced variant options (collapsible) -->
+                        <div class="mt-3">
+                            <button type="button" onclick="toggleVariantAdvanced(0)" 
+                                    class="text-xs text-blue-600 hover:text-blue-800">
+                                <span id="variantAdvancedIcon0">▶️</span> Advanced Options
+                            </button>
+                            
+                            <div id="variantAdvanced0" class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4" style="display: none;">
+                                <div class="flex flex-col gap-2">
+                                    <label class="form-label text-sm font-medium">Compare Price</label>
+                                    <input type="number" name="variants[0][compare_at_price]" class="form-control" 
+                                           value="{{ old('variants.0.compare_at_price') }}" 
+                                           step="0.01" min="0" placeholder="Original price">
+                                </div>
+                                
+                                <div class="flex flex-col gap-2">
+                                    <label class="form-label text-sm font-medium">Cost Price</label>
+                                    <input type="number" name="variants[0][cost_price]" class="form-control" 
+                                           value="{{ old('variants.0.cost_price') }}" 
+                                           step="0.01" min="0" placeholder="Your cost">
+                                </div>
+                                
+                                <div class="flex flex-col gap-2">
+                                    <label class="form-label text-sm font-medium">Barcode</label>
+                                    <input type="text" name="variants[0][barcode]" class="form-control" 
+                                           value="{{ old('variants.0.barcode') }}"
+                                           placeholder="Product barcode">
+                                </div>
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
 
-                    <!-- Variants Section -->
-                    <div class="separator my-7"></div>
+        <!-- Action Buttons -->
+        <div class="card">
+            <div class="card-body">
+                <div class="flex justify-between items-center">
+                    <div class="text-sm text-gray-600">
+                        💡 <strong>Tip:</strong> Use the "Additional Information" section for SEO and categorization.
+                    </div>
                     
-                    <div class="flex items-center justify-between mb-5">
-                        <h3 class="text-lg font-semibold">Product Variants</h3>
-                        <button type="button" onclick="addVariant()" class="kt-btn kt-btn-light kt-btn-sm">
-                            <i class="ki-filled ki-plus"></i>
-                            Add Variant
-                        </button>
-                    </div>
-
-                    <div id="variantsContainer">
-                        <!-- Default variant will be added by JavaScript -->
-                    </div>
-
-                    <!-- Form Actions -->
-                    <div class="flex items-center justify-end gap-5 mt-7">
+                    <div class="flex gap-3">
                         <a href="{{ route('products.index') }}" class="kt-btn kt-btn-light">
                             Cancel
                         </a>
                         <button type="submit" class="kt-btn kt-btn-primary">
-                            <i class="ki-filled ki-check"></i>
+                            <i class="ki-filled ki-plus"></i>
                             Create Product
                         </button>
                     </div>
-                </form>
+                </div>
             </div>
         </div>
-    </div>
+    </form>
 </div>
 
 <script>
-let variantCount = 0;
+let variantIndex = 1;
 
-function addVariant() {
-    variantCount++;
-    const container = document.getElementById('variantsContainer');
+// Toggle collapsible sections
+function toggleSection(sectionId) {
+    const section = document.getElementById(sectionId);
+    const icon = document.getElementById(sectionId + 'Icon');
     
-    const variantHtml = `
-        <div class="variant-item border border-gray-200 rounded-lg p-5 mb-5" id="variant-${variantCount}">
-            <div class="flex items-center justify-between mb-4">
-                <h4 class="text-md font-semibold">Variant ${variantCount}</h4>
-                <button type="button" onclick="removeVariant(${variantCount})" class="kt-btn kt-btn-light kt-btn-sm text-danger">
-                    <i class="ki-filled ki-trash"></i>
-                    Remove
-                </button>
+    if (section.style.display === 'none') {
+        section.style.display = 'block';
+        icon.textContent = '🔽';
+    } else {
+        section.style.display = 'none';
+        icon.textContent = '▶️';
+    }
+}
+
+// Toggle variant advanced options
+function toggleVariantAdvanced(index) {
+    const section = document.getElementById('variantAdvanced' + index);
+    const icon = document.getElementById('variantAdvancedIcon' + index);
+    
+    if (section.style.display === 'none') {
+        section.style.display = 'grid';
+        icon.textContent = '🔽';
+    } else {
+        section.style.display = 'none';
+        icon.textContent = '▶️';
+    }
+}
+
+// Add new variant
+function addVariant() {
+    const container = document.getElementById('variantsContainer');
+    const newVariant = document.createElement('div');
+    newVariant.className = 'variant-row p-4 border border-gray-200 rounded-lg mb-4';
+    newVariant.setAttribute('data-index', variantIndex);
+    
+    newVariant.innerHTML = `
+        <div class="flex justify-between items-center mb-3">
+            <h4 class="text-sm font-semibold text-gray-700">Variant #${variantIndex + 1}</h4>
+            <button type="button" onclick="removeVariant(this)" 
+                    class="kt-btn kt-btn-sm kt-btn-light text-red-600 hover:bg-red-50">
+                <i class="ki-filled ki-trash"></i>
+            </button>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="flex flex-col gap-2">
+                <label class="form-label required text-sm font-medium">Variant Title</label>
+                <input type="text" name="variants[${variantIndex}][title]" class="form-control" 
+                       placeholder="e.g., Medium Blue" required>
             </div>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="flex flex-col gap-2">
+                <label class="form-label text-sm font-medium">SKU</label>
+                <input type="text" name="variants[${variantIndex}][sku]" class="form-control" 
+                       placeholder="e.g., PROD-MD-BLUE">
+            </div>
+            
+            <div class="flex flex-col gap-2">
+                <label class="form-label required text-sm font-medium">💰 Price (PKR)</label>
+                <input type="number" name="variants[${variantIndex}][price]" class="form-control" 
+                       step="0.01" min="0" required>
+            </div>
+            
+            <div class="flex flex-col gap-2">
+                <label class="form-label required text-sm font-medium">📦 Stock</label>
+                <input type="number" name="variants[${variantIndex}][inventory_quantity]" class="form-control" 
+                       min="0" required>
+            </div>
+        </div>
+        
+        <div class="mt-3">
+            <button type="button" onclick="toggleVariantAdvanced(${variantIndex})" 
+                    class="text-xs text-blue-600 hover:text-blue-800">
+                <span id="variantAdvancedIcon${variantIndex}">▶️</span> Advanced Options
+            </button>
+            
+            <div id="variantAdvanced${variantIndex}" class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4" style="display: none;">
                 <div class="flex flex-col gap-2">
-                    <label class="form-label required">Variant Title</label>
-                    <input type="text" name="variants[${variantCount - 1}][title]" class="input" 
-                           placeholder="e.g., Default Title, Small, Large" required>
+                    <label class="form-label text-sm font-medium">Compare Price</label>
+                    <input type="number" name="variants[${variantIndex}][compare_at_price]" class="form-control" 
+                           step="0.01" min="0" placeholder="Original price">
                 </div>
                 
                 <div class="flex flex-col gap-2">
-                    <label class="form-label">SKU</label>
-                    <input type="text" name="variants[${variantCount - 1}][sku]" class="input" 
-                           placeholder="Enter SKU">
+                    <label class="form-label text-sm font-medium">Cost Price</label>
+                    <input type="number" name="variants[${variantIndex}][cost_price]" class="form-control" 
+                           step="0.01" min="0" placeholder="Your cost">
                 </div>
                 
                 <div class="flex flex-col gap-2">
-                    <label class="form-label required">Price</label>
-                    <input type="number" name="variants[${variantCount - 1}][price]" class="input" 
-                           placeholder="0.00" step="0.01" min="0" required>
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label">Compare at Price</label>
-                    <input type="number" name="variants[${variantCount - 1}][compare_at_price]" class="input" 
-                           placeholder="0.00" step="0.01" min="0">
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label">Cost Price</label>
-                    <input type="number" name="variants[${variantCount - 1}][cost_price]" class="input" 
-                           placeholder="0.00" step="0.01" min="0">
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label required">Inventory Quantity</label>
-                    <input type="number" name="variants[${variantCount - 1}][inventory_quantity]" class="input" 
-                           placeholder="0" min="0" required>
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label">Weight</label>
-                    <input type="number" name="variants[${variantCount - 1}][weight]" class="input" 
-                           placeholder="0" step="0.01" min="0">
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label">Weight Unit</label>
-                    <select name="variants[${variantCount - 1}][weight_unit]" class="select">
-                        <option value="g">Grams (g)</option>
-                        <option value="kg">Kilograms (kg)</option>
-                        <option value="oz">Ounces (oz)</option>
-                        <option value="lb">Pounds (lb)</option>
-                    </select>
-                </div>
-                
-                <div class="flex flex-col gap-2">
-                    <label class="form-label">Barcode</label>
-                    <input type="text" name="variants[${variantCount - 1}][barcode]" class="input" 
-                           placeholder="Enter barcode">
+                    <label class="form-label text-sm font-medium">Barcode</label>
+                    <input type="text" name="variants[${variantIndex}][barcode]" class="form-control" 
+                           placeholder="Product barcode">
                 </div>
             </div>
         </div>
     `;
     
-    container.insertAdjacentHTML('beforeend', variantHtml);
+    container.appendChild(newVariant);
+    variantIndex++;
 }
 
-function removeVariant(variantId) {
-    if (document.querySelectorAll('.variant-item').length > 1) {
-        document.getElementById(`variant-${variantId}`).remove();
-    } else {
-        alert('At least one variant is required.');
-    }
+// Remove variant
+function removeVariant(button) {
+    const variantRow = button.closest('.variant-row');
+    variantRow.remove();
 }
-
-// Add default variant on page load
-document.addEventListener('DOMContentLoaded', function() {
-    addVariant();
-});
-
-// Form validation
-document.getElementById('productForm').addEventListener('submit', function(e) {
-    const variants = document.querySelectorAll('.variant-item');
-    if (variants.length === 0) {
-        e.preventDefault();
-        alert('At least one variant is required.');
-        return false;
-    }
-    
-    // Check if all required variant fields are filled
-    let isValid = true;
-    variants.forEach(function(variant) {
-        const requiredFields = variant.querySelectorAll('input[required]');
-        requiredFields.forEach(function(field) {
-            if (!field.value.trim()) {
-                isValid = false;
-                field.classList.add('input-error');
-            } else {
-                field.classList.remove('input-error');
-            }
-        });
-    });
-    
-    if (!isValid) {
-        e.preventDefault();
-        alert('Please fill in all required variant fields.');
-        return false;
-    }
-});
 </script>
 @endsection

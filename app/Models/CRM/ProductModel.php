@@ -339,8 +339,21 @@ class ProductModel extends BaseModel
         try {
             // Check for existing product
             $existingProduct = null;
-            if (isset($productData['shopify_product_id'])) {
+            
+            // First check if we have an explicit existing product ID (for manual updates)
+            if (isset($productData['existing_product_id'])) {
+                $existingProduct = static::find($productData['existing_product_id']);
+                unset($productData['existing_product_id']); // Remove from data to avoid DB issues
+            }
+            // Then check for Shopify products
+            elseif (isset($productData['shopify_product_id'])) {
                 $existingProduct = static::where('shopify_product_id', $productData['shopify_product_id'])->first();
+            }
+            // Finally check for external_id (WooCommerce, etc.)
+            elseif (isset($productData['external_id']) && isset($productData['external_source'])) {
+                $existingProduct = static::where('external_id', $productData['external_id'])
+                    ->where('external_source', $productData['external_source'])
+                    ->first();
             }
 
             // Prepare product data

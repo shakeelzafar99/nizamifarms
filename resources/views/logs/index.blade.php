@@ -374,7 +374,7 @@ class LogViewer {
             return;
         }
 
-        data.logs.forEach(log => {
+        data.logs.forEach((log, index) => {
             const row = document.createElement('tr');
             row.className = 'hover:bg-gray-50';
             
@@ -399,7 +399,7 @@ class LogViewer {
                     ${log.is_api_related ? '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 mt-1"><i class="ki-filled ki-cloud text-xs mr-1"></i>API</span>' : ''}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <button onclick="logViewer.showLogDetail(${data.logs.indexOf(log)})" 
+                    <button onclick="window.logViewer.showLogDetail(${index})" 
                             class="text-blue-600 hover:text-blue-900">
                         <i class="ki-filled ki-eye text-base"></i>
                     </button>
@@ -580,6 +580,10 @@ class LogViewer {
     }
 
     showLogDetail(index) {
+        if (!this.currentLogs || typeof index !== 'number' || !this.currentLogs[index]) {
+            console.error('Log detail not available for index:', index, this.currentLogs);
+            return;
+        }
         const log = this.currentLogs[index];
         const modal = document.getElementById('logDetailModal');
         const content = document.getElementById('logDetailContent');

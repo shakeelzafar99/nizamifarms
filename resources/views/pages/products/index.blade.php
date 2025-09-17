@@ -21,13 +21,9 @@
                 <i class="ki-filled ki-setting-2"></i>
                 Columns
             </button>
-            <button onclick="importProducts()" class="kt-btn kt-btn-light">
+            <button onclick="openImportModal()" class="kt-btn kt-btn-primary">
                 <i class="ki-filled ki-cloud-download"></i>
-                Import Limited
-            </button>
-            <button onclick="importAllProducts()" class="kt-btn kt-btn-primary">
-                <i class="ki-filled ki-cloud-download"></i>
-                Import All Products
+                Import Products
             </button>
         </div>
     </div>
@@ -104,18 +100,41 @@
     <div style="display: flex; min-height: 100%; align-items: center; justify-content: center; padding: 16px;">
         <div style="background: white; border-radius: 8px; width: 100%; max-width: 500px; position: relative;">
             <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
-                <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;">Import Products from Shopify</h3>
+                <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;">Import Products</h3>
             </div>
             
             <div id="importProductsContent" style="padding: 24px;">
+                <!-- Source Selection -->
                 <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                        Import Source
+                    </label>
+                    <select id="importSource" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateImportOptions()">
+                        <option value="shopify">Shopify Store</option>
+                        <option value="woocommerce">WooCommerce Store</option>
+                    </select>
+                </div>
+
+                <!-- Import Type -->
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                        Import Type
+                    </label>
+                    <select id="importType" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateImportOptions()">
+                        <option value="limited">Limited Import (50-250 products)</option>
+                        <option value="all">Import All Products</option>
+                    </select>
+                </div>
+
+                <!-- Limit Input (shown only for limited import) -->
+                <div id="limitContainer" style="margin-bottom: 20px;">
                     <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
                         Number of Products to Import
                     </label>
                     <input type="number" id="productLimit" value="50" min="1" max="250" 
                            style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                     <p style="font-size: 12px; color: #6b7280; margin-top: 4px;">
-                        Maximum 250 products per import. Leave empty to import 50 products.
+                        Maximum 250 products per import.
                     </p>
                 </div>
 
@@ -136,7 +155,7 @@
                         style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; font-size: 14px; cursor: pointer;">
                     Cancel
                 </button>
-                <button onclick="executeImport()" 
+                <button onclick="executeSelectedImport()" 
                         style="padding: 8px 16px; background: #2563eb; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer;">
                     Import Products
                 </button>
@@ -182,21 +201,59 @@
 </div>
 
 <script>
-function importProducts() {
+// Open unified import modal
+function openImportModal() {
     document.getElementById('importProductsModal').style.display = 'block';
+    updateImportOptions(); // Set initial state
+}
+
+// Update UI based on selected options
+function updateImportOptions() {
+    const importType = document.getElementById('importType').value;
+    const limitContainer = document.getElementById('limitContainer');
+    
+    if (importType === 'limited') {
+        limitContainer.style.display = 'block';
+    } else {
+        limitContainer.style.display = 'none';
+    }
+}
+
+// Execute the selected import option
+function executeSelectedImport() {
+    const source = document.getElementById('importSource').value;
+    const importType = document.getElementById('importType').value;
+    
+    closeModal('importProductsModal');
+    
+    if (importType === 'limited') {
+        executeImport(source);
+    } else {
+        const sourceName = source === 'woocommerce' ? 'WooCommerce' : 'Shopify';
+        if (confirm(`This will import ALL products from your ${sourceName} store. This may take several minutes depending on the number of products. Continue?`)) {
+            executeImportAll(sourceName);
+        }
+    }
+}
+
+// Reuse existing import functions
+function importProducts() {
+    openImportModal();
 }
 
 function importAllProducts() {
-    if (confirm('This will import ALL products from your Shopify store. This may take several minutes depending on the number of products. Continue?')) {
-        executeImportAll();
-    }
+    executeImportAll('Shopify');
+}
+
+function importAllProductsFromWoo() {
+    executeImportAll('WooCommerce');
 }
 
 function closeModal(modalId) {
     document.getElementById(modalId).style.display = 'none';
 }
 
-function executeImportAll() {
+function executeImportAll(source = 'Shopify') {
     // Show loading overlay
     const loadingOverlay = document.createElement('div');
     loadingOverlay.id = 'importAllOverlay';
@@ -219,7 +276,8 @@ function executeImportAll() {
                      document.querySelector('input[name="_token"]')?.value || '';
     
     // Make API call
-    fetch('/products/import-all', {
+    const url = '/products/import-all' + (source ? ('?source=' + encodeURIComponent(source)) : '');
+    fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -252,15 +310,16 @@ function executeImportAll() {
     });
 }
 
-function executeImport() {
+function executeImport(source = 'shopify') {
     const limit = document.getElementById('productLimit').value || 50;
     const content = document.getElementById('importProductsContent');
+    const sourceName = source === 'woocommerce' ? 'WooCommerce' : 'Shopify';
     
     // Show loading
     content.innerHTML = `
         <div style="text-align: center; padding: 40px;">
             <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-            <p style="margin-top: 16px; color: #6b7280;">Importing products from Shopify...</p>
+            <p style="margin-top: 16px; color: #6b7280;">Importing products from ${sourceName}...</p>
         </div>
     `;
     
@@ -618,10 +677,14 @@ function getCellContent(columnKey, product) {
             return '<span class="text-xs text-red-500">Never</span>';
             
         case 'actions':
-            return `<div class="flex gap-2">
+            return `<div class="flex gap-1">
                 <button onclick="viewProduct(${product.id})" 
                         class="kt-btn kt-btn-sm kt-btn-light" title="View Details">
                     <i class="ki-filled ki-eye text-sm"></i>
+                </button>
+                <button onclick="editProduct(${product.id})" 
+                        class="kt-btn kt-btn-sm kt-btn-primary" title="Edit Product">
+                    <i class="ki-filled ki-pencil text-sm"></i>
                 </button>
                 ${product.shopify_product_id ? `<button onclick="syncProduct(${product.id})" 
                         class="kt-btn kt-btn-sm kt-btn-success" title="Sync with Shopify">
@@ -728,6 +791,11 @@ function handleDrop(e) {
 function handleDragEnd(e) {
     this.style.opacity = '1';
     draggedElement = null;
+}
+
+// Edit product - redirect to edit page
+function editProduct(productId) {
+    window.location.href = `/products/${productId}/edit`;
 }
 
 function viewProduct(productId) {

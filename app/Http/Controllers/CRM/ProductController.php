@@ -6,15 +6,18 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\CRM\ProductModel;
 use App\Services\ShopifyService;
+use App\Services\WooCommerceService;
 use Illuminate\Support\Facades\Log;
 
 class ProductController extends Controller
 {
     protected $shopify;
+    protected $wooCommerce;
 
-    public function __construct(ShopifyService $shopify)
+    public function __construct(ShopifyService $shopify, WooCommerceService $wooCommerce)
     {
         $this->shopify = $shopify;
+        $this->wooCommerce = $wooCommerce;
     }
 
     public function index(Request $request)
@@ -297,8 +300,22 @@ class ProductController extends Controller
         try {
             \Log::info('Starting bulk import of all products from Shopify');
 
-            // Fetch ALL products from Shopify
-            $products = $this->shopify->fetchAllProducts();
+            $source = $request->get('source', 'Shopify');
+            if (strcasecmp($source, 'WooCommerce') === 0) {
+                \Log::info('Bulk import source selected: WooCommerce');
+                $wooProductsRaw = $this->wooCommerce->fetchAllProducts();
+                $products = [];
+                foreach ($wooProductsRaw as $wooProduct) {
+                    $variations = [];
+                    if (($wooProduct['type'] ?? '') === 'variable') {
+                        $variations = $this->wooCommerce->fetchProductVariations((int)$wooProduct['id']);
+                    }
+                    $products[] = $this->wooCommerce->mapWooProduct($wooProduct, $variations);
+                }
+            } else {
+                // Fetch ALL products from Shopify
+                $products = $this->shopify->fetchAllProducts();
+            }
 
             if (empty($products)) {
                 return response()->json([
@@ -316,14 +333,11 @@ class ProductController extends Controller
             $errors = [];
             $totalProducts = count($products);
 
-            foreach ($products as $index => $shopifyProduct) {
+            foreach ($products as $index => $productPayload) {
                 try {
-                    // Check if product already exists
-                    $existingProduct = ProductModel::findByShopifyId($shopifyProduct['id']);
-                    $isUpdate = $existingProduct !== null;
-                    
-                    // Create or update product
-                    ProductModel::createOrUpdateFromShopify($shopifyProduct);
+                    // Reuse store method that expects canonical payload
+                    $stored = ProductModel::storeProductFromApi($productPayload);
+                    $isUpdate = $stored->wasRecentlyCreated === false;
                     
                     if ($isUpdate) {
                         $updatedCount++;
@@ -337,12 +351,8 @@ class ProductController extends Controller
                     }
                 } catch (\Exception $e) {
                     $errorCount++;
-                    $errors[] = "Product ID {$shopifyProduct['id']}: " . $e->getMessage();
-                    
-                    Log::error('Failed to import Shopify product: ' . $e->getMessage(), [
-                        'shopify_product_id' => $shopifyProduct['id'] ?? 'unknown',
-                        'error' => $e->getMessage()
-                    ]);
+                    $errors[] = $e->getMessage();
+                    Log::error('Failed to import product: ' . $e->getMessage());
                 }
             }
 
@@ -411,7 +421,7 @@ class ProductController extends Controller
                 
                 // Variants
                 'variants' => 'required|array|min:1',
-                'variants.*.title' => 'required|string|max:255',
+                'variants.*.title' => 'nullable|string|max:255',
                 'variants.*.sku' => 'nullable|string|max:100',
                 'variants.*.price' => 'required|numeric|min:0',
                 'variants.*.compare_at_price' => 'nullable|numeric|min:0',
@@ -424,6 +434,15 @@ class ProductController extends Controller
 
             // Format data to match API structure
             $productData = $this->formatManualProductData($validated);
+            
+            // For single-variant products, default variant title to product title if empty
+            if (isset($productData['variants'])) {
+                foreach ($productData['variants'] as $index => $variantData) {
+                    if (count($productData['variants']) == 1 && empty($productData['variants'][$index]['title'])) {
+                        $productData['variants'][$index]['title'] = $productData['title'];
+                    }
+                }
+            }
             
             // Use the same function as API to maintain consistency
             $product = ProductModel::storeProductFromApi($productData);
@@ -464,10 +483,7 @@ class ProductController extends Controller
         try {
             $product = ProductModel::findOrFail($id);
 
-            // Don't allow editing Shopify products
-            if ($product->shopify_product_id) {
-                return back()->with('error', 'Shopify products cannot be edited manually. Please sync from Shopify instead.');
-            }
+            // Allow editing for all products (manual or imported). No restrictions.
 
             $validated = $request->validate([
                 'title' => 'required|string|max:255',
@@ -484,7 +500,7 @@ class ProductController extends Controller
                 // Variants
                 'variants' => 'required|array|min:1',
                 'variants.*.id' => 'nullable|integer|exists:t_crm_prod_product_variant,id',
-                'variants.*.title' => 'required|string|max:255',
+                'variants.*.title' => 'nullable|string|max:255',
                 'variants.*.sku' => 'nullable|string|max:100',
                 'variants.*.price' => 'required|numeric|min:0',
                 'variants.*.compare_at_price' => 'nullable|numeric|min:0',
@@ -498,12 +514,20 @@ class ProductController extends Controller
             // Format data to match API structure
             $productData = $this->formatManualProductData($validated);
             
+            // For updates, we need to include the existing product ID
+            $productData['existing_product_id'] = $product->id;
+            
             // For updates, we need to include the existing product ID in variants
             if (isset($productData['variants'])) {
                 foreach ($productData['variants'] as $index => $variantData) {
                     // If this is an existing variant, preserve its ID
                     if (isset($validated['variants'][$index]['id'])) {
                         $productData['variants'][$index]['id'] = $validated['variants'][$index]['id'];
+                    }
+                    
+                    // For single-variant products, default variant title to product title if empty
+                    if (count($productData['variants']) == 1 && empty($productData['variants'][$index]['title'])) {
+                        $productData['variants'][$index]['title'] = $productData['title'];
                     }
                 }
             }
