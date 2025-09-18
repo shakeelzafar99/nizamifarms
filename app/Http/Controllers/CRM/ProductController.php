@@ -20,6 +20,353 @@ class ProductController extends Controller
         $this->wooCommerce = $wooCommerce;
     }
 
+    /**
+     * Attribute settings UI (labels from JSON; groups are transient via request form only)
+     */
+    public function attributes()
+    {
+        $labels = $this->readAttributeLabels();
+        $activeKey = (int) request()->get('level', 1);
+        $auto = $this->readAttributeAutoRules();
+        $activeRules = $auto[(string) $activeKey] ?? [];
+        // Sort by priority desc for display
+        usort($activeRules, function($a,$b){ return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0); });
+        // Current DB assignments summary for the selected level (for info only)
+        $column = 'attribute_' . $activeKey;
+        $assignStats = \DB::table('t_crm_prod_product')
+            ->select($column . ' as value', \DB::raw('COUNT(*) as cnt'))
+            ->whereNotNull($column)
+            ->where($column, '!=', '')
+            ->groupBy($column)
+            ->orderByDesc('cnt')
+            ->limit(20)
+            ->get();
+        return view('pages.products.attributes', compact('labels', 'activeKey', 'activeRules', 'assignStats'));
+    }
+
+    public function saveAttributeLabels(Request $request)
+    {
+        $labels = $this->readAttributeLabels();
+        foreach ([1,2,3] as $key) {
+            $label = trim((string) $request->input('label_'.$key));
+            if ($label !== '') {
+                $labels[(string)$key] = $label;
+            }
+        }
+        // Optional auto-rules payload (when sent from UI). Persist to JSON file.
+        $autoRules = $request->input('auto_rules');
+        if (is_array($autoRules)) {
+            $this->writeAttributeAutoRules($autoRules);
+        }
+        $this->writeAttributeLabels($labels);
+        return back()->with('success', 'Attribute labels saved.');
+    }
+
+    // Removed persistent group creation; groups become transient via UI for one-time apply
+
+    // Removed explicit group persistence paths
+
+    public function applyAttributeRules(Request $request)
+    {
+        $validated = $request->validate([
+            'attribute_key' => 'required|in:1,2,3',
+            'group_name' => 'required|string|max:150',
+            'match_string' => 'nullable|string|max:255',
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'integer',
+            'product_type' => 'nullable|string',
+            'vendor' => 'nullable|string',
+        ]);
+
+        $attributeKey = (int) $validated['attribute_key'];
+        $column = 'attribute_' . $attributeKey;
+
+        $query = ProductModel::query();
+        if (!empty($validated['product_type'])) $query->where('product_type', $validated['product_type']);
+        if (!empty($validated['vendor'])) $query->where('vendor', $validated['vendor']);
+
+        $products = $query->get();
+        $updated = 0;
+
+        foreach ($products as $product) {
+            $assign = false;
+            if (!empty($validated['match_string'])) {
+                if (stripos($product->title ?? '', $validated['match_string']) !== false) {
+                    $assign = true;
+                }
+            }
+            if (!$assign && !empty($validated['product_ids']) && in_array($product->id, $validated['product_ids'])) {
+                $assign = true;
+            }
+            if ($assign) {
+                $product->{$column} = $validated['group_name'];
+                $product->save();
+                $updated++;
+            }
+        }
+
+        return back()->with('success', "Applied to {$updated} products.");
+    }
+
+    public function previewAttributeRules(Request $request)
+    {
+        $validated = $request->validate([
+            'attribute_key' => 'required|in:1,2,3',
+            'group_name' => 'required|string|max:150',
+            'match_string' => 'nullable|string|max:255',
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'integer',
+            'product_type' => 'nullable|string',
+            'vendor' => 'nullable|string',
+        ]);
+
+        $query = ProductModel::query();
+        if (!empty($validated['product_type'])) $query->where('product_type', $validated['product_type']);
+        if (!empty($validated['vendor'])) $query->where('vendor', $validated['vendor']);
+
+        $products = $query->select('id','title')->get();
+        $count = 0;
+        $sample = [];
+        foreach ($products as $product) {
+            $assign = false;
+            if (!empty($validated['match_string'])) {
+                if (stripos($product->title ?? '', $validated['match_string']) !== false) {
+                    $assign = true;
+                }
+            }
+            if (!$assign && !empty($validated['product_ids']) && in_array($product->id, $validated['product_ids'])) {
+                $assign = true;
+            }
+            if ($assign) {
+                $count++;
+                if (count($sample) < 10) $sample[] = ['id' => $product->id, 'title' => $product->title];
+            }
+        }
+
+        return response()->json(['success' => true, 'count' => $count, 'sample' => $sample]);
+    }
+
+    private function labelsPath(): string
+    {
+        return storage_path('app/private/attribute_labels.json');
+    }
+
+    private function readAttributeLabels(): array
+    {
+        $path = $this->labelsPath();
+        $defaults = ['1' => 'Category Level 1', '2' => 'Category Level 2', '3' => 'Category Level 3'];
+        if (!is_file($path)) { return $defaults; }
+        $json = file_get_contents($path);
+        $data = json_decode($json, true) ?: [];
+        
+        // Handle both numeric array format and string key format
+        $normalized = $defaults;
+        foreach ([1, 2, 3] as $key) {
+            $stringKey = (string)$key;
+            if (isset($data[$stringKey])) {
+                $normalized[$stringKey] = $data[$stringKey];
+            } elseif (isset($data[$key])) {
+                $normalized[$stringKey] = $data[$key];
+            }
+            
+            // Normalize any legacy 'Attribute X' labels to Category Level X
+            $v = (string)($normalized[$stringKey] ?? '');
+            if (preg_match('/^\s*Attribute\s*' . $key . '\s*$/i', $v)) {
+                $normalized[$stringKey] = $defaults[$stringKey];
+            }
+        }
+        return $normalized;
+    }
+
+    private function writeAttributeLabels(array $labels): void
+    {
+        $path = $this->labelsPath();
+        if (!is_dir(dirname($path))) @mkdir(dirname($path), 0775, true);
+        
+        // Ensure we save with string keys for consistency
+        $normalized = [];
+        foreach ([1, 2, 3] as $key) {
+            $stringKey = (string)$key;
+            $normalized[$stringKey] = $labels[$stringKey] ?? ('Category Level ' . $key);
+        }
+        
+        file_put_contents($path, json_encode($normalized, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), LOCK_EX);
+    }
+
+    private function autoRulesPath(): string
+    {
+        return storage_path('app/private/attribute_auto_rules.json');
+    }
+
+    private function readAttributeAutoRules(): array
+    {
+        $path = $this->autoRulesPath();
+        if (!is_file($path)) return ['1'=>[], '2'=>[], '3'=>[]];
+        $data = json_decode(file_get_contents($path), true) ?: [];
+        
+        // Handle both numeric array format and string key format
+        $normalized = ['1'=>[], '2'=>[], '3'=>[]];
+        foreach ([1, 2, 3] as $key) {
+            $stringKey = (string)$key;
+            if (isset($data[$stringKey])) {
+                $normalized[$stringKey] = $data[$stringKey];
+            } elseif (isset($data[$key])) {
+                $normalized[$stringKey] = $data[$key];
+            }
+        }
+        return $normalized;
+    }
+
+    private function writeAttributeAutoRules(array $rules): void
+    {
+        $path = $this->autoRulesPath();
+        if (!is_dir(dirname($path))) @mkdir(dirname($path), 0775, true);
+        
+        // Ensure we save with string keys for consistency
+        $normalized = [];
+        foreach ([1, 2, 3] as $key) {
+            $stringKey = (string)$key;
+            $normalized[$stringKey] = $rules[$stringKey] ?? [];
+        }
+        
+        file_put_contents($path, json_encode($normalized, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE), LOCK_EX);
+    }
+
+    // Lightweight product lookup for selectors
+    public function lookup(Request $request)
+    {
+        $q = trim((string) $request->get('q', ''));
+        $limit = (int) ($request->get('limit', 15));
+        $limit = max(1, min(50, $limit));
+
+        $query = ProductModel::select('id', 'title')
+            ->when($q !== '', function ($builder) use ($q) {
+                $builder->where('title', 'like', "%{$q}%");
+            })
+            ->orderBy('title')
+            ->limit($limit)
+            ->get();
+
+        return response()->json(['success' => true, 'products' => $query]);
+    }
+
+    public function saveAutoRules(Request $request)
+    {
+        $validated = $request->validate([
+            'attribute_key' => 'required|in:1,2,3',
+            'rules' => 'required|array',
+            'rules.*.match' => 'required|string',
+            'rules.*.group' => 'required|string',
+            'rules.*.priority' => 'nullable|integer',
+        ]);
+        $all = $this->readAttributeAutoRules();
+        $all[(string)$validated['attribute_key']] = array_values($validated['rules']);
+        $this->writeAttributeAutoRules($all);
+        
+        // Generate summary of rule matches
+        $attributeKey = $validated['attribute_key'];
+        $column = 'attribute_' . $attributeKey;
+        $rules = $validated['rules'];
+        $summary = [];
+        
+        foreach ($rules as $rule) {
+            $needle = trim((string)($rule['match'] ?? ''));
+            $group = trim((string)($rule['group'] ?? ''));
+            if ($needle === '' || $group === '') continue;
+            
+            $count = \DB::table('t_crm_prod_product')
+                ->where('title', 'LIKE', '%'.$needle.'%')
+                ->count();
+            
+            $summary[] = [
+                'match' => $needle,
+                'group' => $group,
+                'priority' => $rule['priority'] ?? 0,
+                'matching_products' => $count
+            ];
+        }
+        
+        // Count uncategorized products for this level
+        $totalProducts = \DB::table('t_crm_prod_product')->count();
+        $categorizedProducts = \DB::table('t_crm_prod_product')
+            ->whereNotNull($column)
+            ->where($column, '!=', '')
+            ->count();
+        $uncategorizedProducts = $totalProducts - $categorizedProducts;
+        
+        return response()->json([
+            'success' => true,
+            'summary' => $summary,
+            'total_products' => $totalProducts,
+            'categorized_products' => $categorizedProducts,
+            'uncategorized_products' => $uncategorizedProducts
+        ]);
+    }
+
+    // Preview auto-rules against existing products
+    public function previewAutoRules(Request $request)
+    {
+        $attributeKey = (int) $request->get('attribute_key', 0); // 0 means all
+        $path = $this->autoRulesPath();
+        if (!is_file($path)) {
+            return response()->json(['success' => true, 'results' => []]);
+        }
+        $rules = json_decode(file_get_contents($path), true) ?: [];
+
+        $products = ProductModel::select('id', 'title')->get();
+        $results = [];
+
+        $keys = $attributeKey && in_array($attributeKey, [1,2,3]) ? [$attributeKey] : [1,2,3];
+        foreach ($keys as $key) {
+            $count = 0; $sample = [];
+            $rset = $rules[(string)$key] ?? [];
+            // Sort by priority desc if provided
+            usort($rset, function($a,$b){ return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0); });
+            foreach ($products as $p) {
+                $matched = false;
+                foreach ($rset as $r) {
+                    $needle = (string)($r['match'] ?? '');
+                    $group = (string)($r['group'] ?? '');
+                    // match must be whole word (use regex word boundaries) and case-insensitive
+                    if ($needle !== '' && $group !== '' && preg_match('/\\b' . preg_quote($needle, '/') . '\\b/i', (string)$p->title)) {
+                        $matched = true; break;
+                    }
+                }
+                if ($matched) {
+                    $count++; if (count($sample) < 10) $sample[] = ['id'=>$p->id,'title'=>$p->title];
+                }
+            }
+            $results[$key] = ['count' => $count, 'sample' => $sample];
+        }
+
+        return response()->json(['success' => true, 'results' => $results]);
+    }
+
+    public function applySavedRules(Request $request)
+    {
+        $attributeKey = (int) $request->validate(['attribute_key' => 'required|in:1,2,3'])['attribute_key'];
+        $rules = $this->readAttributeAutoRules();
+        $rset = $rules[(string)$attributeKey] ?? [];
+        usort($rset, function($a,$b){ return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0); });
+        $column = 'attribute_' . $attributeKey;
+        $updated = 0;
+        // Apply in priority order using SQL updates to ensure we hit all matches and respect priority
+        foreach ($rset as $rule) {
+            $needle = trim((string)($rule['match'] ?? ''));
+            $group  = trim((string)($rule['group'] ?? ''));
+            if ($needle === '' || $group === '') { continue; }
+            $count = \DB::table('t_crm_prod_product')
+                ->where(function($q) use ($column) {
+                    // Only set when not already categorized for this level to respect higher priority rules
+                    $q->whereNull($column)->orWhere($column, '=','');
+                })
+                ->where('title', 'LIKE', '%'.$needle.'%')
+                ->update([$column => $group, 'updated_at' => now()]);
+            $updated += (int) $count;
+        }
+        return response()->json(['success' => true, 'updated' => $updated]);
+    }
+
     public function index(Request $request)
     {
         // Get products with variants
@@ -92,7 +439,10 @@ class ProductController extends Controller
             ]);
         }
 
-        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes', 'vendors', 'attribute1s', 'attribute2s', 'attribute3s'));
+        // Get attribute labels for display
+        $attributeLabels = $this->readAttributeLabels();
+        
+        return view('pages.products.index', compact('products', 'syncStatuses', 'productTypes', 'vendors', 'attribute1s', 'attribute2s', 'attribute3s', 'attributeLabels'));
     }
 
     /**

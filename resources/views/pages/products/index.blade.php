@@ -21,6 +21,10 @@
                 <i class="ki-filled ki-setting-2"></i>
                 Columns
             </button>
+            <a href="{{ route('products.attributes') }}" class="kt-btn kt-btn-light">
+                <i class="ki-filled ki-category"></i>
+                Attributes
+            </a>
             <button onclick="openBulkAdjustPricesModal()" class="kt-btn kt-btn-light">
                 <i class="ki-filled ki-price-tag"></i>
                 Adjust Prices
@@ -76,17 +80,19 @@
                             @endforeach
                         </select>
 
-                        <!-- Attribute Filters - Hidden for now -->
-                        <select name="attribute_1" class="select select-sm" id="attr1Filter" style="display: none;">
-                            <option value="">Attribute 1</option>
+                        <!-- Category Level 1 Filter -->
+                        <select name="attribute_1" class="select select-sm" id="attr1Filter">
+                            <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
                             @foreach($attribute1s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
                                     {{ $val }}
                                 </option>
                             @endforeach
                         </select>
+                        
+                        <!-- Other Attribute Filters - Hidden for now -->
                         <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
-                            <option value="">Attribute 2</option>
+                            <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
                             @foreach($attribute2s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
                                     {{ $val }}
@@ -94,7 +100,7 @@
                             @endforeach
                         </select>
                         <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
-                            <option value="">Attribute 3</option>
+                            <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
                             @foreach($attribute3s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
                                     {{ $val }}
@@ -280,7 +286,7 @@
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
                 <div>
-                    <label class="form-label">Attribute 1</label>
+                    <label class="form-label">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
                     <select id="bulkAttr1" class="select select-sm">
                         <option value="">Any</option>
                         @foreach($attribute1s as $val)
@@ -289,7 +295,7 @@
                     </select>
                 </div>
                 <div>
-                    <label class="form-label">Attribute 2</label>
+                    <label class="form-label">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
                     <select id="bulkAttr2" class="select select-sm">
                         <option value="">Any</option>
                         @foreach($attribute2s as $val)
@@ -298,7 +304,7 @@
                     </select>
                 </div>
                 <div>
-                    <label class="form-label">Attribute 3</label>
+                    <label class="form-label">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
                     <select id="bulkAttr3" class="select select-sm">
                         <option value="">Any</option>
                         @foreach($attribute3s as $val)
@@ -561,19 +567,25 @@ const availableColumns = {
     'status': { label: 'Status', width: 'w-[100px]', order: 4 },
     'vendor': { label: 'Vendor', width: 'w-[120px]', order: 5 },
     'product_type': { label: 'Type', width: 'w-[120px]', order: 6 },
-    'price_range': { label: 'Price Range', width: 'w-[120px]', order: 7 },
-    'variants_count': { label: 'Variants', width: 'w-[80px]', order: 8 },
-    'total_inventory': { label: 'Inventory', width: 'w-[100px]', order: 9 },
-    'last_synced_at': { label: 'Last Sync', width: 'w-[100px]', order: 10 },
-    'actions': { label: 'Actions', width: 'w-[120px]', order: 11, fixed: true }
+    'attribute_1': { label: '{{ $attributeLabels["1"] ?? "Category Level 1" }}', width: 'w-[140px]', order: 7 },
+    'attribute_2': { label: '{{ $attributeLabels["2"] ?? "Category Level 2" }}', width: 'w-[140px]', order: 8 },
+    'attribute_3': { label: '{{ $attributeLabels["3"] ?? "Category Level 3" }}', width: 'w-[140px]', order: 9 },
+    'price_range': { label: 'Price Range', width: 'w-[120px]', order: 10 },
+    'variants_count': { label: 'Variants', width: 'w-[80px]', order: 11 },
+    'total_inventory': { label: 'Inventory', width: 'w-[100px]', order: 12 },
+    'last_synced_at': { label: 'Last Sync', width: 'w-[100px]', order: 13 },
+    'actions': { label: 'Actions', width: 'w-[120px]', order: 14, fixed: true }
 };
 
 // Default visible columns
 const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'last_synced_at', 'actions'];
 
+// All available columns (including attributes for column selector)
+const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'last_synced_at', 'actions'];
+
 // Load column settings from localStorage
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || JSON.stringify(defaultColumns));
-let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || JSON.stringify(defaultColumns));
+let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || JSON.stringify(allColumns));
 
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -819,6 +831,21 @@ function getCellContent(columnKey, product) {
             
         case 'product_type':
             return `<span class="text-sm text-gray-600">${product.product_type || '-'}</span>`;
+            
+        case 'attribute_1':
+            return product.attribute_1 ? 
+                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-800">${product.attribute_1}</span>` : 
+                '<span class="text-gray-400">-</span>';
+                
+        case 'attribute_2':
+            return product.attribute_2 ? 
+                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-indigo-100 text-indigo-800">${product.attribute_2}</span>` : 
+                '<span class="text-gray-400">-</span>';
+                
+        case 'attribute_3':
+            return product.attribute_3 ? 
+                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-teal-100 text-teal-800">${product.attribute_3}</span>` : 
+                '<span class="text-gray-400">-</span>';
             
         case 'price_range':
             if (product.price_min && product.price_max) {

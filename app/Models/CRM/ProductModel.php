@@ -176,6 +176,32 @@ class ProductModel extends BaseModel
         return $this->hasMany(ProductVariantModel::class, 'product_id');
     }
 
+    /**
+     * Apply attribute group mapping to this product for a given attribute key (1..3)
+     */
+    public function applyAttributeFromRules(int $attributeKey): void
+    {
+        $title = (string) ($this->title ?? '');
+        $group = \DB::table('t_crm_prod_attribute_groups')
+            ->where('attribute_key', $attributeKey)
+            ->where('is_active', true)
+            ->orderByDesc('priority')
+            ->get()
+            ->first(function ($g) use ($title) {
+                // Explicit assignment has priority; handled in controller apply flow
+                if (!empty($g->match_string)) {
+                    return stripos($title, $g->match_string) !== false;
+                }
+                return false;
+            });
+
+        if ($group) {
+            $column = 'attribute_' . $attributeKey;
+            $this->{$column} = $group->group_name;
+            $this->save();
+        }
+    }
+
     // Helper methods
     public function getPriceRangeAttribute(): string
     {
@@ -392,6 +418,31 @@ class ProductModel extends BaseModel
                 }
                 
                 $product->variants()->saveMany($variantModels);
+            }
+
+            // Auto-assign optional attribute labels by match rules stored in JSON (title contains)
+            try {
+                $title = (string) ($product->title ?? '');
+                $labelsPath = storage_path('app/private/attribute_auto_rules.json');
+                if (is_file($labelsPath) && $title !== '') {
+                    $rules = json_decode(file_get_contents($labelsPath), true) ?: [];
+                    foreach ([1,2,3] as $key) {
+                        $column = 'attribute_' . $key;
+                        if (!empty($rules[(string)$key]) && empty($product->{$column})) {
+                            foreach ($rules[(string)$key] as $rule) { // assume already sorted by priority desc
+                                $needle = (string) ($rule['match'] ?? '');
+                                $groupName = (string) ($rule['group'] ?? '');
+                                if ($needle !== '' && $groupName !== '' && stripos($title, $needle) !== false) {
+                                    $product->{$column} = $groupName;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    $product->save();
+                }
+            } catch (\Throwable $e) {
+                // fail silently to avoid impacting core flows
             }
 
             \DB::commit();
