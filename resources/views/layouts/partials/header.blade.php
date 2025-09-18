@@ -34,8 +34,8 @@
                 <!--End of Megamenu Inner-->
             </div>
             <!--End of Megamenu Contaoner-->
-            <!-- Topbar -->
-            <div class="flex items-center gap-2.5">
+            <!-- Topbar (hidden - legacy theme icons not used) -->
+            <div class="flex items-center gap-2.5 hidden">
                 <!-- Search -->
                 <button class="group kt-btn kt-btn-ghost kt-btn-icon size-9 rounded-full hover:bg-primary/10 hover:[&_i]:text-primary" data-kt-modal-toggle="#search_modal">
                     <i class="ki-filled ki-magnifier text-lg group-hover:text-primary">

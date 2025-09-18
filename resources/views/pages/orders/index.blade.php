@@ -6,69 +6,141 @@
 
 @push('styles')
 <style>
-/* Enhanced Orders Page Styles */
+/* Modern Professional Orders Page Styles */
 .orders-table-container {
     /* Custom scrollbar for better UX */
     scrollbar-width: thin;
-    scrollbar-color: #cbd5e1 #f1f5f9;
+    scrollbar-color: #cbd5e1 #f8fafc;
 }
 
 .orders-table-container::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
 }
 
 .orders-table-container::-webkit-scrollbar-track {
-    background: #f1f5f9;
-    border-radius: 4px;
+    background: #f8fafc;
+    border-radius: 6px;
 }
 
 .orders-table-container::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: 4px;
-    transition: background 0.2s ease;
+    background: linear-gradient(135deg, #cbd5e1, #94a3b8);
+    border-radius: 6px;
+    transition: all 0.2s ease;
 }
 
 .orders-table-container::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+    background: linear-gradient(135deg, #94a3b8, #64748b);
 }
 
-/* Enhanced table row hover effects */
+/* Modern table row hover effects */
+.orders-table-container tbody tr {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .orders-table-container tbody tr:hover {
-    background-color: #f8fafc !important;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.08);
+    transform: translateY(-1px);
     position: relative;
     z-index: 1;
 }
 
-/* Improved sticky header */
+/* Professional sticky header */
 .orders-table-container thead {
     position: sticky;
     top: 0;
     z-index: 20;
-    background: white;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
-/* Better table spacing */
-.orders-table-container {
-    border-radius: 12px;
-    overflow: hidden;
+.orders-table-container thead th {
+    padding: 16px 20px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #e2e8f0;
 }
 
+/* Modern table styling */
 .orders-table-container table {
     border-collapse: separate;
     border-spacing: 0;
+    width: 100%;
 }
 
-/* Improved table cell spacing */
+/* Enhanced table cell styling */
 .orders-table-container td {
+    padding: 16px 20px;
     border-bottom: 1px solid #f1f5f9;
     vertical-align: middle;
+    font-size: 14px;
+    line-height: 1.5;
 }
 
 .orders-table-container tbody tr:last-child td {
     border-bottom: none;
+}
+
+/* Professional text styles */
+.table-text-primary {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1e293b;
+    line-height: 1.4;
+}
+
+.table-text-secondary {
+    font-size: 13px;
+    color: #64748b;
+    line-height: 1.3;
+}
+
+.table-text-small {
+    font-size: 12px;
+    color: #94a3b8;
+    line-height: 1.2;
+}
+
+/* Status badges with modern styling */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.status-pending {
+    background: linear-gradient(135deg, #fef3c7, #fde68a);
+    color: #92400e;
+    border: 1px solid #f59e0b;
+}
+
+.status-completed {
+    background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+    color: #065f46;
+    border: 1px solid #10b981;
+}
+
+.status-processing {
+    background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+    color: #1e40af;
+    border: 1px solid #3b82f6;
+}
+
+.status-cancelled {
+    background: linear-gradient(135deg, #fee2e2, #fecaca);
+    color: #991b1b;
+    border: 1px solid #ef4444;
 }
 
 /* Better text sizing and spacing */
@@ -269,18 +341,21 @@ input:focus, select:focus, button:focus {
 
 @endif
 
-<!-- Enhanced Layout with Sticky Elements -->
-<div class="min-h-screen bg-gray-50">
-    <!-- Sticky Top Bar -->
-    <div class="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm">
-<div class="kt-container-fixed">
-            <div class="flex items-center justify-between py-4">
-                <!-- Left: Title + Tabs + Quick Stats -->
-                <div class="flex items-center gap-6">
-                    <h1 class="text-xl font-semibold text-gray-900">{{ $source === 'shopify' ? 'Shopify' : 'Orders' }}</h1>
-                    
-                    <!-- Compact Tabs -->
-                    <div class="flex bg-gray-100 rounded-lg p-1">
+<!-- Shopify-Inspired Layout -->
+<div class="min-h-screen bg-gray-100">
+    
+    <!-- Shopify-Inspired Header -->
+    <div class="bg-white border-b border-gray-200">
+        <div class="kt-container-fixed">
+            <!-- Compact Header Section -->
+            <div class="py-3">
+                <div class="flex items-center justify-between mb-3">
+                    <h1 class="text-xl font-semibold text-gray-900">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
+                </div>
+                
+                <!-- Tabs and Actions Row -->
+                <div class="flex items-center justify-between">
+                    <div class="flex space-x-1 bg-gray-100 rounded-lg p-1">
                         @if($source === 'shopify')
                             <!-- Shopify page tabs -->
                             <a href="{{ url('/orders') }}?source=shopify&tab=all" 
@@ -308,90 +383,94 @@ input:focus, select:focus, button:focus {
                         @endif
                     </div>
                     
-                    <!-- Quick Stats -->
-                    <div id="quick-stats" class="text-sm text-gray-500 font-medium">
-                        <span id="results-count">Showing {{ $orders->total() }} orders</span>
+                    <!-- Action Buttons -->
+                    <div class="flex items-center gap-3">
+                        <button onclick="createNewOrder()" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 shadow-sm">
+                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+                            </svg>
+                            Create order
+                        </button>
+                        
+                        <button onclick="openColumnSettings()" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z"></path>
+                            </svg>
+                            Columns
+                        </button>
+                        
+                        <button onclick="openImportModal()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 min-w-[100px]">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"></path>
+                            </svg>
+                            <span class="whitespace-nowrap">Import</span>
+                        </button>
                     </div>
                 </div>
 
-                <!-- Right: Inline Filters + Actions -->
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <!-- Compact Search -->
+                <!-- Shopify-Style Search and Filters -->
+                <div class="mt-3 space-y-2">
+                    <!-- Main Search Bar -->
                     <div class="relative">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                            </svg>
+                        </div>
                         <input type="text" 
                                id="orderSearch" 
-                               placeholder="Search orders..." 
-                               class="w-64 xl:w-64 lg:w-56 md:w-48 sm:w-40 pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <i class="ki-filled ki-magnifier text-gray-400"></i>
+                               placeholder="Search orders, customers, or order numbers..." 
+                               class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm">
+                    </div>
+                    
+                    <!-- Filter Row -->
+                    <div class="flex flex-wrap items-center gap-3">
+                        <div class="flex items-center space-x-2">
+                            <span class="text-sm font-medium text-gray-700">Filter:</span>
+                            
+                            <select id="statusFilter" class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
+                                <option value="">All status</option>
+                                <option value="pending">Pending</option>
+                                <option value="processing">Processing</option>
+                                <option value="on-hold">On Hold</option>
+                                <option value="completed">Completed</option>
+                                <option value="cancelled">Cancelled</option>
+                                <option value="refunded">Refunded</option>
+                                <option value="failed">Failed</option>
+                            </select>
+                            
+                            <input type="date" 
+                                   id="dateFilter" 
+                                   class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
+                            
+                            <button onclick="clearFilters()" 
+                                    class="inline-flex items-center px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded border border-gray-300" 
+                                    title="Clear filters">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
                         </div>
                     </div>
-                    
-                    <!-- Compact Status Filter -->
-                    <select id="statusFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
-                        <option value="">All Status</option>
-                        <option value="pending">Pending</option>
-                        <option value="processing">Processing</option>
-                        <option value="on-hold">On Hold</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                        <option value="refunded">Refunded</option>
-                        <option value="failed">Failed</option>
-                    </select>
-                    
-                    <!-- Compact Date Filter -->
-                    <input type="date" 
-                           id="dateFilter" 
-                           class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    
-                    <!-- Clear Button -->
-                    <button onclick="clearFilters()" 
-                            class="px-2.5 py-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg text-sm border border-gray-200 transition-colors" title="Clear all filters">
-                        <i class="ki-filled ki-cross text-xs"></i>
-                    </button>
-                    
-                    <!-- Action Buttons -->
-                    <div class="flex gap-2 ml-2 pl-2 border-l border-gray-200 shrink-0">
-                        <button onclick="openColumnSettings()" 
-                                class="flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all-smooth btn-enhanced text-sm" title="Columns">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="12" y1="8" x2="12" y2="21"/></svg>
-                            Columns
-                        </button>
-                        <button onclick="openImportModal()" 
-                                class="flex items-center px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-all-smooth btn-enhanced text-sm" title="Import">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            Import
-                        </button>
-                        @if($source !== 'shopify')
-                        <button onclick="createNewOrder()" 
-                                class="flex items-center px-3 py-2 rounded-lg transition-all-smooth text-sm border border-emerald-500 text-emerald-700 hover:bg-emerald-50 font-medium" title="Create Order">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mr-1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                            Create Order
-                        </button>
-                        @endif
-                    </div>
-                    </div>
+                </div>
             </div>
         </div>
             </div>
 
-    <!-- Main Content Container -->
-    <div class="kt-container-fixed pt-8 pb-40">
-
-        <!-- Enhanced Table Container with Proper Spacing -->
-        <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-            <!-- Table with Sticky Header -->
-            <div class="orders-table-container relative pb-24" style="max-height: calc(100vh - 320px); overflow-y: auto;">
-                <table class="w-full text-sm">
-                    <thead class="sticky top-0 bg-white z-20 shadow-sm border-b-2 border-gray-200">
-                        <tr id="table-header" class="bg-gradient-to-r from-gray-50 to-blue-50">
+    <!-- Shopify-Style Table Container -->
+    <div class="kt-container-fixed pt-0 pb-4">
+        <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+            <div class="orders-table-container relative" style="height: calc(100vh - 180px); overflow-y: auto;">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50 sticky top-0 z-20">
+                        <tr id="table-header">
                             <!-- Dynamic headers will be generated by JavaScript -->
-                                </tr>
-                            </thead>
-                    <tbody id="table-body" class="bg-white divide-y divide-gray-100">
+                        </tr>
+                    </thead>
+                    <tbody id="table-body" class="bg-white divide-y divide-gray-200">
                         <!-- Dynamic rows will be generated by JavaScript -->
-                            </tbody>
-                        </table>
+                    </tbody>
+                </table>
 
                 <!-- Loading State -->
                 <div id="loading-state" class="hidden">
@@ -420,38 +499,33 @@ input:focus, select:focus, button:focus {
         </div>
     </div>
     
-    <!-- Enhanced Bottom Pagination Bar -->
-    <div class="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-sm border-t border-gray-200 shadow-lg z-40">
-        <div class="kt-container-fixed">
-            <div class="flex items-center justify-between py-4">
-                <!-- Left: Compact Info -->
-                <div class="flex items-center gap-6">
-                    <div class="flex items-center gap-2 text-sm text-gray-600">
-                        <span>Show</span>
-                        <select id="per-page-selector" class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+            <!-- Shopify-Style Pagination -->
+            <div class="bg-white border-t border-gray-200 px-6 py-3">
+                <div class="flex items-center justify-between">
+                    <!-- Left: Show entries -->
+                    <div class="flex items-center text-sm text-gray-700">
+                        <span class="mr-2">Show</span>
+                        <select id="per-page-selector" class="border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500">
                             <option value="10" {{ $orders->perPage() == 10 ? 'selected' : '' }}>10</option>
                             <option value="25" {{ $orders->perPage() == 25 ? 'selected' : '' }}>25</option>
                             <option value="50" {{ $orders->perPage() == 50 ? 'selected' : '' }}>50</option>
                             <option value="100" {{ $orders->perPage() == 100 ? 'selected' : '' }}>100</option>
                         </select>
-                        <span>entries</span>
+                        <span class="ml-2">entries</span>
+                        <span class="ml-4 font-medium" id="pagination-info">{{ $orders->firstItem() ?? 0 }}-{{ $orders->lastItem() ?? 0 }} of {{ number_format($orders->total()) }}</span>
                     </div>
-                    <div class="text-sm font-medium text-gray-800">
-                        <span id="pagination-info">{{ $orders->firstItem() ?? 0 }}-{{ $orders->lastItem() ?? 0 }} of {{ number_format($orders->total()) }}</span>
-                    </div>
-                </div>
                 
-                <!-- Right: Pagination Controls -->
-                <div class="flex items-center gap-2">
-                    @if($orders->onFirstPage())
-                        <button class="px-3 py-1.5 text-sm pagination-btn" disabled>
-                            <i class="ki-filled ki-left mr-1"></i> Previous
-                        </button>
-                    @else
-                        <a href="{{ $orders->previousPageUrl() }}" class="px-3 py-1.5 text-sm pagination-btn">
-                            <i class="ki-filled ki-left mr-1"></i> Previous
-                        </a>
-                    @endif
+                    <!-- Right: Pagination Navigation -->
+                    <div class="flex items-center space-x-1">
+                        @if($orders->onFirstPage())
+                            <button class="px-3 py-2 text-sm text-gray-400 bg-white border border-gray-300 rounded-md cursor-not-allowed" disabled>
+                                Previous
+                            </button>
+                        @else
+                            <a href="{{ $orders->previousPageUrl() }}" class="px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
+                                Previous
+                            </a>
+                        @endif
                     
                     <div class="flex items-center gap-1">
                         @php
@@ -470,9 +544,9 @@ input:focus, select:focus, button:focus {
                         
                         @for($page = $start; $page <= $end; $page++)
                             @if ($page == $current)
-                                <span class="px-3 py-1.5 text-sm pagination-btn active">{{ $page }}</span>
+                                <span class="px-3 py-2 text-sm bg-blue-600 text-white rounded-md font-medium">{{ $page }}</span>
                             @else
-                                <a href="{{ $orders->url($page) }}" class="px-3 py-1.5 text-sm pagination-btn">{{ $page }}</a>
+                                <a href="{{ $orders->url($page) }}" class="px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">{{ $page }}</a>
                             @endif
                         @endfor
                         
@@ -484,15 +558,15 @@ input:focus, select:focus, button:focus {
                         @endif
                     </div>
                     
-                    @if($orders->hasMorePages())
-                        <a href="{{ $orders->nextPageUrl() }}" class="px-3 py-1.5 text-sm pagination-btn">
-                            Next <i class="ki-filled ki-right ml-1"></i>
-                        </a>
-                    @else
-                        <button class="px-3 py-1.5 text-sm pagination-btn" disabled>
-                            Next <i class="ki-filled ki-right ml-1"></i>
-                        </button>
-                    @endif
+                        @if($orders->hasMorePages())
+                            <a href="{{ $orders->nextPageUrl() }}" class="px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
+                                Next
+                            </a>
+                        @else
+                            <button class="px-3 py-2 text-sm text-gray-400 bg-white border border-gray-300 rounded-md cursor-not-allowed" disabled>
+                                Next
+                            </button>
+                        @endif
                 </div>
             </div>
         </div>
@@ -1461,9 +1535,12 @@ function addLineItem() {
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
             <input type="text" name="items[${lineItemIndex}][name]" value="" 
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
-                   onkeyup="searchProducts(this, ${lineItemIndex})" 
+                   onkeyup="handleProductSearch(this, ${lineItemIndex}, event)" 
+                   onkeydown="handleProductKeydown(this, ${lineItemIndex}, event)"
                    onfocus="showProductDropdown(${lineItemIndex})"
-                   placeholder="Type to search products...">
+                   onblur="hideProductDropdown(${lineItemIndex})"
+                   placeholder="Type to search products..."
+                   autocomplete="off">
             <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
             <input type="hidden" name="items[${lineItemIndex}][id]" value="">
         </div>
@@ -1823,6 +1900,21 @@ function popoutOrder() {
         // Copy essential functions to the new window
         newWindow.formatCurrency = formatCurrency;
         newWindow.getCurrentLocalDateTime = getCurrentLocalDateTime;
+        
+        // Copy enhanced product search functions
+        newWindow.searchProducts = searchProducts;
+        newWindow.handleProductSearch = handleProductSearch;
+        newWindow.handleProductKeydown = handleProductKeydown;
+        newWindow.updateDropdownHighlight = updateDropdownHighlight;
+        newWindow.showProductResults = showProductResults;
+        newWindow.selectProduct = selectProduct;
+        newWindow.hideProductDropdown = hideProductDropdown;
+        newWindow.autoAddNextLineItem = autoAddNextLineItem;
+        
+        // Copy global variables for keyboard navigation
+        newWindow.currentDropdownIndex = -1;
+        newWindow.currentLineItemIndex = -1;
+        newWindow.currentProducts = [];
         newWindow.updateLineTotal = updateLineTotal;
         newWindow.updateOrderSubtotal = updateOrderSubtotal;
         newWindow.showSuccessMessage = showSuccessMessage;
@@ -1848,9 +1940,12 @@ function popoutOrder() {
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
                     <input type="text" name="items[${newWindow.lineItemIndex}][name]" value="" 
                            style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
-                           onkeyup="searchProducts(this, ${newWindow.lineItemIndex})" 
+                           onkeyup="handleProductSearch(this, ${newWindow.lineItemIndex}, event)" 
+                           onkeydown="handleProductKeydown(this, ${newWindow.lineItemIndex}, event)"
                            onfocus="showProductDropdown(${newWindow.lineItemIndex})"
-                           placeholder="Type to search products...">
+                           onblur="hideProductDropdown(${newWindow.lineItemIndex})"
+                           placeholder="Type to search products..."
+                           autocomplete="off">
                     <div id="productDropdown_${newWindow.lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][id]" value="">
                 </div>
@@ -2077,6 +2172,11 @@ window.resetOrderColumns = function() {
 // Product search functionality
 let productSearchTimeout = null;
 
+// Global variables for keyboard navigation
+let currentDropdownIndex = -1;
+let currentLineItemIndex = -1;
+let currentProducts = [];
+
 function searchProducts(input, index) {
     clearTimeout(productSearchTimeout);
     const query = input.value.trim();
@@ -2107,18 +2207,84 @@ function searchProducts(input, index) {
     }, 300);
 }
 
+// Enhanced search with keyboard navigation support
+function handleProductSearch(input, index, event) {
+    // Don't search on arrow key presses
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Enter' || event.key === 'Escape') {
+        return;
+    }
+    
+    currentLineItemIndex = index;
+    searchProducts(input, index);
+}
+
+// Handle keyboard navigation in product dropdown
+function handleProductKeydown(input, index, event) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (!dropdown || dropdown.style.display === 'none') {
+        return;
+    }
+    
+    const items = dropdown.querySelectorAll('[data-product-index]');
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            currentDropdownIndex = Math.min(currentDropdownIndex + 1, items.length - 1);
+            updateDropdownHighlight(items);
+            break;
+            
+        case 'ArrowUp':
+            event.preventDefault();
+            currentDropdownIndex = Math.max(currentDropdownIndex - 1, -1);
+            updateDropdownHighlight(items);
+            break;
+            
+        case 'Enter':
+            event.preventDefault();
+            if (currentDropdownIndex >= 0 && items[currentDropdownIndex]) {
+                items[currentDropdownIndex].click();
+            }
+            break;
+            
+        case 'Escape':
+            event.preventDefault();
+            hideProductDropdown(index);
+            break;
+    }
+}
+
+// Update visual highlighting in dropdown
+function updateDropdownHighlight(items) {
+    items.forEach((item, idx) => {
+        if (idx === currentDropdownIndex) {
+            item.style.backgroundColor = '#3b82f6';
+            item.style.color = 'white';
+            item.scrollIntoView({ block: 'nearest' });
+        } else {
+            item.style.backgroundColor = 'white';
+            item.style.color = 'inherit';
+        }
+    });
+}
+
 function showProductResults(products, index) {
     const dropdown = document.getElementById(`productDropdown_${index}`);
     if (!dropdown) return;
     
+    // Reset dropdown navigation
+    currentDropdownIndex = -1;
+    currentProducts = products;
+    
     if (products.length === 0) {
         dropdown.innerHTML = '<div style="padding: 8px; color: #6b7280; font-size: 12px;">No products found</div>';
     } else {
-        dropdown.innerHTML = products.map(product => `
+        dropdown.innerHTML = products.map((product, idx) => `
             <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price})" 
-                 style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; hover:background-color: #f9fafb;"
-                 onmouseover="this.style.backgroundColor='#f9fafb'" 
-                 onmouseout="this.style.backgroundColor='white'">
+                 data-product-index="${idx}"
+                 style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
+                 onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
+                 onmouseout="this.style.backgroundColor='white';">
                 <div style="font-weight: 500; font-size: 13px;">${product.name}</div>
                 <div style="font-size: 11px; color: #6b7280;">
                     ${product.sku ? 'SKU: ' + product.sku + ' | ' : ''}Price: PKR ${product.price}${product.sku ? '' : ' | Stock: ' + (product.inventory || 0)}
@@ -2151,6 +2317,43 @@ function selectProduct(index, productId, productName, price) {
     
     // Hide dropdown
     hideProductDropdown(index);
+    
+    // Auto-add new line item after a short delay to allow current selection to complete
+    setTimeout(() => {
+        autoAddNextLineItem();
+    }, 100);
+}
+
+// Auto-add a new line item if the current one is the last and has content
+function autoAddNextLineItem() {
+    const container = document.getElementById('lineItemsContainer');
+    if (!container) return;
+    
+    const lineItems = container.querySelectorAll('.line-item');
+    if (lineItems.length === 0) return;
+    
+    const lastItem = lineItems[lineItems.length - 1];
+    const lastNameInput = lastItem.querySelector('input[name*="[name]"]');
+    
+    // Check if the last line item has a product selected
+    if (lastNameInput && lastNameInput.value.trim()) {
+        // Add new line item using the existing function
+        if (typeof addLineItem === 'function') {
+            addLineItem();
+            
+            // Focus on the new line item's name input
+            setTimeout(() => {
+                const newLineItems = container.querySelectorAll('.line-item');
+                if (newLineItems.length > lineItems.length) {
+                    const newItem = newLineItems[newLineItems.length - 1];
+                    const newNameInput = newItem.querySelector('input[name*="[name]"]');
+                    if (newNameInput) {
+                        newNameInput.focus();
+                    }
+                }
+            }, 50);
+        }
+    }
 }
 
 // Get current local datetime in format suitable for datetime-local input
@@ -3036,9 +3239,7 @@ function renderTableHeader() {
             const columnConfig = availableColumns[column.id];
             if (columnConfig) {
                 const th = document.createElement('th');
-                th.className = `px-6 py-5 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider ${columnConfig.width}`;
-                th.style.background = 'linear-gradient(135deg, #fafbfc 0%, #f8fafc 100%)';
-                th.style.borderBottom = '2px solid #e2e8f0';
+                th.className = `px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
                 th.textContent = columnConfig.label;
                 header.appendChild(th);
             }
@@ -3066,20 +3267,20 @@ function renderTableBody() {
     window.ordersData.forEach((order, index) => {
         try {
             const row = document.createElement('tr');
-            row.className = `hover:bg-gray-50/50 transition-all duration-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/20'}`;
+            row.className = 'hover:bg-gray-50 transition-colors duration-150';
             
             currentColumns.forEach(column => {
                 if (column.visible) {
                     try {
                         const td = document.createElement('td');
-                        td.className = 'px-6 py-5 align-middle';
+                        td.className = 'px-6 py-4 whitespace-nowrap text-sm';
                         const cellContent = getCellContent(order, column.id);
                         td.innerHTML = cellContent;
                         row.appendChild(td);
                     } catch (cellError) {
                         console.error(`Error rendering cell ${column.id}:`, cellError);
                         const td = document.createElement('td');
-                        td.className = 'px-6 py-5 align-middle';
+                        td.className = 'px-6 py-4 whitespace-nowrap text-sm';
                         td.innerHTML = '<span class="text-red-500">Error</span>';
                         row.appendChild(td);
                     }
@@ -3716,13 +3917,14 @@ function saveNewOrder() {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
     
-    // Collect line items
+    // Collect line items (ignore empty ones)
     const items = [];
     document.querySelectorAll('.line-item').forEach((item, index) => {
-        const name = item.querySelector(`input[name*="[name]"]`)?.value;
+        const name = item.querySelector(`input[name*="[name]"]`)?.value?.trim();
         const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`)?.value) || 0;
         const unitPrice = parseFloat(item.querySelector(`input[name*="[unit_price]"]`)?.value) || 0;
         
+        // Only add items that have a name and valid quantity/price
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
@@ -3734,7 +3936,7 @@ function saveNewOrder() {
     });
     
     if (items.length === 0) {
-        alert('Please add at least one line item');
+        alert('Please add at least one line item with valid details');
         return;
     }
     

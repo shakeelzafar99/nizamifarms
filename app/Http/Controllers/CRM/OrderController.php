@@ -51,8 +51,8 @@ class OrderController extends Controller
         }
         
         // Handle per_page parameter
-        $perPage = $request->get('per_page', 10);
-        $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 10; // Validate per_page values
+        $perPage = $request->get('per_page', 25);
+        $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 25; // Validate per_page values
         
         $orders = $query->orderBy('order_date', 'desc')->paginate($perPage);
         

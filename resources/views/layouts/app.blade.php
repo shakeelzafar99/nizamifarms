@@ -34,7 +34,7 @@
         @include('layouts.partials.sidebar')
         <div class="kt-wrapper flex grow flex-col">
             @include('layouts.partials.header')
-            <main class="grow pt-5" id="content" role="content">
+            <main class="grow pt-2" id="content" role="content">
                 @yield('content')
             </main>
             @include('layouts.partials.footer')
