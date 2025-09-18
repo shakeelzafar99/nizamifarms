@@ -772,6 +772,7 @@ class OrderController extends Controller
     {
         try {
             $source = $request->get('source', 'other');
+            $tab = $request->get('tab', 'all');
             $search = $request->get('search', '');
             $status = $request->get('status', '');
             $date = $request->get('date', '');
@@ -780,6 +781,13 @@ class OrderController extends Controller
             if ($source === 'shopify') {
                 // Use Shopify orders table
                 $query = \App\Models\CRM\ShopifyOrderModel::with(['customer', 'lineItems']);
+                
+                // Apply tab filter for Shopify orders
+                if ($tab === 'approvals') {
+                    $query->where(function($q){
+                        $q->whereNull('converted')->orWhere('converted', 0);
+                    });
+                }
             } else {
                 // Use main orders table (non-Shopify)
                 $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
@@ -814,11 +822,30 @@ class OrderController extends Controller
             
             // Get results (limit to 100 for performance)
             $orders = $query->orderBy('order_date', 'desc')->limit(100)->get();
+
+            // Provide counts for Shopify tabs so the frontend can render badges correctly
+            $shopifyAllCount = null;
+            $shopifyApprovalsCount = null;
+            $otherCountAll = null;
+            // Always provide counts for badges across tabs
+            $shopifyAllCount = \App\Models\CRM\ShopifyOrderModel::count();
+            $shopifyApprovalsCount = \App\Models\CRM\ShopifyOrderModel::where(function($q){
+                $q->whereNull('converted')->orWhere('converted', 0);
+            })->count();
+            $otherCountAll = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->count();
             
             return response()->json([
                 'success' => true,
                 'orders' => $orders->toArray(),
-                'total' => $orders->count()
+                'total' => $orders->count(),
+                'shopify_all_count' => $shopifyAllCount,
+                'shopify_approvals_count' => $shopifyApprovalsCount,
+                'other_count' => $otherCountAll,
+                'tab' => $tab,
+                'source' => $source,
             ]);
             
         } catch (\Exception $e) {

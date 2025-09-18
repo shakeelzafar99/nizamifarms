@@ -348,8 +348,8 @@ input:focus, select:focus, button:focus {
     <div class="bg-white border-b border-gray-200">
         <div class="kt-container-fixed">
             <!-- Compact Header Section -->
-            <div class="py-3">
-                <div class="flex items-center justify-between mb-3">
+            <div class="py-1">
+                <div class="flex items-center justify-between mb-1">
                     <h1 class="text-xl font-semibold text-gray-900">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
                 </div>
                 
@@ -358,28 +358,30 @@ input:focus, select:focus, button:focus {
                     <div class="flex space-x-1 bg-gray-100 rounded-lg p-1">
                         @if($source === 'shopify')
                             <!-- Shopify page tabs -->
-                            <a href="{{ url('/orders') }}?source=shopify&tab=all" 
-                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                            <button onclick="switchShopifyTab('all')" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}" 
+                               id="tab-all">
                                 All Orders
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
-                            </a>
-                            <a href="{{ url('/orders') }}?source=shopify&tab=approvals" 
-                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'approvals' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                            </button>
+                            <button onclick="switchShopifyTab('approvals')" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'approvals' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}" 
+                               id="tab-approvals">
                                 Approvals
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $approvalsCount }}</span>
-                            </a>
+                            </button>
                         @else
                             <!-- Main invoices page tabs -->
-                            <a href="{{ url('/orders') }}?source=other" 
+                            <a href="#" onclick="return switchToInvoices()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Invoices
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $otherCount }}</span>
                             </a>
-                            <a href="{{ url('/orders') }}?source=shopify&tab=approvals" 
+                            <button onclick="switchToShopifyApprovals()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Shopify Approvals
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
-                            </a>
+                            </button>
                         @endif
                     </div>
                     
@@ -409,7 +411,7 @@ input:focus, select:focus, button:focus {
                 </div>
 
                 <!-- Shopify-Style Search and Filters -->
-                <div class="mt-3 space-y-2">
+                <div class="mt-1 space-y-1">
                     <!-- Main Search Bar -->
                     <div class="relative">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -458,9 +460,9 @@ input:focus, select:focus, button:focus {
             </div>
 
     <!-- Shopify-Style Table Container -->
-    <div class="kt-container-fixed pt-0 pb-4">
+    <div class="kt-container-fixed pt-0 pb-1">
         <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-            <div class="orders-table-container relative" style="height: calc(100vh - 180px); overflow-y: auto;">
+            <div class="orders-table-container relative" style="height: calc(100vh - 160px); overflow-y: auto;">
                 <table class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-50 sticky top-0 z-20">
                         <tr id="table-header">
@@ -516,7 +518,7 @@ input:focus, select:focus, button:focus {
                     </div>
                 
                     <!-- Right: Pagination Navigation -->
-                    <div class="flex items-center space-x-1">
+                    <div class="flex items-center space-x-1" id="pager-wrap">
                         @if($orders->onFirstPage())
                             <button class="px-3 py-2 text-sm text-gray-400 bg-white border border-gray-300 rounded-md cursor-not-allowed" disabled>
                                 Previous
@@ -527,7 +529,7 @@ input:focus, select:focus, button:focus {
                             </a>
                         @endif
                     
-                    <div class="flex items-center gap-1">
+                    <div class="flex items-center gap-1" id="numeric-pager">
                         @php
                             $current = $orders->currentPage();
                             $last = $orders->lastPage();
@@ -1910,11 +1912,24 @@ function popoutOrder() {
         newWindow.selectProduct = selectProduct;
         newWindow.hideProductDropdown = hideProductDropdown;
         newWindow.autoAddNextLineItem = autoAddNextLineItem;
+        newWindow.showProductDropdown = showProductDropdown;
+        
+        // Copy modal and UI functions
+        newWindow.closeModal = function(modalId) {
+            // In pop-out window, just close the window instead of hiding modal
+            if (modalId) {
+                newWindow.close();
+            }
+        };
+        newWindow.searchCoupons = searchCoupons;
+        newWindow.showCouponDropdown = showCouponDropdown;
+        newWindow.hideCouponDropdown = hideCouponDropdown;
         
         // Copy global variables for keyboard navigation
         newWindow.currentDropdownIndex = -1;
         newWindow.currentLineItemIndex = -1;
         newWindow.currentProducts = [];
+        newWindow.couponSearchTimeout = null;
         newWindow.updateLineTotal = updateLineTotal;
         newWindow.updateOrderSubtotal = updateOrderSubtotal;
         newWindow.showSuccessMessage = showSuccessMessage;
@@ -2106,11 +2121,10 @@ function popoutOrder() {
     };
 }
 
-// Open edit in a proper tab that loads full assets
+// Open edit in a full Orders tab (loads entire app and auto-opens edit modal)
 function openEditInTab() {
     if (currentOrderId) {
-        const url = '/orders/' + currentOrderId + '/edit-tab';
-        // Keep opener so Save & Close can refresh the parent and close this tab
+        const url = '/orders?edit_order_id=' + encodeURIComponent(String(currentOrderId));
         window.open(url, '_blank');
     }
 }
@@ -2750,6 +2764,9 @@ console.log('Current columns after initialization:', currentColumns);
 
 // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
+// Track current source/tab dynamically for correct actions rendering
+window.currentSource = '{{ $source }}';
+window.currentTab = '{{ $tab ?? "all" }}';
 
 
 // Initialize table on page load
@@ -3453,7 +3470,12 @@ function getCellContent(order, columnId) {
         // Actions
         case 'actions':
             // If we're on Shopify Approvals tab specifically, restrict to Approve/Ignore/View
-            if ('{{ $source }}' === 'shopify' && '{{ $tab ?? "all" }}' === 'approvals') {
+            // When loaded via AJAX we rely on window.currentSource/currentTab
+            const isShopifyApprovals = (
+                (typeof window !== 'undefined' && window.currentSource === 'shopify' && window.currentTab === 'approvals') ||
+                ('{{ $source }}' === 'shopify' && '{{ $tab ?? "all" }}' === 'approvals')
+            );
+            if (isShopifyApprovals) {
                 return `
                     <div class="flex items-center justify-center gap-1.5">
                         <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
@@ -3659,11 +3681,7 @@ function updateResultsCount() {
     // Also update pagination info if it exists
     const infoElement = document.querySelector('[data-kt-datatable-info="true"]');
     if (infoElement) {
-        if (filteredCount === totalCount) {
-            infoElement.textContent = `${filteredCount} orders`;
-        } else {
-            infoElement.textContent = `${filteredCount} of ${totalCount} orders`;
-        }
+        infoElement.textContent = `${filteredCount} orders`;
     }
 }
 
@@ -4142,6 +4160,260 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 });
+
+// Shopify tab switching function
+function switchShopifyTab(tab) {
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    fetch(`/orders/filter?source=shopify&tab=${encodeURIComponent(tab)}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.success) return;
+
+            // Update URL without reload
+            const url = new URL(window.location);
+            url.searchParams.set('source', 'shopify');
+            url.searchParams.set('tab', tab);
+            window.history.pushState({}, '', url);
+
+            // Update tab styles
+            const allTab = document.getElementById('tab-all');
+            const approvalsTab = document.getElementById('tab-approvals');
+            if (allTab && approvalsTab) {
+                if (tab === 'all') {
+                    allTab.className = 'px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm';
+                    approvalsTab.className = 'px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50';
+                } else {
+                    approvalsTab.className = 'px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm';
+                    allTab.className = 'px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50';
+                }
+            }
+
+            // Rebuild table with fresh dataset and mark current tab
+            rebuildTableWithOrders(data.orders, 'shopify', tab);
+            // Update badges and pagination for this dataset
+            refreshPaginationInfo({
+                shopify_all_count: data.shopify_all_count,
+                shopify_approvals_count: data.shopify_approvals_count,
+                other_count: data.other_count
+            });
+        })
+        .catch(err => console.error('Failed to switch Shopify tab:', err))
+        .finally(() => {
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        });
+}
+
+// Filter table content based on selected tab
+function filterTableByTab(tab) {
+    const tbody = document.getElementById('table-body');
+    const rows = tbody.querySelectorAll('tr');
+    
+    rows.forEach(row => {
+        if (tab === 'all') {
+            // Show all Shopify orders
+            row.style.display = '';
+        } else if (tab === 'approvals') {
+            // Show only unconverted orders - look for convertOrder function calls (approval buttons)
+            const actionsCell = row.querySelector('td:last-child');
+            if (
+                actionsCell &&
+                (
+                    actionsCell.innerHTML.includes('convertOrder(') ||
+                    actionsCell.innerHTML.includes('title="Approve') ||
+                    actionsCell.innerHTML.toLowerCase().includes('approve (convert)')
+                )
+            ) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
+        }
+    });
+}
+
+// Function to switch to Shopify Approvals from main orders page
+function switchToShopifyApprovals() {
+    // Show loading state
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) {
+        tableContainer.innerHTML = '<div class="flex items-center justify-center h-64"><div class="text-gray-500">Loading Shopify approvals...</div></div>';
+    }
+    
+    // Load Shopify approvals data via AJAX
+    fetch('/orders/filter?source=shopify&tab=approvals')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Update the page to show Shopify approvals
+                updatePageForShopifyApprovals(data.orders, {
+                    shopify_all_count: data.shopify_all_count,
+                    shopify_approvals_count: data.shopify_approvals_count,
+                    other_count: data.other_count
+                });
+                
+                // Update URL without page reload
+                const url = new URL(window.location);
+                url.searchParams.set('source', 'shopify');
+                url.searchParams.set('tab', 'approvals');
+                window.history.pushState({}, '', url);
+            } else {
+                console.error('Failed to load Shopify approvals:', data.message);
+                if (tableContainer) {
+                    tableContainer.innerHTML = '<div class="flex items-center justify-center h-64"><div class="text-red-500">Failed to load data</div></div>';
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error loading Shopify approvals:', error);
+            if (tableContainer) {
+                tableContainer.innerHTML = '<div class="flex items-center justify-center h-64"><div class="text-red-500">Error loading data</div></div>';
+            }
+        });
+}
+
+// Return to the non-Shopify Invoices list from the dynamic Shopify view
+function switchToInvoices() {
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    fetch('/orders/filter?source=other')
+        .then(res => res.json())
+        .then(data => {
+            if (!data || !data.success) return false;
+
+            // Update URL for clarity
+            const url = new URL(window.location);
+            url.searchParams.set('source', 'other');
+            url.searchParams.delete('tab');
+            window.history.pushState({}, '', url);
+
+            // Update title and tabs
+            const pageTitle = document.querySelector('h1');
+            if (pageTitle) pageTitle.textContent = 'Orders';
+
+            const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
+            if (tabsContainer) {
+                tabsContainer.innerHTML = `
+                    <button class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm\">
+                        Invoices
+                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-invoices\">-</span>
+                    </button>
+                    <button onclick=\"switchToShopifyApprovals()\" class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50\">
+                        Shopify Approvals
+                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-approvals\">-</span>
+                    </button>
+                `;
+            }
+
+            // Render invoices dataset
+            rebuildTableWithOrders(data.orders, 'other', 'all');
+            refreshPaginationInfo({
+                shopify_all_count: data.shopify_all_count,
+                shopify_approvals_count: data.shopify_approvals_count,
+                other_count: data.other_count
+            });
+        })
+        .catch(err => console.error('Failed to load invoices:', err))
+        .finally(() => {
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        });
+
+    return false;
+}
+
+// Function to update page content for Shopify approvals
+function updatePageForShopifyApprovals(orders, counts) {
+    // Update page title
+    const pageTitle = document.querySelector('h1');
+    if (pageTitle) {
+        pageTitle.textContent = 'Shopify Orders';
+    }
+    
+    // Update tabs to show Shopify tabs
+    const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
+    if (tabsContainer) {
+        tabsContainer.innerHTML = `
+            <a href="#" onclick="return switchToInvoices()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Invoices
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-invoices">${counts && counts.other_count != null ? counts.other_count : '-'}</span>
+            </a>
+            <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm">
+                Shopify Approvals
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${counts && counts.shopify_approvals_count != null ? counts.shopify_approvals_count : orders.length}</span>
+            </button>
+        `;
+    }
+    
+    // Rebuild the table with Shopify approvals data
+    rebuildTableWithOrders(orders, 'shopify', 'approvals');
+    // Update pagination: hide if <= per-page
+    refreshPaginationInfo(counts);
+}
+
+// Function to rebuild table with new orders data
+function rebuildTableWithOrders(orders, source, tab) {
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (!tableContainer) return;
+
+    // If a table already exists, reuse its structure and just re-render data
+    if (!tableContainer.querySelector('table')) {
+        const tableHTML = `
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50 sticky top-0 z-20">
+                    <tr id="table-header"></tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200" id="table-body"></tbody>
+            </table>
+        `;
+        tableContainer.innerHTML = tableHTML;
+    }
+
+    // Set runtime context so rendering logic can detect Shopify Approvals
+    window.currentSource = source;
+    window.currentTab = tab;
+
+    // Feed data into existing render pipeline
+    window.ordersData = orders || [];
+    window.allOrders = [...window.ordersData];
+    window.filteredOrders = [...window.ordersData];
+
+    // Render using existing helpers to avoid duplication
+    renderOrdersTable();
+    refreshPaginationInfo();
+}
+
+// Update badges and pagination info if response provided counts
+function refreshPaginationInfo(counts) {
+    try {
+        const perPageSelect = document.getElementById('per-page-selector');
+        const perPage = perPageSelect ? parseInt(perPageSelect.value, 10) : 25;
+        const total = (window.ordersData || []).length;
+        const info = document.getElementById('pagination-info');
+        if (info) info.textContent = `1-${Math.min(total, perPage)} of ${total}`;
+
+        // Hide numbered pagination when single page
+        const pager = document.getElementById('numeric-pager');
+        if (pager) {
+            if (total <= perPage) {
+                pager.classList.add('hidden');
+            } else {
+                pager.classList.remove('hidden');
+            }
+        }
+
+        // Update badges when counts provided
+        if (counts) {
+            const bAll = document.getElementById('badge-all');
+            const bApp = document.getElementById('badge-approvals');
+            const bInv = document.getElementById('badge-invoices');
+            if (bAll && counts.shopify_all_count != null) bAll.textContent = counts.shopify_all_count;
+            if (bApp && counts.shopify_approvals_count != null) bApp.textContent = counts.shopify_approvals_count;
+            if (bInv && counts.other_count != null) bInv.textContent = counts.other_count;
+        }
+    } catch (e) { console.warn('refreshPaginationInfo failed', e); }
+}
 
 </script>
 @endpush
