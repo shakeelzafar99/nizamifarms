@@ -57,13 +57,22 @@
 }
 
 .orders-table-container thead th {
-    padding: 16px 20px;
-    font-weight: 600;
-    font-size: 13px;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 2px solid #e2e8f0;
+    padding: 12px 16px;
+    font-weight: 500;
+    font-size: 12px;
+    color: #6d7175;
+    text-transform: none;
+    letter-spacing: 0;
+    border-bottom: 1px solid #e1e5e9;
+    border-right: 1px solid #f6f6f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: #fafbfb;
+}
+
+.orders-table-container thead th:last-child {
+    border-right: none;
 }
 
 /* Modern table styling */
@@ -73,13 +82,23 @@
     width: 100%;
 }
 
-/* Enhanced table cell styling */
+/* Enhanced table cell styling - Shopify inspired */
 .orders-table-container td {
-    padding: 16px 20px;
-    border-bottom: 1px solid #f1f5f9;
+    padding: 13px 16px;
+    border-bottom: 1px solid #e1e5e9;
     vertical-align: middle;
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: 13px;
+    line-height: 1.45;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 0;
+    color: #202223;
+    border-right: 1px solid #f6f6f7;
+}
+
+.orders-table-container td:last-child {
+    border-right: none;
 }
 
 .orders-table-container tbody tr:last-child td {
@@ -238,6 +257,78 @@ input:focus, select:focus, button:focus {
     white-space: nowrap;
 }
 
+/* Specific cell content handling */
+.table-cell-note {
+    white-space: normal !important;
+    word-wrap: break-word;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.4;
+    max-width: 200px;
+}
+
+.table-cell-id {
+    font-family: monospace;
+    font-size: 12px;
+    text-align: center;
+    font-weight: 500;
+}
+
+.table-cell-order-number {
+    font-family: monospace;
+    font-weight: 600;
+    font-size: 13px;
+    color: #1f2937;
+}
+
+.table-cell-customer-name {
+    white-space: normal !important;
+    font-weight: 500;
+    color: #1f2937;
+}
+
+.table-cell-customer-phone {
+    font-family: monospace;
+    font-size: 12px;
+    white-space: normal !important;
+}
+
+.table-cell-address {
+    white-space: normal !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    max-width: 200px;
+    font-size: 12px;
+    color: #637381;
+}
+
+.table-cell-date {
+    font-size: 13px;
+    color: #202223;
+    font-weight: 400;
+}
+
+.table-cell-total {
+    font-weight: 600;
+    color: #202223;
+    font-size: 14px;
+}
+
+/* Keep Actions column visible */
+.sticky-actions {
+    position: sticky;
+    right: 0;
+    background: #ffffff;
+    z-index: 30; /* above row cells */
+    box-shadow: -8px 0 8px -8px rgba(0,0,0,0.08);
+    border-left: 1px solid #e1e5e9;
+}
+
 /* Improved pagination styling */
 .pagination-btn {
     transition: all 0.15s ease;
@@ -346,7 +437,7 @@ input:focus, select:focus, button:focus {
     
     <!-- Shopify-Inspired Header -->
     <div class="bg-white border-b border-gray-200">
-        <div class="kt-container-fixed">
+<div class="kt-container-fixed">
             <!-- Compact Header Section -->
             <div class="py-1">
                 <div class="flex items-center justify-between mb-1">
@@ -439,7 +530,7 @@ input:focus, select:focus, button:focus {
                                 <option value="cancelled">Cancelled</option>
                                 <option value="refunded">Refunded</option>
                                 <option value="failed">Failed</option>
-                            </select>
+                    </select>
                             
                             <input type="date" 
                                    id="dateFilter" 
@@ -452,27 +543,28 @@ input:focus, select:focus, button:focus {
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                                 </svg>
                             </button>
-                        </div>
+                    </div>
                     </div>
                 </div>
             </div>
         </div>
             </div>
 
-    <!-- Shopify-Style Table Container -->
+    <!-- Professional Orders Table Container -->
     <div class="kt-container-fixed pt-0 pb-1">
         <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-            <div class="orders-table-container relative" style="height: calc(100vh - 160px); overflow-y: auto;">
-                <table class="min-w-full divide-y divide-gray-200">
+            <div class="orders-table-container relative" style="height: calc(100vh - 160px); overflow: auto; border: 1px solid #e1e5e9;">
+                <table class="min-w-full divide-y divide-gray-200" style="width: max-content; min-width: 100%;">
+                    <colgroup id="table-colgroup"></colgroup>
                     <thead class="bg-gray-50 sticky top-0 z-20">
                         <tr id="table-header">
                             <!-- Dynamic headers will be generated by JavaScript -->
-                        </tr>
-                    </thead>
+                                </tr>
+                            </thead>
                     <tbody id="table-body" class="bg-white divide-y divide-gray-200">
                         <!-- Dynamic rows will be generated by JavaScript -->
-                    </tbody>
-                </table>
+                            </tbody>
+                        </table>
 
                 <!-- Loading State -->
                 <div id="loading-state" class="hidden">
@@ -2201,7 +2293,7 @@ function searchProducts(input, index) {
     }
     
     productSearchTimeout = setTimeout(() => {
-        fetch(`/api/products/search?q=${encodeURIComponent(query)}&limit=10`, {
+        fetch(`/api/products/search?q=${encodeURIComponent(query)}&limit=20`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
@@ -2212,6 +2304,7 @@ function searchProducts(input, index) {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
+                console.log('Product search debug:', data.debug);
                 showProductResults(data.products, index);
             }
         })
@@ -2590,6 +2683,22 @@ function createNewOrderWithCustomer(customerId) {
                 document.getElementById('customerSearch').value = fullName;
                 document.getElementById('selectedCustomerId').value = customer.id;
                 
+                // Show customer details using the enhanced display
+                const customerData = {
+                    name: fullName,
+                    phone: customer.phone_original || customer.phone || '',
+                    email: customer.email || '',
+                    address: {
+                        address1: customer.address1 || '',
+                        address2: customer.address2 || '',
+                        city: customer.city || '',
+                        province: customer.province || '',
+                        postal_code: customer.postal_code || '',
+                        country: customer.country || ''
+                    }
+                };
+                showSelectedCustomerDetails(customerData);
+                
                 // Auto-fill contact email
                 const emailInput = document.querySelector('input[name="contact_email"]');
                 if (emailInput && customer.email) {
@@ -2630,51 +2739,51 @@ function createNewOrderWithCustomer(customerId) {
 // ==================== COLUMN CUSTOMIZATION SYSTEM ====================
 
 const availableColumns = {
-    id: { label: 'ID', width: 'w-[60px]', key: 'id' },
-    order_number: { label: 'Order #', width: 'min-w-[100px]', key: 'order_number' },
-    order_date: { label: 'Order Date', width: 'min-w-[130px]', key: 'order_date' },
-    order_status: { label: 'Status', width: 'w-[100px]', key: 'order_status' },
-    external_source: { label: 'Source', width: 'w-[100px]', key: 'external_source' },
-    external_id: { label: 'External ID', width: 'w-[100px]', key: 'external_id' },
+    id: { label: 'ID', width: 'w-16', key: 'id' },
+    order_number: { label: 'Order #', width: 'w-24', key: 'order_number' },
+    order_date: { label: 'Order Date', width: 'w-40', key: 'order_date' },
+    order_status: { label: 'Status', width: 'w-32', key: 'order_status' },
+    external_source: { label: 'Source', width: 'w-20', key: 'external_source' },
+    external_id: { label: 'External ID', width: 'w-24', key: 'external_id' },
     
     // Customer Info
-    customer_name: { label: 'Customer Name', width: 'w-[150px]', key: 'customer_name' },
-    contact_email: { label: 'Contact Email', width: 'w-[180px]', key: 'contact_email' },
-    customer_phone: { label: 'Customer Phone', width: 'w-[130px]', key: 'customer_phone' },
+    customer_name: { label: 'Customer Name', width: 'w-48', key: 'customer_name' },
+    contact_email: { label: 'Contact Email', width: 'w-56', key: 'contact_email' },
+    customer_phone: { label: 'Customer Phone', width: 'w-36', key: 'customer_phone' },
     
     // Address Info
-    address_first_name: { label: 'Address First Name', width: 'w-[150px]', key: 'address_first_name' },
-    address_last_name: { label: 'Address Last Name', width: 'w-[150px]', key: 'address_last_name' },
-    address_full_name: { label: 'Address Name', width: 'w-[180px]', key: 'address_full_name' },
-    address_email: { label: 'Address Email', width: 'w-[180px]', key: 'address_email' },
-    address_phone: { label: 'Address Phone', width: 'w-[130px]', key: 'address_phone' },
-    address1: { label: 'Address Line 1', width: 'w-[200px]', key: 'address1' },
-    address2: { label: 'Address Line 2', width: 'w-[200px]', key: 'address2' },
-    address_city: { label: 'City', width: 'w-[120px]', key: 'address_city' },
-    address_province: { label: 'Province', width: 'w-[120px]', key: 'address_province' },
-    address_country: { label: 'Country', width: 'w-[120px]', key: 'address_country' },
-    postal_code: { label: 'Postal Code', width: 'w-[100px]', key: 'postal_code' },
+    address_first_name: { label: 'Address First Name', width: 'w-36', key: 'address_first_name' },
+    address_last_name: { label: 'Address Last Name', width: 'w-36', key: 'address_last_name' },
+    address_full_name: { label: 'Address Name', width: 'w-44', key: 'address_full_name' },
+    address_email: { label: 'Address Email', width: 'w-48', key: 'address_email' },
+    address_phone: { label: 'Address Phone', width: 'w-32', key: 'address_phone' },
+    address1: { label: 'Address Line 1', width: 'w-64', key: 'address1' },
+    address2: { label: 'Address Line 2', width: 'w-48', key: 'address2' },
+    address_city: { label: 'City', width: 'w-28', key: 'address_city' },
+    address_province: { label: 'Province', width: 'w-28', key: 'address_province' },
+    address_country: { label: 'Country', width: 'w-24', key: 'address_country' },
+    postal_code: { label: 'Postal Code', width: 'w-24', key: 'postal_code' },
     
     // Financial Info
-    currency: { label: 'Currency', width: 'w-[80px]', key: 'currency' },
-    subtotal_price: { label: 'Subtotal', width: 'w-[100px]', key: 'subtotal_price' },
-    discount_total: { label: 'Discount', width: 'w-[100px]', key: 'discount_total' },
-    shipping_total: { label: 'Shipping', width: 'w-[100px]', key: 'shipping_total' },
-    total_price: { label: 'Total', width: 'w-[120px]', key: 'total_price' },
-    total_weight: { label: 'Weight', width: 'w-[100px]', key: 'total_weight' },
+    currency: { label: 'Currency', width: 'w-16', key: 'currency' },
+    subtotal_price: { label: 'Subtotal', width: 'w-28', key: 'subtotal_price' },
+    discount_total: { label: 'Discount', width: 'w-24', key: 'discount_total' },
+    shipping_total: { label: 'Shipping', width: 'w-24', key: 'shipping_total' },
+    total_price: { label: 'Total', width: 'w-32', key: 'total_price' },
+    total_weight: { label: 'Weight', width: 'w-20', key: 'total_weight' },
     
     // Payment & Other Info
-    payment_method: { label: 'Payment Method', width: 'w-[120px]', key: 'payment_method' },
-    coupon_code: { label: 'Coupon Code', width: 'w-[100px]', key: 'coupon_code' },
-    note: { label: 'Note', width: 'w-[150px]', key: 'note' },
-    created_at: { label: 'Created At', width: 'w-[130px]', key: 'created_at' },
-    updated_at: { label: 'Updated At', width: 'w-[130px]', key: 'updated_at' },
+    payment_method: { label: 'Payment Method', width: 'w-36', key: 'payment_method' },
+    coupon_code: { label: 'Coupon Code', width: 'w-28', key: 'coupon_code' },
+    note: { label: 'Note', width: 'w-56', key: 'note' },
+    created_at: { label: 'Created At', width: 'w-36', key: 'created_at' },
+    updated_at: { label: 'Updated At', width: 'w-36', key: 'updated_at' },
     
     // Line Items Count
-    line_items_count: { label: 'Items', width: 'w-[80px]', key: 'line_items_count' },
+    line_items_count: { label: 'Items', width: 'w-16', key: 'line_items_count' },
     
     // Actions column
-    actions: { label: '{{ $source === "shopify" && ($tab ?? "all") === "approvals" ? "Approve / Ignore" : "Actions" }}', width: 'w-[160px]', key: 'actions', fixed: true }
+    actions: { label: '{{ $source === "shopify" && ($tab ?? "all") === "approvals" ? "Approve / Ignore" : "Actions" }}', width: 'w-44', key: 'actions', fixed: true }
 };
 
 // DUPLICATE SECTION REMOVED - Proper definitions exist later in file
@@ -3019,9 +3128,11 @@ function getCellContent(order, columnId) {
         case 'address_phone':
             return order.address_phone || '';
         case 'address1':
-            return order.address_line1 || '';
+            const addr1 = order.address_line1 || '';
+            return addr1 ? `<div class="table-cell-address" title="${addr1}">${addr1}</div>` : '';
         case 'address2':
-            return order.address_line2 || '';
+            const addr2 = order.address_line2 || '';
+            return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
         case 'address_city':
             return order.address_city || '';
         case 'address_province':
@@ -3042,7 +3153,7 @@ function getCellContent(order, columnId) {
             return formatCurrency(order.shipping_total);
         case 'total_price':
             const totalPrice = formatCurrency(order.total_price);
-            return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
+            return `<div class="table-cell-total">PKR ${totalPrice}</div>`;
         case 'total_weight':
             return order.total_weight || '0';
             
@@ -3249,7 +3360,9 @@ function renderOrdersTable() {
 
 function renderTableHeader() {
     const header = document.getElementById('table-header');
+    const colgroup = document.getElementById('table-colgroup');
     header.innerHTML = '';
+    if (colgroup) colgroup.innerHTML = '';
     
     currentColumns.forEach(column => {
         if (column.visible) {
@@ -3259,6 +3372,36 @@ function renderTableHeader() {
                 th.className = `px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
                 th.textContent = columnConfig.label;
                 header.appendChild(th);
+
+                // Also render a matching <col> for consistent widths even with custom columns
+                if (colgroup) {
+                    const col = document.createElement('col');
+                    // Translate Tailwind width shorthands to pixel values for reliability
+                    const tw = String(columnConfig.width || '').trim();
+                    const map = {
+                        'w-16': 64,
+                        'w-20': 80,
+                        'w-24': 96,
+                        'w-28': 112,
+                        'w-32': 128,
+                        'w-36': 144,
+                        'w-40': 160,
+                        'w-44': 176,
+                        'w-48': 192,
+                        'w-56': 224,
+                        'w-64': 256
+                    };
+                    let px = map[tw] || null;
+                    // Handle arbitrary like w-[150px]
+                    const match = tw.match(/w-\[(\d+)px\]/);
+                    if (!px && match) px = parseInt(match[1], 10);
+                    // Shrink address1 a bit to protect actions visibility
+                    if ((column.id === 'address1' || column.id === 'address_line_1') && px && px > 200) {
+                        px = 200;
+                    }
+                    if (px) col.style.width = px + 'px';
+                    colgroup.appendChild(col);
+                }
             }
         }
     });
@@ -3290,7 +3433,11 @@ function renderTableBody() {
                 if (column.visible) {
                     try {
                         const td = document.createElement('td');
+                        // Make actions sticky on the right
                         td.className = 'px-6 py-4 whitespace-nowrap text-sm';
+                        if (column.id === 'actions') {
+                            td.className += ' sticky-actions';
+                        }
                         const cellContent = getCellContent(order, column.id);
                         td.innerHTML = cellContent;
                         row.appendChild(td);
@@ -3343,11 +3490,11 @@ function getCellContent(order, columnId) {
         switch (columnId) {
         // Basic Info
         case 'id':
-            return order.id;
+            return `<div class="table-cell-id">${order.id}</div>`;
         case 'order_number':
-            return order.order_number || '';
+            return `<div class="table-cell-order-number">${order.order_number || ''}</div>`;
         case 'order_date':
-            return formatDate(order.order_date);
+            return `<div class="table-cell-date">${formatDate(order.order_date)}</div>`;
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
@@ -3421,9 +3568,11 @@ function getCellContent(order, columnId) {
             const fullAddrName = (fullAddrFirstName + ' ' + fullAddrLastName).trim();
             return fullAddrName || '';
         case 'address1':
-            return order.address_line1 || '';
+            const addr1 = order.address_line1 || '';
+            return addr1 ? `<div class="table-cell-address" title="${addr1}">${addr1}</div>` : '';
         case 'address2':
-            return order.address_line2 || '';
+            const addr2 = order.address_line2 || '';
+            return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
         case 'postal_code':
             return order.postal_code || '';
             
@@ -3438,7 +3587,7 @@ function getCellContent(order, columnId) {
             return formatCurrency(order.shipping_total);
         case 'total_price':
             const totalPrice = formatCurrency(order.total_price);
-            return `<div class="table-text-primary font-semibold">PKR ${totalPrice}</div>`;
+            return `<div class="table-cell-total">PKR ${totalPrice}</div>`;
         case 'total_weight':
             return order.total_weight || '0';
             
@@ -3449,7 +3598,7 @@ function getCellContent(order, columnId) {
             return order.coupon_code || '';
         case 'note':
             const note = order.note || '';
-            return note.length > 30 ? note.substring(0, 30) + '...' : note;
+            return `<div class="table-cell-note" title="${note}">${note}</div>`;
             
         // Line Items
         case 'line_items_count':
@@ -4047,6 +4196,7 @@ function selectCustomerMode(mode) {
     const newSection = document.getElementById('newCustomerSection');
     const existingBtn = document.getElementById('existingCustomerBtn');
     const newBtn = document.getElementById('newCustomerBtn');
+    const detailsDiv = document.getElementById('selectedCustomerDetails');
 
     if (!existingSection || !newSection || !existingBtn || !newBtn) return;
 
@@ -4059,6 +4209,12 @@ function selectCustomerMode(mode) {
         newBtn.style.backgroundColor = '#f9fafb';
         newBtn.style.color = '#374151';
         newBtn.style.borderColor = '#d1d5db';
+        
+        // Focus on search input when switching to existing customer mode
+        setTimeout(() => {
+            const searchInput = document.getElementById('customerSearch');
+            if (searchInput) searchInput.focus();
+        }, 100);
     } else {
         existingSection.style.display = 'none';
         newSection.style.display = '';
@@ -4068,6 +4224,15 @@ function selectCustomerMode(mode) {
         existingBtn.style.backgroundColor = '#f9fafb';
         existingBtn.style.color = '#374151';
         existingBtn.style.borderColor = '#d1d5db';
+        
+        // Hide customer details when switching to new customer mode
+        if (detailsDiv) detailsDiv.style.display = 'none';
+        
+        // Clear search input and selected customer
+        const searchInput = document.getElementById('customerSearch');
+        const hiddenId = document.getElementById('selectedCustomerId');
+        if (searchInput) searchInput.value = '';
+        if (hiddenId) hiddenId.value = '';
     }
 }
 
@@ -4102,45 +4267,135 @@ function searchCustomers(inputEl) {
 function showCustomerResults(customers) {
     const dd = document.getElementById('customerDropdown');
     if (!dd) return;
-    if (!customers || customers.length === 0) { dd.innerHTML = '<div style="padding:8px;color:#6b7280;font-size:12px;">No customers found</div>'; showCustomerDropdown(); return; }
+    if (!customers || customers.length === 0) { 
+        dd.innerHTML = '<div style="padding:8px;color:#6b7280;font-size:12px;">No customers found</div>'; 
+        showCustomerDropdown(); 
+        return; 
+    }
 
     let html = '';
     customers.forEach(c => {
-        const display = [c.name || '', c.phone || '', c.email || ''].filter(Boolean).join(' • ');
-        const addressData = {
-            address1: c.address_line1 || c.address1 || '',
-            address2: c.address_line2 || c.address2 || '',
-            city: c.city || c.address_city || '',
-            province: c.province || c.address_province || '',
-            postal_code: c.postal_code || '',
+        // Build address display
+        const addressParts = [];
+        if (c.address && c.address.address1) addressParts.push(c.address.address1);
+        if (c.address && c.address.city) addressParts.push(c.address.city);
+        if (c.address && c.address.province) addressParts.push(c.address.province);
+        const addressDisplay = addressParts.length > 0 ? addressParts.join(', ') : 'No address';
+        
+        // Prepare customer data for selection
+        const customerData = {
+            id: c.id,
+            name: c.name || '',
+            phone: c.phone || '',
+            email: c.email || '',
+            address: c.address || {}
         };
-        const payload = encodeURIComponent(JSON.stringify(addressData));
-        html += `<div style="padding:8px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid #f3f4f6;" onclick="selectCustomer('${c.id}','${(c.name||'').replace(/'/g, "\'")}', '${payload}')">${display}</div>`;
+        const payload = encodeURIComponent(JSON.stringify(customerData));
+        
+        html += `
+            <div style="padding:10px 12px; cursor:pointer; border-bottom:1px solid #f3f4f6; transition: background-color 0.15s ease;" 
+                 onclick="selectCustomer('${c.id}','${(c.name||'').replace(/'/g, "\\'")}', '${payload}')"
+                 onmouseover="this.style.backgroundColor='#f8fafc'" 
+                 onmouseout="this.style.backgroundColor='white'">
+                <div style="font-weight: 500; color: #374151; font-size: 14px; margin-bottom: 2px;">
+                    ${c.name || 'No name'}
+                </div>
+                <div style="font-size: 12px; color: #6b7280; margin-bottom: 2px;">
+                    📞 ${c.phone || 'No phone'} ${c.email ? '• ✉️ ' + c.email : ''}
+                </div>
+                <div style="font-size: 12px; color: #9ca3af;">
+                    📍 ${addressDisplay}
+                </div>
+            </div>
+        `;
     });
     dd.innerHTML = html;
     showCustomerDropdown();
 }
 
-function selectCustomer(customerId, customerName, encodedAddress) {
-    const addressData = encodedAddress ? JSON.parse(decodeURIComponent(encodedAddress)) : {};
+function selectCustomer(customerId, customerName, encodedData) {
+    const customerData = encodedData ? JSON.parse(decodeURIComponent(encodedData)) : {};
     const searchInput = document.getElementById('customerSearch');
     const hiddenId = document.getElementById('selectedCustomerId');
-    if (searchInput) searchInput.value = customerName || '';
+    
+    // Update the search input with customer name
+    if (searchInput) searchInput.value = customerData.name || customerName || '';
     if (hiddenId) hiddenId.value = customerId || '';
     hideCustomerDropdown();
 
-    // Optionally pre-fill new customer fields if visible
-    const fields = [
-        ['input[name="customer_address1"]', 'address1'],
-        ['input[name="customer_address2"]', 'address2'],
-        ['input[name="customer_city"]', 'city'],
-        ['input[name="customer_province"]', 'province'],
-        ['input[name="customer_postal_code"]', 'postal_code']
-    ];
-    fields.forEach(([sel, key]) => {
-        const el = document.querySelector(sel);
-        if (el && addressData[key]) el.value = addressData[key];
-    });
+    // Show detailed customer information after selection
+    showSelectedCustomerDetails(customerData);
+
+    // Pre-fill new customer fields if visible (reusing existing functionality)
+    if (customerData.address) {
+        const fields = [
+            ['input[name="customer_address1"]', 'address1'],
+            ['input[name="customer_address2"]', 'address2'],
+            ['input[name="customer_city"]', 'city'],
+            ['input[name="customer_province"]', 'province'],
+            ['input[name="customer_postal_code"]', 'postal_code']
+        ];
+        fields.forEach(([sel, key]) => {
+            const el = document.querySelector(sel);
+            if (el && customerData.address[key]) el.value = customerData.address[key];
+        });
+    }
+}
+
+function showSelectedCustomerDetails(customerData) {
+    // Find or create customer details display area
+    let detailsDiv = document.getElementById('selectedCustomerDetails');
+    
+    if (!detailsDiv) {
+        // Create the details display area below the search input
+        const searchContainer = document.getElementById('existingCustomerSection');
+        if (searchContainer) {
+            detailsDiv = document.createElement('div');
+            detailsDiv.id = 'selectedCustomerDetails';
+            detailsDiv.style.cssText = `
+                margin-top: 12px;
+                padding: 12px;
+                background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+                border: 1px solid #bae6fd;
+                border-radius: 8px;
+                font-size: 13px;
+                display: none;
+            `;
+            searchContainer.appendChild(detailsDiv);
+        }
+    }
+
+    if (detailsDiv && customerData.name) {
+        // Build address display
+        const addressParts = [];
+        if (customerData.address) {
+            if (customerData.address.address1) addressParts.push(customerData.address.address1);
+            if (customerData.address.address2) addressParts.push(customerData.address.address2);
+            if (customerData.address.city) addressParts.push(customerData.address.city);
+            if (customerData.address.province) addressParts.push(customerData.address.province);
+            if (customerData.address.postal_code) addressParts.push(customerData.address.postal_code);
+        }
+        const fullAddress = addressParts.length > 0 ? addressParts.join(', ') : 'No address provided';
+
+        detailsDiv.innerHTML = `
+            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                <span style="font-size: 16px; margin-right: 8px;">👤</span>
+                <h4 style="margin: 0; color: #0369a1; font-weight: 600;">Selected Customer</h4>
+            </div>
+            <div style="margin-bottom: 6px;">
+                <strong style="color: #374151;">${customerData.name}</strong>
+            </div>
+            <div style="margin-bottom: 4px; color: #6b7280;">
+                📞 ${customerData.phone || 'No phone'} ${customerData.email ? '• ✉️ ' + customerData.email : ''}
+            </div>
+            <div style="color: #6b7280; line-height: 1.4;">
+                📍 ${fullAddress}
+            </div>
+        `;
+        detailsDiv.style.display = 'block';
+    } else if (detailsDiv) {
+        detailsDiv.style.display = 'none';
+    }
 }
 // ==================== END CUSTOMER SELECTION HELPERS ====================
 

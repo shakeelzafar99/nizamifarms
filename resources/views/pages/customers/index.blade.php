@@ -1787,15 +1787,31 @@ function searchCustomers(input) {
             }
             
             if (data.length > 0) {
-                dropdown.innerHTML = data.map(customer => `
-                    <div onclick="selectCustomer(${customer.id}, '${customer.first_name} ${customer.last_name}', '${customer.phone_original || customer.phone || ''}')" 
-                         style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
-                         onmouseover="this.style.backgroundColor='#f3f4f6'" 
-                         onmouseout="this.style.backgroundColor='white'">
-                        <div style="font-weight: 500;">${customer.first_name} ${customer.last_name}</div>
-                        <div style="font-size: 12px; color: #6b7280;">${customer.phone_original || customer.phone || ''} • ${customer.email || 'No email'}</div>
-                    </div>
-                `).join('');
+                dropdown.innerHTML = data.map(customer => {
+                    // Build address display for consistency
+                    const addressParts = [];
+                    if (customer.address1) addressParts.push(customer.address1);
+                    if (customer.city) addressParts.push(customer.city);
+                    if (customer.province) addressParts.push(customer.province);
+                    const addressDisplay = addressParts.length > 0 ? addressParts.join(', ') : 'No address';
+                    
+                    return `
+                        <div onclick="selectCustomer(${customer.id}, '${customer.first_name} ${customer.last_name}', '${customer.phone_original || customer.phone || ''}')" 
+                             style="padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #e5e7eb; transition: background-color 0.15s ease;"
+                             onmouseover="this.style.backgroundColor='#f8fafc'" 
+                             onmouseout="this.style.backgroundColor='white'">
+                            <div style="font-weight: 500; color: #374151; font-size: 14px; margin-bottom: 2px;">
+                                ${customer.first_name} ${customer.last_name}
+                            </div>
+                            <div style="font-size: 12px; color: #6b7280; margin-bottom: 2px;">
+                                📞 ${customer.phone_original || customer.phone || 'No phone'} ${customer.email ? '• ✉️ ' + customer.email : ''}
+                            </div>
+                            <div style="font-size: 12px; color: #9ca3af;">
+                                📍 ${addressDisplay}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
                 dropdown.style.display = 'block';
             } else {
                 dropdown.innerHTML = '<div style="padding: 8px 12px; color: #6b7280;">No customers found</div>';
@@ -1831,6 +1847,21 @@ function selectCustomer(id, name, phone) {
     if (dropdown) dropdown.style.display = 'none';
 }
 
+// Helper function to build customer address display (reusing logic from orders page)
+function buildCustomerAddress(customer) {
+    if (!customer) return 'No address provided';
+    
+    const addressParts = [];
+    if (customer.address1) addressParts.push(customer.address1);
+    if (customer.address2) addressParts.push(customer.address2);
+    if (customer.city) addressParts.push(customer.city);
+    if (customer.province) addressParts.push(customer.province);
+    if (customer.postal_code) addressParts.push(customer.postal_code);
+    if (customer.country) addressParts.push(customer.country);
+    
+    return addressParts.length > 0 ? addressParts.join(', ') : 'No address provided';
+}
+
 function openCreateOrderModal(customer = null) {
     const modal = document.getElementById('createOrderModal');
     const content = document.getElementById('createOrderContent');
@@ -1838,11 +1869,23 @@ function openCreateOrderModal(customer = null) {
     // Load the order creation form (simplified version)
     content.innerHTML = `
         <form id="createOrderForm">
-            <!-- Customer pre-filled section -->
-            <div style="background-color: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; margin-bottom: 20px; padding: 16px;">
-                <h4 style="color: #0369a1; margin: 0 0 12px 0;">Selected Customer</h4>
-                <p style="margin: 0; font-weight: 500;">${customer ? customer.first_name + ' ' + customer.last_name : 'No customer selected'}</p>
-                ${customer ? `<p style="margin: 4px 0 0 0; color: #6b7280; font-size: 14px;">${customer.phone_original || customer.phone || ''} • ${customer.email || 'No email'}</p>` : ''}
+            <!-- Enhanced Customer pre-filled section -->
+            <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 8px; margin-bottom: 20px; padding: 16px;">
+                <div style="display: flex; align-items: center; margin-bottom: 12px;">
+                    <span style="font-size: 18px; margin-right: 8px;">👤</span>
+                    <h4 style="color: #0369a1; margin: 0; font-weight: 600;">Selected Customer</h4>
+                </div>
+                ${customer ? `
+                    <div style="margin-bottom: 8px;">
+                        <strong style="color: #374151; font-size: 16px;">${(customer.first_name + ' ' + customer.last_name).trim()}</strong>
+                    </div>
+                    <div style="margin-bottom: 6px; color: #6b7280; font-size: 14px;">
+                        📞 ${customer.phone_original || customer.phone || 'No phone'} ${customer.email ? '• ✉️ ' + customer.email : ''}
+                    </div>
+                    <div style="color: #6b7280; font-size: 14px; line-height: 1.4;">
+                        📍 ${buildCustomerAddress(customer)}
+                    </div>
+                ` : '<p style="margin: 0; color: #6b7280; font-style: italic;">No customer selected</p>'}
                 <input type="hidden" name="customer_id" value="${customer ? customer.id : ''}">
             </div>
 

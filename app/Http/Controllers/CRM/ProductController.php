@@ -583,11 +583,30 @@ class ProductController extends Controller
                         ];
                     }
                 }
+                
+                // If no available variants, still show the product (but mark as unavailable)
+                if ($product->variants->where('available', true)->count() === 0 && $product->variants->count() > 0) {
+                    $firstVariant = $product->variants->first();
+                    $results[] = [
+                        'id' => 'variant_' . $firstVariant->id,
+                        'type' => 'variant',
+                        'name' => $product->title . ' (Out of Stock)',
+                        'sku' => $firstVariant->sku,
+                        'price' => $firstVariant->price,
+                        'inventory' => 0,
+                        'vendor' => $product->vendor
+                    ];
+                }
             }
             
             return response()->json([
                 'success' => true,
-                'products' => $results
+                'products' => $results,
+                'debug' => [
+                    'query' => $query,
+                    'products_found' => $products->count(),
+                    'results_count' => count($results)
+                ]
             ]);
             
         } catch (\Exception $e) {
