@@ -1668,14 +1668,6 @@ function openCustomerDetails(customerId) {
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">CITY</label>
                                 <div style="font-size: 14px; color: #374151;">${customer.city || 'N/A'}</div>
                             </div>
-                            <div style="margin-top: 15px;">
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">PROVINCE</label>
-                                <div style="font-size: 14px; color: #374151;">${customer.province || 'N/A'}</div>
-                            </div>
-                            <div style="margin-top: 15px;">
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">POSTAL CODE</label>
-                                <div style="font-size: 14px; color: #374151;">${customer.postal_code || 'N/A'}</div>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -2077,20 +2069,10 @@ function loadEditForm(order) {
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                        <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">City</label>
                                 <input type="text" name="address_city" value="${order.address_city || ''}" 
-                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
-                            </div>
-                            <div>
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Province</label>
-                                <input type="text" name="address_province" value="${order.address_province || ''}" 
-                                       style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
-                            </div>
-                            <div>
-                                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Postal Code</label>
-                                <input type="text" name="address_postal_code" value="${order.address_postal_code || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
@@ -2426,8 +2408,6 @@ function saveOrderChanges(orderId) {
         address_line1: formData.get('address_line1'),
         address_line2: formData.get('address_line2'),
         address_city: formData.get('address_city'),
-        address_province: formData.get('address_province'),
-        address_postal_code: formData.get('address_postal_code'),
         address_country: formData.get('address_country')
     };
     
@@ -2511,8 +2491,6 @@ function saveAndCloseOrder(orderId) {
         address_line1: formData.get('address_line1'),
         address_line2: formData.get('address_line2'),
         address_city: formData.get('address_city'),
-        address_province: formData.get('address_province'),
-        address_postal_code: formData.get('address_postal_code'),
         address_country: formData.get('address_country')
     };
     
@@ -4725,10 +4703,6 @@ function createNewOrder() {
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Phone Number *</label>
                                 <input type="text" name="customer_phone" placeholder="+92345000681 or 03455000681" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                             </div>
-                            <div style="margin-bottom: 12px;">
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Company</label>
-                                <input type="text" name="customer_company" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
-                            </div>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Address Line 1</label>
@@ -4739,18 +4713,14 @@ function createNewOrder() {
                                     <input type="text" name="customer_address2" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                             </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">City</label>
                                     <input type="text" name="customer_city" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                                 <div>
-                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Province</label>
-                                    <input type="text" name="customer_province" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
-                                </div>
-                                <div>
-                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Postal Code</label>
-                                    <input type="text" name="customer_postal_code" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Country</label>
+                                    <input type="text" name="customer_country" value="Pakistan" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                             </div>
                         </div>
@@ -4922,12 +4892,9 @@ function saveNewOrder() {
         customer_phone: formData.get('customer_phone'),
         customer_first_name: formData.get('customer_first_name'),
         customer_last_name: formData.get('customer_last_name'),
-        customer_company: formData.get('customer_company'),
         customer_address1: formData.get('customer_address1'),
         customer_address2: formData.get('customer_address2'),
         customer_city: formData.get('customer_city'),
-        customer_province: formData.get('customer_province'),
-        customer_postal_code: formData.get('customer_postal_code'),
         customer_country: formData.get('customer_country')
     };
     
@@ -5128,9 +5095,7 @@ function selectCustomer(customerId, customerName, encodedData) {
     const fields = [
         ['input[name="customer_address1"]', 'address1'],
         ['input[name="customer_address2"]', 'address2'],
-        ['input[name="customer_city"]', 'city'],
-        ['input[name="customer_province"]', 'province'],
-        ['input[name="customer_postal_code"]', 'postal_code']
+        ['input[name="customer_city"]', 'city']
     ];
     fields.forEach(([sel, key]) => {
         const el = document.querySelector(sel);
