@@ -743,7 +743,8 @@ input:focus, select:focus, button:focus {
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Invoice Details</h3>
-            <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="modal-header-buttons" style="display: flex; align-items: center; gap: 12px;">
+                <!-- Primary Actions -->
                 <button id="viewInvoiceBtn" onclick="viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                     <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
@@ -754,28 +755,46 @@ input:focus, select:focus, button:focus {
                     </svg>
                     View Invoice
                 </button>
-                <div style="display: flex; gap: 8px;">
-                    <button onclick="downloadInvoicePdf()" 
-                            style="background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                <button onclick="editOrderFromView()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                         <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                    Edit Order
+                </button>
+                
+                <!-- Secondary Actions Group -->
+                <div style="display: flex; gap: 6px; padding-left: 8px; border-left: 1px solid #e5e7eb;">
+                    <button onclick="downloadInvoicePdf()" 
+                            style="background: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Download PDF">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                             <polyline points="14,2 14,8 20,8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10,9 9,9 8,9"/>
                         </svg>
-                        📄 PDF
+                        PDF
                     </button>
                     <button onclick="downloadInvoiceImage()" 
-                            style="background: #059669; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 6px;">
-                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Download Image">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                             <polyline points="7,10 12,15 17,10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
                         </svg>
-                        📷 Image
+                        PNG
+                    </button>
+                    <button onclick="openEditInTabFromView()" 
+                            style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Open in new tab">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                            <polyline points="15,3 21,3 21,9"/>
+                            <line x1="10" y1="14" x2="21" y2="3"/>
+                        </svg>
+                        Pop Out
                     </button>
                 </div>
+                
                 <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
@@ -793,9 +812,41 @@ input:focus, select:focus, button:focus {
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Edit Invoice</h3>
-            <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <!-- Primary Actions -->
+                <button onclick="viewInvoiceFromEdit()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10,9 9,9 8,9"/>
+                    </svg>
+                    View Invoice
+                </button>
+                
+                <!-- Secondary Actions Group -->
+                <div style="display: flex; gap: 6px; padding-left: 8px; border-left: 1px solid #e5e7eb;">
+                    <button onclick="downloadInvoicePdf()" 
+                            style="background: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Download PDF">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14,2 14,8 20,8"/>
+                        </svg>
+                        PDF
+                    </button>
+                    <button onclick="downloadInvoiceImage()" 
+                            style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Download Image">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                        </svg>
+                        PNG
+                    </button>
                 <a id="popoutOrderBtn" href="#" onclick="openEditInTab()" 
-                        style="background: none; border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 12px; cursor: pointer; color: #374151; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px; text-decoration: none;"
                         title="Open in new tab">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
@@ -804,18 +855,8 @@ input:focus, select:focus, button:focus {
                     </svg>
                     Pop Out
                 </a>
-                <button id="printPdfBtn" onclick="printInvoicePdf()" 
-                        style="background: #dc2626; color: white; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
-                        title="Print PDF">
-                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14,2 14,8 20,8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10,9 9,9 8,9"/>
-                    </svg>
-                    📄 PDF
-                </button>
+                </div>
+                
                 <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
@@ -823,6 +864,22 @@ input:focus, select:focus, button:focus {
         <!-- Modal Body -->
         <div id="editOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
+<!-- Customer Details Modal -->
+<div id="customerDetailsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 20px; font-weight: 600; margin: 0;">Customer Details</h3>
+                <button onclick="closeModal('customerDetailsModal')" 
+                        style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+            </div>
+        </div>
+        <div id="customerDetailsContent" style="padding: 24px;">
+            <!-- Content will be populated by JavaScript -->
         </div>
     </div>
 </div>
@@ -1174,6 +1231,9 @@ function viewOrderDetails(orderId) {
             const order = data.order;
             console.log('Order data:', order);
             
+            // Update modal header buttons based on order type
+            updateViewModalButtons(order);
+            
             // Build HTML using string concatenation to avoid Blade conflicts
             let html = '<div>';
             
@@ -1393,11 +1453,256 @@ function printInvoicePdf() {
     }
 }
 
+// Edit order from view modal
+function editOrderFromView() {
+    if (currentOrderId) {
+        // Close view modal first
+        closeModal('viewOrderModal');
+        // Open edit modal using existing function
+        editOrderDetails(currentOrderId);
+    } else {
+        console.error('No order ID available for editing');
+    }
+}
+
+// Open edit in new tab from view modal
+function openEditInTabFromView() {
+    if (currentOrderId) {
+        // Use existing function to open edit in new tab
+        openEditInTab();
+    } else {
+        console.error('No order ID available for pop-out');
+    }
+}
+
+// View invoice from edit modal
+function viewInvoiceFromEdit() {
+    if (currentOrderId) {
+        // Use existing function to view invoice
+        viewInvoice();
+    } else {
+        console.error('No order ID available for viewing invoice');
+    }
+}
+
+// Update view modal buttons based on order type
+function updateViewModalButtons(order) {
+    const modal = document.getElementById('viewOrderModal');
+    if (!modal) return;
+    
+    const isShopifyOrder = order.external_source === 'shopify';
+    const isConverted = order.converted && order.converted !== 0 && order.converted !== 3;
+    const isIgnored = order.converted === 2;
+    
+    // Find the button container
+    const buttonContainer = modal.querySelector('.modal-header-buttons') || 
+                           modal.querySelector('[style*="display: flex; align-items: center; gap: 12px;"]');
+    
+    if (!buttonContainer) return;
+    
+    if (isShopifyOrder) {
+        if (isConverted || isIgnored) {
+            // Already processed Shopify order - show only close button
+            buttonContainer.innerHTML = `
+                <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            `;
+        } else {
+            // Pending Shopify order - show approve/ignore actions
+            buttonContainer.innerHTML = `
+                <!-- Primary Actions for Shopify Approval -->
+                <button onclick="convertOrder(${order.id})" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    Approve
+                </button>
+                <button onclick="ignoreOrder(${order.id})" style="background-color: #ef4444; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    Ignore
+                </button>
+                
+                <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+            `;
+        }
+    } else {
+        // Non-Shopify order - show full functionality (restore original buttons)
+        buttonContainer.innerHTML = `
+            <!-- Primary Actions -->
+            <button id="viewInvoiceBtn" onclick="viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+                    <polyline points="14,2 14,8 20,8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                    <polyline points="10,9 9,9 8,9"/>
+                </svg>
+                View Invoice
+            </button>
+            <button onclick="editOrderFromView()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                Edit Order
+            </button>
+            
+            <!-- Secondary Actions Group -->
+            <div style="display: flex; gap: 6px; padding-left: 8px; border-left: 1px solid #e5e7eb;">
+                <button onclick="downloadInvoicePdf()" 
+                        style="background: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                        title="Download PDF">
+                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                    </svg>
+                    PDF
+                </button>
+                <button onclick="downloadInvoiceImage()" 
+                        style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                        title="Download Image">
+                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7,10 12,15 17,10"/>
+                    </svg>
+                    PNG
+                </button>
+                <button onclick="openEditInTabFromView()" 
+                        style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                        title="Open in new tab">
+                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                        <polyline points="15,3 21,3 21,9"/>
+                        <line x1="10" y1="14" x2="21" y2="3"/>
+                    </svg>
+                    Pop Out
+                </button>
+            </div>
+            
+            <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        `;
+    }
+}
+
 // Open customer details in new tab
 function openCustomerInNewTab(customerId) {
     // Open customers page in new tab and trigger the customer modal
     const customerUrl = '/customers?view_customer=' + customerId;
     window.open(customerUrl, '_blank');
+}
+
+// Open customer details modal (inline)
+function openCustomerDetails(customerId) {
+    console.log('Opening customer details for ID:', customerId);
+    const modal = document.getElementById('customerDetailsModal');
+    const content = document.getElementById('customerDetailsContent');
+    
+    if (!modal || !content) {
+        // Fallback: open in new tab if modal doesn't exist
+        openCustomerInNewTab(customerId);
+        return;
+    }
+    
+    // Show loading
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
+    
+    // Fetch customer details
+    fetch(`/customers/${customerId}`)
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.customer) {
+            const customer = data.customer;
+            const fullName = [customer.first_name || '', customer.last_name || ''].join(' ').trim() || customer.name || 'N/A';
+            
+            content.innerHTML = `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px;">
+                    <div>
+                        <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 15px;">Personal Information</h4>
+                        <div style="space-y: 10px;">
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">FULL NAME</label>
+                                <div style="font-size: 16px; font-weight: 600; color: #111827;">${fullName}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">EMAIL</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.email || 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">PHONE (ORIGINAL)</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.phone_original || customer.phone || 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">PHONE (NORMALIZED)</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.phone || 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">COMPANY</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.company || 'N/A'}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 15px;">Address Information</h4>
+                        <div style="space-y: 10px;">
+                            <div>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">ADDRESS</label>
+                                <div style="font-size: 14px; color: #374151;">
+                                    ${customer.address1 || 'N/A'}${customer.address2 ? ', ' + customer.address2 : ''}
+                                </div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">CITY</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.city || 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">PROVINCE</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.province || 'N/A'}</div>
+                            </div>
+                            <div style="margin-top: 15px;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">POSTAL CODE</label>
+                                <div style="font-size: 14px; color: #374151;">${customer.postal_code || 'N/A'}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="border-top: 1px solid #e5e7eb; padding-top: 20px;">
+                    <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 15px;">Order Statistics</h4>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+                        <div style="text-align: center;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">TOTAL ORDERS</label>
+                            <div style="font-size: 24px; font-weight: 700; color: #2563eb;">${customer.total_orders || 0}</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">TOTAL SPENT</label>
+                            <div style="font-size: 24px; font-weight: 700; color: #059669;">PKR ${parseFloat(customer.total_spent || 0).toFixed(2)}</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase; margin-bottom: 4px;">LAST ORDER</label>
+                            <div style="font-size: 16px; font-weight: 600; color: #374151;">${customer.last_order_date || 'N/A'}</div>
+                        </div>
+                    </div>
+                </div>
+                
+                ${customer.notes ? `
+                <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
+                    <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 10px;">Notes</h4>
+                    <div style="background-color: #f9fafb; padding: 15px; border-radius: 8px; font-size: 14px; color: #374151;">
+                        ${customer.notes}
+                    </div>
+                </div>
+                ` : ''}
+            `;
+        } else {
+            content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching customer details:', error);
+        content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
+    });
 }
 
 // Edit Order Details
@@ -2540,6 +2845,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         closeModal('viewOrderModal');
         closeModal('editOrderModal');
+        closeModal('customerDetailsModal');
         closeModal('importOrderModal');
     }
 });
@@ -3409,7 +3715,16 @@ function getCellContent_DEPRECATED(order, columnId) {
                 const lastName = order.address_last_name || '';
                 customerName = (firstName + ' ' + lastName).trim();
             }
-            return customerName ? `<div class="table-text-primary">${customerName}</div>` : '<span class="table-text-small">N/A</span>';
+            if (!customerName) {
+                return '<span class="table-text-small">N/A</span>';
+            }
+            
+            // Make customer name clickable if customer_id exists
+            if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
+                return `<div class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer table-text-primary" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</div>`;
+            } else {
+                return `<div class="table-text-primary">${customerName}</div>`;
+            }
         case 'contact_email':
             return order.contact_email || '';
         case 'customer_phone':
@@ -3730,7 +4045,16 @@ function renderTableBody() {
     window.ordersData.forEach((order, index) => {
         try {
             const row = document.createElement('tr');
-            row.className = 'hover:bg-gray-50 transition-colors duration-150';
+            row.className = 'hover:bg-gray-50 transition-colors duration-150 cursor-pointer';
+            
+            // Make entire row clickable to open view order details
+            row.onclick = function(e) {
+                // Don't trigger row click if user clicked on action buttons or customer name
+                if (e.target.closest('.sticky-actions') || e.target.closest('.customer-name-link')) {
+                    return;
+                }
+                viewOrderDetails(order.id);
+            };
             
             currentColumns.forEach(column => {
                 if (column.visible) {
@@ -3839,7 +4163,16 @@ function getCellContent(order, columnId) {
                 const lastName = order.address_last_name || '';
                 customerName = (firstName + ' ' + lastName).trim();
             }
-            return customerName ? `<div class="table-text-primary">${customerName}</div>` : '<span class="table-text-small">N/A</span>';
+            if (!customerName) {
+                return '<span class="table-text-small">N/A</span>';
+            }
+            
+            // Make customer name clickable if customer_id exists
+            if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
+                return `<div class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer table-text-primary" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</div>`;
+            } else {
+                return `<div class="table-text-primary">${customerName}</div>`;
+            }
         case 'contact_email':
             return order.contact_email || '';
         case 'customer_phone':
@@ -3921,27 +4254,40 @@ function getCellContent(order, columnId) {
             
         // Actions
         case 'actions':
-            // If we're on Shopify Approvals tab specifically, restrict to Approve/Ignore/View
-            // When loaded via AJAX we rely on window.currentSource/currentTab
-            const isShopifyApprovals = (
-                (typeof window !== 'undefined' && window.currentSource === 'shopify' && window.currentTab === 'approvals') ||
-                ('{{ $source }}' === 'shopify' && '{{ $tab ?? "all" }}' === 'approvals')
-            );
-            if (isShopifyApprovals) {
-                return `
-                    <div class="flex items-center justify-center gap-1.5">
-                        <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                        </button>
-                        <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        </button>
-                        <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                        </button>
-                    </div>`;
+            // Check if this is a Shopify order (any Shopify order, not just approvals)
+            const isShopifyOrder = order.external_source === 'shopify';
+            
+            if (isShopifyOrder) {
+                // For Shopify orders, check if already converted/approved
+                const isConverted = order.converted && order.converted !== 0 && order.converted !== 3;
+                const isIgnored = order.converted === 2;
+                
+                if (isConverted || isIgnored) {
+                    // Already processed - show only view details
+                    return `
+                        <div class="flex items-center justify-center gap-1.5">
+                            <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                            </button>
+                        </div>`;
+                } else {
+                    // Pending approval - show approve/ignore/view
+                    return `
+                        <div class="flex items-center justify-center gap-1.5">
+                            <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                            </button>
+                            <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                            <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                            </button>
+                        </div>`;
+                }
             }
-            // Default full actions for non-shopify tab
+            
+            // Default full actions for non-Shopify orders (webapp, manual, etc.)
             return `
                 <div class="flex items-center justify-center gap-1.5">
                     <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
