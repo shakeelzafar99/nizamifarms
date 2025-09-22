@@ -150,8 +150,11 @@ class OrderController extends Controller
     
     private function generateInvoiceImage($order, $filename)
     {
-        // Create HTML content for image generation
-        $html = view('pages.orders.invoice-image', compact('order'))->render();
+        // Increase execution time for image generation
+        set_time_limit(120);
+        
+        // Create HTML content for image generation using the exact web invoice (PDF-friendly tweaks)
+        $html = view('pages.orders.invoice', ['order' => $order, 'isPdf' => true])->render();
         
         // Try to use Puppeteer or wkhtmltoimage if available
         $imagePath = $this->createInvoiceImage($html, $filename);
@@ -178,13 +181,16 @@ class OrderController extends Controller
         file_put_contents($htmlPath, $html);
         
         // Try different methods to generate image
+        $wkhtmltoimage = env('WKHTMLTOIMAGE_BIN', 'wkhtmltoimage');
+        $chromeBin = env('CHROME_BIN', 'google-chrome');
+        $wkhtmltoimage = escapeshellarg($wkhtmltoimage);
+        $chromeBin = escapeshellarg($chromeBin);
+
         $methods = [
             // Method 1: wkhtmltoimage
-            "wkhtmltoimage --width 800 --height 1200 --quality 100 --format png \"{$htmlPath}\" \"{$imagePath}\"",
+            "$wkhtmltoimage --width 1024 --quality 95 --format png --disable-smart-width --enable-local-file-access \"{$htmlPath}\" \"{$imagePath}\"",
             // Method 2: Chrome headless (if available)
-            "google-chrome --headless --disable-gpu --window-size=800,1200 --screenshot=\"{$imagePath}\" \"{$htmlPath}\"",
-            // Method 3: Puppeteer (if available)
-            "node -e \"const puppeteer = require('puppeteer'); (async () => { const browser = await puppeteer.launch(); const page = await browser.newPage(); await page.setViewport({width: 800, height: 1200}); await page.goto('file://{$htmlPath}'); await page.screenshot({path: '{$imagePath}'}); await browser.close(); })();\"",
+            "$chromeBin --headless --disable-gpu --window-size=800,1200 --screenshot=\"{$imagePath}\" \"{$htmlPath}\"",
         ];
         
         foreach ($methods as $command) {
@@ -206,31 +212,37 @@ class OrderController extends Controller
     private function generateServerPDF($order, $filename)
     {
         try {
-            // Method 1: Try Laravel's dompdf (most reliable)
+            // Increase execution time for PDF generation
+            set_time_limit(120);
+
+            // Prefer wkhtmltopdf first for pixel-perfect rendering
             try {
-                $pdf = \PDF::loadView('pages.orders.invoice-image', compact('order'))
-                    ->setOptions([
-                        'isHtml5ParserEnabled' => true,
-                        'isRemoteEnabled' => true,
-                        'defaultFont' => 'Times-Roman'
-                    ])
-                    ->setPaper('A4', 'portrait');
-                
-                // Force download with proper headers
-                return response($pdf->output(), 200, [
-                    'Content-Type' => 'application/pdf',
-                    'Content-Disposition' => 'attachment; filename="' . $filename . '.pdf"',
-                    'Content-Length' => strlen($pdf->output()),
-                    'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                    'Pragma' => 'no-cache',
-                    'Expires' => '0'
-                ]);
-                
-            } catch (\Exception $dompdfError) {
-                \Log::info('Dompdf failed, trying wkhtmltopdf: ' . $dompdfError->getMessage());
-                
-                // Method 2: Try wkhtmltopdf as fallback
                 return $this->tryWkhtmltopdf($order, $filename);
+            } catch (\Exception $wkhtmlError) {
+                \Log::info('wkhtmltopdf failed, falling back to dompdf: ' . $wkhtmlError->getMessage());
+
+                // Fallback: use dompdf with print-optimized template
+                try {
+                    $pdf = \PDF::loadView('pages.orders.invoice-print', ['order' => $order, 'filename' => $filename, 'forExport' => true])
+                        ->setOptions([
+                            'isHtml5ParserEnabled' => true,
+                            'isRemoteEnabled' => true,
+                            'defaultFont' => 'Times-Roman'
+                        ])
+                        ->setPaper('A4', 'portrait');
+
+                    return response($pdf->output(), 200, [
+                        'Content-Type' => 'application/pdf',
+                        'Content-Disposition' => 'attachment; filename="' . $filename . '.pdf"',
+                        'Content-Length' => strlen($pdf->output()),
+                        'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                        'Pragma' => 'no-cache',
+                        'Expires' => '0'
+                    ]);
+                } catch (\Exception $dompdfError) {
+                    \Log::info('Dompdf failed as well: ' . $dompdfError->getMessage());
+                    // Final fallback handled below
+                }
             }
             
         } catch (\Exception $e) {
@@ -244,8 +256,8 @@ class OrderController extends Controller
     private function tryWkhtmltopdf($order, $filename)
     {
         try {
-            // Use the clean invoice-image view for PDF generation
-            $html = view('pages.orders.invoice-image', compact('order'))->render();
+            // Use the exact same web invoice view for pixel-perfect output
+            $html = view('pages.orders.invoice', ['order' => $order, 'isPdf' => true])->render();
             
             $tempDir = storage_path('app/temp');
             if (!file_exists($tempDir)) {
@@ -257,8 +269,10 @@ class OrderController extends Controller
             
             file_put_contents($htmlPath, $html);
             
-            // Try wkhtmltopdf command
-            $command = "wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --enable-local-file-access \"{$htmlPath}\" \"{$pdfPath}\"";
+            // Try wkhtmltopdf command (binary can be overridden via .env)
+            $wkhtmltopdf = env('WKHTMLTOPDF_BIN', 'wkhtmltopdf');
+            $wkhtmltopdf = escapeshellarg($wkhtmltopdf);
+            $command = "$wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --dpi 96 --zoom 1.0 --disable-smart-shrinking --enable-local-file-access \"{$htmlPath}\" \"{$pdfPath}\"";
             exec($command . ' 2>&1', $output, $returnCode);
             
             if ($returnCode === 0 && file_exists($pdfPath)) {

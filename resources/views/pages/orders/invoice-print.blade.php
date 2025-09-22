@@ -298,7 +298,7 @@
 </head>
 <body>
         <!-- Download Instructions -->
-        <div class="download-instructions">
+        <div class="download-instructions" style="{{ isset($forExport) && $forExport ? 'display:none' : '' }}">
             <h4>📥 Download Invoice</h4>
             <button onclick="downloadAsPDF()" 
                     style="display: inline-block; background: #dc2626; color: white; padding: 10px 18px; border-radius: 6px; border: none; cursor: pointer; margin-bottom: 8px; font-weight: bold; font-size: 14px;">
@@ -311,8 +311,13 @@
             </button>
             <br>
             <button onclick="window.location.href='{{ url()->current() }}?force_pdf=1'" 
-                    style="display: inline-block; background: #7c3aed; color: white; padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; margin-bottom: 10px; font-weight: bold; font-size: 12px;">
+                    style="display: inline-block; background: #7c3aed; color: white; padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; margin-bottom: 8px; font-weight: bold; font-size: 12px;">
                 ⚡ Server PDF Download
+            </button>
+            <br>
+            <button onclick="printToPDF()" 
+                    style="display: inline-block; background: #0891b2; color: white; padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; margin-bottom: 10px; font-weight: bold; font-size: 12px;">
+                🖨️ Print to PDF
             </button>
             <p><strong>Alternative:</strong> Right-click on the invoice → "Save image as..."</p>
             <p>Filename: <strong>{{ $filename }}</strong></p>
@@ -465,83 +470,85 @@
     <script>
         // Auto-download PDF function that mimics Ctrl+P behavior with automatic download
         function downloadAsPDF() {
-            // Hide the download instructions for clean PDF
+            // Show loading state
+            const button = event.target;
+            const originalText = button.innerHTML;
+            button.innerHTML = '⏳ Generating PDF...';
+            button.disabled = true;
+            
+            // Create a hidden link to trigger download
+            const link = document.createElement('a');
+            link.href = '{{ url()->current() }}?force_pdf=1';
+            link.style.display = 'none';
+            link.target = '_blank';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // Reset button after a delay
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }, 2000);
+        }
+        
+        // Download as image function
+        function downloadAsImage() {
+            // Show loading state
+            const button = event.target;
+            const originalText = button.innerHTML;
+            button.innerHTML = '⏳ Generating Image...';
+            button.disabled = true;
+            
+            // Create a hidden link to trigger download
+            const link = document.createElement('a');
+            link.href = '{{ url()->current() }}?download_image=1';
+            link.style.display = 'none';
+            link.target = '_blank';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // Reset button after a delay
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }, 3000); // Longer delay for image generation
+        }
+        
+        // Print to PDF using browser's print dialog
+        function printToPDF() {
+            // Hide download instructions for clean print
             const instructions = document.querySelector('.download-instructions');
             if (instructions) {
                 instructions.style.display = 'none';
             }
             
-            // Set document title to filename for PDF naming
+            // Set document title for PDF filename
             const originalTitle = document.title;
             document.title = '{{ $filename }}';
             
-            // Configure print settings for PDF with automatic download
+            // Add print-specific CSS
             const printCSS = `
                 @media print {
-                    @page {
-                        margin: 0.5in;
-                        size: A4;
-                    }
-                    body {
-                        -webkit-print-color-adjust: exact !important;
-                        color-adjust: exact !important;
-                        print-color-adjust: exact !important;
-                    }
-                    .download-instructions {
-                        display: none !important;
-                    }
+                    .download-instructions { display: none !important; }
+                    @page { margin: 0.5in; size: A4; }
+                    body { -webkit-print-color-adjust: exact !important; }
                 }
             `;
-            
-            // Add print-specific CSS
             const style = document.createElement('style');
             style.textContent = printCSS;
             document.head.appendChild(style);
             
-            // Modern approach: Use the newer print API if available
-            if (window.navigator.userAgent.includes('Chrome') || window.navigator.userAgent.includes('Edge')) {
-                // For Chrome/Edge - trigger print with filename suggestion
-                setTimeout(() => {
-                    // Set up print event listener to handle the filename
-                    const beforePrint = () => {
-                        document.title = '{{ $filename }}';
-                    };
-                    const afterPrint = () => {
-                        document.title = originalTitle;
-                        if (instructions) {
-                            instructions.style.display = 'block';
-                        }
-                        document.head.removeChild(style);
-                        window.removeEventListener('beforeprint', beforePrint);
-                        window.removeEventListener('afterprint', afterPrint);
-                    };
-                    
-                    window.addEventListener('beforeprint', beforePrint);
-                    window.addEventListener('afterprint', afterPrint);
-                    
-                    // Trigger print dialog
-                    window.print();
-                }, 100);
-            } else {
-                // Fallback for other browsers
-                setTimeout(() => {
-                    window.print();
-                    
-                    // Restore original title after print
-                    setTimeout(() => {
-                        document.title = originalTitle;
-                        if (instructions) {
-                            instructions.style.display = 'block';
-                        }
-                        document.head.removeChild(style);
-                    }, 1000);
-                }, 100);
-            }
-        }
-        
-        // Download as image function
-        function downloadAsImage() {
-            window.location.href = '{{ url()->current() }}?download_image=1';
+            // Trigger print dialog
+            window.print();
+            
+            // Restore after print
+            setTimeout(() => {
+                document.title = originalTitle;
+                if (instructions) instructions.style.display = 'block';
+                document.head.removeChild(style);
+            }, 1000);
         }
         
         // Auto-trigger PDF download if requested

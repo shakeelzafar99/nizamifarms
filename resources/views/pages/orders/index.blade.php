@@ -804,6 +804,18 @@ input:focus, select:focus, button:focus {
                     </svg>
                     Pop Out
                 </a>
+                <button id="printPdfBtn" onclick="printInvoicePdf()" 
+                        style="background: #dc2626; color: white; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                        title="Print PDF">
+                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10,9 9,9 8,9"/>
+                    </svg>
+                    📄 PDF
+                </button>
                 <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
@@ -931,11 +943,130 @@ input:focus, select:focus, button:focus {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+/* Pop-out mode enhancements */
+.popout-mode-active {
+    overflow: hidden !important;
+}
+
+.popout-modal-fullscreen {
+    animation: popoutFadeIn 0.3s ease-out;
+}
+
+@keyframes popoutFadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Enhanced line item styling for better product name handling */
+.line-item input[name*="[name]"] {
+    font-weight: 500;
+    color: #374151;
+    /* Allow full product name to be visible */
+    white-space: normal;
+    overflow: visible;
+}
+
+.line-item input[name*="[name]"]:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    z-index: 10;
+    position: relative;
+}
+
+/* Compact and centered quantity and price fields */
+.line-item input[name*="[quantity]"] {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 2px;
+    color: #1f2937;
+}
+
+.line-item input[name*="[unit_price]"] {
+    text-align: right;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 4px;
+    color: #059669;
+}
+
+/* Total field styling */
+.line-item .line-total {
+    font-weight: 600;
+    color: #1f2937;
+    background-color: #f3f4f6;
+    border: 1px solid #d1d5db;
+    text-align: right;
+    padding: 6px 8px;
+}
+
+/* Delete button styling */
+.line-item button[onclick*="removeLineItem"] {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-size: 16px;
+    line-height: 1;
+}
+
+/* Responsive adjustments for smaller screens */
+@media (max-width: 768px) {
+    .line-item {
+        grid-template-columns: 2fr 60px 80px 90px 28px !important;
+        gap: 8px !important;
+    }
+    
+    .line-item input[name*="[quantity]"],
+    .line-item input[name*="[unit_price]"] {
+        font-size: 12px;
+        padding: 5px 2px;
+    }
+    
+    .line-item .line-total {
+        font-size: 12px;
+        padding: 5px 4px;
+    }
+}
 </style>
 <script>
 // Modal functions
 function closeModal(modalId) {
-    document.getElementById(modalId).style.display = 'none';
+    // If in pop-out mode, close the entire tab instead of just hiding the modal
+    if (window.isPopoutMode && modalId === 'editOrderModal') {
+        // Refresh the parent window if it exists
+        if (window.opener && !window.opener.closed) {
+            try {
+                window.opener.location.reload();
+            } catch (e) {
+                // Ignore cross-origin errors
+            }
+        }
+        // Close the pop-out tab
+        window.close();
+        return;
+    }
+    
+    // Normal modal close behavior
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+        
+        // Reset pop-out styling if it was applied
+        if (modalId === 'editOrderModal' && window.isPopoutMode) {
+            resetModalStyling(modal);
+            window.isPopoutMode = false;
+        }
+    }
 }
 
 // Format date helper
@@ -1213,8 +1344,20 @@ function viewInvoice() {
 
 function downloadInvoicePdf() {
     if (currentOrderId) {
-        // Open invoice page with auto PDF download enabled
-        window.open('/orders/' + currentOrderId + '/invoice?auto_pdf=1', '_blank');
+        // Show loading state on button
+        const button = event.target;
+        const originalText = button.innerHTML;
+        button.innerHTML = '⏳ Generating PDF...';
+        button.disabled = true;
+        
+        // Open web invoice and auto-trigger the browser print dialog for pixel-perfect output
+        window.open('/orders/' + currentOrderId + '/invoice?print_pdf=1', '_blank');
+        
+        // Reset button after download attempt
+        setTimeout(() => {
+            button.innerHTML = originalText;
+            button.disabled = false;
+        }, 5000);
     } else {
         console.error('No order ID available for PDF download');
     }
@@ -1222,10 +1365,31 @@ function downloadInvoicePdf() {
 
 function downloadInvoiceImage() {
     if (currentOrderId) {
-        // Direct image download
-        window.open('/orders/' + currentOrderId + '/invoice?download_image=1', '_blank');
+        // Show loading state on button
+        const button = event.target;
+        const originalText = button.innerHTML;
+        button.innerHTML = '⏳ Generating Image...';
+        button.disabled = true;
+        
+        // Open web invoice and auto-generate a PNG from the DOM for exact visual match
+        window.open('/orders/' + currentOrderId + '/invoice?auto_png=1', '_blank');
+        
+        // Reset button after download attempt
+        setTimeout(() => {
+            button.innerHTML = originalText;
+            button.disabled = false;
+        }, 3000);
     } else {
         console.error('No order ID available for image download');
+    }
+}
+
+function printInvoicePdf() {
+    if (currentOrderId) {
+        // Open invoice page in new tab - it has download options
+        window.open('/orders/' + currentOrderId + '/invoice', '_blank');
+    } else {
+        console.error('No order ID available for PDF printing');
     }
 }
 
@@ -1293,12 +1457,143 @@ function ignoreOrder(orderId) {
     });
 }
 
+// Reset modal styling (for completeness, though not typically needed in pop-out mode)
+function resetModalStyling(modal) {
+    if (!modal) return;
+    
+    // Remove body class
+    document.body.classList.remove('popout-mode-active');
+    
+    const modalContainer = modal.querySelector('div');
+    if (modalContainer) {
+        // Reset to original modal styling
+        modalContainer.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        `;
+        
+        // Remove animation class
+        modalContainer.classList.remove('popout-modal-fullscreen');
+    }
+    
+    // Show the pop-out button again
+    const popoutBtn = modal.querySelector('#popoutOrderBtn');
+    if (popoutBtn) {
+        popoutBtn.style.display = '';
+    }
+    
+    // Remove pop-out indicator
+    const indicator = modal.querySelector('.popout-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+    
+    // Reset page title
+    if (document.title && document.title.includes('[Pop-out]')) {
+        document.title = document.title.replace('[Pop-out] ', '');
+    }
+}
+
+// Apply full-screen styling for pop-out mode
+function applyPopoutStyling(modal) {
+    if (!modal) return;
+    
+    // Get the modal container (the inner div)
+    const modalContainer = modal.querySelector('div');
+    if (!modalContainer) return;
+    
+    // Hide body overflow to prevent scrolling behind the modal
+    document.body.classList.add('popout-mode-active');
+    
+    // Apply full-screen styling to cover entire application
+    modalContainer.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        max-width: none;
+        max-height: none;
+        transform: none;
+        background: white;
+        border-radius: 0;
+        box-shadow: none;
+        overflow-y: auto;
+        z-index: 10000;
+    `;
+    
+    // Add animation class
+    modalContainer.classList.add('popout-modal-fullscreen');
+    
+    // Hide the pop-out button since we're already in pop-out mode
+    const popoutBtn = modal.querySelector('#popoutOrderBtn');
+    if (popoutBtn) {
+        popoutBtn.style.display = 'none';
+    }
+    
+    // Adjust the modal header for full-screen appearance
+    const modalHeader = modal.querySelector('div[style*="padding: 20px"]');
+    if (modalHeader) {
+        modalHeader.style.cssText += `
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-bottom: 2px solid #e5e7eb;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 10001;
+        `;
+    }
+    
+    // Add a subtle indicator that this is pop-out mode
+    const modalTitle = modal.querySelector('h3');
+    if (modalTitle && !modalTitle.querySelector('.popout-indicator')) {
+        const indicator = document.createElement('span');
+        indicator.className = 'popout-indicator';
+        indicator.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            margin-left: 8px;
+            padding: 3px 8px;
+            background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+            color: #1e40af;
+            font-size: 10px;
+            font-weight: 600;
+            border-radius: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border: 1px solid #93c5fd;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        `;
+        indicator.innerHTML = '🔗 Pop-out Mode';
+        modalTitle.appendChild(indicator);
+    }
+    
+    // Update page title to indicate pop-out mode
+    if (document.title && !document.title.includes('[Pop-out]')) {
+        document.title = '[Pop-out] ' + document.title;
+    }
+}
+
 function editOrderDetails(orderId) {
     console.log('Edit order details clicked for order:', orderId);
     // Ensure the pop-out in-tab handler has the order id
     try { currentOrderId = orderId; } catch (e) {}
     const modal = document.getElementById('editOrderModal');
     const content = document.getElementById('editOrderContent');
+    
+    // Apply full-screen styling if in pop-out mode
+    if (window.isPopoutMode) {
+        applyPopoutStyling(modal);
+    }
     
     // Show loading
     content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
@@ -1329,6 +1624,12 @@ function editOrderDetails(orderId) {
 }
 
 function loadEditForm(order) {
+    // Update tab title if in pop-out mode
+    if (window.isPopoutMode) {
+        const orderNumber = order.order_number || `NF-${String(order.id).padStart(4, '0')}`;
+        document.title = `[Pop-out] Edit Invoice - ${orderNumber}`;
+    }
+    
     const content = document.getElementById('editOrderContent');
     content.innerHTML = `
         <form id="editOrderForm" style="padding: 0;">
@@ -1466,7 +1767,7 @@ function loadEditForm(order) {
                 <div id="lineItemsContainer" style="padding: 16px;">
                     ${order.line_items && order.line_items.length > 0 ? 
                         order.line_items.map((item, index) => `
-                        <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
+                        <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
@@ -1622,7 +1923,7 @@ function addLineItem() {
     const newItem = document.createElement('div');
     newItem.className = 'line-item';
     newItem.setAttribute('data-index', lineItemIndex);
-    newItem.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+    newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
     
     newItem.innerHTML = `
         <div style="position: relative;">
@@ -1960,7 +2261,7 @@ function popoutOrder() {
                             div.className = 'line-item';
                             const idx = Date.now();
                             div.setAttribute('data-index', idx);
-                            div.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+                            div.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
                             div.innerHTML = `
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
@@ -2040,7 +2341,7 @@ function popoutOrder() {
             const newItem = newWindow.document.createElement('div');
             newItem.className = 'line-item';
             newItem.setAttribute('data-index', newWindow.lineItemIndex);
-            newItem.style.cssText = 'display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+            newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
             
             newItem.innerHTML = `
                 <div style="position: relative;">
@@ -2264,6 +2565,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const params = new URLSearchParams(window.location.search);
         const editId = params.get('edit_order_id');
         if (editId) {
+            // Mark this as a pop-out mode for full-screen styling
+            window.isPopoutMode = true;
             editOrderDetails(editId);
         }
     } catch (e) {}
@@ -3029,7 +3332,7 @@ function renderOrdersTable() {
 /* ⚠️ DEPRECATED: This function has been replaced by the newer getCellContent() function below (around line 2227)
    This older version has been commented out to avoid conflicts and duplicated code
    The newer version has better error handling, debug logging, and more features
-function getCellContent(order, columnId) {
+function getCellContent_DEPRECATED(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
         try {
@@ -4328,15 +4631,15 @@ function selectCustomer(customerId, customerName, encodedData) {
 
     // Pre-fill new customer fields if visible (reusing existing functionality)
     if (customerData.address) {
-        const fields = [
-            ['input[name="customer_address1"]', 'address1'],
-            ['input[name="customer_address2"]', 'address2'],
-            ['input[name="customer_city"]', 'city'],
-            ['input[name="customer_province"]', 'province'],
-            ['input[name="customer_postal_code"]', 'postal_code']
-        ];
-        fields.forEach(([sel, key]) => {
-            const el = document.querySelector(sel);
+    const fields = [
+        ['input[name="customer_address1"]', 'address1'],
+        ['input[name="customer_address2"]', 'address2'],
+        ['input[name="customer_city"]', 'city'],
+        ['input[name="customer_province"]', 'province'],
+        ['input[name="customer_postal_code"]', 'postal_code']
+    ];
+    fields.forEach(([sel, key]) => {
+        const el = document.querySelector(sel);
             if (el && customerData.address[key]) el.value = customerData.address[key];
         });
     }
@@ -4615,7 +4918,8 @@ function rebuildTableWithOrders(orders, source, tab) {
     // If a table already exists, reuse its structure and just re-render data
     if (!tableContainer.querySelector('table')) {
         const tableHTML = `
-            <table class="min-w-full divide-y divide-gray-200">
+            <table class="min-w-full divide-y divide-gray-200" style="width: max-content; min-width: 100%;">
+                <colgroup id="table-colgroup"></colgroup>
                 <thead class="bg-gray-50 sticky top-0 z-20">
                     <tr id="table-header"></tr>
                 </thead>

@@ -2,6 +2,41 @@
 
 @section('title', 'Customers')
 
+@push('styles')
+<style>
+/* Enhanced line item styling for customers page - consistent with orders */
+.line-item input[name*="[name]"] {
+    font-weight: 500;
+    color: #374151;
+}
+
+.line-item input[name*="[name]"]:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.line-item input[name*="[quantity]"] {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.line-item input[name*="[unit_price]"] {
+    text-align: right;
+    font-size: 13px;
+    font-weight: 500;
+    color: #059669;
+}
+
+.line-item .line-total {
+    font-weight: 600;
+    color: #1f2937;
+    text-align: right;
+}
+</style>
+@endpush
+
 <script>
 // Define functions immediately to avoid "not defined" errors
 window.viewCustomer = function(id) {
@@ -2069,7 +2104,7 @@ function addLineItem() {
     
     const itemHtml = `
         <div class="line-item" style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 12px; background-color: #fefefe;">
-            <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 12px; align-items: end;">
+            <div style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end;">
                 <div style="position: relative;">
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Product Name</label>
                     <input type="text" name="items[${lineItemIndex}][name]" 

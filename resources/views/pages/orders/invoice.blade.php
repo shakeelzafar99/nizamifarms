@@ -344,6 +344,7 @@
     </style>
 </head>
 <body>
+@php $autoPrint = request('print_pdf') == '1'; $autoPng = request('auto_png') == '1'; @endphp
     <div class="invoice-container">
         <!-- Header -->
         <div class="invoice-header">
@@ -512,5 +513,37 @@
             </div>
         </div>
     </div>
+<script>
+// Auto print-to-PDF for exact browser rendering
+(function(){
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('print_pdf') === '1') {
+    // Hide scrollbars and trigger print; user can choose Save as PDF
+    document.title = 'Invoice-{{ $order->order_number }}';
+    setTimeout(() => { window.print(); }, 300);
+  }
+
+  if (url.searchParams.get('auto_png') === '1') {
+    // Use HTMLCanvas + drawWindow via html2canvas for exact screenshot
+    const addScript = (src) => new Promise(r => { const s = document.createElement('script'); s.src = src; s.onload = r; document.head.appendChild(s); });
+    (async () => {
+      // Load html2canvas from CDN once
+      if (!window.html2canvas) {
+        await addScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+      }
+      const node = document.querySelector('.invoice-container');
+      const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/png');
+      link.download = 'Invoice-{{ $order->order_number }}.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      // Close the helper tab/window automatically
+      setTimeout(() => { window.close(); }, 500);
+    })();
+  }
+})();
+</script>
 </body>
 </html>
