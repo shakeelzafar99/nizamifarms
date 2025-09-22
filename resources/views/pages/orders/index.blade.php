@@ -182,6 +182,18 @@
     line-height: 1.2;
 }
 
+.table-cell-address-compact {
+    max-width: 140px;
+    line-height: 1.2;
+}
+
+.table-cell-address-compact:hover {
+    background-color: #f9fafb;
+    border-radius: 4px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+}
+
 /* Smooth transitions for all interactive elements */
 .transition-all-smooth {
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -2875,6 +2887,41 @@ function openEditInTab() {
     }
 }
 
+// Open create order in a full Orders tab (loads entire app and auto-opens create modal)
+function openCreateInTab() {
+    const url = '/orders?create_new_order=1';
+    window.open(url, '_blank');
+}
+
+// Update modal header for create order with pop-out functionality
+function updateCreateOrderModalHeader() {
+    const modal = document.getElementById('editOrderModal');
+    if (!modal) return;
+    
+    // Find the modal header more reliably
+    const headerDiv = modal.querySelector('[style*="padding: 20px"][style*="border-bottom"]');
+    if (!headerDiv) return;
+    
+    headerDiv.innerHTML = `
+        <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Create New Order</h3>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <!-- Pop Out Button -->
+            <button onclick="openCreateInTab()" 
+                    style="background: #7c3aed; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 6px;"
+                    title="Open in new tab">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15,3 21,3 21,9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+                Pop Out
+            </button>
+            
+            <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+    `;
+}
+
 // Import modal functions
 function openImportModal() {
     const modal = document.getElementById('importOrderModal');
@@ -2918,10 +2965,26 @@ document.addEventListener('DOMContentLoaded', function() {
     try {
         const params = new URLSearchParams(window.location.search);
         const editId = params.get('edit_order_id');
+        const createNew = params.get('create_new_order');
+        
         if (editId) {
             // Mark this as a pop-out mode for full-screen styling
             window.isPopoutMode = true;
             editOrderDetails(editId);
+        } else if (createNew === '1') {
+            // Mark this as a pop-out mode for full-screen styling
+            window.isPopoutMode = true;
+            createNewOrder();
+            
+            // Apply pop-out styling to the create order modal
+            setTimeout(() => {
+                const modal = document.getElementById('editOrderModal');
+                if (modal) {
+                    applyPopoutStyling(modal);
+                    // Update title for create order pop-out
+                    document.title = '[Pop-out] Create New Order';
+                }
+            }, 100);
         }
     } catch (e) {}
 });
@@ -3414,7 +3477,7 @@ const availableColumns = {
     address_full_name: { label: 'Address Name', width: 'w-44', key: 'address_full_name' },
     address_email: { label: 'Address Email', width: 'w-48', key: 'address_email' },
     address_phone: { label: 'Address Phone', width: 'w-32', key: 'address_phone' },
-    address1: { label: 'Address Line 1', width: 'w-64', key: 'address1' },
+    address1: { label: 'Address', width: 'w-40', key: 'address1' },
     address2: { label: 'Address Line 2', width: 'w-48', key: 'address2' },
     address_city: { label: 'City', width: 'w-28', key: 'address_city' },
     address_province: { label: 'Province', width: 'w-28', key: 'address_province' },
@@ -3794,8 +3857,24 @@ function getCellContent_DEPRECATED(order, columnId) {
         case 'address_phone':
             return order.address_phone || '';
         case 'address1':
-            const addr1 = order.address_line1 || '';
-            return addr1 ? `<div class="table-cell-address" title="${addr1}">${addr1}</div>` : '';
+            // Create compact multi-line address display
+            const addressParts = [];
+            if (order.address_line1) addressParts.push(order.address_line1);
+            if (order.address_line2) addressParts.push(order.address_line2);
+            if (order.address_city) addressParts.push(order.address_city);
+            if (order.address_province) addressParts.push(order.address_province);
+            
+            if (addressParts.length === 0) return '<span class="table-text-small">N/A</span>';
+            
+            const fullAddress = addressParts.join(', ');
+            const shortAddress = addressParts.length > 2 ? 
+                `${addressParts[0]}, ${addressParts[addressParts.length - 1]}` : 
+                addressParts.join(', ');
+            
+            return `<div class="table-cell-address-compact" title="${fullAddress}">
+                        <div class="text-xs text-gray-700 leading-tight" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis;">${shortAddress}</div>
+                        ${addressParts.length > 2 ? '<div class="text-xs text-gray-400 mt-0.5" style="font-size: 10px;">+' + (addressParts.length - 2) + ' more</div>' : ''}
+                    </div>`;
         case 'address2':
             const addr2 = order.address_line2 || '';
             return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
@@ -4252,8 +4331,24 @@ function getCellContent(order, columnId) {
             const fullAddrName = (fullAddrFirstName + ' ' + fullAddrLastName).trim();
             return fullAddrName || '';
         case 'address1':
-            const addr1 = order.address_line1 || '';
-            return addr1 ? `<div class="table-cell-address" title="${addr1}">${addr1}</div>` : '';
+            // Create compact multi-line address display
+            const addressParts = [];
+            if (order.address_line1) addressParts.push(order.address_line1);
+            if (order.address_line2) addressParts.push(order.address_line2);
+            if (order.address_city) addressParts.push(order.address_city);
+            if (order.address_province) addressParts.push(order.address_province);
+            
+            if (addressParts.length === 0) return '<span class="table-text-small">N/A</span>';
+            
+            const fullAddress = addressParts.join(', ');
+            const shortAddress = addressParts.length > 2 ? 
+                `${addressParts[0]}, ${addressParts[addressParts.length - 1]}` : 
+                addressParts.join(', ');
+            
+            return `<div class="table-cell-address-compact" title="${fullAddress}">
+                        <div class="text-xs text-gray-700 leading-tight" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis;">${shortAddress}</div>
+                        ${addressParts.length > 2 ? '<div class="text-xs text-gray-400 mt-0.5" style="font-size: 10px;">+' + (addressParts.length - 2) + ' more</div>' : ''}
+                    </div>`;
         case 'address2':
             const addr2 = order.address_line2 || '';
             return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
@@ -4772,6 +4867,11 @@ function createNewOrder() {
     };
     
     modal.style.display = 'block';
+    
+    // Update modal header for create order with pop-out functionality after modal is shown
+    setTimeout(() => {
+        updateCreateOrderModalHeader();
+    }, 10);
 }
 
 // DUPLICATE FUNCTION REMOVED - Original exists at line 1402
