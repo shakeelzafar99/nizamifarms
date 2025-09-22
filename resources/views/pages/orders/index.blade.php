@@ -788,12 +788,13 @@ input:focus, select:focus, button:focus {
                     </button>
                     <button onclick="downloadInvoiceImage()" 
                             style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
-                            title="Download Image">
+                            title="Print Invoice as Image">
                         <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7,10 12,15 17,10"/>
+                            <path d="M6 9V2h12v7"/>
+                            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                            <rect x="6" y="14" width="12" height="8"/>
                         </svg>
-                        PNG
+                        Print Invoice
                     </button>
                     <button onclick="openEditInTabFromView()" 
                             style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
@@ -850,12 +851,13 @@ input:focus, select:focus, button:focus {
                     </button>
                     <button onclick="downloadInvoiceImage()" 
                             style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
-                            title="Download Image">
+                            title="Print Invoice as Image">
                         <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7,10 12,15 17,10"/>
+                            <path d="M6 9V2h12v7"/>
+                            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                            <rect x="6" y="14" width="12" height="8"/>
                         </svg>
-                        PNG
+                        Print Invoice
                     </button>
                 <a id="popoutOrderBtn" href="#" onclick="openEditInTab()" 
                             style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px; text-decoration: none;"
@@ -1440,11 +1442,12 @@ function downloadInvoiceImage() {
         // Show loading state on button
         const button = event.target;
         const originalText = button.innerHTML;
-        button.innerHTML = '⏳ Generating Image...';
+        button.innerHTML = '⏳ Printing Invoice...';
         button.disabled = true;
         
         // Open web invoice and auto-generate a PNG from the DOM for exact visual match
-        window.open('/orders/' + currentOrderId + '/invoice?auto_png=1', '_blank');
+        // Use 'view_and_download_png=1' instead of 'auto_png=1' to keep page open
+        window.open('/orders/' + currentOrderId + '/invoice?view_and_download_png=1', '_blank');
         
         // Reset button after download attempt
         setTimeout(() => {
@@ -1934,10 +1937,7 @@ function applyPopoutStyling(modal) {
         modalTitle.appendChild(indicator);
     }
     
-    // Update page title to indicate pop-out mode
-    if (document.title && !document.title.includes('[Pop-out]')) {
-        document.title = '[Pop-out] ' + document.title;
-    }
+    // Page title will be set by individual functions to show just the order number
 }
 
 function editOrderDetails(orderId) {
@@ -1984,7 +1984,7 @@ function loadEditForm(order) {
     // Update tab title if in pop-out mode
     if (window.isPopoutMode) {
         const orderNumber = order.order_number || `NF-${String(order.id).padStart(4, '0')}`;
-        document.title = `[Pop-out] Edit Invoice - ${orderNumber}`;
+        document.title = `${orderNumber}`;
     }
     
     const content = document.getElementById('editOrderContent');
@@ -2960,7 +2960,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (modal) {
                     applyPopoutStyling(modal);
                     // Update title for create order pop-out
-                    document.title = '[Pop-out] Create New Order';
+                    document.title = 'New Order';
                 }
             }, 100);
         }

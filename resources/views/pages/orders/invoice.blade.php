@@ -340,11 +340,19 @@
                 box-shadow: none;
                 max-width: none;
             }
+            
+            .print-invoice-section {
+                display: none !important;
+            }
         }
     </style>
 </head>
 <body>
-@php $autoPrint = request('print_pdf') == '1'; $autoPng = request('auto_png') == '1'; @endphp
+@php 
+$autoPrint = request('print_pdf') == '1'; 
+$autoPng = request('auto_png') == '1'; 
+$viewAndDownloadPng = request('view_and_download_png') == '1';
+@endphp
     <div class="invoice-container">
         <!-- Header -->
         <div class="invoice-header">
@@ -502,6 +510,24 @@
             </table>
         </div>
         
+        <!-- Print Invoice Button (only show on web view, not in PDF) -->
+        @if(empty($isPdf))
+        <div class="print-invoice-section" style="text-align: center; padding: 20px 30px; border-top: 1px solid #e2e8f0;">
+            <button id="printInvoiceBtn" onclick="printInvoiceFromPage()" 
+                    style="background: #059669; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.2s ease;"
+                    onmouseover="this.style.background='#047857'; this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.15)'"
+                    onmouseout="this.style.background='#059669'; this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'"
+                    title="Download this invoice as an image file">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 9V2h12v7"/>
+                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                    <rect x="6" y="14" width="12" height="8"/>
+                </svg>
+                Print Invoice
+            </button>
+        </div>
+        @endif
+        
         <!-- Footer -->
         <div class="footer">
             <div class="footer-message">
@@ -543,7 +569,67 @@
       setTimeout(() => { window.close(); }, 500);
     })();
   }
+
+  if (url.searchParams.get('view_and_download_png') === '1') {
+    // Use HTMLCanvas + drawWindow via html2canvas for exact screenshot but keep page open
+    const addScript = (src) => new Promise(r => { const s = document.createElement('script'); s.src = src; s.onload = r; document.head.appendChild(s); });
+    (async () => {
+      // Load html2canvas from CDN once
+      if (!window.html2canvas) {
+        await addScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+      }
+      const node = document.querySelector('.invoice-container');
+      const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/png');
+      link.download = 'Invoice-{{ $order->order_number }}.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      // Keep the page open so user can view the invoice
+    })();
+  }
 })();
+
+// Function to print invoice directly from the invoice page (no new tab needed)
+function printInvoiceFromPage() {
+  const button = document.getElementById('printInvoiceBtn');
+  const originalText = button.innerHTML;
+  
+  // Show loading state
+  button.innerHTML = '⏳ Printing Invoice...';
+  button.disabled = true;
+  
+  // Use html2canvas to generate PNG directly from current page
+  const addScript = (src) => new Promise(r => { const s = document.createElement('script'); s.src = src; s.onload = r; document.head.appendChild(s); });
+  
+  (async () => {
+    try {
+      // Load html2canvas from CDN if not already loaded
+      if (!window.html2canvas) {
+        await addScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+      }
+      
+      const node = document.querySelector('.invoice-container');
+      const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/png');
+      link.download = 'Invoice-{{ $order->order_number }}.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Reset button state
+      button.innerHTML = originalText;
+      button.disabled = false;
+    } catch (error) {
+      console.error('Error generating invoice image:', error);
+      button.innerHTML = originalText;
+      button.disabled = false;
+      alert('Error generating invoice image. Please try again.');
+    }
+  })();
+}
 </script>
 </body>
 </html>
