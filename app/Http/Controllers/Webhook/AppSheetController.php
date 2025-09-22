@@ -172,13 +172,8 @@ class AppSheetController extends Controller
             $orderData['external_id'] = null;
             $orderData['external_customer_id'] = null;
             
-            // Generate new order number for webapp orders
-            $latestOrder = OrderModel::where('external_source', 'webapp')
-                ->orderBy('id', 'desc')
-                ->first();
-            
-            $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
-            $orderData['order_number'] = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+            // Use same order number as Shopify order with SH- prefix for easy identification
+            $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
             
             // Set current timestamp for order date
             $orderData['order_date'] = now();

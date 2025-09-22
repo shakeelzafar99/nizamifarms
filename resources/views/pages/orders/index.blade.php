@@ -1707,9 +1707,16 @@ function openCustomerDetails(customerId) {
 
 // Edit Order Details
 function convertOrder(orderId) {
-    if (!confirm('Are you sure you want to convert this Shopify order to a webapp invoice? This will create a duplicate order with source "webapp" and mark the original as converted.')) {
+    if (!confirm('Are you sure you want to convert this Shopify order to a webapp invoice? This will match SKUs with your products and recalculate prices based on your rates.')) {
         return;
     }
+    
+    // Show loading state
+    const approveButtons = document.querySelectorAll(`button[onclick="convertOrder(${orderId})"]`);
+    approveButtons.forEach(btn => {
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" class="opacity-75"></path></svg> Converting...';
+    });
     
     fetch(`/orders/${orderId}/convert`, {
         method: 'POST',
@@ -1721,16 +1728,57 @@ function convertOrder(orderId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert(`Order converted successfully! New invoice order #${data.converted_order.order_number} created.`);
+            let message = `Order converted successfully! New invoice order #${data.converted_order.order_number} created.`;
+            
+            // Show price changes if any
+            if (data.price_changes && data.price_changes.length > 0) {
+                message += '\n\nPrice Changes:';
+                data.price_changes.forEach(change => {
+                    message += `\n• ${change.name} (${change.sku}): PKR ${change.original_price} → PKR ${change.new_price} (Qty: ${change.quantity})`;
+                });
+            }
+            
+            // Show warnings if any
+            if (data.warnings && data.warnings.length > 0) {
+                message += '\n\nWarnings:';
+                data.warnings.forEach(warning => {
+                    message += `\n• ${warning}`;
+                });
+            }
+            
+            alert(message);
             // Refresh the page to show updated data
             window.location.reload();
         } else {
-            alert('Error converting order: ' + (data.message || 'Unknown error'));
+            // Show detailed error information
+            let errorMessage = 'Error converting order:\n' + (data.message || 'Unknown error');
+            
+            if (data.errors && data.errors.length > 0) {
+                errorMessage += '\n\nDetails:';
+                data.errors.forEach(error => {
+                    errorMessage += `\n• ${error}`;
+                });
+                errorMessage += '\n\nPlease fix these issues in your products and try again.';
+            }
+            
+            alert(errorMessage);
+            
+            // Restore button state
+            approveButtons.forEach(btn => {
+                btn.disabled = false;
+                btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+            });
         }
     })
     .catch(error => {
         console.error('Error converting order:', error);
         alert('Error converting order. Please try again.');
+        
+        // Restore button state
+        approveButtons.forEach(btn => {
+            btn.disabled = false;
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+        });
     });
 }
 

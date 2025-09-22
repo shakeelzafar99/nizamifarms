@@ -676,7 +676,13 @@ class OrderController extends Controller
                 ], 400);
             }
             
-            // Prepare order data for conversion (exact replica but with webapp source)
+            // Validate SKUs and recalculate prices
+            $validationResult = $this->validateAndRecalculateOrder($originalOrder);
+            if (!$validationResult['success']) {
+                return response()->json($validationResult, 400);
+            }
+            
+            // Prepare order data for conversion
             $orderData = $originalOrder->toArray();
             
             // Remove fields that should not be duplicated
@@ -689,28 +695,16 @@ class OrderController extends Controller
             $orderData['external_id'] = null;
             $orderData['external_customer_id'] = null;
             
-            // Generate new order number for webapp orders
-            $latestOrder = \App\Models\CRM\OrderModel::where('external_source', 'webapp')
-                ->orderBy('id', 'desc')
-                ->first();
-            
-            $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
-            $orderData['order_number'] = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+            // Use same order number as Shopify order with SH- prefix for easy identification
+            $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
             
             // Set current timestamp for order date
             $orderData['order_date'] = now();
             
-            // Prepare line items data
-            $lineItems = [];
-            foreach ($originalOrder->lineItems as $item) {
-                $lineItemData = $item->toArray();
-                unset($lineItemData['id']);
-                unset($lineItemData['order_id']);
-                unset($lineItemData['created_at']);
-                unset($lineItemData['updated_at']);
-                $lineItems[] = $lineItemData;
-            }
-            $orderData['line_items'] = $lineItems;
+            // Use recalculated line items and totals
+            $orderData['line_items'] = $validationResult['recalculated_line_items'];
+            $orderData['subtotal_price'] = $validationResult['new_subtotal'];
+            $orderData['total_price'] = $validationResult['new_total'];
             
             // Use existing storeOrderFromApi method to create the converted order
             $convertedOrder = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
@@ -718,12 +712,20 @@ class OrderController extends Controller
             // Mark original order as converted
             $originalOrder->update(['converted' => 1]);
             
+            // Prepare response message with any warnings
+            $message = 'Order converted successfully with recalculated prices based on your product rates';
+            if (!empty($validationResult['warnings'])) {
+                $message .= '. Warnings: ' . implode(', ', $validationResult['warnings']);
+            }
+            
             return response()->json([
                 'success' => true,
-                'message' => 'Order converted successfully',
+                'message' => $message,
                 'original_order_id' => $originalOrder->id,
                 'converted_order_id' => $convertedOrder->id,
-                'converted_order' => $convertedOrder->load(['customer', 'lineItems'])
+                'converted_order' => $convertedOrder->load(['customer', 'lineItems']),
+                'price_changes' => $validationResult['price_changes'],
+                'warnings' => $validationResult['warnings'] ?? []
             ]);
             
         } catch (\Exception $e) {
@@ -732,6 +734,112 @@ class OrderController extends Controller
                 'message' => 'Failed to convert order: ' . $e->getMessage()
             ], 500);
         }
+    }
+    
+    /**
+     * Validate SKUs and recalculate order totals based on local product prices
+     */
+    private function validateAndRecalculateOrder($shopifyOrder)
+    {
+        $validationErrors = [];
+        $warnings = [];
+        $priceChanges = [];
+        $recalculatedLineItems = [];
+        $newSubtotal = 0;
+        
+        // Validate coupon if present
+        if ($shopifyOrder->coupon_code) {
+            $coupon = \App\Models\CRM\CouponModel::where('code', $shopifyOrder->coupon_code)
+                ->where('is_active', true)
+                ->first();
+            
+            if (!$coupon) {
+                $warnings[] = "Coupon '{$shopifyOrder->coupon_code}' not found in your system - please add it manually";
+            }
+        }
+        
+        // Process each line item
+        foreach ($shopifyOrder->lineItems as $lineItem) {
+            if (!$lineItem->sku) {
+                $validationErrors[] = "Line item '{$lineItem->name}' has no SKU";
+                continue;
+            }
+            
+            // Find product variant by SKU
+            $productVariants = \App\Models\CRM\ProductVariantModel::where('sku', $lineItem->sku)->get();
+            
+            if ($productVariants->isEmpty()) {
+                $validationErrors[] = "SKU '{$lineItem->sku}' not found in your products";
+                continue;
+            }
+            
+            if ($productVariants->count() > 1) {
+                $validationErrors[] = "SKU '{$lineItem->sku}' found in multiple products - please ensure unique SKUs";
+                continue;
+            }
+            
+            $productVariant = $productVariants->first();
+            $originalPrice = (float) $lineItem->unit_price;
+            $newPrice = (float) $productVariant->price;
+            $quantity = (int) $lineItem->quantity;
+            
+            // Calculate new line total
+            $newLineTotal = $quantity * $newPrice;
+            $originalLineTotal = $quantity * $originalPrice;
+            
+            // Track price changes
+            if ($originalPrice != $newPrice) {
+                $priceChanges[] = [
+                    'sku' => $lineItem->sku,
+                    'name' => $lineItem->name,
+                    'original_price' => $originalPrice,
+                    'new_price' => $newPrice,
+                    'quantity' => $quantity,
+                    'original_total' => $originalLineTotal,
+                    'new_total' => $newLineTotal
+                ];
+            }
+            
+            // Prepare recalculated line item
+            $lineItemData = $lineItem->toArray();
+            unset($lineItemData['id']);
+            unset($lineItemData['order_id']);
+            unset($lineItemData['created_at']);
+            unset($lineItemData['updated_at']);
+            
+            // Update with new prices
+            $lineItemData['unit_price'] = $newPrice;
+            $lineItemData['line_total'] = $newLineTotal;
+            $lineItemData['line_subtotal'] = $newLineTotal; // Assuming no line-level discounts
+            
+            $recalculatedLineItems[] = $lineItemData;
+            $newSubtotal += $newLineTotal;
+        }
+        
+        // If there are validation errors, stop conversion
+        if (!empty($validationErrors)) {
+            return [
+                'success' => false,
+                'message' => 'Cannot convert order due to the following issues: ' . implode(', ', $validationErrors),
+                'errors' => $validationErrors
+            ];
+        }
+        
+        // Calculate new total (preserve shipping, tax, and discount structure)
+        $shippingTotal = (float) $shopifyOrder->shipping_total;
+        $taxTotal = (float) $shopifyOrder->total_tax;
+        $discountTotal = (float) $shopifyOrder->discount_total;
+        
+        $newTotal = $newSubtotal + $shippingTotal + $taxTotal - $discountTotal;
+        
+        return [
+            'success' => true,
+            'recalculated_line_items' => $recalculatedLineItems,
+            'new_subtotal' => $newSubtotal,
+            'new_total' => $newTotal,
+            'price_changes' => $priceChanges,
+            'warnings' => $warnings
+        ];
     }
 
     public function ignoreOrder($id)
