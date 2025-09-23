@@ -3,33 +3,45 @@
 @section('title', 'Products')
 
 @section('content')
+<!-- Enhanced Header Section -->
 <div class="container-fixed">
-    <div class="flex flex-wrap items-center lg:items-end justify-between gap-5 pb-7.5">
-        <div class="flex flex-col justify-center gap-2">
-            <h1 class="text-xl font-semibold leading-none text-foreground">Products</h1>
-            <div class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-                Manage your Shopify products and inventory
+    <div class="flex flex-wrap items-center lg:items-end justify-between gap-6 pb-6">
+        <div class="flex flex-col justify-center gap-3">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
+                    <i class="ki-filled ki-shop text-white text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold leading-tight text-gray-900">Products</h1>
+                    <div class="flex items-center gap-2 text-sm font-medium text-gray-600 mt-1">
+                        <i class="ki-filled ki-information-2 text-blue-500"></i>
+                        {{ $products->total() }} products found
+                    </div>
+                </div>
             </div>
         </div>
         
-        <div class="flex items-center gap-2.5">
-            <a href="{{ route('products.create') }}" class="kt-btn kt-btn-light">
-                <i class="ki-filled ki-plus"></i>
-                Create Product
-            </a>
-            <button onclick="openColumnSettings()" class="kt-btn kt-btn-light">
-                <i class="ki-filled ki-setting-2"></i>
-                Columns
-            </button>
-            <a href="{{ route('products.attributes') }}" class="kt-btn kt-btn-light">
-                <i class="ki-filled ki-category"></i>
-                Attributes
-            </a>
-            <button onclick="openBulkAdjustPricesModal()" class="kt-btn kt-btn-light">
-                <i class="ki-filled ki-price-tag"></i>
-                Adjust Prices
-            </button>
-            <button onclick="openImportModal()" class="kt-btn kt-btn-primary">
+        <!-- Enhanced Action Buttons -->
+        <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-1">
+                <a href="{{ route('products.create') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
+                    <i class="ki-filled ki-plus text-blue-500"></i>
+                    Create Product
+                </a>
+                <button onclick="openColumnSettings()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
+                    <i class="ki-filled ki-setting-2 text-gray-500"></i>
+                    Columns
+                </button>
+                <a href="{{ route('products.attributes') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
+                    <i class="ki-filled ki-category text-gray-500"></i>
+                    Attributes
+                </a>
+                <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
+                    <i class="ki-filled ki-price-tag text-gray-500"></i>
+                    Adjust Prices
+                </button>
+            </div>
+            <button onclick="openImportModal()" class="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 transform hover:-translate-y-0.5">
                 <i class="ki-filled ki-cloud-download"></i>
                 Import Products
             </button>
@@ -37,114 +49,180 @@
     </div>
 </div>
 
+<!-- Enhanced Main Content -->
 <div class="container-fixed">
-    <div class="grid gap-5 lg:gap-7.5">
-        <div class="card card-grid min-w-full">
-            <div class="card-header flex-wrap gap-2">
-                <h3 class="card-title font-medium text-sm">All Products</h3>
-                
-                <div class="flex flex-wrap gap-2 lg:gap-5">
-                    <!-- Search -->
-                    <form method="GET" class="flex items-center gap-2" id="productSearchForm">
-                        <input type="text" name="search" value="{{ request('search') }}" 
-                               placeholder="Search products, SKUs..." 
-                               class="input input-sm w-48"
-                               id="productSearchInput"
-                               autocomplete="off">
+    <div class="grid gap-4">
+        <!-- Modern Card with Enhanced Styling -->
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <!-- Enhanced Filter Section -->
+            <div class="bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 px-6 py-4">
+                    <form method="GET" id="productSearchForm">
+                        <!-- Search Bar Row -->
+                        <div class="flex items-center gap-4 mb-4">
+                            <div class="flex-1 relative">
+                                <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                    </svg>
+                                </div>
+                                <input type="text" name="search" value="{{ request('search') }}" 
+                                       placeholder="Search products, SKUs, vendors..." 
+                                       class="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 bg-white shadow-sm text-gray-900 placeholder-gray-500"
+                                       id="productSearchInput"
+                                       autocomplete="off">
+                            </div>
+                            <button type="submit" onclick="event.preventDefault(); performSearch();" 
+                                    class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                                </svg>
+                                Search
+                            </button>
+                        </div>
                         
-                        <!-- Status Filter -->
-                        <select name="status" class="select select-sm" id="statusFilter">
-                            <option value="">All Status</option>
-                            <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                            <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
-                            <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
-                        </select>
+                        <!-- Filter Pills Row -->
+                        <div class="flex flex-wrap items-center gap-3">
+                            <!-- Status Filter -->
+                            <div class="relative min-w-[120px]">
+                                <select name="status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="statusFilter">
+                                    <option value="">All Status</option>
+                                    <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
+                                    <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
+                                    <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
 
-                        <!-- Category Filter -->
-                        <select name="product_type" class="select select-sm" id="categoryFilter">
-                            <option value="">All Categories</option>
-                            @foreach($productTypes as $type)
-                                <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
-                                    {{ $type }}
-                                </option>
-                            @endforeach
-                        </select>
+                            <!-- Category Filter -->
+                            <div class="relative min-w-[140px]">
+                                <select name="product_type" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="categoryFilter">
+                                    <option value="">All Categories</option>
+                                    @foreach($productTypes as $type)
+                                        <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
+                                            {{ $type }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
 
-                        <!-- Vendor Filter -->
-                        <select name="vendor" class="select select-sm" id="vendorFilter">
-                            <option value="">All Vendors</option>
-                            @foreach($vendors as $vendor)
-                                <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
-                                    {{ $vendor }}
-                                </option>
-                            @endforeach
-                        </select>
+                            <!-- Vendor Filter -->
+                            <div class="relative min-w-[130px]">
+                                <select name="vendor" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="vendorFilter">
+                                    <option value="">All Vendors</option>
+                                    @foreach($vendors as $vendor)
+                                        <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
+                                            {{ $vendor }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
 
-                        <!-- Category Level 1 Filter -->
-                        <select name="attribute_1" class="select select-sm" id="attr1Filter">
-                            <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
-                            @foreach($attribute1s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                        
-                        <!-- Other Attribute Filters - Hidden for now -->
-                        <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
-                            <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
-                            @foreach($attribute2s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                        <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
-                            <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
-                            @foreach($attribute3s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                        
-                        <!-- Sync Status Filter -->
-                        <select name="sync_status" class="select select-sm" id="syncStatusFilter">
-                            <option value="">All Sources</option>
-                            @foreach($syncStatuses as $syncStatus)
-                                <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
-                                    {{ ucfirst($syncStatus) }}
-                                </option>
-                            @endforeach
-                        </select>
-                        
-                        <button type="submit" class="kt-btn kt-btn-sm kt-btn-light" onclick="event.preventDefault(); performSearch();">Filter</button>
-                        @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
-                            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-sm kt-btn-light" id="clearFiltersBtn" onclick="event.preventDefault(); clearAllFilters();">Clear</a>
-                        @endif
+                            <!-- Category Level 1 Filter -->
+                            <div class="relative min-w-[160px]">
+                                <select name="attribute_1" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="attr1Filter">
+                                    <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
+                                    @foreach($attribute1s as $val)
+                                        <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
+                                            {{ $val }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            
+                            <!-- Hidden Attribute Filters -->
+                            <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
+                                <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
+                                @foreach($attribute2s as $val)
+                                    <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
+                                        {{ $val }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
+                                <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
+                                @foreach($attribute3s as $val)
+                                    <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
+                                        {{ $val }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            
+                            <!-- Sync Status Filter -->
+                            <div class="relative min-w-[130px]">
+                                <select name="sync_status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="syncStatusFilter">
+                                    <option value="">All Sources</option>
+                                    @foreach($syncStatuses as $syncStatus)
+                                        <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
+                                            {{ ucfirst($syncStatus) }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            
+                            @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
+                                <button type="button" onclick="event.preventDefault(); clearAllFilters();" 
+                                        class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-all duration-200" id="clearFiltersBtn">
+                                    <i class="ki-filled ki-cross-circle text-red-500"></i>
+                                    Clear Filters
+                                </button>
+                            @endif
+                        </div>
                     </form>
                 </div>
             </div>
 
-            <div class="card-body">
-                <div class="scrollable-x-auto">
-                    <table class="table table-auto table-border" data-datatable="true" id="productsTable">
-                        <thead id="tableHead">
-                            <!-- Dynamic headers will be inserted here -->
-                        </thead>
-                        <tbody id="tableBody">
-                            <!-- Dynamic rows will be inserted here -->
-                        </tbody>
-                    </table>
+            <!-- Enhanced Table Section -->
+            <div class="px-6 pb-6">
+                <div class="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full" id="productsTable">
+                            <thead id="tableHead" class="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
+                                <!-- Dynamic headers will be inserted here -->
+                            </thead>
+                            <tbody id="tableBody" class="divide-y divide-gray-100">
+                                <!-- Dynamic rows will be inserted here -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
-                <!-- Pagination -->
-                <div class="flex items-center justify-between mt-5">
-                    <div class="text-sm text-gray-700">
-                        Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }} 
-                        of {{ $products->total() }} products
+                <!-- Enhanced Pagination -->
+                <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6 pt-6 border-t border-gray-100">
+                    <div class="flex items-center gap-2 text-sm text-gray-600">
+                        <div class="flex items-center gap-1">
+                            <i class="ki-filled ki-information-2 text-blue-500"></i>
+                            <span class="font-medium">Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }}</span>
+                        </div>
+                        <span>of</span>
+                        <span class="font-semibold text-gray-900">{{ $products->total() }} products</span>
                     </div>
-                    {{ $products->appends(request()->query())->links() }}
+                    <div class="flex items-center gap-2">
+                        {{ $products->appends(request()->query())->links() }}
+                    </div>
                 </div>
             </div>
         </div>
@@ -768,7 +846,7 @@ function renderTableHeaders() {
         if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
             const column = availableColumns[columnKey];
             const th = document.createElement('th');
-            th.className = column.width;
+            th.className = `${column.width} px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider`;
             th.textContent = column.label;
             headerRow.appendChild(th);
         }
@@ -782,13 +860,14 @@ function renderTableBody() {
     const tbody = document.getElementById('tableBody');
     tbody.innerHTML = '';
 
-    window.productsData.forEach(product => {
+    window.productsData.forEach((product, index) => {
         const row = document.createElement('tr');
-        row.className = 'hover:bg-gray-50';
+        row.className = 'hover:bg-blue-50 transition-colors duration-150 cursor-pointer group';
         
         columnOrder.forEach(columnKey => {
             if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
                 const cell = document.createElement('td');
+                cell.className = 'px-6 py-4 whitespace-nowrap';
                 cell.innerHTML = getCellContent(columnKey, product);
                 row.appendChild(cell);
             }
@@ -802,89 +881,155 @@ function getCellContent(columnKey, product) {
     switch(columnKey) {
         case 'image':
             if (product.featured_image) {
-                return `<img src="${product.featured_image}" alt="${product.title}" class="w-12 h-12 object-cover rounded">`;
+                return `<div class="relative">
+                    <img src="${product.featured_image}" alt="${product.title}" class="w-14 h-14 object-cover rounded-xl shadow-sm border border-gray-100 group-hover:shadow-md transition-shadow duration-200">
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent rounded-xl"></div>
+                </div>`;
             } else {
-                return `<div class="w-12 h-12 bg-gray-200 rounded flex items-center justify-center">
-                    <i class="ki-filled ki-picture text-gray-400"></i>
+                return `<div class="w-14 h-14 bg-gradient-to-br from-gray-100 to-gray-200 rounded-xl flex items-center justify-center border border-gray-100 group-hover:from-blue-50 group-hover:to-blue-100 transition-colors duration-200">
+                    <i class="ki-filled ki-picture text-gray-400 text-lg"></i>
                 </div>`;
             }
             
         case 'title':
-            return `<div class="flex flex-col">
-                <span class="font-medium text-gray-900">${product.title}</span>
-                ${product.product_type ? `<span class="text-xs text-gray-500">${product.product_type}</span>` : ''}
+            return `<div class="flex flex-col max-w-xs">
+                <span class="font-semibold text-gray-900 group-hover:text-blue-700 transition-colors duration-200 truncate" title="${product.title}">${product.title}</span>
+                ${product.product_type ? `<span class="text-xs text-gray-500 mt-1 font-medium">${product.product_type}</span>` : ''}
             </div>`;
             
         case 'skus':
             const skus = product.variants ? product.variants.map(v => v.sku).filter(sku => sku).join(', ') : '';
-            return skus ? `<span class="text-sm text-gray-600" title="${skus}">${skus.length > 30 ? skus.substring(0, 30) + '...' : skus}</span>` : '<span class="text-gray-400">-</span>';
+            return skus ? `<div class="flex items-center">
+                <span class="text-sm font-mono text-gray-700 bg-gray-50 px-2 py-1 rounded-lg border border-gray-200" title="${skus}">
+                    ${skus.length > 25 ? skus.substring(0, 25) + '...' : skus}
+                </span>
+            </div>` : '<span class="text-gray-400 text-sm">No SKU</span>';
             
         case 'status':
-            const statusClass = product.status === 'active' ? 'bg-green-100 text-green-800' : 
-                              (product.status === 'draft' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800');
-            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${statusClass}">
-                ${product.status.charAt(0).toUpperCase() + product.status.slice(1)}
-            </span>`;
+            const statusConfig = {
+                'active': { 
+                    bg: 'bg-green-50', 
+                    text: 'text-green-700', 
+                    border: 'border-green-200',
+                    icon: 'ki-check-circle',
+                    iconColor: 'text-green-500'
+                },
+                'draft': { 
+                    bg: 'bg-yellow-50', 
+                    text: 'text-yellow-700', 
+                    border: 'border-yellow-200',
+                    icon: 'ki-time',
+                    iconColor: 'text-yellow-500'
+                },
+                'archived': { 
+                    bg: 'bg-gray-50', 
+                    text: 'text-gray-700', 
+                    border: 'border-gray-200',
+                    icon: 'ki-archive',
+                    iconColor: 'text-gray-500'
+                }
+            };
+            const config = statusConfig[product.status] || statusConfig['archived'];
+            const statusText = product.status ? product.status.charAt(0).toUpperCase() + product.status.slice(1) : 'Unknown';
+            return `<div class="flex items-center">
+                <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${config.bg} ${config.text} ${config.border}">
+                    <i class="ki-filled ${config.icon} ${config.iconColor} text-xs"></i>
+                    <span class="text-xs font-semibold">${statusText}</span>
+                </div>
+            </div>`;
             
         case 'vendor':
-            return `<span class="text-sm text-gray-600">${product.vendor || '-'}</span>`;
+            return product.vendor ? 
+                `<div class="flex items-center gap-2">
+                    <div class="w-6 h-6 bg-gradient-to-br from-purple-100 to-purple-200 rounded-lg flex items-center justify-center">
+                        <i class="ki-filled ki-shop text-purple-600 text-xs"></i>
+                    </div>
+                    <span class="text-sm font-medium text-gray-700">${product.vendor}</span>
+                </div>` : 
+                '<span class="text-gray-400 text-sm">No vendor</span>';
             
         case 'product_type':
-            return `<span class="text-sm text-gray-600">${product.product_type || '-'}</span>`;
+            return product.product_type ? 
+                `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">${product.product_type}</span>` : 
+                '<span class="text-gray-400 text-sm">No type</span>';
             
         case 'attribute_1':
             return product.attribute_1 ? 
-                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-800">${product.attribute_1}</span>` : 
-                '<span class="text-gray-400">-</span>';
+                `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200">${product.attribute_1}</span>` : 
+                '<span class="text-gray-400 text-sm">-</span>';
                 
         case 'attribute_2':
             return product.attribute_2 ? 
-                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-indigo-100 text-indigo-800">${product.attribute_2}</span>` : 
-                '<span class="text-gray-400">-</span>';
+                `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">${product.attribute_2}</span>` : 
+                '<span class="text-gray-400 text-sm">-</span>';
                 
         case 'attribute_3':
             return product.attribute_3 ? 
-                `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-teal-100 text-teal-800">${product.attribute_3}</span>` : 
-                '<span class="text-gray-400">-</span>';
+                `<span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-teal-50 text-teal-700 border border-teal-200">${product.attribute_3}</span>` : 
+                '<span class="text-gray-400 text-sm">-</span>';
             
         case 'price_range':
             if (product.price_min && product.price_max) {
                 const priceRange = product.price_min === product.price_max ? 
                     `PKR ${parseFloat(product.price_min).toFixed(2)}` : 
                     `PKR ${parseFloat(product.price_min).toFixed(2)} - ${parseFloat(product.price_max).toFixed(2)}`;
-                return `<span class="font-medium">${priceRange}</span>`;
+                return `<div class="flex items-center gap-1">
+                    <i class="ki-filled ki-price-tag text-green-500 text-xs"></i>
+                    <span class="font-semibold text-gray-900">${priceRange}</span>
+                </div>`;
             }
-            return '<span class="text-gray-500">-</span>';
+            return '<span class="text-gray-400 text-sm">No price</span>';
             
         case 'variants_count':
             const variantCount = product.variants ? product.variants.length : 0;
-            return `<span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
-                ${variantCount}
-            </span>`;
+            const variantColor = variantCount > 1 ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-gray-50 text-gray-700 border-gray-200';
+            return `<div class="flex items-center">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold border ${variantColor}">
+                    ${variantCount} ${variantCount === 1 ? 'variant' : 'variants'}
+                </span>
+            </div>`;
             
         case 'total_inventory':
-            const inventoryClass = product.total_inventory > 0 ? 'text-green-600' : 'text-red-600';
-            return `<span class="font-medium ${inventoryClass}">${product.total_inventory || 0}</span>`;
+            const inventory = product.total_inventory || 0;
+            const inventoryConfig = inventory > 10 ? 
+                { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200', icon: 'ki-check-circle', iconColor: 'text-green-500' } :
+                inventory > 0 ? 
+                { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200', icon: 'ki-information-2', iconColor: 'text-yellow-500' } :
+                { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', icon: 'ki-cross-circle', iconColor: 'text-red-500' };
+            return `<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${inventoryConfig.bg} ${inventoryConfig.text} ${inventoryConfig.border}">
+                <i class="ki-filled ${inventoryConfig.icon} ${inventoryConfig.iconColor} text-xs"></i>
+                <span class="font-semibold text-xs">${inventory}</span>
+            </div>`;
             
         case 'last_synced_at':
             if (product.last_synced_at) {
                 const date = new Date(product.last_synced_at);
-                return `<span class="text-xs text-gray-500">${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>`;
+                const timeAgo = getTimeAgo(date);
+                return `<div class="flex items-center gap-1.5">
+                    <i class="ki-filled ki-time text-blue-500 text-xs"></i>
+                    <span class="text-xs text-gray-600" title="${date.toLocaleString()}">${timeAgo}</span>
+                </div>`;
             }
-            return '<span class="text-xs text-red-500">Never</span>';
+            return `<div class="flex items-center gap-1.5">
+                <i class="ki-filled ki-information-2 text-red-500 text-xs"></i>
+                <span class="text-xs font-medium text-red-600">Never</span>
+            </div>`;
             
         case 'actions':
-            return `<div class="flex gap-1">
+            return `<div class="flex items-center gap-1.5">
                 <button onclick="viewProduct(${product.id})" 
-                        class="kt-btn kt-btn-sm kt-btn-light" title="View Details">
+                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
+                        title="View Details">
                     <i class="ki-filled ki-eye text-sm"></i>
                 </button>
                 <button onclick="editProduct(${product.id})" 
-                        class="kt-btn kt-btn-sm kt-btn-primary" title="Edit Product">
+                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
+                        title="Edit Product">
                     <i class="ki-filled ki-pencil text-sm"></i>
                 </button>
                 ${product.shopify_product_id ? `<button onclick="syncProduct(${product.id})" 
-                        class="kt-btn kt-btn-sm kt-btn-success" title="Sync with Shopify">
+                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors duration-200 border border-purple-200" 
+                        title="Sync with Shopify">
                     <i class="ki-filled ki-arrows-circle text-sm"></i>
                 </button>` : ''}
             </div>`;
@@ -892,6 +1037,18 @@ function getCellContent(columnKey, product) {
         default:
             return '-';
     }
+}
+
+// Helper function for time ago display
+function getTimeAgo(date) {
+    const now = new Date();
+    const diffInSeconds = Math.floor((now - date) / 1000);
+    
+    if (diffInSeconds < 60) return 'Just now';
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+    if (diffInSeconds < 2592000) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function openColumnSettings() {
