@@ -1424,14 +1424,15 @@ function downloadInvoicePdf() {
         button.innerHTML = '⏳ Generating PDF...';
         button.disabled = true;
         
-        // Open web invoice and auto-trigger the browser print dialog for pixel-perfect output
+        // Use the same approach as PNG but for PDF - open invoice page with auto-PDF generation
         window.open('/orders/' + currentOrderId + '/invoice?print_pdf=1', '_blank');
         
         // Reset button after download attempt
         setTimeout(() => {
             button.innerHTML = originalText;
             button.disabled = false;
-        }, 5000);
+        }, 3000);
+        
     } else {
         console.error('No order ID available for PDF download');
     }
@@ -1576,12 +1577,13 @@ function updateViewModalButtons(order) {
                 </button>
                 <button onclick="downloadInvoiceImage()" 
                         style="background: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
-                        title="Download Image">
+                        title="Print Invoice as Image">
                     <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7,10 12,15 17,10"/>
+                        <path d="M6 9V2h12v7"/>
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                        <rect x="6" y="14" width="12" height="8"/>
                     </svg>
-                    PNG
+                    Print Invoice
                 </button>
                 <button onclick="openEditInTabFromView()" 
                         style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
@@ -4393,19 +4395,19 @@ function getCellContent(order, columnId) {
                         </div>`;
                 } else {
                     // Pending approval - show approve/ignore/view
-                    return `
-                        <div class="flex items-center justify-center gap-1.5">
-                            <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                            </button>
-                            <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                            </button>
+                return `
+                    <div class="flex items-center justify-center gap-1.5">
+                        <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                        </button>
+                        <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
                             <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                            </button>
-                        </div>`;
-                }
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        </button>
+                    </div>`;
+            }
             }
             
             // Default full actions for non-Shopify orders (webapp, manual, etc.)

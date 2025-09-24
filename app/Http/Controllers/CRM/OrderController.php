@@ -116,8 +116,8 @@ class OrderController extends Controller
         try {
             $order = $this->findOrder($id);
             
-            // Generate filename for download
-            $filename = 'Invoice-' . ($order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
+            // Generate filename for download (allow custom filename from request)
+            $filename = request('filename', 'Invoice-' . ($order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT)));
             
             // Check if user wants direct image download
             if (request()->has('download_image')) {
@@ -126,13 +126,8 @@ class OrderController extends Controller
             
             // Check if user wants auto PDF download
             if (request()->has('auto_pdf')) {
-                // Check if user wants direct PDF download (bypass browser display)
-                if (request()->has('direct_download')) {
-                    return $this->generateServerPDF($order, $filename);
-                }
-                
-                // Otherwise, use JavaScript-enhanced auto-download page
-                return $this->createJavaScriptPDFDownload($order, $filename);
+                // Always generate actual server PDF for auto_pdf requests
+                return $this->generateServerPDF($order, $filename);
             }
             
             // Check if user wants direct server-generated PDF download
@@ -214,6 +209,8 @@ class OrderController extends Controller
         try {
             // Increase execution time for PDF generation
             set_time_limit(120);
+            
+            \Log::info('Starting PDF generation for order: ' . $order->id . ' with filename: ' . $filename);
 
             // Prefer wkhtmltopdf first for pixel-perfect rendering
             try {
@@ -223,18 +220,23 @@ class OrderController extends Controller
 
                 // Fallback: use dompdf with print-optimized template
                 try {
-                    $pdf = \PDF::loadView('pages.orders.invoice-print', ['order' => $order, 'filename' => $filename, 'forExport' => true])
+                    $pdf = \PDF::loadView('pages.orders.invoice', ['order' => $order, 'filename' => $filename, 'isPdf' => true])
                         ->setOptions([
                             'isHtml5ParserEnabled' => true,
                             'isRemoteEnabled' => true,
-                            'defaultFont' => 'Times-Roman'
+                            'defaultFont' => 'DejaVu Sans',
+                            'isUnicode' => true,
+                            'isFontSubsettingEnabled' => true
                         ])
                         ->setPaper('A4', 'portrait');
 
-                    return response($pdf->output(), 200, [
+                    $pdfOutput = $pdf->output();
+                    \Log::info('Dompdf PDF generated successfully, size: ' . strlen($pdfOutput) . ' bytes');
+                    
+                    return response($pdfOutput, 200, [
                         'Content-Type' => 'application/pdf',
                         'Content-Disposition' => 'attachment; filename="' . $filename . '.pdf"',
-                        'Content-Length' => strlen($pdf->output()),
+                        'Content-Length' => strlen($pdfOutput),
                         'Cache-Control' => 'no-cache, no-store, must-revalidate',
                         'Pragma' => 'no-cache',
                         'Expires' => '0'
@@ -267,15 +269,19 @@ class OrderController extends Controller
             $htmlPath = $tempDir . '/' . $filename . '.html';
             $pdfPath = $tempDir . '/' . $filename . '.pdf';
             
-            file_put_contents($htmlPath, $html);
+            file_put_contents($htmlPath, $html, LOCK_EX);
             
             // Try wkhtmltopdf command (binary can be overridden via .env)
             $wkhtmltopdf = env('WKHTMLTOPDF_BIN', 'wkhtmltopdf');
             $wkhtmltopdf = escapeshellarg($wkhtmltopdf);
-            $command = "$wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --dpi 96 --zoom 1.0 --disable-smart-shrinking --enable-local-file-access \"{$htmlPath}\" \"{$pdfPath}\"";
+            $command = "$wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --dpi 300 --zoom 1.0 --disable-smart-shrinking --enable-local-file-access --print-media-type --background --encoding UTF-8 \"{$htmlPath}\" \"{$pdfPath}\"";
             exec($command . ' 2>&1', $output, $returnCode);
+            \Log::info('wkhtmltopdf command executed with return code: ' . $returnCode . ', output: ' . implode("\n", $output));
             
             if ($returnCode === 0 && file_exists($pdfPath)) {
+                $fileSize = filesize($pdfPath);
+                \Log::info('wkhtmltopdf PDF generated successfully, size: ' . $fileSize . ' bytes');
+                
                 // Clean up HTML file
                 unlink($htmlPath);
                 

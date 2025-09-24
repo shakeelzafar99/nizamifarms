@@ -2,9 +2,26 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Invoice #{{ $order->order_number }}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
+        /* Embedded Unicode font for PDF reliability */
+        @font-face {
+            font-family: 'InvoiceUnicode';
+            src: url('https://fonts.gstatic.com/s/notosans/v36/o-0IIpQlx3QUlC5A4PNr5TRASf6M7Q.woff2') format('woff2');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: 'InvoiceUnicode';
+            src: url('https://fonts.gstatic.com/s/notosans/v36/o-0NIpQlx3QUlC5A4PNjXhFVZNyB.woff2') format('woff2');
+            font-weight: 600;
+            font-style: normal;
+            font-display: swap;
+        }
         * {
             margin: 0;
             padding: 0;
@@ -13,17 +30,24 @@
         @page { margin: 3mm 8mm 8mm 8mm; }
         
         body {
-            font-family: 'Inter', Arial, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background-color: #f5f5f5;
             padding: 20px;
+            color: #1a202c;
+            line-height: 1.5;
         }
         /* PDF-specific complete override */
         @if(!empty($isPdf))
+        :root { font-size: 14px; }  /* stabilize rems */
+        html, body { margin: 0; padding: 0; }
+        *, *::before, *::after { box-sizing: border-box; }
+        
         body {
             background: #ffffff !important;
             padding: 0 !important;
             margin: 0 !important;
-            font-family: 'DejaVu Sans', Arial, sans-serif !important;
+            font-family: 'InvoiceUnicode', 'Noto Sans', 'DejaVu Sans', 'Arial Unicode MS', Arial, sans-serif !important;
+            color: #000000 !important;
         }
         .invoice-container {
             box-shadow: none !important;
@@ -31,37 +55,49 @@
             margin: 0 !important;
         }
         .invoice-header {
-            padding: 4px 12px !important;
-            margin-bottom: 4px !important;
+            padding: 8px 12px !important;
+            margin-bottom: 6px !important;
             display: flex !important;
             justify-content: space-between !important;
             align-items: flex-start !important;
+            min-height: 30px !important;
         }
         .logo-section {
-            flex: 1 !important;
+            flex: 0 0 auto !important;
             display: flex !important;
             align-items: flex-start !important;
+            width: 120px !important;
         }
         .logo {
-            width: auto !important;
-            height: auto !important;
+            width: 120px !important;
+            height: 30px !important;
             padding: 0 !important;
             box-shadow: none !important;
             border-radius: 0 !important;
             background: none !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
         }
         .logo img {
-            height: 40px !important;
+            height: 28px !important;
             width: auto !important;
+            max-width: 120px !important;
             display: block !important;
         }
         .company-details {
             flex: 1 !important;
             text-align: right !important;
             font-size: 10px !important;
-            line-height: 1.2 !important;
+            line-height: 1.3 !important;
             margin-top: 0 !important;
             align-self: flex-start !important;
+            padding-left: 10px !important;
+            color: #000000 !important;
+        }
+        .company-details strong {
+            font-weight: bold !important;
+            color: #000000 !important;
         }
         .invoice-title {
             padding: 4px 12px !important;
@@ -70,28 +106,177 @@
         }
         .invoice-title h2 {
             margin: 0 !important;
-            font-size: 20px !important;
+            font-size: 24px !important;
             text-align: center !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+            letter-spacing: 2px !important;
         }
         .invoice-info {
-            padding: 8px 12px !important;
+            padding: 6px 12px !important;
         }
         .invoice-columns {
             display: flex !important;
             justify-content: space-between !important;
             align-items: flex-start !important;
+            gap: 20px !important;
         }
-        .customer-info h3, .order-info h3 {
+        .invoice-col {
+            flex: 1 !important;
+        }
+        .customer-info h3 {
             margin: 0 0 6px 0 !important;
             font-size: 12px !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            height: 18px !important;
+        }
+        .order-info h3 {
+            margin: 0 0 6px 0 !important;
+            font-size: 12px !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            height: 18px !important;
+            text-align: right !important;
+        }
+        .order-info {
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+        }
+        .order-details {
+            margin-top: 0 !important;
         }
         .customer-details, .order-details {
             font-size: 11px !important;
             line-height: 1.4 !important;
+            color: #000000 !important;
         }
         .order-details {
             text-align: right !important;
         }
+        .order-details strong {
+            font-weight: bold !important;
+            color: #000000 !important;
+        }
+        .customer-name {
+            font-size: 12px !important;
+            font-weight: bold !important;
+            margin-bottom: 3px !important;
+            color: #000000 !important;
+        }
+        .products-table {
+            margin: 6px 12px !important;
+            width: calc(100% - 24px) !important;
+            margin-bottom: 10px !important;
+        }
+        .products-table th {
+            padding: 10px 8px !important;
+            font-size: 11px !important;
+            font-weight: bold !important;
+            color: #ffffff !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.5px !important;
+        }
+        .products-table td {
+            padding: 8px 8px !important;
+            font-size: 11px !important;
+            color: #000000 !important;
+        }
+        .product-name {
+            font-size: 11px !important;
+            font-weight: bold !important;
+            margin-bottom: 2px !important;
+            color: #000000 !important;
+        }
+        .product-sku {
+            font-size: 9px !important;
+            color: #666666 !important;
+            font-style: italic !important;
+        }
+        .totals-section {
+            padding: 0 12px 10px 12px !important;
+        }
+        .totals-table {
+            max-width: 250px !important;
+        }
+        .totals-table td {
+            padding: 6px 10px !important;
+            font-size: 11px !important;
+            color: #000000 !important;
+        }
+        .totals-table .label {
+            font-weight: bold !important;
+        }
+        .totals-table .amount {
+            font-weight: bold !important;
+        }
+        .totals-table .total-row .label,
+        .totals-table .total-row .amount {
+            font-size: 13px !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+        }
+        .footer {
+            padding: 10px 12px !important;
+            font-size: 9px !important;
+            color: #000000 !important;
+        }
+        .footer-message {
+            font-size: 10px !important;
+            margin-bottom: 6px !important;
+            font-weight: 500 !important;
+            color: #000000 !important;
+        }
+        .footer-contact {
+            font-size: 9px !important;
+            color: #000000 !important;
+        }
+        
+        /* PDF-friendly table layout for reliable alignment */
+        .invoice-two-col {
+            width: 100% !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+            margin-bottom: 12px !important;
+        }
+        .invoice-two-col td {
+            vertical-align: top !important;
+            padding: 0 !important;
+        }
+        .invoice-col-left { width: 58% !important; }
+        .invoice-col-right { width: 42% !important; }
+        
+        .invoice-block h5, .invoice-block .title {
+            margin: 0 0 6px 0 !important;
+            font-size: 12px !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.5px !important;
+        }
+        .invoice-block p {
+            margin: 0 0 4px 0 !important;
+            line-height: 1.3 !important;
+            font-size: 11px !important;
+            color: #000000 !important;
+        }
+        
+        /* Fixed table layout for products */
+        .products-table {
+            table-layout: fixed !important;
+            width: calc(100% - 24px) !important;
+            border-collapse: separate !important;
+            border-spacing: 0 !important;
+        }
+        .products-table th.col-product, .products-table td.col-product { width: 56% !important; white-space: normal !important; }
+        .products-table th.col-qty, .products-table td.col-qty { width: 12% !important; text-align: center !important; }
+        .products-table th.col-price, .products-table td.col-price { width: 14% !important; text-align: center !important; }
+        .products-table th.col-total, .products-table td.col-total { width: 18% !important; text-align: right !important; }
+        
         @endif
         
         .invoice-container {
@@ -171,10 +356,12 @@
         }
         
         .invoice-title h2 {
-            font-size: 28px;
-            font-weight: bold;
-            color: #2d3748;
+            font-size: 32px;
+            font-weight: 700;
+            color: #1a202c;
             text-align: center;
+            letter-spacing: 1px;
+            margin: 0;
         }
         
         .invoice-info { padding: 30px; }
@@ -183,10 +370,12 @@
         
         .customer-info h3,
         .order-info h3 {
-            font-size: 14px;
-            font-weight: bold;
-            color: #2d3748;
-            margin-bottom: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         
         .customer-details,
@@ -194,6 +383,36 @@
             font-size: 14px;
             line-height: 1.6;
             color: #4a5568;
+            font-weight: 400;
+        }
+        
+        .customer-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 6px;
+        }
+        
+        .order-details strong {
+            color: #1a202c;
+            font-weight: 600;
+        }
+        
+        /* Fix web view alignment too */
+        .invoice-columns {
+            align-items: flex-start;
+        }
+        
+        .customer-info h3,
+        .order-info h3 {
+            margin-top: 0;
+            margin-bottom: 12px;
+            height: 20px;
+            line-height: 20px;
+        }
+        
+        .order-info h3 {
+            text-align: right;
         }
         
         .customer-details div,
@@ -219,11 +438,12 @@
         }
         
         .products-table th {
-            padding: 15px 10px;
+            padding: 16px 12px;
             text-align: left;
-            font-size: 12px;
-            font-weight: bold;
+            font-size: 13px;
+            font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         
         .products-table th:nth-child(2),
@@ -244,9 +464,10 @@
         }
         
         .products-table td {
-            padding: 15px 10px;
-            font-size: 13px;
+            padding: 16px 12px;
+            font-size: 14px;
             color: #4a5568;
+            font-weight: 400;
         }
         
         .products-table td:nth-child(2),
@@ -256,18 +477,21 @@
         
         .products-table td:last-child {
             text-align: right;
-            font-weight: bold;
+            font-weight: 600;
+            color: #1a202c;
         }
         
         .product-name {
-            font-weight: bold;
-            color: #2d3748;
-            margin-bottom: 3px;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 4px;
+            font-size: 14px;
         }
         
         .product-sku {
-            font-size: 11px;
+            font-size: 12px;
             color: #718096;
+            font-weight: 400;
         }
         
         .totals-section {
@@ -282,33 +506,34 @@
         }
         
         .totals-table td {
-            padding: 8px 15px;
+            padding: 10px 16px;
             font-size: 14px;
+            font-weight: 400;
         }
         
         .totals-table .label {
             text-align: right;
-            font-weight: bold;
+            font-weight: 500;
             color: #4a5568;
             border-right: 1px solid #e2e8f0;
         }
         
         .totals-table .amount {
             text-align: right;
-            color: #2d3748;
-            font-weight: bold;
+            color: #1a202c;
+            font-weight: 600;
         }
         
         .totals-table .total-row {
-            border-top: 2px solid #2d3748;
+            border-top: 2px solid #1a202c;
             background-color: #f7fafc;
         }
         
         .totals-table .total-row .label,
         .totals-table .total-row .amount {
             font-size: 16px;
-            font-weight: bold;
-            color: #2d3748;
+            font-weight: 700;
+            color: #1a202c;
         }
         
         .footer {
@@ -319,21 +544,26 @@
         }
         
         .footer-message {
-            font-size: 14px;
+            font-size: 15px;
             color: #4a5568;
-            margin-bottom: 15px;
+            margin-bottom: 16px;
+            font-weight: 500;
+            font-style: italic;
         }
         
         .footer-contact {
-            font-size: 12px;
+            font-size: 13px;
             color: #718096;
-            line-height: 1.5;
+            line-height: 1.6;
+            font-weight: 400;
         }
         
         @media print {
             body {
                 padding: 0;
-                background-color: white;
+                background-color: white !important;
+                -webkit-print-color-adjust: exact !important;
+                color-adjust: exact !important;
             }
             
             .invoice-container {
@@ -341,6 +571,24 @@
                 max-width: none;
             }
             
+            .products-table thead {
+                background-color: #2d3748 !important;
+                color: white !important;
+                -webkit-print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
+            
+            .totals-table .total-row {
+                background-color: #f7fafc !important;
+                -webkit-print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
+            
+            .footer {
+                background-color: #f7fafc !important;
+                -webkit-print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
         }
     </style>
 </head>
@@ -349,6 +597,7 @@
 $autoPrint = request('print_pdf') == '1'; 
 $autoPng = request('auto_png') == '1'; 
 $viewAndDownloadPng = request('view_and_download_png') == '1';
+$isPngDownload = $autoPng || $viewAndDownloadPng;
 @endphp
     <div class="invoice-container">
         <!-- Header -->
@@ -375,7 +624,7 @@ $viewAndDownloadPng = request('view_and_download_png') == '1';
         }
     }
 @endphp
-                    @if(!empty($isPdf) && $logoDataUri)
+                    @if((!empty($isPdf) || $isPngDownload) && $logoDataUri)
                         <img src="{{ $logoDataUri }}" alt="Nizami Farms" style="height: 42px; width: auto; display: block;">
                     @else
                         <!-- Preserve robust web fallback with JS as it was working -->
@@ -419,63 +668,99 @@ $viewAndDownloadPng = request('view_and_download_png') == '1';
         
         <!-- Invoice Information -->
         <div class="invoice-info">
-            <div class="invoice-columns">
-            <div class="customer-section invoice-col">
-                <div class="customer-info">
-                    <h3>Bill To:</h3>
-                    <div class="customer-details">
-                    <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
-                    @if($order->customer && $order->customer->address1)
-                        <div>{{ $order->customer->address1 }}</div>
-                        @if($order->customer->address2)
-                            <div>{{ $order->customer->address2 }}</div>
+            @if(!empty($isPdf))
+                <!-- PDF-friendly table layout -->
+                <table class="invoice-two-col">
+                    <tr>
+                        <td class="invoice-col-left">
+                            <div class="invoice-block">
+                                <h5 class="title">BILL TO:</h5>
+                                <p><strong>{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</strong></p>
+                                @if($order->customer && $order->customer->address1)
+                                    <p>{{ $order->customer->address1 }}</p>
+                                    @if($order->customer->address2)
+                                        <p>{{ $order->customer->address2 }}</p>
+                                    @endif
+                                    <p>{{ $order->customer->city ?? '' }}@if($order->customer->province), {{ $order->customer->province }}@endif</p>
+                                    @if($order->customer->postal_code)
+                                        <p>{{ $order->customer->postal_code }}</p>
+                                    @endif
+                                @endif
+                                @if($order->customer && $order->customer->phone_original)
+                                    <p>{{ $order->customer->phone_original }}</p>
+                                @endif
+                            </div>
+                        </td>
+                        <td class="invoice-col-right">
+                            <div class="invoice-block" style="text-align: right;">
+                                <h5 class="title">INVOICE DETAILS:</h5>
+                                <p><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</p>
+                                <p><strong>Order Number:</strong> {{ $order->order_number }}</p>
+                                <p><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</p>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+            @else
+                <!-- Web view - keep existing flexbox layout -->
+                <div class="invoice-columns">
+                <div class="customer-section invoice-col">
+                    <div class="customer-info">
+                        <h3>Bill To:</h3>
+                        <div class="customer-details">
+                        <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
+                        @if($order->customer && $order->customer->address1)
+                            <div>{{ $order->customer->address1 }}</div>
+                            @if($order->customer->address2)
+                                <div>{{ $order->customer->address2 }}</div>
+                            @endif
+                            <div>{{ $order->customer->city ?? '' }}@if($order->customer->province), {{ $order->customer->province }}@endif</div>
+                            @if($order->customer->postal_code)
+                                <div>{{ $order->customer->postal_code }}</div>
+                            @endif
                         @endif
-                        <div>{{ $order->customer->city ?? '' }}@if($order->customer->province), {{ $order->customer->province }}@endif</div>
-                        @if($order->customer->postal_code)
-                            <div>{{ $order->customer->postal_code }}</div>
+                        @if($order->customer && $order->customer->phone_original)
+                            <div>{{ $order->customer->phone_original }}</div>
                         @endif
-                    @endif
-                    @if($order->customer && $order->customer->phone_original)
-                        <div>{{ $order->customer->phone_original }}</div>
-                    @endif
+                        </div>
                     </div>
                 </div>
-            </div>
-            <div class="order-section invoice-col">
-                <div class="order-info">
-                    <h3>&nbsp;</h3> <!-- Empty header to align with "Bill To:" -->
-                    <div class="order-details" style="text-align:right;">
-                        <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
-                        <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
-                        <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                <div class="order-section invoice-col">
+                    <div class="order-info">
+                        <h3>Invoice Details:</h3>
+                        <div class="order-details" style="text-align:right;">
+                            <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                            <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
+                            <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                        </div>
                     </div>
                 </div>
-            </div>
-            </div>
+                </div>
+            @endif
         </div>
         
         <!-- Products Table -->
         <table class="products-table">
             <thead>
                 <tr>
-                    <th>Product</th>
-                    <th>Quantity</th>
-                    <th>Price</th>
-                    <th>Total</th>
+                    <th class="col-product">Product</th>
+                    <th class="col-qty">Quantity</th>
+                    <th class="col-price">Price</th>
+                    <th class="col-total">Total</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach($order->lineItems as $item)
                 <tr>
-                    <td>
+                    <td class="col-product">
                         <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
                         @if($item->sku)
                             <div class="product-sku">SKU: {{ $item->sku }}</div>
                         @endif
                     </td>
-                    <td>{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
-                    <td>Rs.{{ number_format($item->unit_price, 0) }}</td>
-                    <td>Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                    <td class="col-qty">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
+                    <td class="col-price">Rs.{{ number_format($item->unit_price, 0) }}</td>
+                    <td class="col-total">Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
                 </tr>
                 @endforeach
             </tbody>
@@ -524,9 +809,37 @@ $viewAndDownloadPng = request('view_and_download_png') == '1';
 (function(){
   const url = new URL(window.location.href);
   if (url.searchParams.get('print_pdf') === '1') {
-    // Hide scrollbars and trigger print; user can choose Save as PDF
-    document.title = 'Invoice-{{ $order->order_number }}';
-    setTimeout(() => { window.print(); }, 300);
+    // Auto-download PDF using server-side generation for better formatting
+    const filename = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}_{{ $order->order_number }}';
+    const pdfUrl = '/orders/{{ $order->id }}/invoice/pdf?auto_pdf=1&filename=' + encodeURIComponent(filename);
+    
+    // Try server-side PDF generation first
+    fetch(pdfUrl)
+      .then(response => {
+        if (response.ok) {
+          // Server-side PDF generation successful, trigger download
+          const link = document.createElement('a');
+          link.href = pdfUrl;
+          link.download = filename + '.pdf';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          
+          // Close tab after successful download
+          setTimeout(() => { window.close(); }, 1000);
+        } else {
+          throw new Error('Server PDF generation failed');
+        }
+      })
+      .catch(error => {
+        console.log('Server PDF failed, falling back to browser print:', error);
+        // Fallback to browser print dialog
+        document.title = 'Invoice-{{ $order->order_number }}';
+        setTimeout(() => { 
+          window.print(); 
+          // Don't close tab automatically for print dialog
+        }, 300);
+      });
   }
 
   if (url.searchParams.get('auto_png') === '1') {
