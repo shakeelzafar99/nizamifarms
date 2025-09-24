@@ -194,6 +194,18 @@
     margin: -2px -4px;
 }
 
+/* Precise customer name clickable area */
+.customer-name-link {
+    display: inline;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: none;
+}
+.customer-name-link:hover {
+    text-decoration: underline;
+}
+
 /* Smooth transitions for all interactive elements */
 .transition-all-smooth {
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1289,7 +1301,7 @@ function viewOrderDetails(orderId) {
             // Make customer name clickable if customer_id exists
             var customerDisplay = customerName;
             if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
-                customerDisplay = '<span onclick="openCustomerInNewTab(' + order.customer_id + ')" class="text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" title="View customer details">' + customerName + '</span>';
+                customerDisplay = '<span onclick="openCustomerInNewTab(' + order.customer_id + ')" class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" title="View customer details">' + customerName + '</span>';
             }
             
             html += '<p><strong>Customer:</strong> ' + customerDisplay + '</p>';
@@ -3812,7 +3824,7 @@ function getCellContent_DEPRECATED(order, columnId) {
             
             // Make customer name clickable if customer_id exists
             if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
-                return `<div class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer table-text-primary" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</div>`;
+                return `<div class="table-text-primary"><span class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</span></div>`;
             } else {
                 return `<div class="table-text-primary">${customerName}</div>`;
             }
@@ -4276,7 +4288,7 @@ function getCellContent(order, columnId) {
             
             // Make customer name clickable if customer_id exists
             if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
-                return `<div class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer table-text-primary" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</div>`;
+                return `<div class="table-text-primary"><span class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" onclick="openCustomerDetails(${order.customer_id})" title="View customer details">${customerName}</span></div>`;
             } else {
                 return `<div class="table-text-primary">${customerName}</div>`;
             }
