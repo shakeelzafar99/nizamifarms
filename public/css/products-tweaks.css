@@ -1,0 +1,208 @@
+/* Modern Products Page Styling */
+/* Scope everything to this page */
+.products-index { 
+    --ink: #121826; 
+    --muted: #6b7280; 
+    --line: #e5e7eb; 
+    --band: #f8fafc; 
+    --head: #2f3a4a; 
+}
+
+/* Top toolbar spacing/consistency */
+.products-index .products-toolbar {
+    display: flex; 
+    align-items: center; 
+    gap: 10px; 
+    margin: 6px 0 10px;
+}
+.products-index .products-toolbar .btn { 
+    height: 36px; 
+    border-radius: 10px; 
+}
+
+/* Filters row compact + one-line */
+.products-index .filters-bar {
+    display: flex; 
+    flex-wrap: wrap; 
+    gap: 8px; 
+    align-items: center; 
+    margin: 8px 0 6px;
+}
+.products-index .filters-bar .form-control,
+.products-index .filters-bar .btn,
+.products-index .filters-bar .dropdown-toggle {
+    height: 34px;
+}
+.products-index .filters-bar .search-input { 
+    flex: 1 1 420px; 
+}
+
+/* Table look: modern, dense, readable */
+.products-index .table-products {
+    width: 100%;
+    table-layout: fixed;               /* enables truncation */
+    border-collapse: separate;
+    border-spacing: 0;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+}
+.products-index .table-products thead th {
+    position: sticky; 
+    top: 0; 
+    z-index: 2;
+    background: var(--head); 
+    color: #fff;
+    text-transform: uppercase; 
+    font-size: 11px; 
+    letter-spacing: .35px;
+    padding: 10px; 
+    border-bottom: 1px solid #223046;
+}
+.products-index .table-products tbody td { 
+    padding: 10px; 
+    border-bottom: 1px solid var(--line); 
+    vertical-align: middle; 
+}
+.products-index .table-products tbody tr:nth-child(odd) { 
+    background: var(--band); 
+}
+.products-index .table-products tbody tr:hover { 
+    background: #eef2f7; 
+}
+
+/* Column widths + alignment */
+.products-index .table-products .col-image     { width: 56px; }
+.products-index .table-products .col-name      { width: 28%; }
+.products-index .table-products .col-sku       { width: 10%; }
+.products-index .table-products .col-status    { width: 10%; }
+.products-index .table-products .col-vendor    { width: 12%; }
+.products-index .table-products .col-price     { width: 12%; text-align: right; font-variant-numeric: tabular-nums; }
+.products-index .table-products .col-variants  { width: 10%; text-align: center; }
+.products-index .table-products .col-inventory { width: 10%; text-align: right; font-variant-numeric: tabular-nums; }
+.products-index .table-products .col-sync      { width: 10%; text-align: center; }
+.products-index .table-products .col-actions   { width: 120px; text-align: right; position: sticky; right: 0; z-index: 1; background: inherit; }
+
+/* Subtext hierarchy (category, collection under product name) */
+.products-index .product-title   { 
+    font-weight: 600; 
+    color: var(--ink); 
+    white-space: nowrap; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+}
+.products-index .product-sub     { 
+    font-size: 11px; 
+    color: var(--muted); 
+    margin-top: 2px; 
+    white-space: nowrap; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+}
+
+/* Thumbnail */
+.products-index .thumb {
+    width: 40px; 
+    height: 40px; 
+    border-radius: 8px; 
+    object-fit: cover; 
+    border: 1px solid var(--line); 
+    background: #fff;
+}
+
+/* Pills/badges (status, variants, inventory) */
+.products-index .pill {
+    display: inline-flex; 
+    align-items: center; 
+    gap: 6px;
+    height: 26px; 
+    padding: 0 10px; 
+    border-radius: 999px; 
+    font-weight: 600; 
+    font-size: 12px;
+    border: 1px solid var(--line); 
+    background: #fff; 
+    color: var(--ink);
+}
+.products-index .pill.success { 
+    background: #ecfdf5; 
+    border-color: #a7f3d0; 
+    color: #065f46; 
+}
+.products-index .pill.neutral { 
+    background: #f3f4f6; 
+    color: #374151; 
+}
+.products-index .pill.warn    { 
+    background: #fff7ed; 
+    border-color: #fed7aa; 
+    color: #9a3412; 
+}
+
+/* Action buttons always visible; add subtle left shadow */
+.products-index .table-products .col-actions::before {
+    content: ""; 
+    position: absolute; 
+    left: -8px; 
+    top: 0; 
+    bottom: 0; 
+    width: 8px;
+    box-shadow: -8px 0 8px -8px rgba(0,0,0,.12); 
+    pointer-events: none;
+}
+.products-index .actions { 
+    display: inline-flex; 
+    gap: 6px; 
+}
+.products-index .actions .btn { 
+    height: 30px; 
+    padding: 0 10px; 
+    border-radius: 8px; 
+}
+
+/* Truncation to avoid column blowouts */
+.products-index .table-products th,
+.products-index .table-products td { 
+    white-space: nowrap; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+}
+
+/* Header label alignment fix for multi-line headers */
+.products-index .table-products th .hdr { 
+    display: inline-block; 
+    transform: translateY(1px); 
+}
+
+/* Price emphasis */
+.products-index .price { 
+    font-weight: 700; 
+}
+
+/* Density & spacing at row boundaries */
+.products-index .product-row:first-child td { 
+    border-top: none; 
+}
+.products-index .product-row:last-child td { 
+    border-bottom: none; 
+}
+
+/* Additional modern touches */
+.products-index .table-products thead th:first-child {
+    border-top-left-radius: 12px;
+}
+.products-index .table-products thead th:last-child {
+    border-top-right-radius: 12px;
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+    .products-index .filters-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .products-index .filters-bar .search-input {
+        flex: 1 1 100%;
+    }
+}

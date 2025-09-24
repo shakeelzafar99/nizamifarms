@@ -2,7 +2,12 @@
 
 @section('title', 'Products')
 
+@push('styles')
+<link rel="stylesheet" href="{{ asset('css/products-tweaks.css') }}">
+@endpush
+
 @section('content')
+<div class="products-index">
 <!-- Enhanced Header Section -->
 <div class="container-fixed">
     <div class="flex flex-wrap items-center lg:items-end justify-between gap-6 pb-6">
@@ -22,24 +27,24 @@
         </div>
         
         <!-- Enhanced Action Buttons -->
-        <div class="flex items-center gap-3">
+        <div class="products-toolbar flex items-center gap-3">
             <div class="flex items-center gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-1">
                 <a href="{{ route('products.create') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-plus text-blue-500"></i>
-                    Create Product
-                </a>
+                Create Product
+            </a>
                 <button onclick="openColumnSettings()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-setting-2 text-gray-500"></i>
-                    Columns
-                </button>
+                Columns
+            </button>
                 <a href="{{ route('products.attributes') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-category text-gray-500"></i>
-                    Attributes
-                </a>
+                Attributes
+            </a>
                 <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-price-tag text-gray-500"></i>
-                    Adjust Prices
-                </button>
+                Adjust Prices
+            </button>
             </div>
             <button onclick="openImportModal()" class="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 transform hover:-translate-y-0.5">
                 <i class="ki-filled ki-cloud-download"></i>
@@ -59,17 +64,17 @@
                     <form method="GET" id="productSearchForm">
                         <!-- Search Bar Row -->
                         <div class="flex items-center gap-4 mb-4">
-                            <div class="flex-1 relative">
+                            <div class="search-input flex-1 relative">
                                 <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                                     <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                     </svg>
                                 </div>
-                                <input type="text" name="search" value="{{ request('search') }}" 
+                        <input type="text" name="search" value="{{ request('search') }}" 
                                        placeholder="Search products, SKUs, vendors..." 
                                        class="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 bg-white shadow-sm text-gray-900 placeholder-gray-500"
-                                       id="productSearchInput"
-                                       autocomplete="off">
+                               id="productSearchInput"
+                               autocomplete="off">
                             </div>
                             <button type="submit" onclick="event.preventDefault(); performSearch();" 
                                     class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md">
@@ -81,15 +86,15 @@
                         </div>
                         
                         <!-- Filter Pills Row -->
-                        <div class="flex flex-wrap items-center gap-3">
-                            <!-- Status Filter -->
+                        <div class="filters-bar flex flex-wrap items-center gap-3">
+                        <!-- Status Filter -->
                             <div class="relative min-w-[120px]">
                                 <select name="status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="statusFilter">
-                                    <option value="">All Status</option>
-                                    <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                                    <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
-                                    <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
-                                </select>
+                            <option value="">All Status</option>
+                            <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
+                            <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
+                            <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
+                        </select>
                                 <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
                                     <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
@@ -97,16 +102,16 @@
                                 </div>
                             </div>
 
-                            <!-- Category Filter -->
+                        <!-- Category Filter -->
                             <div class="relative min-w-[140px]">
                                 <select name="product_type" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="categoryFilter">
-                                    <option value="">All Categories</option>
-                                    @foreach($productTypes as $type)
-                                        <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
-                                            {{ $type }}
-                                        </option>
-                                    @endforeach
-                                </select>
+                            <option value="">All Categories</option>
+                            @foreach($productTypes as $type)
+                                <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
+                                    {{ $type }}
+                                </option>
+                            @endforeach
+                        </select>
                                 <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
                                     <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
@@ -114,16 +119,16 @@
                                 </div>
                             </div>
 
-                            <!-- Vendor Filter -->
+                        <!-- Vendor Filter -->
                             <div class="relative min-w-[130px]">
                                 <select name="vendor" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="vendorFilter">
-                                    <option value="">All Vendors</option>
-                                    @foreach($vendors as $vendor)
-                                        <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
-                                            {{ $vendor }}
-                                        </option>
-                                    @endforeach
-                                </select>
+                            <option value="">All Vendors</option>
+                            @foreach($vendors as $vendor)
+                                <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
+                                    {{ $vendor }}
+                                </option>
+                            @endforeach
+                        </select>
                                 <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
                                     <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
@@ -131,16 +136,16 @@
                                 </div>
                             </div>
 
-                            <!-- Category Level 1 Filter -->
+                        <!-- Category Level 1 Filter -->
                             <div class="relative min-w-[160px]">
                                 <select name="attribute_1" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="attr1Filter">
-                                    <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
-                                    @foreach($attribute1s as $val)
-                                        <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
-                                            {{ $val }}
-                                        </option>
-                                    @endforeach
-                                </select>
+                            <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
+                            @foreach($attribute1s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
                                 <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
                                     <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
@@ -149,33 +154,33 @@
                             </div>
                             
                             <!-- Hidden Attribute Filters -->
-                            <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
-                                <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
-                                @foreach($attribute2s as $val)
-                                    <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
-                                        {{ $val }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
-                                <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
-                                @foreach($attribute3s as $val)
-                                    <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
-                                        {{ $val }}
-                                    </option>
-                                @endforeach
-                            </select>
-                            
-                            <!-- Sync Status Filter -->
+                        <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
+                            <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
+                            @foreach($attribute2s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
+                            <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
+                            @foreach($attribute3s as $val)
+                                <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
+                                    {{ $val }}
+                                </option>
+                            @endforeach
+                        </select>
+                        
+                        <!-- Sync Status Filter -->
                             <div class="relative min-w-[130px]">
                                 <select name="sync_status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="syncStatusFilter">
-                                    <option value="">All Sources</option>
-                                    @foreach($syncStatuses as $syncStatus)
-                                        <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
-                                            {{ ucfirst($syncStatus) }}
-                                        </option>
-                                    @endforeach
-                                </select>
+                            <option value="">All Sources</option>
+                            @foreach($syncStatuses as $syncStatus)
+                                <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
+                                    {{ ucfirst($syncStatus) }}
+                                </option>
+                            @endforeach
+                        </select>
                                 <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
                                     <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
@@ -183,13 +188,13 @@
                                 </div>
                             </div>
                             
-                            @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
+                        @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
                                 <button type="button" onclick="event.preventDefault(); clearAllFilters();" 
                                         class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-all duration-200" id="clearFiltersBtn">
                                     <i class="ki-filled ki-cross-circle text-red-500"></i>
                                     Clear Filters
                                 </button>
-                            @endif
+                        @endif
                         </div>
                     </form>
                 </div>
@@ -199,14 +204,14 @@
             <div class="px-6 pb-6">
                 <div class="bg-white rounded-xl border border-gray-100 overflow-hidden">
                     <div class="overflow-x-auto">
-                        <table class="w-full" id="productsTable">
+                        <table class="table-products w-full" id="productsTable">
                             <thead id="tableHead" class="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
-                                <!-- Dynamic headers will be inserted here -->
-                            </thead>
+                            <!-- Dynamic headers will be inserted here -->
+                        </thead>
                             <tbody id="tableBody" class="divide-y divide-gray-100">
-                                <!-- Dynamic rows will be inserted here -->
-                            </tbody>
-                        </table>
+                            <!-- Dynamic rows will be inserted here -->
+                        </tbody>
+                    </table>
                     </div>
                 </div>
 
@@ -216,12 +221,12 @@
                         <div class="flex items-center gap-1">
                             <i class="ki-filled ki-information-2 text-blue-500"></i>
                             <span class="font-medium">Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }}</span>
-                        </div>
+                    </div>
                         <span>of</span>
                         <span class="font-semibold text-gray-900">{{ $products->total() }} products</span>
                     </div>
                     <div class="flex items-center gap-2">
-                        {{ $products->appends(request()->query())->links() }}
+                    {{ $products->appends(request()->query())->links() }}
                     </div>
                 </div>
             </div>
@@ -639,20 +644,20 @@ window.productsData = @json($products->items());
 
 // Available columns configuration
 const availableColumns = {
-    'image': { label: 'Image', width: 'w-[60px]', order: 1 },
-    'title': { label: 'Product', width: 'min-w-[200px]', order: 2 },
-    'skus': { label: 'SKUs', width: 'w-[150px]', order: 3 },
-    'status': { label: 'Status', width: 'w-[100px]', order: 4 },
-    'vendor': { label: 'Vendor', width: 'w-[120px]', order: 5 },
-    'product_type': { label: 'Type', width: 'w-[120px]', order: 6 },
-    'attribute_1': { label: '{{ $attributeLabels["1"] ?? "Category Level 1" }}', width: 'w-[140px]', order: 7 },
-    'attribute_2': { label: '{{ $attributeLabels["2"] ?? "Category Level 2" }}', width: 'w-[140px]', order: 8 },
-    'attribute_3': { label: '{{ $attributeLabels["3"] ?? "Category Level 3" }}', width: 'w-[140px]', order: 9 },
-    'price_range': { label: 'Price Range', width: 'w-[120px]', order: 10 },
-    'variants_count': { label: 'Variants', width: 'w-[80px]', order: 11 },
-    'total_inventory': { label: 'Inventory', width: 'w-[100px]', order: 12 },
-    'last_synced_at': { label: 'Last Sync', width: 'w-[100px]', order: 13 },
-    'actions': { label: 'Actions', width: 'w-[120px]', order: 14, fixed: true }
+    'image': { label: 'Image', width: 'w-[60px]', order: 1, cssClass: 'col-image' },
+    'title': { label: 'Product', width: 'min-w-[200px]', order: 2, cssClass: 'col-name' },
+    'skus': { label: 'SKUs', width: 'w-[150px]', order: 3, cssClass: 'col-sku' },
+    'status': { label: 'Status', width: 'w-[100px]', order: 4, cssClass: 'col-status' },
+    'vendor': { label: 'Vendor', width: 'w-[120px]', order: 5, cssClass: 'col-vendor' },
+    'product_type': { label: 'Type', width: 'w-[120px]', order: 6, cssClass: 'col-type' },
+    'attribute_1': { label: '{{ $attributeLabels["1"] ?? "Category Level 1" }}', width: 'w-[140px]', order: 7, cssClass: 'col-attr1' },
+    'attribute_2': { label: '{{ $attributeLabels["2"] ?? "Category Level 2" }}', width: 'w-[140px]', order: 8, cssClass: 'col-attr2' },
+    'attribute_3': { label: '{{ $attributeLabels["3"] ?? "Category Level 3" }}', width: 'w-[140px]', order: 9, cssClass: 'col-attr3' },
+    'price_range': { label: 'Price Range', width: 'w-[120px]', order: 10, cssClass: 'col-price' },
+    'variants_count': { label: 'Variants', width: 'w-[80px]', order: 11, cssClass: 'col-variants' },
+    'total_inventory': { label: 'Inventory', width: 'w-[100px]', order: 12, cssClass: 'col-inventory' },
+    'last_synced_at': { label: 'Last sync', width: 'w-[100px]', order: 13, cssClass: 'col-sync' },
+    'actions': { label: 'Actions', width: 'w-[120px]', order: 14, fixed: true, cssClass: 'col-actions' }
 };
 
 // Default visible columns
@@ -846,8 +851,8 @@ function renderTableHeaders() {
         if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
             const column = availableColumns[columnKey];
             const th = document.createElement('th');
-            th.className = `${column.width} px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider`;
-            th.textContent = column.label;
+            th.className = `${column.cssClass} ${column.width} px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider`;
+            th.innerHTML = `<span class="hdr">${column.label}</span>`;
             headerRow.appendChild(th);
         }
     });
@@ -862,12 +867,13 @@ function renderTableBody() {
 
     window.productsData.forEach((product, index) => {
         const row = document.createElement('tr');
-        row.className = 'hover:bg-blue-50 transition-colors duration-150 cursor-pointer group';
+        row.className = 'product-row hover:bg-blue-50 transition-colors duration-150 cursor-pointer group';
         
         columnOrder.forEach(columnKey => {
             if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
+                const column = availableColumns[columnKey];
                 const cell = document.createElement('td');
-                cell.className = 'px-6 py-4 whitespace-nowrap';
+                cell.className = `${column.cssClass} px-6 py-4 whitespace-nowrap`;
                 cell.innerHTML = getCellContent(columnKey, product);
                 row.appendChild(cell);
             }
@@ -881,20 +887,17 @@ function getCellContent(columnKey, product) {
     switch(columnKey) {
         case 'image':
             if (product.featured_image) {
-                return `<div class="relative">
-                    <img src="${product.featured_image}" alt="${product.title}" class="w-14 h-14 object-cover rounded-xl shadow-sm border border-gray-100 group-hover:shadow-md transition-shadow duration-200">
-                    <div class="absolute inset-0 bg-gradient-to-t from-black/10 to-transparent rounded-xl"></div>
-                </div>`;
+                return `<img src="${product.featured_image}" alt="${product.title}" class="thumb">`;
             } else {
-                return `<div class="w-14 h-14 bg-gradient-to-br from-gray-100 to-gray-200 rounded-xl flex items-center justify-center border border-gray-100 group-hover:from-blue-50 group-hover:to-blue-100 transition-colors duration-200">
-                    <i class="ki-filled ki-picture text-gray-400 text-lg"></i>
+                return `<div class="thumb flex items-center justify-center">
+                    <i class="ki-filled ki-picture text-gray-400 text-sm"></i>
                 </div>`;
             }
             
         case 'title':
-            return `<div class="flex flex-col max-w-xs">
-                <span class="font-semibold text-gray-900 group-hover:text-blue-700 transition-colors duration-200 truncate" title="${product.title}">${product.title}</span>
-                ${product.product_type ? `<span class="text-xs text-gray-500 mt-1 font-medium">${product.product_type}</span>` : ''}
+            return `<div>
+                <div class="product-title" title="${product.title}">${product.title}</div>
+                ${product.product_type ? `<div class="product-sub">${product.product_type}</div>` : ''}
             </div>`;
             
         case 'skus':
@@ -931,12 +934,8 @@ function getCellContent(columnKey, product) {
             };
             const config = statusConfig[product.status] || statusConfig['archived'];
             const statusText = product.status ? product.status.charAt(0).toUpperCase() + product.status.slice(1) : 'Unknown';
-            return `<div class="flex items-center">
-                <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${config.bg} ${config.text} ${config.border}">
-                    <i class="ki-filled ${config.icon} ${config.iconColor} text-xs"></i>
-                    <span class="text-xs font-semibold">${statusText}</span>
-                </div>
-            </div>`;
+            const statusPillClass = product.status === 'active' ? 'pill success' : 'pill neutral';
+            return `<span class="${statusPillClass}">${statusText}</span>`;
             
         case 'vendor':
             return product.vendor ? 
@@ -973,33 +972,22 @@ function getCellContent(columnKey, product) {
                 const priceRange = product.price_min === product.price_max ? 
                     `PKR ${parseFloat(product.price_min).toFixed(2)}` : 
                     `PKR ${parseFloat(product.price_min).toFixed(2)} - ${parseFloat(product.price_max).toFixed(2)}`;
-                return `<div class="flex items-center gap-1">
-                    <i class="ki-filled ki-price-tag text-green-500 text-xs"></i>
-                    <span class="font-semibold text-gray-900">${priceRange}</span>
-                </div>`;
+                return `<span class="price">${priceRange}</span>`;
             }
             return '<span class="text-gray-400 text-sm">No price</span>';
             
         case 'variants_count':
             const variantCount = product.variants ? product.variants.length : 0;
-            const variantColor = variantCount > 1 ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-gray-50 text-gray-700 border-gray-200';
-            return `<div class="flex items-center">
-                <span class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold border ${variantColor}">
-                    ${variantCount} ${variantCount === 1 ? 'variant' : 'variants'}
-                </span>
-            </div>`;
+            if (variantCount > 1) {
+                return `<span class="pill neutral">${variantCount} variants</span>`;
+            } else {
+                return `<span class="pill neutral">${variantCount}</span>`;
+            }
             
         case 'total_inventory':
             const inventory = product.total_inventory || 0;
-            const inventoryConfig = inventory > 10 ? 
-                { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200', icon: 'ki-check-circle', iconColor: 'text-green-500' } :
-                inventory > 0 ? 
-                { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200', icon: 'ki-information-2', iconColor: 'text-yellow-500' } :
-                { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', icon: 'ki-cross-circle', iconColor: 'text-red-500' };
-            return `<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${inventoryConfig.bg} ${inventoryConfig.text} ${inventoryConfig.border}">
-                <i class="ki-filled ${inventoryConfig.icon} ${inventoryConfig.iconColor} text-xs"></i>
-                <span class="font-semibold text-xs">${inventory}</span>
-            </div>`;
+            const inventoryPillClass = inventory > 10 ? 'pill success' : inventory > 0 ? 'pill warn' : 'pill neutral';
+            return `<span class="${inventoryPillClass}">${inventory}</span>`;
             
         case 'last_synced_at':
             if (product.last_synced_at) {
@@ -1016,19 +1004,19 @@ function getCellContent(columnKey, product) {
             </div>`;
             
         case 'actions':
-            return `<div class="flex items-center gap-1.5">
+            return `<div class="actions">
                 <button onclick="viewProduct(${product.id})" 
-                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
+                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
                         title="View Details">
                     <i class="ki-filled ki-eye text-sm"></i>
                 </button>
                 <button onclick="editProduct(${product.id})" 
-                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
+                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
                         title="Edit Product">
                     <i class="ki-filled ki-pencil text-sm"></i>
                 </button>
                 ${product.shopify_product_id ? `<button onclick="syncProduct(${product.id})" 
-                        class="flex items-center justify-center w-8 h-8 rounded-lg bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors duration-200 border border-purple-200" 
+                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors duration-200 border border-purple-200" 
                         title="Sync with Shopify">
                     <i class="ki-filled ki-arrows-circle text-sm"></i>
                 </button>` : ''}
@@ -1410,4 +1398,5 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 </script>
+</div> <!-- End products-index wrapper -->
 @endsection
