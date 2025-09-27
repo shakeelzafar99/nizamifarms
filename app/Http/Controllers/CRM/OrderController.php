@@ -326,7 +326,8 @@ class OrderController extends Controller
             // Validate request
             $validated = $request->validate([
                 'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
-                'order_status' => 'required|string',
+                // Ensure we only accept valid status codes from master table
+                'order_status' => 'required|string|exists:t_crm_order_status_master,status_code',
                 'order_date' => 'required|date',
                 'contact_email' => 'nullable|email',
                 'subtotal_price' => 'required|numeric',
@@ -411,7 +412,8 @@ class OrderController extends Controller
             // Validate request
             $validated = $request->validate([
                 'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
-                'order_status' => 'required|string',
+                // Allow null to auto-default to 'new' server-side
+                'order_status' => 'nullable|string|exists:t_crm_order_status_master,status_code',
                 'order_date' => 'required|date',
                 'contact_email' => 'nullable|email',
                 'subtotal_price' => 'required|numeric',
@@ -439,6 +441,11 @@ class OrderController extends Controller
                 'customer_country' => 'nullable|string'
             ]);
             
+            // Default order status to 'new' if not provided
+            if (empty($validated['order_status'])) {
+                $validated['order_status'] = 'new';
+            }
+
             // Generate order number for webapp orders
             $latestOrder = \App\Models\CRM\OrderModel::where('external_source', 'webapp')
                 ->orderBy('id', 'desc')
@@ -711,9 +718,30 @@ class OrderController extends Controller
             $orderData['line_items'] = $validationResult['recalculated_line_items'];
             $orderData['subtotal_price'] = $validationResult['new_subtotal'];
             $orderData['total_price'] = $validationResult['new_total'];
+
+            // Ensure new converted webapp invoices start in 'new' status (non-Shopify orders only)
+            // This preserves existing functionality while initializing the status system correctly.
+            $orderData['order_status'] = $orderData['order_status'] ?? 'new';
             
             // Use existing storeOrderFromApi method to create the converted order
             $convertedOrder = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+
+            // Force final status to 'new' AFTER creation so any mapped legacy status from Shopify
+            // cannot overwrite it inside store logic. This preserves the request to always start
+            // converted invoices in 'new' while keeping all other conversion behavior intact.
+            try {
+                if (method_exists($convertedOrder, 'changeStatus')) {
+                    $convertedOrder->changeStatus('new', 'Converted from Shopify approval');
+                } else {
+                    $convertedOrder->order_status = 'new';
+                    $convertedOrder->save();
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('Unable to set converted order status to new', [
+                    'order_id' => $convertedOrder->id ?? null,
+                    'error' => $e->getMessage(),
+                ]);
+            }
             
             // Mark original order as converted
             $originalOrder->update(['converted' => 1]);

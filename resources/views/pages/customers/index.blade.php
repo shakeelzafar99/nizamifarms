@@ -1931,11 +1931,8 @@ function openCreateOrderModal(customer = null) {
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Status</label>
-                            <select name="order_status" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
-                                <option value="pending">Pending</option>
-                                <option value="processing">Processing</option>
-                                <option value="completed">Completed</option>
-                                <option value="on-hold">On Hold</option>
+                            <select name="order_status" id="customerCreateOrderStatus" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="">Loading statuses...</option>
                             </select>
                         </div>
                         <div style="margin-bottom: 12px;">
@@ -2010,6 +2007,38 @@ function openCreateOrderModal(customer = null) {
             </div>
         </form>
     `;
+
+    // Load status options from master table and default to 'new'
+    (async function(){
+        try {
+            const resp = await fetch('/order-status/api/statuses', {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                },
+                credentials: 'same-origin'
+            });
+            const data = await resp.json();
+            const sel = document.getElementById('customerCreateOrderStatus');
+            if (data && data.success && sel) {
+                sel.innerHTML = data.data.map(s => `<option value="${s.status_code}">${s.icon} ${s.status_name}</option>`).join('');
+                if (data.data.find(s => s.status_code === 'new')) sel.value = 'new';
+            }
+        } catch (e) {
+            const sel = document.getElementById('customerCreateOrderStatus');
+            if (sel) sel.innerHTML = `
+                <option value="new" selected>⏳ New</option>
+                <option value="processing">⚡ Processing</option>
+                <option value="out_for_delivery">🚚 Out for Delivery</option>
+                <option value="delivered">✓ Delivered</option>
+                <option value="on_hold">⏸ On Hold</option>
+                <option value="cancelled">✕ Cancelled</option>
+                <option value="refunded">↩ Refunded</option>`;
+        }
+    })();
     
     // Reset line item index for new order
     lineItemIndex = 0;

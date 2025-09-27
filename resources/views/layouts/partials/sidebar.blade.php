@@ -70,6 +70,32 @@
                           </div>
                       </a>
                   </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/order-status">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-setting-2 text-lg">
+                                  </i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Order Status
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/order-status/history">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-time text-lg">
+                                  </i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Status History
+                              </span>
+                          </div>
+                      </a>
+                  </div>
                   
                   <!-- Products Section -->
                   <div class="kt-menu-item pt-2.25 pb-px">
@@ -162,6 +188,19 @@
                            </div>
                        </a>
                    </div>
+                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                       <a href="/admin/bulk-status-update">
+                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                   <i class="ki-filled ki-cloud-upload text-lg">
+                                   </i>
+                               </span>
+                               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                   Bulk Upload
+                                </span>
+                            </div>
+                        </a>
+                    </div>
                </div>
                <!-- End of Sidebar Menu -->
            </div>

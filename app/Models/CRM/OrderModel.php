@@ -96,6 +96,16 @@ class OrderModel extends BaseModel
         return $this->hasMany(OrderLineItemModel::class, 'order_id');
     }
 
+    public function statusHistory(): HasMany
+    {
+        return $this->hasMany(OrderStatusHistory::class, 'order_id')->orderBy('changed_at', 'desc');
+    }
+
+    public function currentStatusHistory(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(OrderStatusHistory::class, 'order_id')->where('is_current', true);
+    }
+
     // Helper methods
     public function getFullAddressAttribute(): string
     {
@@ -236,6 +246,8 @@ class OrderModel extends BaseModel
                     $order = $existingOrder;
                 } else {
                     $order = static::create($orderAttributes);
+                    // Create initial status history for new non-Shopify orders
+                    $order->createInitialStatusHistory();
                 }
             }
 
@@ -435,5 +447,180 @@ class OrderModel extends BaseModel
         ];
 
         return $statusMap[$status] ?? 'pending';
+    }
+
+    // Status Management Methods
+    public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
+    {
+        try {
+            // Validate status exists
+            $newStatus = OrderStatusMaster::getByCode($statusCode);
+            if (!$newStatus) {
+                throw new \InvalidArgumentException("Invalid status code: {$statusCode}");
+            }
+
+            // No transition enforcement - allow any status change
+            // This supports API/webhook updates and flexible status management
+
+            // Handle everything at application level (no triggers needed)
+            return \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus) {
+                // 1. Mark all previous status history as not current
+                \DB::table('t_crm_order_status_history')
+                    ->where('order_id', $this->id)
+                    ->where('is_current', 1)
+                    ->update(['is_current' => 0]);
+
+                // 2. Create new status history record
+                \DB::table('t_crm_order_status_history')->insert([
+                    'order_id' => $this->id,
+                    'status_id' => $newStatus->id,
+                    'status_code' => $statusCode,
+                    'is_current' => 1,
+                    'changed_by' => $changedBy ?? (auth()->check() ? auth()->id() : 1),
+                    'notes' => $notes ?? "Status changed to {$statusCode}",
+                    'changed_at' => now(),
+                    'created_at' => now()
+                ]);
+
+                // 3. Update the main order table
+                $this->order_status = $statusCode;
+                if (method_exists($this, 'setAttribute')) {
+                    $this->setAttribute('updated_by', $changedBy ?? (auth()->check() ? auth()->id() : 1));
+                }
+                $this->save();
+
+                // Refresh and return
+                $this->refresh();
+                return true;
+            });
+        } catch (\Exception $e) {
+            \Log::error("Failed to change order status: " . $e->getMessage(), [
+                'order_id' => $this->id,
+                'status_code' => $statusCode,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return false;
+        }
+    }
+
+    public function getCurrentStatus(): ?OrderStatusMaster
+    {
+        return OrderStatusMaster::getByCode($this->order_status);
+    }
+
+    /**
+     * Create initial status history for new orders
+     * This replaces the trigger functionality
+     */
+    public function createInitialStatusHistory(): bool
+    {
+        try {
+            // Check if history already exists
+            $existingHistory = \DB::table('t_crm_order_status_history')
+                ->where('order_id', $this->id)
+                ->exists();
+
+            if ($existingHistory) {
+                return true; // Already has history
+            }
+
+            $status = OrderStatusMaster::getByCode($this->order_status);
+            if (!$status) {
+                \Log::warning("Cannot create initial status history: status '{$this->order_status}' not found in master table for order {$this->id}");
+                return false;
+            }
+
+            \DB::table('t_crm_order_status_history')->insert([
+                'order_id' => $this->id,
+                'status_id' => $status->id,
+                'status_code' => $this->order_status,
+                'is_current' => 1,
+                'changed_by' => $this->created_by ?? 1,
+                'notes' => 'Initial order status',
+                'changed_at' => $this->created_at ?? now(),
+                'created_at' => $this->created_at ?? now()
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            \Log::error("Failed to create initial status history: " . $e->getMessage(), [
+                'order_id' => $this->id,
+                'order_status' => $this->order_status
+            ]);
+            return false;
+        }
+    }
+
+    public function getStatusHistory()
+    {
+        return $this->statusHistory()->with(['status', 'changedBy'])->get();
+    }
+
+    public function getAvailableStatusTransitions()
+    {
+        $currentStatus = $this->getCurrentStatus();
+        return $currentStatus ? $currentStatus->getAvailableTransitions() : collect();
+    }
+
+    public function canChangeToStatus(string $statusCode): bool
+    {
+        $currentStatus = $this->getCurrentStatus();
+        $newStatus = OrderStatusMaster::getByCode($statusCode);
+        
+        if (!$currentStatus || !$newStatus) {
+            return false;
+        }
+
+        return $currentStatus->canTransitionTo($newStatus);
+    }
+
+    public function getStatusDisplayInfo(): array
+    {
+        $status = $this->getCurrentStatus();
+        
+        if (!$status) {
+            return [
+                'code' => $this->order_status,
+                'name' => ucfirst(str_replace('_', ' ', $this->order_status ?? 'unknown')),
+                'color_class' => 'gray',
+                'icon' => '?',
+                'is_final' => false
+            ];
+        }
+
+        return [
+            'code' => $status->status_code,
+            'name' => $status->status_name,
+            'color_class' => $status->color_class,
+            'icon' => $status->icon,
+            'is_final' => $status->is_final
+        ];
+    }
+
+    // Bulk status operations
+    public static function bulkChangeStatus(array $orderIds, string $statusCode, ?string $notes = null, ?int $changedBy = null): array
+    {
+        $results = ['success' => [], 'failed' => []];
+        
+        foreach ($orderIds as $orderId) {
+            try {
+                $order = static::find($orderId);
+                if (!$order) {
+                    $results['failed'][] = ['id' => $orderId, 'error' => 'Order not found'];
+                    continue;
+                }
+
+                if ($order->changeStatus($statusCode, $notes, $changedBy)) {
+                    $results['success'][] = $orderId;
+                } else {
+                    $results['failed'][] = ['id' => $orderId, 'error' => 'Status change failed'];
+                }
+            } catch (\Exception $e) {
+                $results['failed'][] = ['id' => $orderId, 'error' => $e->getMessage()];
+            }
+        }
+
+        return $results;
     }
 }

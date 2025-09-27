@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Webhook;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\CRM\OrderModel;
+use App\Models\CRM\OrderStatusMaster;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -260,6 +261,147 @@ class AppSheetController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Test failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Webhook: Update order status from AppSheet
+     * Expected JSON body:
+     * {
+     *   "order_id": 2590              // or "order_number": "NF-14553"
+     *   "status" or "status_code": "processing",  // must exist in master (aliases mapped)
+     *   "date": "2025-09-27 11:20:46",           // optional; sets history changed_at
+     *   "notes": "optional reason",
+     *   "changed_by": 1               // optional user id
+     * }
+     */
+    public function statusUpdate(Request $request)
+    {
+        try {
+            $payload = $request->all();
+
+            // Basic validation
+            $rawStatus = $payload['status'] ?? $payload['status_code'] ?? '';
+            $statusCode = strtolower(trim((string) $rawStatus));
+            if ($statusCode === '') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'status_code is required'
+                ], 422);
+            }
+
+            // Accept either order_id or order_number
+            $orderId = $payload['order_id'] ?? null;
+            $orderNumber = $payload['order_number'] ?? null;
+            if (!$orderId && !$orderNumber) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Provide order_id or order_number'
+                ], 422);
+            }
+
+            // Normalize common legacy codes
+            $aliases = [
+                'pending' => 'new',
+                'on-hold' => 'on_hold',
+                'completed' => 'delivered',
+                'out for delivery' => 'out_for_delivery',
+            ];
+            $normalizedCode = $aliases[$statusCode] ?? str_replace([' ', '-'], ['_', '_'], $statusCode);
+
+            // Ensure status exists in master
+            $statusMaster = OrderStatusMaster::getByCode($normalizedCode);
+            if (!$statusMaster) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Invalid status_code '{$statusCode}'. Create it in master or use a valid code."
+                ], 422);
+            }
+
+            // Find order
+            $order = null;
+            if ($orderId) {
+                $order = OrderModel::find($orderId);
+            } else if ($orderNumber) {
+                $order = OrderModel::where('order_number', $orderNumber)->first();
+            }
+
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found'
+                ], 404);
+            }
+
+            // Only non-Shopify orders should be updated here
+            if (strtolower((string)$order->external_source) === 'shopify') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This endpoint updates non-Shopify orders only.'
+                ], 400);
+            }
+
+            $notes = $payload['notes'] ?? null;
+            $changedBy = $payload['changed_by'] ?? null;
+
+            $ok = $order->changeStatus($normalizedCode, $notes, $changedBy);
+            if (!$ok) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to change status'
+                ], 500);
+            }
+
+            // Optional explicit date for history (changed_at)
+            $providedDate = $payload['date'] ?? $payload['changed_at'] ?? null;
+            if ($providedDate) {
+                try {
+                    $dt = new \DateTime($providedDate);
+                    \DB::table('t_crm_order_status_history')
+                        ->where('order_id', $order->id)
+                        ->where('is_current', 1)
+                        ->orderByDesc('id')
+                        ->limit(1)
+                        ->update([
+                            'changed_at' => $dt->format('Y-m-d H:i:s'),
+                            'created_at' => $dt->format('Y-m-d H:i:s'),
+                        ]);
+                } catch (\Throwable $e) {
+                    Log::warning('AppSheet status-update: invalid or unparsable date, default kept', [
+                        'order_id' => $order->id,
+                        'date' => $providedDate,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            Log::info('AppSheet status-update applied', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'status' => $normalizedCode,
+                'notes' => $notes,
+                'changed_by' => $changedBy,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Status updated',
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'status_code' => $normalizedCode,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('AppSheet status-update error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'payload' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Internal server error processing status-update'
             ], 500);
         }
     }

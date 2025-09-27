@@ -1,3 +1,8 @@
+shopify token:
+
+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
+
+
 Database
 h9b87av3mn
 nizamifarms_db-373592fd
@@ -24,8 +29,7 @@ zsvuwg13j9
 
 
 
-replace utf8mb4_0900_ai_ci with utf8mb4_unicode_ci
-
+b9419a77ecc40205bd0cfcfee94f7d89
 
 
 ftp : 
@@ -43,3 +47,12 @@ Pakistan@1947
 
 
 application url : https://app.nizamifarms.com/auth/login
+
+
+
+ check carefully please and make sure to reuse existing functions and variables where possible so that we dont end up with duplicates and dont leave junk or dead code. please dont change any other existing functionality of the app and dont leave duplicate functions or sections of the code. check carefully thee existing functionality 
+
+
+
+now i want to do a major enhancement but please do this carefully by first understanding how the app is working and avoiding duplicate code segments or functions or variables and checking for existing ones that are available. also do not spoil existing functionality so please be careful
+

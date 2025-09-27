@@ -4,7 +4,7 @@
 
 @section('title', 'Orders')
 
-@push('styles')
+@push('custom_css')
 <style>
 /* Modern Professional Orders Page Styles */
 .orders-table-container {
@@ -522,6 +522,25 @@ input:focus, select:focus, button:focus {
                             </svg>
                             <span class="whitespace-nowrap">Import</span>
                         </button>
+                        
+                        @if($source !== 'shopify')
+                        <!-- Bulk Status Change Button -->
+                        <button onclick="openBulkStatusModal()" class="inline-flex items-center px-4 py-2 border border-purple-300 text-sm font-medium rounded-md text-purple-700 bg-purple-50 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 min-w-[120px]">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                            </svg>
+                            Bulk Status
+                        </button>
+                        
+                        <!-- Order Status Management Link -->
+                        <a href="/order-status" class="inline-flex items-center px-4 py-2 border border-indigo-300 text-sm font-medium rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            Manage Statuses
+                        </a>
+                        @endif
                     </div>
                 </div>
 
@@ -547,14 +566,7 @@ input:focus, select:focus, button:focus {
                             
                             <select id="statusFilter" class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
                                 <option value="">All status</option>
-                                <option value="pending">Pending</option>
-                                <option value="processing">Processing</option>
-                                <option value="on-hold">On Hold</option>
-                                <option value="completed">Completed</option>
-                                <option value="cancelled">Cancelled</option>
-                                <option value="refunded">Refunded</option>
-                                <option value="failed">Failed</option>
-                    </select>
+                            </select>
                             
                             <input type="date" 
                                    id="dateFilter" 
@@ -1382,11 +1394,26 @@ function viewOrderDetails(orderId) {
                 html += '</div>';
             }
 
+            // Status Timeline Section
+            html += '<div style="padding: 20px; background-color: #f9fafb; border-radius: 8px; margin: 20px 0 0 0;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #111827; font-size: 16px;">Status History</h3>';
+            html += '<div id="viewOrderTimeline" style="max-height: 250px; overflow-y: auto;">';
+            html += '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>';
+            html += '</div>';
+            html += '</div>';
+
             html += '</div>';
             html += '</div>';
             html += '</div>';
             
             content.innerHTML = html;
+            
+            // Load status timeline after content is rendered
+            try {
+                loadViewOrderTimeline(orderId);
+            } catch (e) {
+                console.warn('Failed to load view timeline', e);
+            }
         } else {
             content.innerHTML = `
                 <div class="text-center py-8">
@@ -2018,13 +2045,8 @@ function loadEditForm(order) {
                         </div>
                         <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Order Status</label>
-                            <select name="order_status" required style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
-                                <option value="pending" ${order.order_status === 'pending' ? 'selected' : ''}>Pending</option>
-                                <option value="processing" ${order.order_status === 'processing' ? 'selected' : ''}>Processing</option>
-                                <option value="completed" ${order.order_status === 'completed' ? 'selected' : ''}>Completed</option>
-                                <option value="on-hold" ${order.order_status === 'on-hold' ? 'selected' : ''}>On Hold</option>
-                                <option value="cancelled" ${order.order_status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
-                                <option value="refunded" ${order.order_status === 'refunded' ? 'selected' : ''}>Refunded</option>
+                            <select name="order_status" id="editOrderStatus" required style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                                <option value="">Loading statuses...</option>
                             </select>
                         </div>
                         <div>
@@ -2200,6 +2222,14 @@ function loadEditForm(order) {
                 </div>
             </div>
 
+            <!-- Status Timeline Section -->
+            <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                <h4 style="font-weight: 600; color: #374151; margin: 0 0 12px 0;">Status History</h4>
+                <div id="editOrderTimeline" style="max-height: 200px; overflow-y: auto;">
+                    <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>
+                </div>
+            </div>
+
             <!-- Form Actions -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
                 <button type="button" onclick="closeModal('editOrderModal')" 
@@ -2223,6 +2253,20 @@ function loadEditForm(order) {
         e.preventDefault();
         saveOrderChanges(order.id);
     });
+
+    // Immediately load status options for the dropdown, independent of totals/line items
+    try {
+        loadEditOrderStatuses(order.order_status);
+    } catch (e) {
+        console.warn('Failed to trigger status load', e);
+    }
+    
+    // Load status timeline
+    try {
+        loadEditOrderTimeline(order.id);
+    } catch (e) {
+        console.warn('Failed to load timeline', e);
+    }
 }
 
 function showEditError(message) {
@@ -2370,7 +2414,339 @@ function updateSubtotal() {
     if (subtotalInput) {
         subtotalInput.value = subtotal.toFixed(2);
         updateOrderTotal();
+        
+        // Load dynamic statuses for the edit form
+        loadEditOrderStatuses(order.order_status);
     }
+}
+
+// Cache statuses so we don't refetch repeatedly
+window.__orderStatusesCache = window.__orderStatusesCache || null;
+
+function normalizeLegacyStatus(code) {
+    if (!code) return code;
+    const map = {
+        'pending': 'new',
+        'on-hold': 'on_hold',
+        'completed': 'delivered',
+        'fulfilled': 'delivered',
+        'approved': 'processing',
+        'confirmed': 'processing'
+    };
+    return map[code] || code;
+}
+
+// Load available statuses for edit order form
+async function loadEditOrderStatuses(currentStatus) {
+    try {
+        const statusSelect = document.getElementById('editOrderStatus');
+        if (!statusSelect) return;
+
+        const normalized = normalizeLegacyStatus(currentStatus);
+
+        if (!window.__orderStatusesCache) {
+            const response = await fetch('/order-status/api/statuses', {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                },
+                credentials: 'same-origin'
+            });
+            const data = await response.json();
+            if (data && data.success) {
+                window.__orderStatusesCache = data.data;
+            }
+        }
+
+        const list = window.__orderStatusesCache;
+        if (Array.isArray(list) && list.length) {
+            statusSelect.innerHTML = list.map(status => 
+                `<option value="${status.status_code}" ${status.status_code === normalized ? 'selected' : ''}>${status.icon} ${status.status_name}</option>`
+            ).join('');
+            // If nothing selected and no normalized current status, default to 'new'
+            if (!statusSelect.value && list.find(s => s.status_code === 'new')) {
+                statusSelect.value = 'new';
+            }
+            // If current status not in master (legacy), insert it at top so user sees it
+            if (!list.find(s => s.status_code === normalized) && currentStatus) {
+                const opt = document.createElement('option');
+                opt.value = currentStatus;
+                opt.textContent = currentStatus.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+                opt.selected = true;
+                statusSelect.insertBefore(opt, statusSelect.firstChild);
+            }
+        } else {
+            throw new Error('Statuses cache empty');
+        }
+    } catch (error) {
+        console.error('Error loading statuses:', error);
+        // Fallback to basic statuses
+        const statusSelect = document.getElementById('editOrderStatus');
+        if (statusSelect) {
+            const normalized = normalizeLegacyStatus(currentStatus);
+            statusSelect.innerHTML = `
+                <option value="new" ${normalized === 'new' ? 'selected' : ''}>⏳ New</option>
+                <option value="processing" ${normalized === 'processing' ? 'selected' : ''}>⚡ Processing</option>
+                <option value="out_for_delivery" ${normalized === 'out_for_delivery' ? 'selected' : ''}>🚚 Out for Delivery</option>
+                <option value="delivered" ${normalized === 'delivered' ? 'selected' : ''}>✓ Delivered</option>
+                <option value="on_hold" ${normalized === 'on_hold' ? 'selected' : ''}>⏸ On Hold</option>
+                <option value="cancelled" ${normalized === 'cancelled' ? 'selected' : ''}>✕ Cancelled</option>
+                <option value="refunded" ${normalized === 'refunded' ? 'selected' : ''}>↩ Refunded</option>
+            `;
+        }
+    }
+}
+
+// Load status timeline for quick modal
+async function loadQuickStatusTimeline(orderId) {
+    try {
+        const timelineContainer = document.getElementById('quickStatusTimeline');
+        if (!timelineContainer) return;
+        
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        console.log('Quick Timeline API response for order', orderId, ':', data); // Debug log
+        
+        if (data.success && data.data.length > 0) {
+            const timelineHtml = data.data.map((item, index) => {
+                const date = new Date(item.changed_at);
+                const timeAgo = getTimeAgo(date);
+                const isFirst = index === 0;
+                
+                return `
+                    <div style="display:flex;align-items:start;gap:8px;margin-bottom:${index === data.data.length - 1 ? '0' : '12px'};">
+                        <div style="width:8px;height:8px;border-radius:50%;background:${getStatusColor(item.color_class)};margin-top:4px;flex-shrink:0;${isFirst ? 'box-shadow:0 0 0 2px rgba(34,197,94,0.2);' : ''}"></div>
+                        <div style="flex:1;min-width:0;">
+                            <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+                                <span style="font-size:12px;font-weight:${isFirst ? '600' : '500'};color:#374151;">${item.icon} ${item.status_name}</span>
+                                ${isFirst ? '<span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 4px;border-radius:3px;">Current</span>' : ''}
+                            </div>
+                            <div style="font-size:11px;color:#6b7280;margin-bottom:1px;">${timeAgo}</div>
+                            ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:11px;color:#9ca3af;font-style:italic;">${item.notes}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            timelineContainer.innerHTML = timelineHtml;
+        } else {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:12px;padding:16px;">No status history available</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load timeline:', error);
+        const timelineContainer = document.getElementById('quickStatusTimeline');
+        if (timelineContainer) {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:12px;padding:16px;">Failed to load timeline</div>';
+        }
+    }
+}
+
+// Helper function to get status color
+function getStatusColor(colorClass) {
+    const colors = {
+        'green': '#22c55e',
+        'blue': '#3b82f6', 
+        'yellow': '#eab308',
+        'orange': '#f97316',
+        'red': '#ef4444',
+        'purple': '#a855f7',
+        'gray': '#6b7280'
+    };
+    return colors[colorClass] || '#6b7280';
+}
+
+// Helper function to get time ago
+function getTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+}
+
+// Load status timeline for edit order modal
+async function loadEditOrderTimeline(orderId) {
+    try {
+        const timelineContainer = document.getElementById('editOrderTimeline');
+        if (!timelineContainer) return;
+        
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            const timelineHtml = data.data.map((item, index) => {
+                const date = new Date(item.changed_at);
+                const timeAgo = getTimeAgo(date);
+                const isFirst = index === 0;
+                
+                return `
+                    <div style="display:flex;align-items:start;gap:12px;margin-bottom:${index === data.data.length - 1 ? '0' : '16px'};">
+                        <div style="width:10px;height:10px;border-radius:50%;background:${getStatusColor(item.color_class)};margin-top:6px;flex-shrink:0;${isFirst ? 'box-shadow:0 0 0 3px rgba(34,197,94,0.2);' : ''}"></div>
+                        <div style="flex:1;min-width:0;">
+                            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                                <span style="font-size:14px;font-weight:${isFirst ? '600' : '500'};color:#374151;">${item.icon} ${item.status_name}</span>
+                                ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 6px;border-radius:4px;">Current</span>' : ''}
+                            </div>
+                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">${timeAgo} • ${item.changed_by_name}</div>
+                            ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:12px;color:#9ca3af;font-style:italic;background:#f9fafb;padding:4px 8px;border-radius:4px;border-left:3px solid #e5e7eb;">${item.notes}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            timelineContainer.innerHTML = timelineHtml;
+        } else {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">No status history available</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load edit timeline:', error);
+        const timelineContainer = document.getElementById('editOrderTimeline');
+        if (timelineContainer) {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:13px;padding:20px;">Failed to load timeline</div>';
+        }
+    }
+}
+
+// Load status timeline for view order modal
+async function loadViewOrderTimeline(orderId) {
+    try {
+        const timelineContainer = document.getElementById('viewOrderTimeline');
+        if (!timelineContainer) return;
+        
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            const timelineHtml = data.data.map((item, index) => {
+                const date = new Date(item.changed_at);
+                const timeAgo = getTimeAgo(date);
+                const isFirst = index === 0;
+                
+                return `
+                    <div style="display:flex;align-items:start;gap:14px;margin-bottom:${index === data.data.length - 1 ? '0' : '18px'};">
+                        <div style="width:12px;height:12px;border-radius:50%;background:${getStatusColor(item.color_class)};margin-top:4px;flex-shrink:0;${isFirst ? 'box-shadow:0 0 0 4px rgba(34,197,94,0.15);' : ''}"></div>
+                        <div style="flex:1;min-width:0;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                                <span style="font-size:15px;font-weight:${isFirst ? '600' : '500'};color:#111827;">${item.icon} ${item.status_name}</span>
+                                ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:4px;font-weight:500;">Current</span>' : ''}
+                            </div>
+                            <div style="font-size:13px;color:#6b7280;margin-bottom:4px;">${timeAgo} • ${item.changed_by_name}</div>
+                            ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:13px;color:#9ca3af;font-style:italic;background:#ffffff;padding:8px 12px;border-radius:6px;border-left:4px solid #e5e7eb;margin-top:6px;">${item.notes}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            timelineContainer.innerHTML = timelineHtml;
+        } else {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:14px;padding:30px;">No status history available</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load view timeline:', error);
+        const timelineContainer = document.getElementById('viewOrderTimeline');
+        if (timelineContainer) {
+            timelineContainer.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:14px;padding:30px;">Failed to load timeline</div>';
+        }
+    }
+}
+
+// Quick Status Change Modal
+function openQuickStatusChange(orderId, currentStatus) {
+    // Build a simple modal lazily
+    let modal = document.getElementById('quickStatusModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'quickStatusModal';
+        modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
+        modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:520px;padding:16px;border:1px solid #e5e7eb;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Change Status</h3>
+                <button onclick="document.getElementById('quickStatusModal').remove()" style="background:none;border:0;font-size:20px;color:#6b7280;cursor:pointer">×</button>
+            </div>
+            <div style="display:flex;gap:16px;">
+                <div style="flex:1;display:flex;flex-direction:column;gap:12px;">
+                    <select id="quickStatusSelect" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;"></select>
+                    <textarea id="quickStatusNotes" placeholder="Reason (optional)" style="width:100%;min-height:70px;padding:8px;border:1px solid #d1d5db;border-radius:6px;"></textarea>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                        <button onclick="document.getElementById('quickStatusModal').remove()" style="padding:8px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Cancel</button>
+                        <button id="quickStatusSave" style="padding:8px 12px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;">Save</button>
+                    </div>
+                </div>
+                <div style="flex:1;border-left:1px solid #e5e7eb;padding-left:16px;">
+                    <h4 style="margin:0 0 8px 0;font-size:14px;font-weight:600;color:#374151;">Recent Changes</h4>
+                    <div id="quickStatusTimeline" style="max-height:140px;overflow-y:auto;">
+                        <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        document.body.appendChild(modal);
+    }
+    // Load statuses and preselect
+    (async function(){
+        try {
+            const resp = await fetch('/order-status/api/statuses', { headers: { 'Accept': 'application/json','X-Requested-With':'XMLHttpRequest' }, credentials:'same-origin' });
+            const data = await resp.json();
+            const sel = document.getElementById('quickStatusSelect');
+            if (sel) {
+                sel.innerHTML = data.success ? data.data.map(s=>`<option value="${s.status_code}">${s.icon} ${s.status_name}</option>`).join('') : '';
+                sel.value = currentStatus || 'new';
+            }
+            
+            // Load timeline
+            loadQuickStatusTimeline(orderId);
+            const btn = document.getElementById('quickStatusSave');
+            btn.onclick = async function(){
+                const status_code = document.getElementById('quickStatusSelect').value;
+                const notes = document.getElementById('quickStatusNotes').value;
+                const res = await fetch('/order-status/api/change-status', {
+                    method:'POST',
+                    headers:{ 'Accept':'application/json','Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') },
+                    credentials:'same-origin',
+                    body: JSON.stringify({ order_id: orderId, status_code, notes })
+                });
+                const j = await res.json();
+                if (j && j.success) {
+                    document.getElementById('quickStatusModal').remove();
+                    location.reload();
+                } else {
+                    alert(j.message || 'Failed to change status');
+                }
+            };
+        } catch(e) {
+            console.warn('Quick status fetch failed', e);
+        }
+    })();
 }
 
 function saveOrderChanges(orderId) {
@@ -3581,9 +3957,35 @@ ensureAddressFields();
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
 
 // Debug: Log current columns after initialization
-console.log('Current columns after initialization:', currentColumns);
+    console.log('Current columns after initialization:', currentColumns);
 
-// Orders data passed from Laravel
+    // Populate status filter from loaded orders data - simple and efficient
+    function initStatusFilter() {
+        const sel = document.getElementById('statusFilter');
+        if (!sel || !window.ordersData) return;
+        
+        // Extract unique statuses from loaded orders
+        const uniqueStatuses = [...new Set(window.ordersData.map(order => order.order_status).filter(status => status))];
+        
+        // Build options HTML
+        const preserved = sel.value; // Preserve current selection
+        const optionsHtml = '<option value="">All status</option>' +
+            uniqueStatuses.map(status => {
+                const displayName = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                return `<option value="${status}">${displayName}</option>`;
+            }).join('');
+        
+        sel.innerHTML = optionsHtml;
+        
+        // Restore previous selection if it still exists
+        if (uniqueStatuses.includes(preserved)) {
+            sel.value = preserved;
+        }
+        
+        console.log('Status filter populated with', uniqueStatuses.length, 'unique statuses:', uniqueStatuses);
+    }
+
+    // Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 // Track current source/tab dynamically for correct actions rendering
 window.currentSource = '{{ $source }}';
@@ -3595,6 +3997,41 @@ document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
 });
 */ 
+
+// Global: initialize the top status filter from currently loaded orders
+// Safe to call from any tab. For Shopify tabs we intentionally show only "All status".
+function initStatusFilter() {
+	try {
+		const selectEl = document.getElementById('statusFilter');
+		if (!selectEl) return;
+
+		const source = (window.currentSource || '').toLowerCase();
+		const orders = Array.isArray(window.ordersData) ? window.ordersData : [];
+
+		// For non-Shopify sources, derive unique statuses from the loaded orders
+		let uniqueStatuses = [];
+		if (source !== 'shopify' && source !== 'shopify_approvals' && source !== 'shopify-approvals') {
+			uniqueStatuses = [...new Set(orders.map(o => (o && o.order_status) ? String(o.order_status) : '').filter(Boolean))];
+		}
+
+		const preserved = selectEl.value;
+		if (!uniqueStatuses.length) {
+			selectEl.innerHTML = '<option value="">All status</option>';
+			selectEl.value = '';
+			return;
+		}
+
+		const optionsHtml = '<option value="">All status</option>' +
+			uniqueStatuses.map(s => {
+				const label = s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+				return `<option value="${s}">${label}</option>`;
+			}).join('');
+		selectEl.innerHTML = optionsHtml;
+		if (uniqueStatuses.includes(preserved)) selectEl.value = preserved;
+	} catch (e) {
+		console.warn('initStatusFilter failed', e);
+	}
+}
 
 function openColumnSettings() {
     renderColumnSettings();
@@ -3787,10 +4224,10 @@ function getCellContent_DEPRECATED(order, columnId) {
                 'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' }
             };
             const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
-            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
-                        <span class="mr-1 text-xs">${config.icon}</span>
-                        ${status.charAt(0).toUpperCase() + status.slice(1)}
-                    </span>`;
+            return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition" title="Quick change status">
+                        <span class=\"mr-1 text-xs\">${config.icon}</span>
+                        ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
+                    </button>`;
         case 'external_source':
             const source = order.external_source || 'manual';
             const sourceColors = {
@@ -4101,6 +4538,21 @@ function renderTableHeader() {
     header.innerHTML = '';
     if (colgroup) colgroup.innerHTML = '';
     
+    // Add checkbox column first (only for non-Shopify orders)
+    const isShopifyView = window.location.search.includes('source=shopify');
+    if (!isShopifyView) {
+        const checkboxTh = document.createElement('th');
+        checkboxTh.className = 'px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-12';
+        checkboxTh.innerHTML = '<input type="checkbox" id="selectAllOrders" onchange="toggleAllOrdersSelection()" class="rounded" title="Select all on page">';
+        header.appendChild(checkboxTh);
+        
+        if (colgroup) {
+            const checkboxCol = document.createElement('col');
+            checkboxCol.style.width = '48px';
+            colgroup.appendChild(checkboxCol);
+        }
+    }
+    
     currentColumns.forEach(column => {
         if (column.visible) {
             const columnConfig = availableColumns[column.id];
@@ -4168,12 +4620,25 @@ function renderTableBody() {
             
             // Make entire row clickable to open view order details
             row.onclick = function(e) {
-                // Don't trigger row click if user clicked on action buttons or customer name
-                if (e.target.closest('.sticky-actions') || e.target.closest('.customer-name-link')) {
+                // Don't trigger row click if user clicked on action buttons, customer name, or checkboxes
+                if (e.target.closest('.sticky-actions') || e.target.closest('.customer-name-link') || e.target.closest('input[type="checkbox"]')) {
                     return;
                 }
                 viewOrderDetails(order.id);
             };
+            
+            // Add checkbox column first (only for non-Shopify orders)
+            const isShopifyView = window.location.search.includes('source=shopify');
+            if (!isShopifyView) {
+                const checkboxTd = document.createElement('td');
+                checkboxTd.className = 'px-3 py-4 whitespace-nowrap text-sm';
+                if (order.external_source === 'shopify') {
+                    checkboxTd.innerHTML = ''; // No checkbox for Shopify orders
+                } else {
+                    checkboxTd.innerHTML = `<input type=\"checkbox\" class=\"order-checkbox rounded\" id=\"order_${order.id}\" value=\"${order.id}\" onchange=\"toggleOrderSelection(${order.id})\" onclick=\"event.stopPropagation()\">`;
+                }
+                row.appendChild(checkboxTd);
+            }
             
             currentColumns.forEach(column => {
                 if (column.visible) {
@@ -4249,13 +4714,16 @@ function getCellContent(order, columnId) {
                 'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '✓' },
                 'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '✕' },
                 'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '↩' },
-                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' }
+                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '⏸' },
+                'new': { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '📝' },
+                'out_for_delivery': { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', icon: '🚚' },
+                'delivered': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '✅' }
             };
             const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
-            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text}">
+            return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" title="Click to change status">
                         <span class="mr-1 text-xs">${config.icon}</span>
-                        ${status.charAt(0).toUpperCase() + status.slice(1)}
-                    </span>`;
+                        ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
+                    </button>`;
         case 'external_source':
             const source = order.external_source || 'manual';
             const sourceColors = {
@@ -4457,6 +4925,9 @@ document.addEventListener('DOMContentLoaded', function() {
     window.allOrders = [...window.ordersData];
     window.filteredOrders = [...window.ordersData];
     
+    // Initialize status filter with current data
+    initStatusFilter();
+    
     // Set up search with debouncing
     const searchInput = document.getElementById('orderSearch');
     const statusFilter = document.getElementById('statusFilter');
@@ -4483,13 +4954,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 300); // Reduced timeout for better responsiveness
     });
     
-    // Filter functionality - make API call for full dataset
+    // Filter functionality - use in-page filtering (no API roundtrip)
     statusFilter.addEventListener('change', function() {
-        fetchFilteredOrders();
+        applyFilters();
     });
     
     dateFilter.addEventListener('change', function() {
-        fetchFilteredOrders();
+        applyFilters();
     });
     
     // Per-page selector functionality
@@ -4645,25 +5116,35 @@ function clearFilters() {
 
 // Loading state functions
 function showLoadingState() {
-    document.getElementById('table-body').style.display = 'none';
-    document.getElementById('no-results-state').classList.add('hidden');
-    document.getElementById('loading-state').classList.remove('hidden');
+    const tbody = document.getElementById('table-body');
+    const noResults = document.getElementById('no-results-state');
+    const loading = document.getElementById('loading-state');
+    if (tbody) tbody.style.display = 'none';
+    if (noResults) noResults.classList.add('hidden');
+    if (loading) loading.classList.remove('hidden');
 }
 
 function hideLoadingState() {
-    document.getElementById('loading-state').classList.add('hidden');
-    document.getElementById('table-body').style.display = '';
+    const loading = document.getElementById('loading-state');
+    const tbody = document.getElementById('table-body');
+    if (loading) loading.classList.add('hidden');
+    if (tbody) tbody.style.display = '';
 }
 
 function showEmptyState() {
-    document.getElementById('table-body').style.display = 'none';
-    document.getElementById('loading-state').classList.add('hidden');
-    document.getElementById('no-results-state').classList.remove('hidden');
+    const tbody = document.getElementById('table-body');
+    const loading = document.getElementById('loading-state');
+    const noResults = document.getElementById('no-results-state');
+    if (tbody) tbody.style.display = 'none';
+    if (loading) loading.classList.add('hidden');
+    if (noResults) noResults.classList.remove('hidden');
 }
 
 function hideEmptyState() {
-    document.getElementById('no-results-state').classList.add('hidden');
-    document.getElementById('table-body').style.display = '';
+    const noResults = document.getElementById('no-results-state');
+    const tbody = document.getElementById('table-body');
+    if (noResults) noResults.classList.add('hidden');
+    if (tbody) tbody.style.display = '';
 }
 
 // ==================== END SEARCH AND FILTER ====================
@@ -4676,7 +5157,7 @@ function createNewOrder() {
     
     // Set up form for new order
     content.innerHTML = `
-        <form id="editOrderForm">
+        <form id="editOrderForm" onsubmit="event.preventDefault(); saveOrderChanges(null);">
             <!-- Customer Section -->
             <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
                 <div style="padding: 16px; border-bottom: 1px solid #e5e7eb;">
@@ -4748,11 +5229,8 @@ function createNewOrder() {
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Status</label>
-                            <select name="order_status" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
-                                <option value="pending">Pending</option>
-                                <option value="processing">Processing</option>
-                                <option value="completed">Completed</option>
-                                <option value="on-hold">On Hold</option>
+                            <select name="order_status" id="createOrderStatus" required style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="">Loading statuses...</option>
                             </select>
                         </div>
                         <div style="margin-bottom: 12px;">
@@ -4856,6 +5334,37 @@ function createNewOrder() {
     setTimeout(() => {
         updateCreateOrderModalHeader();
     }, 10);
+    // Load master statuses for create dropdown
+    (async function(){
+        try {
+            const resp = await fetch('/order-status/api/statuses', {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                },
+                credentials: 'same-origin'
+            });
+            const data = await resp.json();
+            const sel = document.getElementById('createOrderStatus');
+            if (data && data.success && sel) {
+                sel.innerHTML = data.data.map(s => `<option value="${s.status_code}">${s.icon} ${s.status_name}</option>`).join('');
+                if (data.data.find(s => s.status_code === 'new')) sel.value = 'new';
+            }
+        } catch (e) {
+            const sel = document.getElementById('createOrderStatus');
+            if (sel) sel.innerHTML = `
+                <option value="new" selected>⏳ New</option>
+                <option value="processing">⚡ Processing</option>
+                <option value="out_for_delivery">🚚 Out for Delivery</option>
+                <option value="delivered">✓ Delivered</option>
+                <option value="on_hold">⏸ On Hold</option>
+                <option value="cancelled">✕ Cancelled</option>
+                <option value="refunded">↩ Refunded</option>`;
+        }
+    })();
 }
 
 // DUPLICATE FUNCTION REMOVED - Original exists at line 1402
@@ -5411,6 +5920,9 @@ function rebuildTableWithOrders(orders, source, tab) {
     window.allOrders = [...window.ordersData];
     window.filteredOrders = [...window.ordersData];
 
+    // Update status filter with new data (safe for Shopify: will show only All status)
+    initStatusFilter();
+
     // Render using existing helpers to avoid duplication
     renderOrdersTable();
     refreshPaginationInfo();
@@ -5447,5 +5959,516 @@ function refreshPaginationInfo(counts) {
     } catch (e) { console.warn('refreshPaginationInfo failed', e); }
 }
 
+// Bulk Status Change Functions
+let availableStatuses = [];
+let selectedOrderIds = [];
+
+// Load available statuses for bulk change
+async function loadAvailableStatuses() {
+    try {
+        const response = await fetch('/order-status/api/statuses', {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            credentials: 'same-origin'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            availableStatuses = data.data;
+            populateStatusSelect();
+        }
+    } catch (error) {
+        console.error('Error loading statuses:', error);
+    }
+}
+
+// Populate status select dropdown
+function populateStatusSelect() {
+    const select = document.getElementById('bulkNewStatus');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">Select new status...</option>';
+    
+    availableStatuses.forEach(status => {
+        const option = document.createElement('option');
+        option.value = status.status_code;
+        option.textContent = `${status.icon} ${status.status_name}`;
+        select.appendChild(option);
+    });
+}
+
+// Open bulk status modal
+// Note: openBulkStatusModal function is defined later with enhanced checkbox functionality
+
+// Populate orders list for bulk selection
+function populateBulkOrdersList() {
+    const container = document.getElementById('bulkOrdersList');
+    if (!container || !window.currentOrders) return;
+    
+    // Filter out Shopify orders
+    const eligibleOrders = window.currentOrders.filter(order => 
+        order.external_source !== 'shopify'
+    );
+    
+    if (eligibleOrders.length === 0) {
+        container.innerHTML = '<div style="color: #6b7280; font-style: italic;">No eligible orders found on this page</div>';
+        return;
+    }
+    
+    container.innerHTML = eligibleOrders.map(order => `
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: white; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 4px;">
+            <input type="checkbox" id="order_${order.id}" value="${order.id}" onchange="toggleOrderSelection(${order.id})" style="border-radius: 4px;">
+            <label for="order_${order.id}" style="flex: 1; font-size: 14px; cursor: pointer;">
+                <span style="font-weight: 500;">#${order.order_number || order.id}</span>
+                <span style="color: #6b7280; margin-left: 8px;">$${parseFloat(order.total_price || 0).toFixed(2)}</span>
+                <span style="color: #6b7280; margin-left: 8px;">${order.order_status || 'unknown'}</span>
+            </label>
+        </div>
+    `).join('');
+}
+
+// Toggle individual order selection
+function toggleOrderSelection(orderId) {
+    const checkbox = document.getElementById(`order_${orderId}`);
+    if (!checkbox) return;
+    
+    if (checkbox.checked) {
+        if (!selectedOrderIds.includes(orderId)) {
+            selectedOrderIds.push(orderId);
+        }
+    } else {
+        selectedOrderIds = selectedOrderIds.filter(id => id !== orderId);
+    }
+    
+    updateSelectedCount();
+    updateSelectAllCheckbox();
+    updateBulkActionButtons(); // Add this line to update bulk status button
+}
+
+// Toggle all orders selection
+function toggleAllOrders() {
+    const selectAllCheckbox = document.getElementById('selectAllOrders');
+    const orderCheckboxes = document.querySelectorAll('#bulkOrdersList input[type="checkbox"]');
+    
+    orderCheckboxes.forEach(checkbox => {
+        checkbox.checked = selectAllCheckbox.checked;
+        const orderId = parseInt(checkbox.value);
+        
+        if (selectAllCheckbox.checked) {
+            if (!selectedOrderIds.includes(orderId)) {
+                selectedOrderIds.push(orderId);
+            }
+        } else {
+            selectedOrderIds = selectedOrderIds.filter(id => id !== orderId);
+        }
+    });
+    
+    updateSelectedCount();
+}
+
+// Update selected orders count
+function updateSelectedCount() {
+    const countElement = document.getElementById('selectedOrdersCount');
+    const executeBtn = document.getElementById('executeBulkStatusBtn');
+    
+    if (countElement) {
+        countElement.textContent = `${selectedOrderIds.length} orders selected`;
+    }
+    
+    if (executeBtn) {
+        executeBtn.disabled = selectedOrderIds.length === 0;
+    }
+}
+
+// Update select all checkbox state
+function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('selectAllOrders');
+    const orderCheckboxes = document.querySelectorAll('#bulkOrdersList input[type="checkbox"]');
+    const checkedBoxes = document.querySelectorAll('#bulkOrdersList input[type="checkbox"]:checked');
+    
+    if (checkedBoxes.length === 0) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    } else if (checkedBoxes.length === orderCheckboxes.length) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+    } else {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = true;
+    }
+}
+
+// Execute bulk status change
+async function executeBulkStatusChange() {
+    const newStatus = document.getElementById('bulkNewStatus').value;
+    const notes = document.getElementById('bulkStatusNotes').value;
+    
+    console.log('Bulk update debug:');
+    console.log('- newStatus:', newStatus);
+    console.log('- selectedOrderIds:', selectedOrderIds);
+    console.log('- selectedOrderIds.length:', selectedOrderIds.length);
+    
+    if (!newStatus) {
+        showBulkStatusAlert('Please select a new status', 'error');
+        return;
+    }
+    
+    if (selectedOrderIds.length === 0) {
+        showBulkStatusAlert('Please select at least one order', 'error');
+        return;
+    }
+    
+    const executeBtn = document.getElementById('executeBulkStatusBtn');
+    const originalText = executeBtn.textContent;
+    
+    try {
+        executeBtn.disabled = true;
+        executeBtn.innerHTML = '<div style="width: 16px; height: 16px; border: 2px solid #ffffff; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px;"></div>Updating...';
+        
+        const requestBody = {
+            order_ids: selectedOrderIds,
+            status_code: newStatus,
+            notes: notes
+        };
+        
+        console.log('Bulk update request body:', requestBody);
+        
+        const response = await fetch('/order-status/api/bulk-change', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify(requestBody),
+            credentials: 'same-origin'
+        });
+        
+        console.log('Bulk update response status:', response.status);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Bulk update API failed:', response.status, errorText);
+            showBulkStatusAlert(`API Error: ${response.status} - ${errorText}`, 'error');
+            return;
+        }
+        
+        const data = await response.json();
+        console.log('Bulk update response data:', data);
+        
+        if (data.success) {
+            const successCount = data.summary ? data.summary.success : data.updated_count || 0;
+            showBulkStatusAlert(`Successfully updated ${successCount} orders`, 'success');
+            
+            // Refresh the orders table
+            setTimeout(() => {
+                closeModal('bulkStatusModal');
+                location.reload(); // Simple refresh for now
+            }, 2000);
+        } else {
+            showBulkStatusAlert(data.message || 'Failed to update orders', 'error');
+        }
+    } catch (error) {
+        console.error('Error updating orders:', error);
+        showBulkStatusAlert('An error occurred while updating orders', 'error');
+    } finally {
+        executeBtn.disabled = false;
+        executeBtn.textContent = originalText;
+    }
+}
+
+// Show alert in bulk status modal
+function showBulkStatusAlert(message, type) {
+    const alertContainer = document.getElementById('bulkStatusAlert');
+    if (!alertContainer) return;
+    
+    const alertClass = type === 'success' ? 'background: #d1fae5; color: #065f46; border: 1px solid #34d399;' : 'background: #fee2e2; color: #dc2626; border: 1px solid #f87171;';
+    
+    alertContainer.innerHTML = `
+        <div style="padding: 12px 16px; border-radius: 8px; font-size: 14px; ${alertClass}">
+            ${message}
+        </div>
+    `;
+    alertContainer.style.display = 'block';
+    
+    // Auto-hide success messages
+    if (type === 'success') {
+        setTimeout(() => {
+            alertContainer.style.display = 'none';
+        }, 5000);
+    }
+}
+
+// View order status history
+async function viewOrderStatusHistory(orderId) {
+    document.getElementById('statusHistoryModal').style.display = 'flex';
+    
+    try {
+        const response = await fetch(`/order-status/api/orders/${orderId}/history`);
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            renderStatusHistory(data.data);
+        } else {
+            document.getElementById('statusHistoryContent').innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6b7280;">
+                    No status history found for this order
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error loading status history:', error);
+        document.getElementById('statusHistoryContent').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #ef4444;">
+                Error loading status history
+            </div>
+        `;
+    }
+}
+
+// Render status history
+function renderStatusHistory(history) {
+    const content = document.getElementById('statusHistoryContent');
+    
+    content.innerHTML = `
+        <div style="space-y: 16px;">
+            ${history.map((entry, index) => `
+                <div style="display: flex; gap: 16px; ${index < history.length - 1 ? 'border-bottom: 1px solid #e5e7eb; padding-bottom: 16px;' : ''}">
+                    <div style="flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%; background: ${getStatusColor(entry.status_code)}; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 12px;">
+                        ${entry.status ? entry.status.icon : '?'}
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; color: #111827; margin-bottom: 4px;">
+                            ${entry.status ? entry.status.status_name : entry.status_code}
+                        </div>
+                        <div style="font-size: 14px; color: #6b7280; margin-bottom: 4px;">
+                            ${formatDate(entry.changed_at)} by ${entry.changed_by ? entry.changed_by.name : 'System'}
+                        </div>
+                        ${entry.notes ? `<div style="font-size: 14px; color: #374151; background: #f9fafb; padding: 8px; border-radius: 6px; border-left: 3px solid ${getStatusColor(entry.status_code)};">${entry.notes}</div>` : ''}
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+// Get status color for history display
+function getStatusColor(statusCode) {
+    const colorMap = {
+        'new': '#eab308',
+        'on_hold': '#f97316', 
+        'processing': '#3b82f6',
+        'out_for_delivery': '#8b5cf6',
+        'delivered': '#10b981',
+        'cancelled': '#ef4444',
+        'refunded': '#8b5cf6'
+    };
+    return colorMap[statusCode] || '#6b7280';
+}
+
+// Bulk selection functions for checkbox-based selection
+function toggleAllOrdersSelection() {
+    const selectAllCheckbox = document.getElementById('selectAllOrders');
+    const orderCheckboxes = document.querySelectorAll('.order-checkbox');
+    
+    orderCheckboxes.forEach(checkbox => {
+        checkbox.checked = selectAllCheckbox.checked;
+    });
+    
+    updateBulkActionButtons();
+}
+
+function updateBulkActionButtons() {
+    // Use selectedOrderIds array as source of truth instead of DOM queries
+    const selectedCount = selectedOrderIds ? selectedOrderIds.length : 0;
+    const bulkStatusBtn = document.querySelector('button[onclick="openBulkStatusModal()"]');
+    const selectAllCheckbox = document.getElementById('selectAllOrders');
+    const totalCheckboxes = document.querySelectorAll('.order-checkbox');
+    
+    // Update bulk status button
+    if (bulkStatusBtn) {
+        if (selectedCount > 0) {
+            // Update button text while preserving the SVG icon
+            const svgIcon = `<svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                            </svg>`;
+            bulkStatusBtn.innerHTML = svgIcon + `Bulk Status (${selectedCount})`;
+            bulkStatusBtn.disabled = false;
+            bulkStatusBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        } else {
+            // Reset button text while preserving the SVG icon
+            const svgIcon = `<svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                            </svg>`;
+            bulkStatusBtn.innerHTML = svgIcon + 'Bulk Status';
+            bulkStatusBtn.disabled = true;
+            bulkStatusBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+    }
+    
+    // Update select all checkbox state based on actual checked checkboxes (for visual consistency)
+    const selectedCheckboxes = document.querySelectorAll('.order-checkbox:checked');
+    if (selectAllCheckbox && totalCheckboxes.length > 0) {
+        if (selectedCheckboxes.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        } else if (selectedCheckboxes.length === totalCheckboxes.length) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+        } else {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = true;
+        }
+    }
+}
+
+function getSelectedOrderIds() {
+    // Source of truth is selectedOrderIds so table and modal stay in sync
+    if (selectedOrderIds && selectedOrderIds.length) return [...selectedOrderIds];
+    const selectedCheckboxes = document.querySelectorAll('.order-checkbox:checked');
+    return Array.from(selectedCheckboxes).map(cb => parseInt(cb.value));
+}
+
+// Enhanced bulk status modal for checkbox-based selection
+function openBulkStatusModal() {
+    const selectedIds = selectedOrderIds && selectedOrderIds.length ? selectedOrderIds : getSelectedOrderIds();
+    
+    if (selectedIds.length === 0) {
+        alert('Please select orders first by checking the checkboxes.');
+        return;
+    }
+    
+    // Load available statuses
+    loadAvailableStatuses();
+    
+    // Reset form
+    document.getElementById('bulkNewStatus').value = '';
+    document.getElementById('bulkStatusNotes').value = '';
+    
+    // Update modal content to show selected orders
+    const container = document.getElementById('bulkOrdersList');
+    const selectedOrders = (window.ordersData || []).filter(order => selectedIds.includes(order.id));
+    
+    container.innerHTML = selectedOrders.map(order => `
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: #e0f2fe; border: 1px solid #0284c7; border-radius: 6px; margin-bottom: 4px;">
+            <span style="color: #0284c7;">✓</span>
+            <label style="flex: 1; font-size: 14px;">
+                <span style="font-weight: 500;">#${order.order_number || order.id}</span>
+                <span style="color: #6b7280; margin-left: 8px;">$${parseFloat(order.total_price || 0).toFixed(2)}</span>
+                <span style="color: #6b7280; margin-left: 8px;">${order.order_status || 'unknown'}</span>
+            </label>
+        </div>
+    `).join('');
+    
+    // Update selected count
+    document.getElementById('selectedOrdersCount').textContent = `${selectedIds.length} orders selected`;
+    document.getElementById('executeBulkStatusBtn').disabled = false;
+    
+    // Store selected IDs globally
+    selectedOrderIds = selectedIds;
+    
+    document.getElementById('bulkStatusModal').style.display = 'flex';
+}
+
+// Initialize bulk status functionality when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    // Store current orders globally for bulk operations
+    window.currentOrders = [];
+    
+    // Initialize bulk action buttons state
+    setTimeout(() => {
+        updateBulkActionButtons();
+    }, 1000);
+});
+
 </script>
+
+<!-- Bulk Status Change Modal -->
+<div id="bulkStatusModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 700px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        
+        <!-- Modal Header -->
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Bulk Status Change</h3>
+            <button onclick="closeModal('bulkStatusModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 24px;">
+            <div id="bulkStatusAlert" style="display: none; margin-bottom: 16px;"></div>
+            
+            <!-- Step 1: Select Orders -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #374151;">Step 1: Select Orders</h4>
+                <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; max-height: 300px; overflow-y: auto;">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                        <input type="checkbox" id="selectAllOrders" onchange="toggleAllOrders()" style="border-radius: 4px;">
+                        <label for="selectAllOrders" style="font-size: 14px; font-weight: 500; color: #374151;">Select All Visible Orders</label>
+                    </div>
+                    <div id="bulkOrdersList" style="space-y: 8px;">
+                        <!-- Orders will be populated here -->
+                    </div>
+                </div>
+                <div id="selectedOrdersCount" style="margin-top: 8px; font-size: 14px; color: #6b7280;">
+                    0 orders selected
+                </div>
+            </div>
+            
+            <!-- Step 2: Choose New Status -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #374151;">Step 2: Choose New Status</h4>
+                <select id="bulkNewStatus" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                    <option value="">Select new status...</option>
+                </select>
+            </div>
+            
+            <!-- Step 3: Add Notes (Optional) -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #374151;">Step 3: Add Notes (Optional)</h4>
+                <textarea id="bulkStatusNotes" placeholder="Reason for status change..." style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical; min-height: 80px;"></textarea>
+            </div>
+        </div>
+        
+        <!-- Modal Footer -->
+        <div style="padding: 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <button onclick="closeModal('bulkStatusModal')" style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                Cancel
+            </button>
+            <button id="executeBulkStatusBtn" onclick="executeBulkStatusChange()" style="padding: 8px 24px; background: #7c3aed; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;" disabled>
+                Update Selected Orders
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Order Status History Modal -->
+<div id="statusHistoryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        
+        <!-- Modal Header -->
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Order Status History</h3>
+            <button onclick="closeModal('statusHistoryModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 24px;">
+            <div id="statusHistoryContent">
+                <div style="display: flex; align-items: center; justify-content: center; padding: 40px;">
+                    <div style="display: flex; align-items: center; gap: 8px; color: #6b7280;">
+                        <div style="width: 16px; height: 16px; border: 2px solid #e5e7eb; border-top: 2px solid #7c3aed; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        Loading status history...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 @endpush
