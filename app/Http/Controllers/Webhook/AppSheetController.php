@@ -281,10 +281,17 @@ class AppSheetController extends Controller
         try {
             $payload = $request->all();
 
+            // Log the incoming request for debugging
+            Log::info('AppSheet status-update webhook received', [
+                'payload' => $payload,
+                'headers' => $request->headers->all()
+            ]);
+
             // Basic validation
-            $rawStatus = $payload['status'] ?? $payload['status_code'] ?? '';
+            $rawStatus = $payload['status'] ?? $payload['Status'] ?? $payload['status_code'] ?? '';
             $statusCode = strtolower(trim((string) $rawStatus));
             if ($statusCode === '') {
+                Log::error('AppSheet status-update: missing status', ['payload' => $payload]);
                 return response()->json([
                     'success' => false,
                     'message' => 'status_code is required'
@@ -293,13 +300,41 @@ class AppSheetController extends Controller
 
             // Accept either order_id or order_number
             $orderId = $payload['order_id'] ?? null;
-            $orderNumber = $payload['order_number'] ?? null;
+            $orderNumber = $payload['order_number']
+                ?? ($payload['Order Number'] ?? null)
+                ?? ($payload['order number'] ?? null)
+                ?? ($payload['Order No'] ?? null)
+                ?? ($payload['order no'] ?? null)
+                ?? ($payload['order_no'] ?? null)
+                ?? ($payload['orderNo'] ?? null);
+
+            Log::info('AppSheet status-update: extracted identifiers', [
+                'order_id' => $orderId,
+                'raw_order_number' => $orderNumber,
+                'raw_status' => $rawStatus
+            ]);
+
+            // Normalize order number: trim, remove commas, remove NF- prefix if present
+            if ($orderNumber !== null) {
+                $orderNumber = trim((string) $orderNumber);
+                // Remove commas (thousands separators)
+                $orderNumber = str_replace(',', '', $orderNumber);
+                if (stripos($orderNumber, 'NF-') === 0) {
+                    $orderNumber = substr($orderNumber, 3);
+                }
+            }
             if (!$orderId && !$orderNumber) {
+                Log::error('AppSheet status-update: no order identifier', ['payload' => $payload]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Provide order_id or order_number'
                 ], 422);
             }
+
+            Log::info('AppSheet status-update: normalized identifiers', [
+                'order_id' => $orderId,
+                'normalized_order_number' => $orderNumber
+            ]);
 
             // Normalize common legacy codes
             $aliases = [
@@ -307,15 +342,29 @@ class AppSheetController extends Controller
                 'on-hold' => 'on_hold',
                 'completed' => 'delivered',
                 'out for delivery' => 'out_for_delivery',
+                'delivered' => 'delivered', // Add explicit mapping
+                'processing' => 'processing', // Add explicit mapping
             ];
             $normalizedCode = $aliases[$statusCode] ?? str_replace([' ', '-'], ['_', '_'], $statusCode);
+
+            Log::info('AppSheet status-update: status normalization', [
+                'raw_status' => $statusCode,
+                'normalized_status' => $normalizedCode
+            ]);
 
             // Ensure status exists in master
             $statusMaster = OrderStatusMaster::getByCode($normalizedCode);
             if (!$statusMaster) {
+                // Log all available statuses for debugging
+                $availableStatuses = OrderStatusMaster::where('is_active', 1)->pluck('status_code')->toArray();
+                Log::error('AppSheet status-update: invalid status code', [
+                    'raw_status' => $statusCode,
+                    'normalized_status' => $normalizedCode,
+                    'available_statuses' => $availableStatuses
+                ]);
                 return response()->json([
                     'success' => false,
-                    'message' => "Invalid status_code '{$statusCode}'. Create it in master or use a valid code."
+                    'message' => "Invalid status_code '{$statusCode}' (normalized: '{$normalizedCode}'). Available statuses: " . implode(', ', $availableStatuses)
                 ], 422);
             }
 
@@ -323,19 +372,58 @@ class AppSheetController extends Controller
             $order = null;
             if ($orderId) {
                 $order = OrderModel::find($orderId);
+                Log::info('AppSheet status-update: order lookup by ID', [
+                    'order_id' => $orderId,
+                    'found' => $order ? true : false
+                ]);
             } else if ($orderNumber) {
                 $order = OrderModel::where('order_number', $orderNumber)->first();
+                Log::info('AppSheet status-update: order lookup by number', [
+                    'order_number' => $orderNumber,
+                    'found' => $order ? true : false
+                ]);
+                
+                // If not found, try with different variations
+                if (!$order) {
+                    Log::info('AppSheet status-update: trying alternative order number lookups');
+                    // Try with NF- prefix
+                    $order = OrderModel::where('order_number', 'NF-' . $orderNumber)->first();
+                    if ($order) {
+                        Log::info('AppSheet status-update: found with NF- prefix');
+                    } else {
+                        // Try as integer comparison
+                        $order = OrderModel::whereRaw('CAST(order_number AS UNSIGNED) = ?', [(int)$orderNumber])->first();
+                        if ($order) {
+                            Log::info('AppSheet status-update: found with integer cast');
+                        }
+                    }
+                }
             }
 
             if (!$order) {
+                Log::error('AppSheet status-update: order not found', [
+                    'order_id' => $orderId,
+                    'order_number' => $orderNumber
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Order not found'
                 ], 404);
             }
 
+            Log::info('AppSheet status-update: order found', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'external_source' => $order->external_source,
+                'current_status' => $order->order_status
+            ]);
+
             // Only non-Shopify orders should be updated here
             if (strtolower((string)$order->external_source) === 'shopify') {
+                Log::warning('AppSheet status-update: attempted to update Shopify order', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'This endpoint updates non-Shopify orders only.'
@@ -345,16 +433,38 @@ class AppSheetController extends Controller
             $notes = $payload['notes'] ?? null;
             $changedBy = $payload['changed_by'] ?? null;
 
+            Log::info('AppSheet status-update: attempting status change', [
+                'order_id' => $order->id,
+                'from_status' => $order->order_status,
+                'to_status' => $normalizedCode,
+                'notes' => $notes,
+                'changed_by' => $changedBy
+            ]);
+
             $ok = $order->changeStatus($normalizedCode, $notes, $changedBy);
             if (!$ok) {
+                Log::error('AppSheet status-update: changeStatus failed', [
+                    'order_id' => $order->id,
+                    'status_code' => $normalizedCode,
+                    'current_order_status' => $order->fresh()->order_status
+                ]);
                 return response()->json([
                     'success' => false,
                     'message' => 'Failed to change status'
                 ], 500);
             }
 
+            // Verify the status was actually changed
+            $updatedOrder = $order->fresh();
+            Log::info('AppSheet status-update: status change result', [
+                'order_id' => $order->id,
+                'old_status' => $order->order_status,
+                'new_status' => $updatedOrder->order_status,
+                'change_successful' => $updatedOrder->order_status === $normalizedCode
+            ]);
+
             // Optional explicit date for history (changed_at)
-            $providedDate = $payload['date'] ?? $payload['changed_at'] ?? null;
+            $providedDate = $payload['date'] ?? $payload['Date'] ?? $payload['changed_at'] ?? null;
             if ($providedDate) {
                 try {
                     $dt = new \DateTime($providedDate);

@@ -2506,7 +2506,7 @@ async function loadQuickStatusTimeline(orderId) {
         const timelineContainer = document.getElementById('quickStatusTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest' 
@@ -2586,7 +2586,7 @@ async function loadEditOrderTimeline(orderId) {
         const timelineContainer = document.getElementById('editOrderTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest' 
@@ -2636,7 +2636,7 @@ async function loadViewOrderTimeline(orderId) {
         const timelineContainer = document.getElementById('viewOrderTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest' 

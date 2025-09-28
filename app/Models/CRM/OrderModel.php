@@ -242,8 +242,28 @@ class OrderModel extends BaseModel
                 }
             } else {
                 if ($existingOrder) {
+                    // Capture the previous status to detect changes from WooCommerce or other non-Shopify sources
+                    $previousStatus = $existingOrder->order_status;
                     $existingOrder->update($orderAttributes);
                     $order = $existingOrder;
+
+                    // If the incoming payload updated the status, write history via changeStatus()
+                    if (array_key_exists('order_status', $orderAttributes)
+                        && $orderAttributes['order_status'] !== null
+                        && $orderAttributes['order_status'] !== $previousStatus) {
+                        try {
+                            // Normalize common legacy codes before applying
+                            $normalized = str_replace([' ', '-'], ['_', '_'], strtolower($orderAttributes['order_status']));
+                            $order->changeStatus($normalized, 'WooCommerce sync');
+                        } catch (\Throwable $e) {
+                            \Log::warning('storeOrderFromApi: failed to write history on non-Shopify status update', [
+                                'order_id' => $order->id,
+                                'from' => $previousStatus,
+                                'to' => $orderAttributes['order_status'],
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
                 } else {
                     $order = static::create($orderAttributes);
                     // Create initial status history for new non-Shopify orders
@@ -464,14 +484,25 @@ class OrderModel extends BaseModel
 
             // Handle everything at application level (no triggers needed)
             return \DB::transaction(function () use ($statusCode, $notes, $changedBy, $newStatus) {
+                \Log::info("OrderModel::changeStatus - Starting transaction", [
+                    'order_id' => $this->id,
+                    'status_code' => $statusCode,
+                    'status_id' => $newStatus->id
+                ]);
+
                 // 1. Mark all previous status history as not current
-                \DB::table('t_crm_order_status_history')
+                $updatedRows = \DB::table('t_crm_order_status_history')
                     ->where('order_id', $this->id)
                     ->where('is_current', 1)
                     ->update(['is_current' => 0]);
 
+                \Log::info("OrderModel::changeStatus - Marked previous history as not current", [
+                    'order_id' => $this->id,
+                    'updated_rows' => $updatedRows
+                ]);
+
                 // 2. Create new status history record
-                \DB::table('t_crm_order_status_history')->insert([
+                $historyData = [
                     'order_id' => $this->id,
                     'status_id' => $newStatus->id,
                     'status_code' => $statusCode,
@@ -480,6 +511,18 @@ class OrderModel extends BaseModel
                     'notes' => $notes ?? "Status changed to {$statusCode}",
                     'changed_at' => now(),
                     'created_at' => now()
+                ];
+
+                \Log::info("OrderModel::changeStatus - Inserting new history record", [
+                    'order_id' => $this->id,
+                    'history_data' => $historyData
+                ]);
+
+                $historyId = \DB::table('t_crm_order_status_history')->insertGetId($historyData);
+
+                \Log::info("OrderModel::changeStatus - History record created", [
+                    'order_id' => $this->id,
+                    'history_id' => $historyId
                 ]);
 
                 // 3. Update the main order table
@@ -488,6 +531,11 @@ class OrderModel extends BaseModel
                     $this->setAttribute('updated_by', $changedBy ?? (auth()->check() ? auth()->id() : 1));
                 }
                 $this->save();
+
+                \Log::info("OrderModel::changeStatus - Main order table updated", [
+                    'order_id' => $this->id,
+                    'new_status' => $this->order_status
+                ]);
 
                 // Refresh and return
                 $this->refresh();
