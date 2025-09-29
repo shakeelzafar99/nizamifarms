@@ -60,8 +60,13 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/logs/info', [LogController::class, 'getLogInfo']);
     Route::post('/logs/clear-old', [LogController::class, 'clearOldLogs']);
     Route::get('/logs/export', [LogController::class, 'exportLogs']);
+    // Operations dashboard page (imports, bulk delivery status)
+    Route::get('/admin/operations', function () {
+        return view('admin.operations');
+    })->name('admin.operations');
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
+    Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');

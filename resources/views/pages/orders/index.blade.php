@@ -6,6 +6,37 @@
 
 @push('custom_css')
 <style>
+/* Status Cards Styles */
+.status-card.active .border-gray-200 {
+    border-color: #3b82f6 !important;
+    border-width: 2px !important;
+}
+
+.status-card:hover .border-gray-200 {
+    border-color: #d1d5db !important;
+}
+
+/* Show status cards only for open orders tab */
+#openOrdersStatusCards {
+    display: {{ $source === 'other' && ($tab ?? 'all') === 'open' ? 'block' : 'none' }};
+}
+
+/* Responsive status cards */
+@media (max-width: 768px) {
+    #statusCardsContainer {
+        flex-direction: column;
+    }
+    
+    .status-card {
+        width: 100%;
+    }
+    
+    .status-card > div {
+        min-width: auto !important;
+    }
+}
+</style>
+<style>
 /* Modern Professional Orders Page Styles */
 .orders-table-container {
     /* Custom scrollbar for better UX */
@@ -488,10 +519,15 @@ input:focus, select:focus, button:focus {
                         @else
                             <!-- Main invoices page tabs -->
                             <a href="#" onclick="return switchToInvoices()" 
-                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' && ($tab ?? 'all') === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Invoices
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $otherCount }}</span>
                             </a>
+                            <button onclick="switchToOpenOrders()" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' && ($tab ?? 'all') === 'open' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                Open Orders
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $openCount }}</span>
+                            </button>
                             <button onclick="switchToShopifyApprovals()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Shopify Approvals
@@ -516,12 +552,7 @@ input:focus, select:focus, button:focus {
                             Columns
                         </button>
                         
-                        <button onclick="openImportModal()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 min-w-[100px]">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"></path>
-                            </svg>
-                            <span class="whitespace-nowrap">Import</span>
-                        </button>
+                        <!-- Import button removed: use Administration → Operations instead -->
                         
                         @if($source !== 'shopify')
                         <!-- Bulk Status Change Button -->
@@ -533,14 +564,23 @@ input:focus, select:focus, button:focus {
                         </button>
                         
                         <!-- Order Status Management Link -->
-                        <a href="/order-status" class="inline-flex items-center px-4 py-2 border border-indigo-300 text-sm font-medium rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            Manage Statuses
-                        </a>
+                        <!-- Manage Statuses button removed: use sidebar → Order Status -->
                         @endif
+                    </div>
+                </div>
+
+                <!-- Open Orders Status Cards (only show for open orders tab) -->
+                <!-- Status Cards Section - Always present but hidden by default -->
+                <div class="mt-4 mb-6" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
+                    <div class="flex flex-wrap gap-3" id="statusCardsContainer">
+                        <!-- Status cards will be loaded here via JavaScript -->
+                        <div class="flex items-center justify-center py-8 text-gray-500">
+                            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Loading status cards...
+                        </div>
                     </div>
                 </div>
 
@@ -566,7 +606,7 @@ input:focus, select:focus, button:focus {
                             
                             <select id="statusFilter" class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
                                 <option value="">All status</option>
-                            </select>
+                    </select>
                             
                             <input type="date" 
                                    id="dateFilter" 
@@ -965,70 +1005,7 @@ input:focus, select:focus, button:focus {
     </div>
 </div>
 
-<!-- Import Orders Modal -->
-<div id="importOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 500px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
-        <!-- Modal Header -->
-        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
-            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Import Historical Orders</h3>
-            <button onclick="closeModal('importOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
-        </div>
-        
-        <!-- Modal Body -->
-        <div style="padding: 20px;">
-            <form id="importOrderForm" action="{{ route('orders.importOrders') }}" method="POST">
-                @csrf
-                <div style="margin-bottom: 20px;">
-                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Select Source</label>
-                    <select name="source" required style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
-                        <option value="">Choose a source...</option>
-                        <option value="Shopify">Shopify</option>
-                        <option value="WooCommerce">WooCommerce</option>
-                    </select>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;">
-                    <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">From Date</label>
-                        <input type="date" name="from_date" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" required>
-                    </div>
-                    <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">To Date</label>
-                        <input type="date" name="to_date" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" required>
-                    </div>
-                </div>
-
-                <div style="background-color: #f0f9ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 12px; margin-bottom: 20px;">
-                    <div style="display: flex; align-items: start;">
-                        <div style="color: #3b82f6; margin-right: 8px;">
-                            <svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
-                            </svg>
-                        </div>
-                        <div>
-                            <h4 style="font-size: 14px; font-weight: 500; color: #1e40af; margin: 0 0 4px 0;">Import Information</h4>
-                            <p style="font-size: 12px; color: #1e40af; margin: 0;">This will fetch and import orders from the selected platform within the specified date range. Existing orders will be updated if found.</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <div style="display: flex; justify-content: flex-end; gap: 12px;">
-                    <button type="button" onclick="closeModal('importOrderModal')" 
-                            style="padding: 10px 20px; border: 1px solid #d1d5db; border-radius: 6px; color: #374151; background-color: white; cursor: pointer; font-size: 14px;">
-                        Cancel
-                    </button>
-                    <button type="submit" 
-                            style="padding: 10px 20px; background-color: #10b981; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;">
-                        <svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"></path>
-                        </svg>
-                        Import Orders
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
+@include('pages.orders.partials.import-modal')
 
 @endsection
 
@@ -1243,6 +1220,46 @@ function formatCurrency(amount, currency = 'PKR') {
     return currency + ' ' + num.toFixed(2);
 }
 
+// Normalize payment method for display
+function normalizePaymentMethodDisplay(paymentMethod) {
+    if (!paymentMethod) return 'Cash';
+    
+    const method = paymentMethod.toLowerCase().trim();
+    
+    // Mapping for display
+    const displayMap = {
+        'cash': 'Cash',
+        'cash_on_delivery': 'Cash on Delivery',
+        'cod': 'Cash on Delivery',
+        'bank_transfer': 'Bank Transfer',
+        'direct_bank_transfer': 'Bank Transfer',
+        'bacs': 'Bank Transfer',
+        'card': 'Card Payment',
+        'credit_card': 'Card Payment',
+        'debit_card': 'Card Payment',
+        'online': 'Online Payment',
+        'online_payment': 'Online Payment',
+        'paypal': 'Online Payment',
+        'stripe': 'Online Payment',
+        'razorpay': 'Online Payment'
+    };
+    
+    // Check for partial matches if exact match not found
+    if (!displayMap[method]) {
+        if (method.includes('bank') || method.includes('transfer')) {
+            return 'Bank Transfer';
+        } else if (method.includes('cash') || method.includes('cod')) {
+            return 'Cash';
+        } else if (method.includes('card') || method.includes('visa') || method.includes('master')) {
+            return 'Card Payment';
+        } else if (method.includes('online') || method.includes('paypal') || method.includes('stripe')) {
+            return 'Online Payment';
+        }
+    }
+    
+    return displayMap[method] || 'Cash'; // Default to Cash if unknown
+}
+
 // View Order Details
 function viewOrderDetails(orderId) {
     console.log('View order details clicked for order:', orderId);
@@ -1322,6 +1339,7 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             html += '<div>';
             html += '<p><strong>Status:</strong> ' + (order.order_status || 'N/A') + '</p>';
+            html += '<p><strong>Payment Method:</strong> ' + normalizePaymentMethodDisplay(order.payment_method) + '</p>';
             html += '<p><strong>Total:</strong> ' + formatCurrency(order.total_price, order.currency) + '</p>';
             html += '<p><strong>Items:</strong> ' + (order.line_items ? order.line_items.length : 0) + '</p>';
             html += '</div>';
@@ -2506,18 +2524,20 @@ async function loadQuickStatusTimeline(orderId) {
         const timelineContainer = document.getElementById('quickStatusTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest' 
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
             },
             credentials: 'same-origin'
         });
         
         const data = await response.json();
         console.log('Quick Timeline API response for order', orderId, ':', data); // Debug log
+        console.log('Response status:', response.status, 'Response OK:', response.ok); // Debug response
         
-        if (data.success && data.data.length > 0) {
+        if (data.success && data.data && data.data.length > 0) {
             const timelineHtml = data.data.map((item, index) => {
                 const date = new Date(item.changed_at);
                 const timeAgo = getTimeAgo(date);
@@ -2540,6 +2560,7 @@ async function loadQuickStatusTimeline(orderId) {
             
             timelineContainer.innerHTML = timelineHtml;
         } else {
+            console.log('No timeline data available:', data); // Debug log
             timelineContainer.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:12px;padding:16px;">No status history available</div>';
         }
     } catch (error) {
@@ -2586,7 +2607,7 @@ async function loadEditOrderTimeline(orderId) {
         const timelineContainer = document.getElementById('editOrderTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest' 
@@ -2636,7 +2657,7 @@ async function loadViewOrderTimeline(orderId) {
         const timelineContainer = document.getElementById('viewOrderTimeline');
         if (!timelineContainer) return;
         
-        const response = await fetch(`/api/orders/${orderId}/timeline`, {
+        const response = await fetch(`/order-status/api/orders/${orderId}/timeline`, {
             headers: { 
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest' 
@@ -2682,6 +2703,7 @@ async function loadViewOrderTimeline(orderId) {
 
 // Quick Status Change Modal
 function openQuickStatusChange(orderId, currentStatus) {
+    console.log('Opening quick status change for order ID:', orderId, 'Current status:', currentStatus); // Debug log
     // Build a simple modal lazily
     let modal = document.getElementById('quickStatusModal');
     if (!modal) {
@@ -3957,7 +3979,7 @@ ensureAddressFields();
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
 
 // Debug: Log current columns after initialization
-    console.log('Current columns after initialization:', currentColumns);
+console.log('Current columns after initialization:', currentColumns);
 
     // Populate status filter from loaded orders data - simple and efficient
     function initStatusFilter() {
@@ -3985,7 +4007,7 @@ localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
         console.log('Status filter populated with', uniqueStatuses.length, 'unique statuses:', uniqueStatuses);
     }
 
-    // Orders data passed from Laravel
+// Orders data passed from Laravel
 window.ordersData = @json($orders->items());
 // Track current source/tab dynamically for correct actions rendering
 window.currentSource = '{{ $source }}';
@@ -4928,6 +4950,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize status filter with current data
     initStatusFilter();
     
+    // Initialize status cards if on open orders tab
+    const currentTab = new URLSearchParams(window.location.search).get('tab');
+    const currentSource = new URLSearchParams(window.location.search).get('source');
+    
+    // Always try to load status cards if the section exists and is visible
+    const statusCardsSection = document.getElementById('openOrdersStatusCards');
+    if (statusCardsSection) {
+        const isVisible = statusCardsSection.style.display !== 'none' && 
+                         statusCardsSection.offsetParent !== null;
+        
+        if ((currentSource === 'other' && currentTab === 'open') || isVisible) {
+            console.log('Initializing status cards on page load...'); // Debug log
+            setTimeout(() => {
+                loadOpenOrdersStatusCards();
+            }, 200);
+        }
+    }
+    
     // Set up search with debouncing
     const searchInput = document.getElementById('orderSearch');
     const statusFilter = document.getElementById('statusFilter');
@@ -4975,6 +5015,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+    // Auto-open Import modal when requested via query param
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('open') === 'import') {
+            if (typeof openImportModal === 'function') {
+                setTimeout(() => openImportModal(), 200);
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to process open=import param', e);
+    }
 
 // Fetch filtered orders from backend
 function fetchFilteredOrders() {
@@ -5773,6 +5825,215 @@ function filterTableByTab(tab) {
     });
 }
 
+// Function to switch to Open Orders tab
+function switchToOpenOrders() {
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    fetch('/orders/filter?source=other&tab=open')
+        .then(res => res.json())
+        .then(data => {
+            if (!data || !data.success) return false;
+
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('source', 'other');
+            url.searchParams.set('tab', 'open');
+            window.history.pushState({}, '', url);
+
+            // Update page title
+            const pageTitle = document.querySelector('h1');
+            if (pageTitle) pageTitle.textContent = 'Orders';
+
+            // Update tabs
+            updateTabsForOpenOrders(data);
+
+            // Load status cards after a short delay to ensure DOM is updated
+            console.log('Switching to Open Orders - loading status cards...'); // Debug log
+            setTimeout(() => {
+                loadOpenOrdersStatusCards();
+            }, 200);
+
+            // Render open orders dataset
+            rebuildTableWithOrders(data.orders, 'other', 'open');
+            
+            // Update pagination for filtered results
+            updatePaginationForTab(data.orders, 'other', 'open', data.open_count);
+            
+            refreshPaginationInfo({
+                shopify_all_count: data.shopify_all_count,
+                shopify_approvals_count: data.shopify_approvals_count,
+                other_count: data.other_count,
+                open_count: data.open_count
+            });
+        })
+        .catch(err => console.error('Failed to load open orders:', err))
+        .finally(() => {
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        });
+
+    return false;
+}
+
+// Update tabs for open orders view
+function updateTabsForOpenOrders(data) {
+    const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
+    if (tabsContainer) {
+        tabsContainer.innerHTML = `
+            <a href="#" onclick="return switchToInvoices()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Invoices
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-invoices">${data.other_count || '-'}</span>
+            </a>
+            <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm">
+                Open Orders
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-open">${data.open_count || '-'}</span>
+            </button>
+            <button onclick="switchToShopifyApprovals()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Shopify Approvals
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${data.shopify_approvals_count || '-'}</span>
+            </button>
+        `;
+    }
+
+    // Show status cards section
+    const statusCardsSection = document.getElementById('openOrdersStatusCards');
+    if (statusCardsSection) {
+        statusCardsSection.style.display = 'block';
+    }
+}
+
+// Load and display open orders status cards
+async function loadOpenOrdersStatusCards() {
+    console.log('Loading open orders status cards...'); // Debug log
+    try {
+        const response = await fetch('/orders/open-status-counts', {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        console.log('Status cards API response:', data); // Debug log
+        
+        if (data.success) {
+            renderStatusCards(data.status_counts, data.total_open_count);
+        } else {
+            console.error('Failed to load status counts:', data.message);
+        }
+    } catch (error) {
+        console.error('Error loading status cards:', error);
+    }
+}
+
+// Render status cards with modern design
+function renderStatusCards(statusCounts, totalOpenCount) {
+    console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount); // Debug log
+    const container = document.getElementById('statusCardsContainer');
+    if (!container) {
+        console.log('Status cards container not found!'); // Debug log
+        return;
+    }
+
+    // Create "All Open" card first
+    let cardsHtml = `
+        <div class="status-card active" data-status="all" onclick="filterByStatus('all')">
+            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px]">
+                <div>
+                    <div class="text-2xl font-bold text-blue-600">${totalOpenCount}</div>
+                    <div class="text-sm font-medium text-gray-700">All Open</div>
+                </div>
+                <div class="text-2xl">📋</div>
+            </div>
+        </div>
+    `;
+
+    // Add individual status cards
+    statusCounts.forEach(status => {
+        const colorClass = getStatusColorClass(status.color_class);
+        cardsHtml += `
+            <div class="status-card" data-status="${status.status_code}" onclick="filterByStatus('${status.status_code}')">
+                <div class="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px] hover:border-${colorClass}-300">
+                    <div>
+                        <div class="text-2xl font-bold text-${colorClass}-600">${status.count}</div>
+                        <div class="text-sm font-medium text-gray-700">${status.status_name}</div>
+                    </div>
+                    <div class="text-2xl">${status.icon}</div>
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = cardsHtml;
+}
+
+// Get appropriate color class for status
+function getStatusColorClass(colorClass) {
+    const colorMap = {
+        'yellow': 'yellow',
+        'orange': 'orange', 
+        'blue': 'blue',
+        'purple': 'purple',
+        'green': 'green',
+        'red': 'red',
+        'gray': 'gray'
+    };
+    return colorMap[colorClass] || 'gray';
+}
+
+// Filter orders by status
+function filterByStatus(statusCode) {
+    // Update active card
+    document.querySelectorAll('.status-card').forEach(card => {
+        card.classList.remove('active');
+        const cardDiv = card.querySelector('div');
+        if (statusCode === 'all') {
+            cardDiv.className = cardDiv.className.replace(/border-\w+-200/, 'border-gray-200');
+        }
+    });
+    
+    const activeCard = document.querySelector(`[data-status="${statusCode}"]`);
+    if (activeCard) {
+        activeCard.classList.add('active');
+        const cardDiv = activeCard.querySelector('div');
+        if (statusCode === 'all') {
+            cardDiv.className = cardDiv.className.replace(/border-gray-200/, 'border-blue-200');
+        } else {
+            // Add active border color for specific status
+            const status = statusCode;
+            cardDiv.className = cardDiv.className.replace(/border-gray-200/, `border-blue-200`);
+        }
+    }
+
+    // Filter table data
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    const params = new URLSearchParams({
+        source: 'other',
+        tab: 'open'
+    });
+    
+    if (statusCode !== 'all') {
+        params.append('status', statusCode);
+    }
+
+    fetch(`/orders/filter?${params.toString()}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data && data.success) {
+                rebuildTableWithOrders(data.orders, 'other', 'open');
+                // Update pagination for filtered results
+                updatePaginationForTab(data.orders, 'other', 'open');
+            }
+        })
+        .catch(err => console.error('Failed to filter by status:', err))
+        .finally(() => {
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+    });
+}
+
 // Function to switch to Shopify Approvals from main orders page
 function switchToShopifyApprovals() {
     // Show loading state
@@ -5840,6 +6101,10 @@ function switchToInvoices() {
                         Invoices
                         <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-invoices\">-</span>
                     </button>
+                    <button onclick=\"switchToOpenOrders()\" class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50\">
+                        Open Orders
+                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-open\">${data.open_count || '-'}</span>
+                    </button>
                     <button onclick=\"switchToShopifyApprovals()\" class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50\">
                         Shopify Approvals
                         <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-approvals\">-</span>
@@ -5847,8 +6112,18 @@ function switchToInvoices() {
                 `;
             }
 
+            // Hide status cards section
+            const statusCardsSection = document.getElementById('openOrdersStatusCards');
+            if (statusCardsSection) {
+                statusCardsSection.style.display = 'none';
+            }
+
             // Render invoices dataset
             rebuildTableWithOrders(data.orders, 'other', 'all');
+            
+            // Update pagination for invoices (full dataset)
+            updatePaginationForTab(data.orders, 'other', 'all', data.other_count);
+            
             refreshPaginationInfo({
                 shopify_all_count: data.shopify_all_count,
                 shopify_approvals_count: data.shopify_approvals_count,
@@ -5952,11 +6227,61 @@ function refreshPaginationInfo(counts) {
             const bAll = document.getElementById('badge-all');
             const bApp = document.getElementById('badge-approvals');
             const bInv = document.getElementById('badge-invoices');
+            const bOpen = document.getElementById('badge-open');
             if (bAll && counts.shopify_all_count != null) bAll.textContent = counts.shopify_all_count;
             if (bApp && counts.shopify_approvals_count != null) bApp.textContent = counts.shopify_approvals_count;
             if (bInv && counts.other_count != null) bInv.textContent = counts.other_count;
+            if (bOpen && counts.open_count != null) bOpen.textContent = counts.open_count;
         }
     } catch (e) { console.warn('refreshPaginationInfo failed', e); }
+}
+
+// Update pagination for filtered/tab-switched data
+function updatePaginationForTab(orders, source, tab, totalCount = null) {
+    try {
+        const paginationInfo = document.getElementById('pagination-info');
+        const numericPager = document.getElementById('numeric-pager');
+        const pagerWrap = document.getElementById('pager-wrap');
+        
+        if (!orders || !Array.isArray(orders)) return;
+        
+        const perPageSelect = document.getElementById('per-page-selector');
+        const perPage = perPageSelect ? parseInt(perPageSelect.value, 10) : 25;
+        const displayedCount = Math.min(orders.length, perPage);
+        const total = totalCount || orders.length;
+        
+        // Update pagination info
+        if (paginationInfo) {
+            paginationInfo.textContent = `1-${displayedCount} of ${total}`;
+        }
+        
+        // Hide numeric pagination for single page results
+        if (numericPager) {
+            if (total <= perPage) {
+                numericPager.classList.add('hidden');
+            } else {
+                numericPager.classList.remove('hidden');
+                // For now, just show page 1 since we're loading limited results
+                numericPager.innerHTML = '<span class="px-3 py-2 text-sm bg-blue-600 text-white rounded-md font-medium">1</span>';
+            }
+        }
+        
+        // Update Previous/Next buttons to be disabled since we're showing filtered results
+        if (pagerWrap) {
+            const prevBtn = pagerWrap.querySelector('a[href*="page"], button:first-child');
+            const nextBtn = pagerWrap.querySelector('a[href*="page"]:last-child, button:last-child');
+            
+            if (prevBtn) {
+                prevBtn.outerHTML = '<button class="px-3 py-2 text-sm text-gray-400 bg-white border border-gray-300 rounded-md cursor-not-allowed" disabled>Previous</button>';
+            }
+            if (nextBtn && nextBtn !== prevBtn) {
+                nextBtn.outerHTML = '<button class="px-3 py-2 text-sm text-gray-400 bg-white border border-gray-300 rounded-md cursor-not-allowed" disabled>Next</button>';
+            }
+        }
+        
+    } catch (e) { 
+        console.warn('updatePaginationForTab failed', e); 
+    }
 }
 
 // Bulk Status Change Functions

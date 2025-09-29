@@ -486,6 +486,17 @@ class AppSheetController extends Controller
                 }
             }
 
+            // Final reconciliation safeguard: ensure the 'current' flag and main order table
+            // reflect the most recent history by changed_at (handles any out-of-order timestamps)
+            try {
+                \App\Models\CRM\OrderModel::reconcileCurrentStatus($order->id);
+            } catch (\Throwable $e) {
+                Log::warning('AppSheet status-update: reconcile step failed', [
+                    'order_id' => $order->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             Log::info('AppSheet status-update applied', [
                 'order_id' => $order->id,
                 'order_number' => $order->order_number,

@@ -46,10 +46,7 @@
                 Adjust Prices
             </button>
             </div>
-            <button onclick="openImportModal()" class="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-xl shadow-lg hover:shadow-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 transform hover:-translate-y-0.5">
-                <i class="ki-filled ki-cloud-download"></i>
-                Import Products
-            </button>
+            <!-- Import Products button removed: use Administration → Operations → Import Products -->
         </div>
     </div>
 </div>

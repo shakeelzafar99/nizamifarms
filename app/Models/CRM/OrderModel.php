@@ -355,8 +355,10 @@ class OrderModel extends BaseModel
             'address_country' => $primaryAddress['country'] ?? 'Pakistan',
             
             // Extras
-            'payment_method' => $shopifyOrder['gateway'] ?? $shopifyOrder['payment_gateway_names'][0] ?? 
-                               (isset($shopifyOrder['transactions'][0]) ? $shopifyOrder['transactions'][0]['gateway'] : null),
+            'payment_method' => static::normalizePaymentMethod(
+                $shopifyOrder['gateway'] ?? $shopifyOrder['payment_gateway_names'][0] ?? 
+                (isset($shopifyOrder['transactions'][0]) ? $shopifyOrder['transactions'][0]['gateway'] : null)
+            ),
             'note' => $shopifyOrder['note'] ?? null,
             
             // Line items
@@ -410,7 +412,7 @@ class OrderModel extends BaseModel
             'address_country' => $primaryAddress['country'] ?? 'Pakistan',
             
             // Extras
-            'payment_method' => $wooOrder['payment_method_title'] ?? $wooOrder['payment_method'] ?? null,
+            'payment_method' => static::normalizePaymentMethod($wooOrder['payment_method_title'] ?? $wooOrder['payment_method'] ?? null),
             'note' => $wooOrder['customer_note'] ?? null,
             
             // Line items
@@ -469,6 +471,118 @@ class OrderModel extends BaseModel
         return $statusMap[$status] ?? 'pending';
     }
 
+    /**
+     * Normalize payment method from external sources to our standard values
+     */
+    private static function normalizePaymentMethod(?string $paymentMethod): string
+    {
+        if (!$paymentMethod) {
+            return 'cash'; // Default to cash
+        }
+
+        $method = strtolower(trim($paymentMethod));
+
+        // Log the original payment method for debugging
+        \Log::info('Normalizing payment method', [
+            'original' => $paymentMethod,
+            'lowercase' => $method
+        ]);
+
+        // Mapping from external payment methods to our standard values
+        $methodMap = [
+            // Cash variants
+            'cash' => 'cash',
+            'cash_on_delivery' => 'cash_on_delivery',
+            'cod' => 'cash_on_delivery',
+            
+            // Bank transfer variants
+            'bank_transfer' => 'bank_transfer',
+            'direct_bank_transfer' => 'bank_transfer',
+            'bacs' => 'bank_transfer',
+            'wire_transfer' => 'bank_transfer',
+            'manual' => 'bank_transfer',
+            
+            // Card variants
+            'card' => 'card',
+            'credit_card' => 'card',
+            'debit_card' => 'card',
+            'visa' => 'card',
+            'mastercard' => 'card',
+            'amex' => 'card',
+            
+            // Online payment variants
+            'online' => 'online',
+            'online_payment' => 'online',
+            'paypal' => 'online',
+            'stripe' => 'online',
+            'razorpay' => 'online',
+            'square' => 'online',
+            'authorize.net' => 'online',
+            'shopify_payments' => 'online',
+            'bogus' => 'online', // Shopify test gateway
+        ];
+
+        // Check for partial matches if exact match not found
+        if (!isset($methodMap[$method])) {
+            // Check if it contains keywords
+            if (strpos($method, 'bank') !== false || strpos($method, 'transfer') !== false) {
+                $normalized = 'bank_transfer';
+            } elseif (strpos($method, 'cash') !== false || strpos($method, 'cod') !== false) {
+                $normalized = 'cash';
+            } elseif (strpos($method, 'card') !== false || strpos($method, 'visa') !== false || strpos($method, 'master') !== false) {
+                $normalized = 'card';
+            } elseif (strpos($method, 'online') !== false || strpos($method, 'paypal') !== false || strpos($method, 'stripe') !== false) {
+                $normalized = 'online';
+            } else {
+                $normalized = 'cash'; // Default fallback
+            }
+        } else {
+            $normalized = $methodMap[$method];
+        }
+
+        \Log::info('Payment method normalized', [
+            'original' => $paymentMethod,
+            'normalized' => $normalized
+        ]);
+
+        return $normalized;
+    }
+
+    /**
+     * Reconcile current status flag and main order table using latest history by changed_at
+     * Defensive utility for cases where external updates created inconsistent flags
+     */
+    public static function reconcileCurrentStatus(int $orderId): void
+    {
+        \DB::transaction(function () use ($orderId) {
+            $latest = \DB::table('t_crm_order_status_history')
+                ->where('order_id', $orderId)
+                ->orderByDesc('changed_at')
+                ->orderByDesc('id')
+                ->first();
+
+            if (!$latest) {
+                return; // nothing to reconcile
+            }
+
+            // Demote all, promote the latest
+            \DB::table('t_crm_order_status_history')
+                ->where('order_id', $orderId)
+                ->update(['is_current' => 0]);
+
+            \DB::table('t_crm_order_status_history')
+                ->where('id', $latest->id)
+                ->update(['is_current' => 1]);
+
+            // Update main order table to reflect latest status
+            \DB::table('t_crm_prod_order')
+                ->where('id', $orderId)
+                ->update([
+                    'order_status' => $latest->status_code,
+                    'updated_at' => now(),
+                ]);
+        });
+    }
     // Status Management Methods
     public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
     {

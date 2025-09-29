@@ -27,7 +27,7 @@ class OrderController extends Controller
     public function index(Request $request)
     {
         $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
-        $tab = $request->get('tab', 'all'); // 'all' or 'approvals'
+        $tab = $request->get('tab', 'all'); // 'all', 'approvals', or 'open'
 
         // Build query per source
         if ($source === 'shopify') {
@@ -48,6 +48,11 @@ class OrderController extends Controller
                     $q->where('external_source', '!=', 'shopify')
                       ->orWhereNull('external_source');
                 });
+            
+            // If viewing open orders tab, filter to exclude completed statuses
+            if ($tab === 'open') {
+                $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+            }
         }
         
         // Handle per_page parameter
@@ -67,6 +72,7 @@ class OrderController extends Controller
                 $q->whereNull('converted')->orWhere('converted', 0);
             })->count(); // Only unconverted
             $otherCount = 0; // Not relevant for Shopify page
+            $openCount = 0; // Not relevant for Shopify page
         } else {
             // For main Invoices page: count as before
             $shopifyCount = \App\Models\CRM\ShopifyOrderModel::where(function($q){
@@ -77,9 +83,13 @@ class OrderController extends Controller
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
             })->count();
+            $openCount = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])->count();
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount'));
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount'));
     }
 
     public function show($id)
@@ -951,6 +961,11 @@ class OrderController extends Controller
                         $q->where('external_source', '!=', 'shopify')
                           ->orWhereNull('external_source');
                     });
+                
+                // Apply tab filter for open orders
+                if ($tab === 'open') {
+                    $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+                }
             }
             
             // Apply search filter
@@ -992,6 +1007,10 @@ class OrderController extends Controller
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
             })->count();
+            $openCountAll = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])->count();
             
             return response()->json([
                 'success' => true,
@@ -1000,6 +1019,7 @@ class OrderController extends Controller
                 'shopify_all_count' => $shopifyAllCount,
                 'shopify_approvals_count' => $shopifyApprovalsCount,
                 'other_count' => $otherCountAll,
+                'open_count' => $openCountAll,
                 'tab' => $tab,
                 'source' => $source,
             ]);
@@ -1010,6 +1030,57 @@ class OrderController extends Controller
                 'success' => false,
                 'message' => 'Filter failed: ' . $e->getMessage(),
                 'orders' => []
+            ], 500);
+        }
+    }
+
+    /**
+     * Get open orders status counts for status cards
+     */
+    public function getOpenOrdersStatusCounts(Request $request)
+    {
+        try {
+            // Get all active statuses excluding completed ones
+            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            $statusCounts = \DB::table('t_crm_order_status_master as sm')
+                ->leftJoin('t_crm_prod_order as o', function($join) use ($excludedStatuses) {
+                    $join->on('o.order_status', '=', 'sm.status_code')
+                         ->where(function($query) {
+                             $query->where('o.external_source', '!=', 'shopify')
+                                   ->orWhereNull('o.external_source');
+                         });
+                })
+                ->where('sm.is_active', 1)
+                ->whereNotIn('sm.status_code', $excludedStatuses)
+                ->groupBy('sm.id', 'sm.status_code', 'sm.status_name', 'sm.icon', 'sm.color_class', 'sm.sequence_order')
+                ->orderBy('sm.sequence_order')
+                ->select([
+                    'sm.status_code',
+                    'sm.status_name', 
+                    'sm.icon',
+                    'sm.color_class',
+                    \DB::raw('COUNT(o.id) as count')
+                ])
+                ->get();
+
+            // Calculate total open orders count
+            $totalOpenCount = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->whereNotIn('order_status', $excludedStatuses)->count();
+
+            return response()->json([
+                'success' => true,
+                'status_counts' => $statusCounts,
+                'total_open_count' => $totalOpenCount
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Open orders status counts error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch status counts: ' . $e->getMessage()
             ], 500);
         }
     }
