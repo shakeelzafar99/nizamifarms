@@ -559,6 +559,12 @@ input:focus, select:focus, button:focus {
                             </svg>
                             Bulk Status
                         </button>
+                        <button onclick="openBulkRiderModal()" class="inline-flex items-center px-4 py-2 border border-cyan-300 text-sm font-medium rounded-md text-cyan-700 bg-cyan-50 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 min-w-[120px]">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                            </svg>
+                            Bulk Assign Rider
+                        </button>
                         
                         <!-- Order Status Management Link -->
                         <!-- Manage Statuses button removed: use sidebar → Order Status -->
@@ -948,13 +954,14 @@ input:focus, select:focus, button:focus {
         <!-- Modal Body -->
         <div id="editOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
-            <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Rider</h4>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <select id="editRiderSelect" style="flex:1;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;"><option value="">Loading...</option></select>
-                    <button type="button" id="editRiderAssignBtn" style="padding:8px 10px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;">Assign</button>
+                <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Rider Assignment</h4>
+                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+                        <select id="editRiderSelect" style="flex:1;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;"><option value="">Loading...</option></select>
+                        <button type="button" id="editRiderAssignBtn" style="padding:8px 10px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;">Assign</button>
+                    </div>
+                    <div id="editOrderRiderTimeline" style="max-height:150px;overflow-y:auto;font-size:13px;"></div>
                 </div>
-            </div>
         </div>
     </div>
 </div>
@@ -1420,6 +1427,17 @@ function viewOrderDetails(orderId) {
                 html += '</div>';
             }
 
+            // Rider Assignment Section
+            html += '<div style="padding: 20px; background-color: #f0f9ff; border: 1px solid #0891b2; border-radius: 8px; margin: 20px 0 0 0;">';
+            html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">';
+            html += '<div style="flex:1;">';
+            html += '<h3 style="margin: 0 0 4px 0; color: #111827; font-size: 16px;">Assigned Rider</h3>';
+            html += '<div id="viewOrderRiderName" style="font-size:14px;font-weight:600;color:#0891b2;">Loading...</div>';
+            html += '</div>';
+            html += '<button id="viewOrderAssignRiderBtn" style="padding:10px 16px;background:#0ea5e9;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:500;font-size:14px;">Assign / Change</button>';
+            html += '</div>';
+            html += '</div>';
+            
             // Status Timeline Section
             html += '<div style="padding: 20px; background-color: #f9fafb; border-radius: 8px; margin: 20px 0 0 0;">';
             html += '<h3 style="margin: 0 0 16px 0; color: #111827; font-size: 16px;">Status History</h3>';
@@ -1440,6 +1458,17 @@ function viewOrderDetails(orderId) {
             } catch (e) {
                 console.warn('Failed to load view timeline', e);
             }
+            
+            // Wire up rider bar after content is loaded
+            try {
+                const riderNameEl = document.getElementById('viewOrderRiderName');
+                const btn = document.getElementById('viewOrderAssignRiderBtn');
+                if (riderNameEl && btn) {
+                    const rname = order.rider_name || (order.assigned_rider && (order.assigned_rider.fullname || order.assigned_rider.name)) || (order.assigned_rider_user_id ? ('User #' + order.assigned_rider_user_id) : 'Unassigned');
+                    riderNameEl.textContent = rname;
+                    btn.onclick = function(){ openQuickRiderAssign(order.id, order.assigned_rider_user_id || null, rname); };
+                }
+            } catch(e) { console.warn('view rider bar update failed', e); }
         } else {
             content.innerHTML = `
                 <div class="text-center py-8">
@@ -2140,10 +2169,10 @@ function loadEditForm(order) {
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Payment Method</label>
                                 <select name="payment_method" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                                     <option value="">Select Payment Method</option>
-                                    <option value="cash_on_delivery" ${order.payment_method === 'cash_on_delivery' ? 'selected' : ''}>Cash on Delivery</option>
-                                    <option value="bank_transfer" ${order.payment_method === 'bank_transfer' ? 'selected' : ''}>Bank Transfer</option>
-                                    <option value="card" ${order.payment_method === 'card' ? 'selected' : ''}>Card Payment</option>
-                                    <option value="online" ${order.payment_method === 'online' ? 'selected' : ''}>Online Payment</option>
+                                    <option value="cash_on_delivery" ${(order.payment_method || '').toLowerCase().includes('cash') || order.payment_method === 'cash_on_delivery' ? 'selected' : ''}>Cash on Delivery</option>
+                                    <option value="bank_transfer" ${(order.payment_method || '').toLowerCase().includes('bank') || order.payment_method === 'bank_transfer' ? 'selected' : ''}>Bank Transfer</option>
+                                    <option value="card" ${(order.payment_method || '').toLowerCase().includes('card') || order.payment_method === 'card' ? 'selected' : ''}>Card Payment</option>
+                                    <option value="online" ${(order.payment_method || '').toLowerCase().includes('online') || order.payment_method === 'online' ? 'selected' : ''}>Online Payment</option>
                                 </select>
                             </div>
                         </div>
@@ -2288,6 +2317,7 @@ function loadEditForm(order) {
     try {
         const rSel = document.getElementById('editRiderSelect');
         const rBtn = document.getElementById('editRiderAssignBtn');
+        const rTimeline = document.getElementById('editOrderRiderTimeline');
         if (rSel && rBtn) {
             rSel.innerHTML = '<option value="">Loading...</option>';
             fetch('/riders/active', { headers: { 'Accept': 'application/json' }})
@@ -2308,6 +2338,19 @@ function loadEditForm(order) {
                     .then(j=>{ if (!j.success) throw new Error(j.message||'Failed'); location.reload(); })
                     .catch(()=>{ alert('Assign rider failed'); rBtn.textContent='Assign'; rBtn.disabled=false; });
             };
+        }
+        // Load rider assignment history
+        if (rTimeline) {
+            rTimeline.innerHTML = '<div style="color:#6b7280;padding:8px;text-align:center;">Loading history...</div>';
+            fetch(`/orders/${order.id}/rider/history`, { headers: { 'Accept':'application/json' }})
+                .then(r=>r.json())
+                .then(j=>{
+                    if (j && j.success && j.data && j.data.length) {
+                        rTimeline.innerHTML = j.data.map(h=>`<div style="padding:6px 8px;border-left:3px solid ${h.is_current?'#10b981':'#d1d5db'};margin-bottom:4px;background:${h.is_current?'#ecfdf5':'#f9fafb'};"><div style="font-weight:500;color:#111827;">${h.rider_name||'Unassigned'} ${h.is_current?'<span style="color:#10b981;font-size:11px;">(Current)</span>':''}</div><div style="font-size:11px;color:#6b7280;">${h.assigned_at} by ${h.assigned_by_name||'System'}</div></div>`).join('');
+                    } else {
+                        rTimeline.innerHTML = '<div style="color:#9ca3af;padding:8px;text-align:center;font-size:12px;">No assignment history</div>';
+                    }
+                }).catch(()=>{ rTimeline.innerHTML = '<div style="color:#ef4444;padding:8px;text-align:center;font-size:12px;">Failed to load</div>'; });
         }
     } catch(e) { console.warn('edit rider UI wiring failed', e); }
 }
@@ -6763,6 +6806,116 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 1000);
 });
 
+// Bulk Rider Assignment Functions
+function openBulkRiderModal() {
+    const selectedIds = selectedOrderIds && selectedOrderIds.length ? selectedOrderIds : getSelectedOrderIds();
+    
+    if (selectedIds.length === 0) {
+        alert('Please select orders first by checking the checkboxes.');
+        return;
+    }
+    
+    // Load riders
+    fetch('/riders/active', { headers: { 'Accept': 'application/json' }})
+        .then(r => r.json())
+        .then(j => {
+            const sel = document.getElementById('bulkRiderSelect');
+            if (j && j.success && j.data) {
+                sel.innerHTML = '<option value="">-- Select a rider to assign --</option>' + 
+                    j.data.map(r => `<option value="${r.id}">${r.fullname}</option>`).join('');
+            } else {
+                sel.innerHTML = '<option value="">No riders found</option>';
+            }
+        })
+        .catch(() => {
+            document.getElementById('bulkRiderSelect').innerHTML = '<option value="">Failed to load riders</option>';
+        });
+    
+    // Show selected orders
+    const container = document.getElementById('bulkRiderOrdersList');
+    const selectedOrders = (window.ordersData || []).filter(order => selectedIds.includes(order.id));
+    
+    container.innerHTML = selectedOrders.map(order => `
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: #e0f2fe; border: 1px solid #0891b2; border-radius: 6px; margin-bottom: 4px;">
+            <span style="color: #0891b2;">[✓]</span>
+            <label style="flex: 1; font-size: 14px;">
+                <span style="font-weight: 500;">#${order.order_number || order.id}</span>
+                <span style="color: #6b7280; margin-left: 8px;">${order.rider_name || 'No rider'}</span>
+            </label>
+        </div>
+    `).join('');
+    
+    // Update count
+    document.getElementById('selectedRiderOrdersCount').textContent = `${selectedIds.length} orders selected`;
+    document.getElementById('executeBulkRiderBtn').disabled = false;
+    
+    // Store selected IDs
+    selectedOrderIds = selectedIds;
+    
+    document.getElementById('bulkRiderModal').style.display = 'flex';
+}
+
+async function executeBulkRiderAssign() {
+    const riderId = document.getElementById('bulkRiderSelect').value;
+    const selectedIds = selectedOrderIds && selectedOrderIds.length ? selectedOrderIds : getSelectedOrderIds();
+    
+    if (selectedIds.length === 0) {
+        alert('No orders selected');
+        return;
+    }
+    
+    if (!riderId) {
+        alert('Please select a rider');
+        return;
+    }
+    
+    const btn = document.getElementById('executeBulkRiderBtn');
+    const originalText = btn.textContent;
+    btn.textContent = 'Assigning...';
+    btn.disabled = true;
+    
+    try {
+        // Assign rider to each order
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const orderId of selectedIds) {
+            try {
+                const response = await fetch(`/orders/${orderId}/rider/assign`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                    },
+                    body: JSON.stringify({ rider_user_id: parseInt(riderId, 10) })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
+            } catch (error) {
+                failCount++;
+            }
+        }
+        
+        // Show results
+        alert(`Bulk assignment complete!\nSuccess: ${successCount}\nFailed: ${failCount}`);
+        
+        // Close modal and refresh
+        closeModal('bulkRiderModal');
+        location.reload();
+        
+    } catch (error) {
+        alert('Bulk assignment failed: ' + error.message);
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
 </script>
 <!-- Bulk Status Change Modal -->
 <div id="bulkStatusModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
@@ -6822,6 +6975,54 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 </div>
 
+<!-- Bulk Rider Assignment Modal -->
+<div id="bulkRiderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 700px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        
+        <!-- Modal Header -->
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Bulk Rider Assignment</h3>
+            <button onclick="closeModal('bulkRiderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 24px;">
+            <div id="bulkRiderAlert" style="display: none; margin-bottom: 16px;"></div>
+            
+            <!-- Step 1: Selected Orders -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #374151;">Selected Orders</h4>
+                <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; max-height: 300px; overflow-y: auto;">
+                    <div id="bulkRiderOrdersList">
+                        <!-- Orders will be populated here -->
+                    </div>
+                </div>
+                <div id="selectedRiderOrdersCount" style="margin-top: 8px; font-size: 14px; color: #6b7280;">
+                    0 orders selected
+                </div>
+            </div>
+            
+            <!-- Step 2: Choose Rider -->
+            <div style="margin-bottom: 24px;">
+                <h4 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #374151;">Choose Rider</h4>
+                <select id="bulkRiderSelect" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
+                    <option value="">Loading riders...</option>
+                </select>
+            </div>
+        </div>
+        
+        <!-- Modal Footer -->
+        <div style="padding: 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <button onclick="closeModal('bulkRiderModal')" style="padding: 8px 16px; border: 1px solid #d1d5db; background: white; color: #374151; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                Cancel
+            </button>
+            <button id="executeBulkRiderBtn" onclick="executeBulkRiderAssign()" style="padding: 8px 24px; background: #0891b2; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;" disabled>
+                Assign Rider to Selected Orders
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- Order Status History Modal -->
 <div id="statusHistoryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
     <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
@@ -6830,7 +7031,7 @@ document.addEventListener('DOMContentLoaded', function() {
         <div style="padding: 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">Order Status History</h3>
             <button onclick="closeModal('statusHistoryModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
-        </div>
+            image.png</div>
         
         <!-- Modal Body -->
         <div style="padding: 24px;">
