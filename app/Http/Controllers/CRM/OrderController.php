@@ -1050,7 +1050,7 @@ class OrderController extends Controller
                         WHEN o.order_status IN ('on-hold','on hold') THEN 'on_hold'
                         WHEN o.order_status = 'completed' THEN 'delivered'
                         WHEN o.order_status IN ('out-for-delivery','out for delivery') THEN 'out_for_delivery'
-                        WHEN o.order_status = 'pending' THEN 'new'
+                        WHEN o.order_status IN ('pending','pending payment','pending-payment') THEN 'pending'
                         ELSE o.order_status END AS normalized_code"),
                     \DB::raw('COUNT(o.id) as count')
                 ])

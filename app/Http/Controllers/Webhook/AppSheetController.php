@@ -338,7 +338,10 @@ class AppSheetController extends Controller
 
             // Normalize common legacy codes
             $aliases = [
-                'pending' => 'new',
+                // Do not map pending to new; keep as pending
+                'pending' => 'pending',
+                'pending payment' => 'pending',
+                'pending-payment' => 'pending',
                 'on-hold' => 'on_hold',
                 'on hold' => 'on_hold',
                 'completed' => 'delivered',

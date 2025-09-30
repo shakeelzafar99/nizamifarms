@@ -501,10 +501,14 @@ class OrderModel extends BaseModel
 
         // Map common aliases to canonical codes
         $map = [
-            'pending' => 'new',
             'on_hold' => 'on_hold',
             'on-hold' => 'on_hold',
             'on hold' => 'on_hold',
+            // Treat Woo 'pending' / 'pending payment' as pending
+            'pending' => 'pending',
+            'pending_payment' => 'pending',
+            'pending-payment' => 'pending',
+            'pending payment' => 'pending',
             'processing' => 'processing',
             'out_for_delivery' => 'out_for_delivery',
             'out-for-delivery' => 'out_for_delivery',
