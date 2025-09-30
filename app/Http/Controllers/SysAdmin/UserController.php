@@ -54,6 +54,31 @@ class UserController extends Controller
         }
     }
 
+    // Get all active users for dropdowns
+    public function allActive(Request $request)
+    {
+        $users = \DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('u.is_active', 1)
+            ->orderBy('u.fullname')
+            ->select(
+                'u.id',
+                'u.fullname',
+                'u.email',
+                \DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
+                \DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end'),
+                'r.urole_name as role_name'
+            )
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $users
+        ]);
+    }
+
     public function store(Request $request)
     {
         $request->validate([

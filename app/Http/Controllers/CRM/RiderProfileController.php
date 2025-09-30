@@ -64,4 +64,72 @@ class RiderProfileController extends Controller
         $profile = DB::table('t_ops_rider_profile')->where('user_id', $userId)->first();
         return response()->json(['success' => true, 'profile' => $profile]);
     }
+
+    public function updateShift(Request $request)
+    {
+        // Convert 12-hour format to 24-hour if needed
+        $shiftStart = $request->shift_start;
+        $shiftEnd = $request->shift_end;
+        
+        // Check if it's in 12-hour format and convert
+        if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $shiftStart, $matches)) {
+            $hour = (int)$matches[1];
+            $minute = $matches[2];
+            $period = strtoupper($matches[3]);
+            
+            if ($period === 'PM' && $hour !== 12) {
+                $hour += 12;
+            } elseif ($period === 'AM' && $hour === 12) {
+                $hour = 0;
+            }
+            $shiftStart = sprintf('%02d:%s', $hour, $minute);
+        }
+        
+        if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $shiftEnd, $matches)) {
+            $hour = (int)$matches[1];
+            $minute = $matches[2];
+            $period = strtoupper($matches[3]);
+            
+            if ($period === 'PM' && $hour !== 12) {
+                $hour += 12;
+            } elseif ($period === 'AM' && $hour === 12) {
+                $hour = 0;
+            }
+            $shiftEnd = sprintf('%02d:%s', $hour, $minute);
+        }
+        
+        $request->validate([
+            'user_id' => 'required|exists:t_sys_user,id'
+        ]);
+
+        try {
+            // Check if profile exists
+            $exists = DB::table('t_ops_rider_profile')->where('user_id', $request->user_id)->exists();
+
+            if ($exists) {
+                // Update existing profile
+                DB::table('t_ops_rider_profile')
+                    ->where('user_id', $request->user_id)
+                    ->update([
+                        'shift_start' => $shiftStart,
+                        'shift_end' => $shiftEnd,
+                        'updated_at' => now()
+                    ]);
+            } else {
+                // Create new profile with shift times
+                DB::table('t_ops_rider_profile')->insert([
+                    'user_id' => $request->user_id,
+                    'shift_start' => $shiftStart,
+                    'shift_end' => $shiftEnd,
+                    'active' => 1,
+                    'created_at' => now(),
+                    'updated_at' => now()
+                ]);
+            }
+
+            return response()->json(['success' => true, 'message' => 'Shift times updated successfully']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
 }
