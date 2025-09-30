@@ -43,11 +43,17 @@ class OrderController extends Controller
             // Otherwise show ALL Shopify orders
         } else {
             // Non-shopify from prod orders
-            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems', 'assignedRider'])
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
                       ->orWhereNull('external_source');
                 });
+            
+            // Role-based filtering: riders see only their assigned orders
+            $userRole = $this->getUserRole($request);
+            if ($userRole === 'rider') {
+                $query->where('assigned_rider_user_id', auth()->id());
+            }
             
             // If viewing open orders tab, filter to exclude completed statuses
             if ($tab === 'open') {
@@ -921,7 +927,7 @@ class OrderController extends Controller
     /**
      * Helper method to find order from either Shopify or main orders table
      */
-    private function findOrder($id, $withRelations = ['customer', 'lineItems'])
+    private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider'])
     {
         // First try to find in Shopify orders table
         $order = \App\Models\CRM\ShopifyOrderModel::with($withRelations)->find($id);
@@ -956,7 +962,7 @@ class OrderController extends Controller
                 }
             } else {
                 // Use main orders table (non-Shopify)
-                $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems'])
+                $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems', 'assignedRider'])
                     ->where(function($q) {
                         $q->where('external_source', '!=', 'shopify')
                           ->orWhereNull('external_source');
@@ -1106,5 +1112,16 @@ class OrderController extends Controller
                 'message' => 'Failed to fetch status counts: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    private function getUserRole(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) return null;
+
+        return \DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $user->id)
+            ->value('r.type');
     }
 }

@@ -8,6 +8,7 @@ use App\Models\Shared\BaseModel;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 
 class OrderModel extends BaseModel
 {
@@ -64,6 +65,14 @@ class OrderModel extends BaseModel
         'converted' => 'boolean'
     ];
 
+    // Ensure relationships are included when converting to array/JSON
+    protected $with = [];
+
+    // Append computed attributes to JSON automatically (for frontend table)
+    protected $appends = [
+        'rider_name'
+    ];
+
     // Mutator to format order_date for MySQL
     public function setOrderDateAttribute($value)
     {
@@ -104,6 +113,27 @@ class OrderModel extends BaseModel
     public function currentStatusHistory(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(OrderStatusHistory::class, 'order_id')->where('is_current', true);
+    }
+
+    public function assignedRider(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\SysAdmin\UserModel::class, 'assigned_rider_user_id', 'id');
+    }
+
+    /**
+     * Computed rider_name for frontend consumption
+     */
+    public function getRiderNameAttribute(): ?string
+    {
+        if ($this->relationLoaded('assignedRider') && $this->assignedRider) {
+            return $this->assignedRider->fullname ?? null;
+        }
+        // Lazy fetch minimal if not loaded and id present
+        if (!empty($this->assigned_rider_user_id)) {
+            $name = \DB::table('t_sys_user')->where('id', $this->assigned_rider_user_id)->value('fullname');
+            return $name ?: null;
+        }
+        return null;
     }
 
     // Helper methods
@@ -325,6 +355,66 @@ class OrderModel extends BaseModel
         } catch (\Exception $e) {
             DB::rollBack();
             throw $e;
+        }
+    }
+
+    /**
+     * Assign a rider to this order and record history.
+     * - Demotes previous current assignment (if any)
+     * - Inserts a new current assignment
+     * - Updates denormalized assigned_rider_user_id on order
+     */
+    public function assignRider(int $riderUserId, ?string $notes = null, ?int $assignedByUserId = null, ?\DateTimeInterface $assignedAt = null): bool
+    {
+        try {
+            $orderId = $this->getAttribute($this->primaryKey);
+            if (!$orderId) {
+                return false;
+            }
+
+            $assignedBy = $assignedByUserId ?? (auth()->check() ? (int)auth()->id() : null);
+            $assignedAtTs = $assignedAt ? Carbon::instance($assignedAt)->format('Y-m-d H:i:s') : Carbon::now()->format('Y-m-d H:i:s');
+
+            return DB::transaction(function () use ($orderId, $riderUserId, $notes, $assignedBy, $assignedAtTs) {
+                // Demote previous current
+                DB::table('t_ops_order_rider_history')
+                    ->where('order_id', $orderId)
+                    ->where('is_current', 1)
+                    ->update(['is_current' => 0]);
+
+                // Insert new current assignment
+                DB::table('t_ops_order_rider_history')->insert([
+                    'order_id'      => $orderId,
+                    'rider_user_id' => $riderUserId,
+                    'is_current'    => 1,
+                    'assigned_at'   => $assignedAtTs,
+                    'assigned_by'   => $assignedBy,
+                    'source'        => 'api',
+                    'notes'         => $notes,
+                    'created_at'    => Carbon::now()->format('Y-m-d H:i:s'),
+                ]);
+
+                // Update denormalized column on order
+                DB::table('t_crm_prod_order')
+                    ->where('id', $orderId)
+                    ->update([
+                        'assigned_rider_user_id' => $riderUserId,
+                        'updated_at' => Carbon::now()->format('Y-m-d H:i:s'),
+                    ]);
+
+                // Refresh current model instance
+                $this->setAttribute('assigned_rider_user_id', $riderUserId);
+                $this->refresh();
+
+                return true;
+            });
+        } catch (\Throwable $e) {
+            \Log::error('Failed to assign rider', [
+                'order_id' => $this->id ?? null,
+                'rider_user_id' => $riderUserId,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
         }
     }
 

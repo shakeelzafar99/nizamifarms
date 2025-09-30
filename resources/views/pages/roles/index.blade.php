@@ -113,6 +113,11 @@
                                                     title="Edit Role">
                                                 <i class="ki-filled ki-pencil"></i>
                                             </button>
+                                            <a href="{{ route('roles.permissions.manage', $role->id) }}" 
+                                               class="kt-btn kt-btn-sm kt-btn-icon kt-btn-info" 
+                                               title="Manage Permissions">
+                                                <i class="ki-filled ki-setting-2"></i>
+                                            </a>
                                             @if($role->user_roles_count == 0)
                                             <form action="{{ route('roles.destroy', $role->id) }}" method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this role?')">
                                                 @csrf
@@ -188,6 +193,7 @@
                             <option value="admin">Admin</option>
                             <option value="user">User</option>
                             <option value="manager">Manager</option>
+                            <option value="rider">Rider</option>
                             <option value="super_admin">Super Admin</option>
                         </select>
                     </div>

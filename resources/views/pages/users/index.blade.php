@@ -212,32 +212,22 @@
                         <small style="color: #6b7280; font-size: 12px;" id="passwordHelp">Leave blank to keep current password (when editing)</small>
                     </div>
                     <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">User Type *</label>
-                        <select name="user_type" id="user_type" required 
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Role *</label>
+                        <select name="role_id" id="role_id" required
                                 style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
-                            <option value="">Select User Type</option>
-                            <option value="admin">Admin</option>
-                            <option value="branch_user">Branch User</option>
-                            <option value="super_admin">Super Admin</option>
+                            <option value="">Select Role</option>
+                            @if(isset($roles) && count($roles) > 0)
+                                @foreach($roles as $role)
+                                    <option value="{{ $role->id }}">{{ $role->urole_name }} ({{ ucfirst($role->type) }})</option>
+                                @endforeach
+                            @else
+                                <option value="" disabled>No roles available</option>
+                            @endif
                         </select>
                     </div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
-                    <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Role <span style="color: #6b7280; font-weight: normal;">(Optional)</span></label>
-                        <select name="role_id" id="role_id" 
-                                style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
-                            <option value="">Select Role</option>
-                            @if(isset($roles) && count($roles) > 0)
-                                @foreach($roles as $role)
-                                    <option value="{{ $role->id }}">{{ $role->urole_name }}</option>
-                                @endforeach
-                            @else
-                                <option value="" disabled>No roles available ({{ isset($roles) ? count($roles) : 'roles not set' }} roles found)</option>
-                            @endif
-                        </select>
-                    </div>
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Status</label>
                         <select name="is_active" id="is_active" 
@@ -245,6 +235,9 @@
                             <option value="1">Active</option>
                             <option value="0">Inactive</option>
                         </select>
+                    </div>
+                    <div>
+                        <!-- Empty space for layout balance -->
                     </div>
                 </div>
 

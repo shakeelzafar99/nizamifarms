@@ -60,8 +60,7 @@ class UserController extends Controller
             'fullname' => 'required|string|max:255',
             'email' => 'required|email|unique:t_sys_user,email',
             'password' => 'required|min:6',
-            'user_type' => 'required|string',
-            'role_id' => 'nullable|exists:t_sys_role,id' // Made optional
+            'role_id' => 'required|exists:t_sys_role,id'
         ]);
 
         try {
@@ -69,21 +68,19 @@ class UserController extends Controller
                 'fullname' => $request->fullname,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
-                'user_type' => $request->user_type,
+                'user_type' => $request->role_id ? 'role_based' : ($request->user_type ?? 'branch_user'),
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
                 'company_id' => 1, // Default company
-                'branch_id' => null, // Optional
+                'branch_id' => 1, // Default branch to avoid SQL error
                 'created_by' => auth()->id()
             ]);
 
-            // Assign role only if provided
-            if ($request->role_id) {
-                UserRoleModel::create([
-                    'user_id' => $user->id,
-                    'role_id' => $request->role_id
-                ]);
-            }
+            // Always assign the selected role
+            UserRoleModel::create([
+                'user_id' => $user->id,
+                'role_id' => $request->role_id
+            ]);
 
             return redirect()->route('users.index')
                 ->with('success', 'User created successfully!')

@@ -192,6 +192,7 @@
     color: #991b1b;
     border: 1px solid #ef4444;
 }
+
 /* Better text sizing and spacing */
 .table-text-primary {
     font-size: 14px;
@@ -348,6 +349,7 @@ input:focus, select:focus, button:focus {
     font-size: 12px;
     white-space: normal !important;
 }
+
 .table-cell-address {
     white-space: normal !important;
     overflow: hidden;
@@ -390,6 +392,7 @@ input:focus, select:focus, button:focus {
     border-radius: 6px;
     font-weight: 500;
 }
+
 .pagination-btn:hover:not(:disabled) {
     background: #f8fafc;
     border-color: #cbd5e1;
@@ -504,7 +507,7 @@ input:focus, select:focus, button:focus {
                             <button onclick="switchShopifyTab('all')" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ ($tab ?? 'all') === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}" 
                                id="tab-all">
-                                <div class="text-2xl">[ALL]</div>
+                                All Orders
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
                             </button>
                             <button onclick="switchShopifyTab('approvals')" 
@@ -549,7 +552,7 @@ input:focus, select:focus, button:focus {
                             Columns
                         </button>
                         
-                        <!-- Import button removed: use Administration → Operations instead -->
+                        <!-- Import button removed: use Administration â†’ Operations instead -->
                         
                         @if($source !== 'shopify')
                         <!-- Bulk Status Change Button -->
@@ -561,7 +564,7 @@ input:focus, select:focus, button:focus {
                         </button>
                         
                         <!-- Order Status Management Link -->
-                        <!-- Manage Statuses button removed: use sidebar → Order Status -->
+                        <!-- Manage Statuses button removed: use sidebar â†’ Order Status -->
                         @endif
                     </div>
                 </div>
@@ -580,6 +583,7 @@ input:focus, select:focus, button:focus {
                         </div>
                     </div>
                 </div>
+
                 <!-- Shopify-Style Search and Filters -->
                 <div class="mt-1 space-y-1">
                     <!-- Main Search Bar -->
@@ -875,17 +879,6 @@ input:focus, select:focus, button:focus {
         <!-- Modal Body -->
         <div id="viewOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
-            <div id="viewOrderRiderBar" style="display:none;margin-bottom:12px;padding:10px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                    <div>
-                        <div style="font-size:12px;color:#6b7280;">Assigned Rider</div>
-                        <div id="viewOrderRiderName" style="font-size:14px;font-weight:600;color:#111827;">Unassigned</div>
-                    </div>
-                    <div>
-                        <button id="viewOrderAssignRiderBtn" style="padding:8px 10px;background:#0ea5e9;color:#fff;border:0;border-radius:6px;cursor:pointer;">Assign / Change</button>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 </div>
@@ -945,16 +938,10 @@ input:focus, select:focus, button:focus {
                 <button onclick="closeModal('editOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
             </div>
         </div>
+        
         <!-- Modal Body -->
         <div id="editOrderContent" style="padding: 20px;">
             <!-- Content will be loaded here -->
-            <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Rider</h4>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <select id="editRiderSelect" style="flex:1;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;"><option value="">Loading...</option></select>
-                    <button type="button" id="editRiderAssignBtn" style="padding:8px 10px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;">Assign</button>
-                </div>
-            </div>
         </div>
     </div>
 </div>
@@ -1032,6 +1019,7 @@ input:focus, select:focus, button:focus {
 .popout-mode-active {
     overflow: hidden !important;
 }
+
 .popout-modal-fullscreen {
     animation: popoutFadeIn 0.3s ease-out;
 }
@@ -1151,6 +1139,7 @@ function closeModal(modalId) {
         }
     }
 }
+
 // Format date helper
 function formatDate(dateString) {
     if (!dateString) return '';
@@ -1342,6 +1331,7 @@ function viewOrderDetails(orderId) {
             if (order.customer_id && order.customer_id !== 'N/A' && order.customer_id !== null) {
                 customerDisplay = '<span onclick="openCustomerInNewTab(' + order.customer_id + ')" class="customer-name-link text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer" title="View customer details">' + customerName + '</span>';
             }
+            
             html += '<p><strong>Customer:</strong> ' + customerDisplay + '</p>';
             html += '<p><strong>Address:</strong> ' + fullAddress + '</p>';
             html += '<p><strong>Phone:</strong> ' + (order.address_phone || order.customer_phone || 'N/A') + '</p>';
@@ -1355,6 +1345,7 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             html += '</div>';
             html += '</div>';
+            
             // Line Items (read-only)
             var items = (order.line_items && Array.isArray(order.line_items)) ? order.line_items : [];
             html += '<div style="padding: 20px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 0 0 20px 0;">';
@@ -1532,6 +1523,7 @@ function printInvoicePdf() {
         console.error('No order ID available for PDF printing');
     }
 }
+
 // Edit order from view modal
 function editOrderFromView() {
     if (currentOrderId) {
@@ -1671,6 +1663,7 @@ function openCustomerInNewTab(customerId) {
     const customerUrl = '/customers?view_customer=' + customerId;
     window.open(customerUrl, '_blank');
 }
+
 // Open customer details modal (inline)
 function openCustomerDetails(customerId) {
     console.log('Opening customer details for ID:', customerId);
@@ -1686,6 +1679,7 @@ function openCustomerDetails(customerId) {
     // Show loading
     content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
     modal.style.display = 'block';
+    
     // Fetch customer details
     fetch(`/customers/${customerId}`)
     .then(response => response.json())
@@ -1879,6 +1873,7 @@ function ignoreOrder(orderId) {
         alert('Error ignoring order. Please try again.');
     });
 }
+
 // Reset modal styling (for completeness, though not typically needed in pop-out mode)
 function resetModalStyling(modal) {
     if (!modal) return;
@@ -1994,12 +1989,13 @@ function applyPopoutStyling(modal) {
             border: 1px solid #93c5fd;
             box-shadow: 0 1px 2px rgba(0,0,0,0.1);
         `;
-        indicator.innerHTML = '🔗 Pop-out Mode';
+        indicator.innerHTML = 'ðŸ”— Pop-out Mode';
         modalTitle.appendChild(indicator);
     }
     
     // Page title will be set by individual functions to show just the order number
 }
+
 function editOrderDetails(orderId) {
     console.log('Edit order details clicked for order:', orderId);
     // Ensure the pop-out in-tab handler has the order id
@@ -2039,6 +2035,7 @@ function editOrderDetails(orderId) {
         showEditError('Network error. Please try again.');
     });
 }
+
 function loadEditForm(order) {
     // Update tab title if in pop-out mode
     if (window.isPopoutMode) {
@@ -2271,6 +2268,7 @@ function loadEditForm(order) {
         e.preventDefault();
         saveOrderChanges(order.id);
     });
+
     // Immediately load status options for the dropdown, independent of totals/line items
     try {
         loadEditOrderStatuses(order.order_status);
@@ -2284,32 +2282,6 @@ function loadEditForm(order) {
     } catch (e) {
         console.warn('Failed to load timeline', e);
     }
-    
-    try {
-        const rSel = document.getElementById('editRiderSelect');
-        const rBtn = document.getElementById('editRiderAssignBtn');
-        if (rSel && rBtn) {
-            rSel.innerHTML = '<option value="">Loading...</option>';
-            fetch('/riders/active', { headers: { 'Accept': 'application/json' }})
-                .then(r=>r.json())
-                .then(j=>{
-                    if (j && j.success) {
-                        const opts = (j.data||[]).map(r=>`<option value="${r.id}" ${r.id == (order.assigned_rider_user_id||'') ? 'selected' : ''}>${r.fullname}</option>`).join('');
-                        rSel.innerHTML = '<option value="">-- Unassign rider --</option>' + opts;
-                    } else {
-                        rSel.innerHTML = '<option value="">No riders found</option>';
-                    }
-                }).catch(()=>{ rSel.innerHTML = '<option value="">Load failed</option>'; });
-            rBtn.onclick = function(){
-                const val = rSel.value;
-                rBtn.textContent = 'Assigning...'; rBtn.disabled = true;
-                fetch(`/orders/${order.id}/rider/assign`, { method:'POST', headers:{ 'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') }, body: JSON.stringify({ rider_user_id: val ? parseInt(val,10) : null }) })
-                    .then(r=>r.json())
-                    .then(j=>{ if (!j.success) throw new Error(j.message||'Failed'); location.reload(); })
-                    .catch(()=>{ alert('Assign rider failed'); rBtn.textContent='Assign'; rBtn.disabled=false; });
-            };
-        }
-    } catch(e) { console.warn('edit rider UI wiring failed', e); }
 }
 
 function showEditError(message) {
@@ -2357,6 +2329,7 @@ function showSuccessMessage(message, duration = 3000) {
         }
     }, duration);
 }
+
 // Line item management functions
 let lineItemIndex = 1000; // Start high to avoid conflicts with existing items
 
@@ -2460,6 +2433,7 @@ function updateSubtotal() {
         loadEditOrderStatuses(order.order_status);
     }
 }
+
 // Cache statuses so we don't refetch repeatedly
 window.__orderStatusesCache = window.__orderStatusesCache || null;
 
@@ -2531,7 +2505,7 @@ async function loadEditOrderStatuses(currentStatus) {
                 <option value="new" ${normalized === 'new' ? 'selected' : ''}>â³ New</option>
                 <option value="processing" ${normalized === 'processing' ? 'selected' : ''}>âš¡ Processing</option>
                 <option value="out_for_delivery" ${normalized === 'out_for_delivery' ? 'selected' : ''}>ðŸšš Out for Delivery</option>
-                <option value="delivered" ${normalized === 'delivered' ? 'selected' : ''}>âœ… Delivered</option>
+                <option value="delivered" ${normalized === 'delivered' ? 'selected' : ''}>âœ“ Delivered</option>
                 <option value="on_hold" ${normalized === 'on_hold' ? 'selected' : ''}>â¸ On Hold</option>
                 <option value="cancelled" ${normalized === 'cancelled' ? 'selected' : ''}>âœ• Cancelled</option>
                 <option value="refunded" ${normalized === 'refunded' ? 'selected' : ''}>â†© Refunded</option>
@@ -2622,84 +2596,7 @@ function getTimeAgo(date) {
     if (diffDays < 7) return `${diffDays}d ago`;
     return date.toLocaleDateString();
 }
-function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
-    try {
-        let modal = document.getElementById('quickRiderModal');
-        if (!modal) {
-            modal = document.createElement('div');
-            modal.id = 'quickRiderModal';
-            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
-            modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:560px;padding:16px;border:1px solid #e5e7eb;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                    <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Assign Rider</h3>
-                    <button onclick="document.getElementById('quickRiderModal').remove()" style="background:none;border:0;font-size:20px;color:#6b7280;cursor:pointer">Ã—</button>
-                </div>
-                <div style="display:flex;gap:16px;">
-                    <div style="flex:1;display:flex;flex-direction:column;gap:12px;">
-                        <div style="padding:8px;background:#f3f4f6;border-radius:6px;border:1px solid #e5e7eb;">
-                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">Current Rider</div>
-                            <div id="quickRiderCurrent" style="font-size:14px;font-weight:500;color:#111827;">${currentRiderName || 'Unassigned'}</div>
-                        </div>
-                        <select id="quickRiderSelectStandalone" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;"><option value="">Loading riders...</option></select>
-                        <div style="display:flex;gap:8px;justify-content:flex-end;">
-                            <button onclick="document.getElementById('quickRiderModal').remove()" style="padding:8px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Cancel</button>
-                            <button id="quickRiderSaveBtn" style="padding:8px 12px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:500;">Assign Rider</button>
-                        </div>
-                    </div>
-                    <div style="flex:1;border-left:1px solid #e5e7eb;padding-left:16px;">
-                        <h4 style="margin:0 0 8px 0;font-size:14px;font-weight:600;color:#374151;">Assignment History</h4>
-                        <div id="quickRiderTimeline" style="max-height:160px;overflow-y:auto;">
-                            <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading history...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-            document.body.appendChild(modal);
-        }
-        (async function(){
-            try {
-                const rRes = await fetch('/riders/active', { headers: { 'Accept': 'application/json' } });
-                const rJson = await rRes.json();
-                const rSel = document.getElementById('quickRiderSelectStandalone');
-                if (rJson && rJson.success && rSel) {
-                    const opts = (rJson.data||[]).map(r=>`<option value="${r.id}" ${r.id == currentRiderId ? 'selected' : ''}>${r.fullname}</option>`).join('');
-                    rSel.innerHTML = '<option value="">-- Unassign rider --</option>' + opts;
-                }
-                try {
-                    const hRes = await fetch(`/orders/${orderId}/rider/history`, { headers: { 'Accept': 'application/json' } });
-                    const hJson = await hRes.json();
-                    const timeline = document.getElementById('quickRiderTimeline');
-                    if (hJson && hJson.success && hJson.data && hJson.data.length > 0) {
-                        timeline.innerHTML = hJson.data.slice(0,5).map(h=>{
-                            const d = new Date(h.assigned_at);
-                            const s = d.toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-                            const name = h.rider_name || 'Unknown';
-                            const badge = h.is_current ? '<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;">CURRENT</span>' : '';
-                            return `<div style="padding:8px;border-left:2px solid ${h.is_current ? '#10b981' : '#e5e7eb'};margin-bottom:8px;background:${h.is_current ? '#f0fdf4' : '#fafafa'};"><div style="font-size:12px;font-weight:600;color:#111827;">${name} ${badge}</div><div style="font-size:11px;color:#6b7280;margin-top:2px;">${s}</div></div>`;
-                        }).join('');
-                    } else {
-                        timeline.innerHTML = '<div style="text-align:center;color:#9ca3af;font-size:12px;padding:20px;">No history</div>';
-                    }
-                } catch(e) { console.warn('Rider history load failed', e); }
-                const saveBtn = document.getElementById('quickRiderSaveBtn');
-                saveBtn.onclick = async function(){
-                    const val = document.getElementById('quickRiderSelectStandalone').value;
-                    saveBtn.textContent = 'Assigning...'; saveBtn.disabled = true;
-                    try {
-                        const aRes = await fetch(`/orders/${orderId}/rider/assign`, { method:'POST', headers:{ 'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') }, body: JSON.stringify({ rider_user_id: val ? parseInt(val,10) : null }) });
-                        const aJson = await aRes.json();
-                        if (!aJson.success) throw new Error(aJson.message||'Failed');
-                        document.getElementById('quickRiderModal').remove();
-                        location.reload();
-                    } catch(e) {
-                        alert('Assign rider failed');
-                        saveBtn.textContent = 'Assign Rider'; saveBtn.disabled = false;
-                    }
-                };
-            } catch(e) { console.warn('Quick rider load failed', e); }
-        })();
-    } catch(e) { console.warn('openQuickRiderAssign failed', e); }
-}
+
 // Load status timeline for edit order modal
 async function loadEditOrderTimeline(orderId) {
     try {
@@ -2730,7 +2627,7 @@ async function loadEditOrderTimeline(orderId) {
                                 <span style="font-size:14px;font-weight:${isFirst ? '600' : '500'};color:#374151;">${item.icon} ${item.status_name}</span>
                                 ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 6px;border-radius:4px;">Current</span>' : ''}
                             </div>
-                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">${timeAgo} • ${item.changed_by_name}</div>
+                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">${timeAgo} â€¢ ${item.changed_by_name}</div>
                             ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:12px;color:#9ca3af;font-style:italic;background:#f9fafb;padding:4px 8px;border-radius:4px;border-left:3px solid #e5e7eb;">${item.notes}</div>` : ''}
                         </div>
                     </div>
@@ -2780,7 +2677,7 @@ async function loadViewOrderTimeline(orderId) {
                                 <span style="font-size:15px;font-weight:${isFirst ? '600' : '500'};color:#111827;">${item.icon} ${item.status_name}</span>
                                 ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:4px;font-weight:500;">Current</span>' : ''}
                             </div>
-                            <div style="font-size:13px;color:#6b7280;margin-bottom:4px;">${timeAgo} • ${item.changed_by_name}</div>
+                            <div style="font-size:13px;color:#6b7280;margin-bottom:4px;">${timeAgo} â€¢ ${item.changed_by_name}</div>
                             ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:13px;color:#9ca3af;font-style:italic;background:#ffffff;padding:8px 12px;border-radius:6px;border-left:4px solid #e5e7eb;margin-top:6px;">${item.notes}</div>` : ''}
                         </div>
                     </div>
@@ -2812,7 +2709,7 @@ function openQuickStatusChange(orderId, currentStatus) {
         modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:520px;padding:16px;border:1px solid #e5e7eb;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                 <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Change Status</h3>
-                <button onclick="document.getElementById('quickStatusModal').remove()" style="background:none;border:0;font-size:20px;color:#6b7280;cursor:pointer">×</button>
+                <button onclick="document.getElementById('quickStatusModal').remove()" style="background:none;border:0;font-size:20px;color:#6b7280;cursor:pointer">Ã—</button>
             </div>
             <div style="display:flex;gap:16px;">
                 <div style="flex:1;display:flex;flex-direction:column;gap:12px;">
@@ -2869,6 +2766,7 @@ function openQuickStatusChange(orderId, currentStatus) {
         }
     })();
 }
+
 function saveOrderChanges(orderId) {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
@@ -3038,6 +2936,7 @@ function saveAndCloseOrder(orderId) {
         saveAndCloseBtn.disabled = false;
     });
 }
+
 function popoutOrder() {
     const modalContent = document.getElementById('editOrderContent');
     const modalTitle = document.querySelector('#editOrderModal h3').textContent;
@@ -3258,6 +3157,7 @@ function popoutOrder() {
                 btn.addEventListener('click', (ev) => { ev.preventDefault(); newWindow.addLineItem(); });
             });
         } catch (e) {}
+        
         // Override save functions for popup behavior
         newWindow.saveOrderChanges = function(orderId) {
             const form = newWindow.document.getElementById('editOrderForm');
@@ -3377,6 +3277,7 @@ function openCreateInTab() {
     const url = '/orders?create_new_order=1';
     window.open(url, '_blank');
 }
+
 // Update modal header for create order with pop-out functionality
 function updateCreateOrderModalHeader() {
     const modal = document.getElementById('editOrderModal');
@@ -3429,8 +3330,10 @@ document.addEventListener('keydown', function(e) {
     }
 });
 // Close modals when clicking outside - this is now handled by onclick in the backdrop divs
+
 // Debug: Log when script loads
 console.log('Order management script loaded');
+
 // Check for preloaded customer on page load
 document.addEventListener('DOMContentLoaded', function() {
     const preloadCustomerId = localStorage.getItem('preloadCustomerId');
@@ -3603,6 +3506,7 @@ function showProductResults(products, index) {
     
     dropdown.style.display = 'block';
 }
+
 function selectProduct(index, productId, productName, price) {
     // Fill in the product details
     const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
@@ -3726,6 +3630,7 @@ function searchCoupons(query) {
             });
     }, 300);
 }
+
 function showCouponDropdown() {
     const query = document.getElementById('couponSearch').value;
     if (query.length > 0) {
@@ -3765,6 +3670,7 @@ function selectCoupon(code, value, valueType, minimumAmount) {
     // Hide dropdown
     document.getElementById('couponDropdown').style.display = 'none';
 }
+
 // New order coupon search functionality
 let newOrderCouponSearchTimeout;
 function searchNewOrderCoupons(query) {
@@ -3915,7 +3821,7 @@ function createNewOrderWithCustomer(customerId) {
                 if (customerSection) {
                     const note = document.createElement('div');
                     note.style.cssText = 'margin-top: 8px; padding: 8px; background-color: #ecfdf5; border: 1px solid #d1fae5; border-radius: 4px; font-size: 12px; color: #065f46;';
-                    note.innerHTML = `✅ Customer pre-selected from customers page: ${fullName}`;
+                    note.innerHTML = `âœ“ Customer pre-selected from customers page: ${fullName}`;
                     customerSection.appendChild(note);
                 }
             }, 100);
@@ -3930,7 +3836,9 @@ function createNewOrderWithCustomer(customerId) {
         createNewOrder();
     });
 }
+
 // DUPLICATE FUNCTION REMOVED - Complete version exists later in the file
+
 // ==================== COLUMN CUSTOMIZATION SYSTEM ====================
 
 const availableColumns = {
@@ -3976,10 +3884,6 @@ const availableColumns = {
     
     // Line Items Count
     line_items_count: { label: 'Items', width: 'w-16', key: 'line_items_count' },
-    
-    // Rider Info
-    rider: { label: 'Rider', width: 'w-32', key: 'rider' },
-    rider_id: { label: 'Rider ID', width: 'w-20', key: 'rider_id' },
     
     // Actions column
     actions: { label: '{{ $source === "shopify" && ($tab ?? "all") === "approvals" ? "Approve / Ignore" : "Actions" }}', width: 'w-44', key: 'actions', fixed: true }
@@ -4030,7 +3934,7 @@ const defaultColumns = [
 // Current column settings
 let currentColumns = JSON.parse(localStorage.getItem('orderTableColumns')) || defaultColumns;
 
-/* ⚠️ DUPLICATE INITIALIZATION BLOCK - COMMENTED OUT TO PREVENT CONFLICTS
+/* âš ï¸ DUPLICATE INITIALIZATION BLOCK - COMMENTED OUT TO PREVENT CONFLICTS
    This block is duplicated below around line 1966 and causes JavaScript errors
    
 // Ensure Actions column is always present and visible
@@ -4044,17 +3948,17 @@ function ensureActionsColumn() {
     }
 }
 
-// Ensure all address fields and rider columns are present in currentColumns
+// Ensure all address fields are present in currentColumns
 function ensureAddressFields() {
     const addressFields = [
         'address_first_name', 'address_last_name', 'address_full_name',
-        'address1', 'address2', 'postal_code', 'rider', 'rider_id'
+        'address1', 'address2', 'postal_code'
     ];
     
     addressFields.forEach(fieldId => {
         const hasField = currentColumns.find(col => col.id === fieldId);
         if (!hasField) {
-            // Add missing field (default to not visible)
+            // Add missing address field
             currentColumns.push({ id: fieldId, visible: false });
         }
     });
@@ -4064,13 +3968,6 @@ function ensureAddressFields() {
 ensureActionsColumn();
 ensureAddressFields();
 
-// Migration: Ensure rider columns exist for existing users
-if (!currentColumns.find(col => col.id === 'rider')) {
-    currentColumns.push({ id: 'rider', visible: false });
-}
-if (!currentColumns.find(col => col.id === 'rider_id')) {
-    currentColumns.push({ id: 'rider_id', visible: false });
-}
 // Save the updated columns to localStorage
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
 
@@ -4115,6 +4012,7 @@ document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
 });
 */ 
+
 // Global: initialize the top status filter from currently loaded orders
 // Safe to call from any tab. For Shopify tabs we intentionally show only "All status".
 function initStatusFilter() {
@@ -4182,7 +4080,7 @@ function renderColumnSettings() {
         item.innerHTML = `
             <div style="display: flex; align-items: center; width: 100%;">
                 <div style="margin-right: 12px; color: #6b7280; cursor: ${columnConfig.fixed ? 'default' : 'grab'};">
-                    ${columnConfig.fixed ? '🔒' : '☰'}
+                    ${columnConfig.fixed ? 'ðŸ”’' : 'â˜°'}
                 </div>
                 <div style="flex: 1;">
                     <div style="font-weight: 500; color: #374151;">${columnConfig.label}</div>
@@ -4274,6 +4172,7 @@ function saveColumnSettings() {
     document.getElementById('columnSettingsModal').style.display = 'none';
     renderOrdersTable();
 }
+
 function resetColumnSettings() {
     localStorage.removeItem('orderTableColumns');
     currentColumns = [...defaultColumns];
@@ -4282,7 +4181,8 @@ function resetColumnSettings() {
     localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
     renderColumnSettings();
 }
-// ⚠️ DEPRECATED: This function has been replaced by the modular renderTableHeader() and renderTableBody() system
+
+// âš ï¸ DEPRECATED: This function has been replaced by the modular renderTableHeader() and renderTableBody() system
 // Keeping this as a wrapper for backward compatibility, but it now calls the newer modular functions
 function renderOrdersTable() {
     // Call the newer, more maintainable modular system
@@ -4330,14 +4230,14 @@ function getCellContent_DEPRECATED(order, columnId) {
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
-                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: '' },
-                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '' },
-                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' },
-                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '' },
-                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '' },
-                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '' }
+                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: 'â³' },
+                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: 'âš¡' },
+                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: 'âœ“' },
+                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: 'âœ•' },
+                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: 'â†©' },
+                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: 'â¸' }
             };
-            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' };
+            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
             return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition" title="Quick change status">
                         <span class=\"mr-1 text-xs\">${config.icon}</span>
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
@@ -4503,17 +4403,17 @@ function ensureActionsColumn() {
     }
 }
 
-// Ensure all address fields and rider columns are present in currentColumns (legacy copy)
+// Ensure all address fields are present in currentColumns (legacy copy)
 function ensureAddressFields() {
     const addressFields = [
         'address_first_name', 'address_last_name', 'address_full_name',
-        'address1', 'address2', 'postal_code', 'rider', 'rider_id'
+        'address1', 'address2', 'postal_code'
     ];
     
     addressFields.forEach(fieldId => {
         const hasField = currentColumns.find(col => col.id === fieldId);
         if (!hasField) {
-            // Add missing field (default to not visible)
+            // Add missing address field
             currentColumns.push({ id: fieldId, visible: false });
         }
     });
@@ -4522,14 +4422,6 @@ function ensureAddressFields() {
 // Initialize columns
 ensureActionsColumn();
 ensureAddressFields();
-
-// Migration: Ensure rider columns exist for existing users
-if (!currentColumns.find(col => col.id === 'rider')) {
-    currentColumns.push({ id: 'rider', visible: false });
-}
-if (!currentColumns.find(col => col.id === 'rider_id')) {
-    currentColumns.push({ id: 'rider_id', visible: false });
-}
 
 // Save the updated columns to localStorage
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
@@ -4615,6 +4507,7 @@ function handleDragStart(e) {
 function handleDragOver(e) {
     e.preventDefault();
 }
+
 function handleDrop(e) {
     e.preventDefault();
     if (draggedElement !== e.target && !availableColumns[e.target.dataset.columnId]?.fixed) {
@@ -4631,6 +4524,7 @@ function handleDrop(e) {
         }
     }
 }
+
 function handleDragEnd(e) {
     e.target.style.opacity = '1';
     draggedElement = null;
@@ -4651,6 +4545,7 @@ function renderOrdersTable() {
     renderTableHeader();
     renderTableBody();
 }
+
 function renderTableHeader() {
     const header = document.getElementById('table-header');
     const colgroup = document.getElementById('table-colgroup');
@@ -4731,6 +4626,7 @@ function renderTableBody() {
         tbody.appendChild(row);
         return;
     }
+    
     window.ordersData.forEach((order, index) => {
         try {
             const row = document.createElement('tr');
@@ -4813,6 +4709,7 @@ function getCellContent(order, columnId) {
         if (!amount) return '0.00';
         return parseFloat(amount).toFixed(2);
     };
+    
     try {
         switch (columnId) {
         // Basic Info
@@ -4825,17 +4722,17 @@ function getCellContent(order, columnId) {
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
-                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: '' },
-                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '' },
-                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' },
-                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '' },
-                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '' },
-                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '' },
-                'new': { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' },
-                'out_for_delivery': { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', icon: '' },
-                'delivered': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' }
+                'pending': { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: 'â³' },
+                'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: 'âš¡' },
+                'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: 'âœ“' },
+                'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: 'âœ•' },
+                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: 'â†©' },
+                'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: 'â¸' },
+                'new': { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: 'ðŸ“' },
+                'out_for_delivery': { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', icon: 'ðŸšš' },
+                'delivered': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: 'âœ…' }
             };
-            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' };
+            const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '?' };
             return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" title="Click to change status">
                         <span class="mr-1 text-xs">${config.icon}</span>
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
@@ -4954,6 +4851,7 @@ function getCellContent(order, columnId) {
         case 'note':
             const note = order.note || '';
             return `<div class="table-cell-note" title="${note}">${note}</div>`;
+            
         // Line Items
         case 'line_items_count':
             const itemCount = order.line_items ? order.line_items.length : 0;
@@ -4970,29 +4868,6 @@ function getCellContent(order, columnId) {
         case 'updated_at':
             return formatDate(order.updated_at);
             
-        // Rider columns
-        case 'rider_id':
-            const riderId = order.assigned_rider_user_id;
-            if (riderId == null || riderId === undefined) {
-                return '<span class="text-gray-400 text-xs">-</span>';
-            }
-            return `<span class="text-gray-900 font-mono text-xs font-semibold">${riderId}</span>`;
-        case 'rider':
-            const rid = order.assigned_rider_user_id || order.rider_user_id || null;
-            const rname = order.rider_name || (order.assigned_rider && (order.assigned_rider.fullname || order.assigned_rider.name)) || null;
-            
-            // GUARANTEED FALLBACK: If we have an ID but no name, show "User #ID" in amber (clickable)
-            if (!rname && rid) {
-                return `<button type="button" onclick="event.stopPropagation(); openQuickRiderAssign(${order.id}, ${rid}, 'User #${rid}')" class="inline-flex items-center px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-300 text-xs font-medium hover:bg-amber-100 cursor-pointer transition" title="Click to assign rider">User #${rid}</button>`;
-            }
-            
-            // No rider assigned at all (clickable)
-            if (!rname && !rid) {
-                return `<button type="button" onclick="event.stopPropagation(); openQuickRiderAssign(${order.id}, null, 'Unassigned')" class="inline-flex items-center px-2 py-1 rounded bg-gray-100 text-gray-700 text-xs hover:bg-gray-200 cursor-pointer transition" title="Click to assign rider">Unassigned</button>`;
-            }
-            
-            // We have a name - show it in blue (clickable)
-            return `<button type="button" onclick="event.stopPropagation(); openQuickRiderAssign(${order.id}, ${rid}, '${String(rname).replace(/'/g, "\\'")}')" class="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-300 text-xs font-medium hover:bg-blue-100 cursor-pointer transition" title="Click to change rider">${String(rname)}</button>`;
         // Actions
         case 'actions':
             // Check if this is a Shopify order (any Shopify order, not just approvals)
@@ -5056,6 +4931,7 @@ function getCellContent(order, columnId) {
 
 window.allOrders = []; // Store all orders for filtering
 window.filteredOrders = []; // Store filtered results
+
 // Initialize search and filters
 document.addEventListener('DOMContentLoaded', function() {
     // Store original data from current page only
@@ -5142,6 +5018,7 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch (e) {
         console.warn('Failed to process open=import param', e);
     }
+
 // Fetch filtered orders from backend
 function fetchFilteredOrders() {
     const searchTerm = document.getElementById('orderSearch').value.trim();
@@ -5279,6 +5156,7 @@ function clearFilters() {
     renderOrdersWithFilters(window.filteredOrders);
     updateResultsCount();
 }
+
 // Loading state functions
 function showLoadingState() {
     const tbody = document.getElementById('table-body');
@@ -5310,7 +5188,9 @@ function hideEmptyState() {
     if (noResults) noResults.classList.add('hidden');
     if (tbody) tbody.style.display = '';
 }
+
 // ==================== END SEARCH AND FILTER ====================
+
 // Create new order functionality
 function createNewOrder() {
     // Reset and open the edit modal for creating new order
@@ -5384,6 +5264,7 @@ function createNewOrder() {
                     </div>
                 </div>
             </div>
+
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
                 <div>
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Information</h4>
@@ -5518,13 +5399,12 @@ function createNewOrder() {
             const sel = document.getElementById('createOrderStatus');
             if (sel) sel.innerHTML = `
                 <option value="new" selected>â³ New</option>
-                <option value="processing">â¡ Processing</option>
-                <option value="out_for_delivery">ð Out for Delivery</option>
-                <option value="delivered">â
- Delivered</option>
+                <option value="processing">âš¡ Processing</option>
+                <option value="out_for_delivery">ðŸšš Out for Delivery</option>
+                <option value="delivered">âœ“ Delivered</option>
                 <option value="on_hold">â¸ On Hold</option>
-                <option value="cancelled">â Cancelled</option>
-                <option value="refunded">âª Refunded</option>`;
+                <option value="cancelled">âœ• Cancelled</option>
+                <option value="refunded">â†© Refunded</option>`;
         }
     })();
 }
@@ -5636,6 +5516,7 @@ function loadDefaultShippingPrice(modalId = null) {
             console.log('Could not load default shipping price:', error);
         });
 }
+
 // ==================== CUSTOMER SELECTION HELPERS (single source of truth) ====================
 let customerSearchTimeout;
 
@@ -5693,6 +5574,7 @@ function hideCustomerDropdown() {
     const dd = document.getElementById('customerDropdown');
     if (dd) dd.style.display = 'none';
 }
+
 function searchCustomers(inputEl) {
     const query = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     clearTimeout(customerSearchTimeout);
@@ -5710,6 +5592,7 @@ function searchCustomers(inputEl) {
         .catch(function() {});
     }, 250);
 }
+
 function showCustomerResults(customers) {
     const dd = document.getElementById('customerDropdown');
     if (!dd) return;
@@ -5747,10 +5630,10 @@ function showCustomerResults(customers) {
                     ${c.name || 'No name'}
                 </div>
                 <div style="font-size: 12px; color: #6b7280; margin-bottom: 2px;">
-                    📞 ${c.phone || 'No phone'} ${c.email ? '• ✉️ ' + c.email : ''}
+                    ðŸ“ž ${c.phone || 'No phone'} ${c.email ? 'â€¢ âœ‰ï¸ ' + c.email : ''}
                 </div>
                 <div style="font-size: 12px; color: #9ca3af;">
-                    📍 ${addressDisplay}
+                    ðŸ“ ${addressDisplay}
                 </div>
             </div>
         `;
@@ -5758,6 +5641,7 @@ function showCustomerResults(customers) {
     dd.innerHTML = html;
     showCustomerDropdown();
 }
+
 function selectCustomer(customerId, customerName, encodedData) {
     const customerData = encodedData ? JSON.parse(decodeURIComponent(encodedData)) : {};
     const searchInput = document.getElementById('customerSearch');
@@ -5821,17 +5705,17 @@ function showSelectedCustomerDetails(customerData) {
 
         detailsDiv.innerHTML = `
             <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                <span style="font-size: 16px; margin-right: 8px;">👤</span>
+                <span style="font-size: 16px; margin-right: 8px;">ðŸ‘¤</span>
                 <h4 style="margin: 0; color: #0369a1; font-weight: 600;">Selected Customer</h4>
             </div>
             <div style="margin-bottom: 6px;">
                 <strong style="color: #374151;">${customerData.name}</strong>
             </div>
             <div style="margin-bottom: 4px; color: #6b7280;">
-                📞 ${customerData.phone || 'No phone'} ${customerData.email ? '• ✉️ ' + customerData.email : ''}
+                ðŸ“ž ${customerData.phone || 'No phone'} ${customerData.email ? 'â€¢ âœ‰ï¸ ' + customerData.email : ''}
             </div>
             <div style="color: #6b7280; line-height: 1.4;">
-                📍 ${fullAddress}
+                ðŸ“ ${fullAddress}
             </div>
         `;
         detailsDiv.style.display = 'block';
@@ -5857,6 +5741,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 });
+
 // Shopify tab switching function
 function switchShopifyTab(tab) {
     const tableContainer = document.querySelector('.orders-table-container');
@@ -5978,6 +5863,7 @@ function switchToOpenOrders() {
 
     return false;
 }
+
 // Update tabs for open orders view
 function updateTabsForOpenOrders(data) {
     const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
@@ -6029,6 +5915,7 @@ async function loadOpenOrdersStatusCards() {
         console.error('Error loading status cards:', error);
     }
 }
+
 // Render status cards with modern design
 function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0) {
     console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount); // Debug log
@@ -6046,7 +5933,7 @@ function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0
                     <div class="text-2xl font-bold text-blue-600">${totalOpenCount}</div>
                     <div class="text-sm font-medium text-gray-700">All Open</div>
                 </div>
-                <div class="text-2xl">📋</div>
+                <div class="text-2xl">ðŸ“‹</div>
             </div>
         </div>
     `;
@@ -6059,7 +5946,7 @@ function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0
                     <div class="text-2xl font-bold text-green-600">${deliveredTodayCount}</div>
                     <div class="text-sm font-medium text-gray-700">Delivered Today</div>
                 </div>
-                <div class="text-2xl">✅</div>
+                <div class="text-2xl">âœ…</div>
             </div>
         </div>
     `;
@@ -6292,6 +6179,7 @@ function refreshPaginationInfo(counts) {
         }
     } catch (e) { console.warn('refreshPaginationInfo failed', e); }
 }
+
 // Update pagination for filtered/tab-switched data
 function updatePaginationForTab(orders, source, tab, totalCount = null) {
     try {
@@ -6367,6 +6255,7 @@ async function loadAvailableStatuses() {
         console.error('Error loading statuses:', error);
     }
 }
+
 // Populate status select dropdown
 function populateStatusSelect() {
     const select = document.getElementById('bulkNewStatus');
@@ -6411,6 +6300,7 @@ function populateBulkOrdersList() {
         </div>
     `).join('');
 }
+
 // Toggle individual order selection
 function toggleOrderSelection(orderId) {
     const checkbox = document.getElementById(`order_${orderId}`);
@@ -6610,6 +6500,7 @@ async function viewOrderStatusHistory(orderId) {
         `;
     }
 }
+
 // Render status history
 function renderStatusHistory(history) {
     const content = document.getElementById('statusHistoryContent');
@@ -6635,6 +6526,7 @@ function renderStatusHistory(history) {
         </div>
     `;
 }
+
 // Get status color for history display
 function getStatusColor(statusCode) {
     const colorMap = {
@@ -6681,7 +6573,7 @@ function updateBulkActionButtons() {
         } else {
             // Reset button text while preserving the SVG icon
             const svgIcon = `<svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                             </svg>`;
             bulkStatusBtn.innerHTML = svgIcon + 'Bulk Status';
             bulkStatusBtn.disabled = true;
@@ -6733,7 +6625,7 @@ function openBulkStatusModal() {
     
     container.innerHTML = selectedOrders.map(order => `
         <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: #e0f2fe; border: 1px solid #0284c7; border-radius: 6px; margin-bottom: 4px;">
-            <span style="color: #0284c7;">[âœ“]</span>
+            <span style="color: #0284c7;">âœ“</span>
             <label style="flex: 1; font-size: 14px;">
                 <span style="font-weight: 500;">#${order.order_number || order.id}</span>
                 <span style="color: #6b7280; margin-left: 8px;">$${parseFloat(order.total_price || 0).toFixed(2)}</span>
@@ -6764,6 +6656,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 </script>
+
 <!-- Bulk Status Change Modal -->
 <div id="bulkStatusModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
     <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 700px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">

@@ -61,9 +61,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/logs/clear-old', [LogController::class, 'clearOldLogs']);
     Route::get('/logs/export', [LogController::class, 'exportLogs']);
     // Operations dashboard page (imports, bulk delivery status)
-    Route::get('/admin/operations', function () {
-        return view('admin.operations');
-    })->name('admin.operations');
+    Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
@@ -73,6 +71,22 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}/invoice/pdf', [OrderController::class, 'invoicePdf'])->name('orders.invoice.pdf');
     Route::put('/orders/{id}', [OrderController::class, 'update'])->name('orders.update');
     Route::post('/orders', [OrderController::class, 'store'])->name('orders.store');
+
+    // Rider assignment APIs
+    Route::post('/orders/{id}/rider/assign', [\App\Http\Controllers\CRM\OrderRiderController::class, 'assign'])->name('orders.rider.assign');
+    Route::get('/orders/{id}/rider/timeline', [\App\Http\Controllers\CRM\OrderRiderController::class, 'timeline'])->name('orders.rider.timeline');
+    Route::get('/riders/active', [\App\Http\Controllers\CRM\RiderController::class, 'active'])->name('riders.active');
+    Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
+    Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
+    
+    // Rider profile management
+    Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');
+    Route::post('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'store'])->name('riders.store');
+    Route::get('/riders/{id}', [\App\Http\Controllers\CRM\RiderProfileController::class, 'show'])->name('riders.show');
+
+    // Attendance (admin/manager view)
+    Route::get('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'index'])->name('attendance.index');
+    Route::get('/attendance/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'data'])->name('attendance.data');
     Route::post('/orders/{id}/convert', [OrderController::class, 'convertOrder'])->name('orders.convert');
     Route::post('/orders/{id}/ignore', [OrderController::class, 'ignoreOrder'])->name('orders.ignore');
     Route::post('/orders/import-orders', [OrderController::class, 'importOrders'])->name('orders.importOrders');
@@ -182,5 +196,16 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/', [\App\Http\Controllers\SysAdmin\RoleController::class, 'store'])->name('roles.store');
         Route::put('/{id}', [\App\Http\Controllers\SysAdmin\RoleController::class, 'update'])->name('roles.update');
         Route::delete('/{id}', [\App\Http\Controllers\SysAdmin\RoleController::class, 'destroy'])->name('roles.destroy');
+        
+        // Permission management
+        Route::get('/{id}/permissions', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'manage'])->name('roles.permissions.manage');
+        Route::put('/{id}/permissions', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'update'])->name('roles.permissions.update');
+        Route::post('/{id}/permissions/defaults', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'setDefaults'])->name('roles.permissions.defaults');
     });
+});
+
+// Rider-only scoped APIs (example view filters will check role on server side as well)
+Route::middleware(['auth', \App\Http\Middleware\EnsureRole::class.':rider'])->group(function () {
+    Route::get('/attendance/mine', [\App\Http\Controllers\CRM\AttendanceController::class, 'mine'])->name('attendance.mine');
+    Route::get('/attendance/mine/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'mineData'])->name('attendance.mine.data');
 });

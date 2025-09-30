@@ -40,6 +40,46 @@
                 Open Product Import
             </button>
         </div>
+
+        <!-- Rider Assignments Import Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">Import Rider Assignments</h2>
+            </div>
+            <p class="text-sm text-gray-600 mb-4">Upload CSV: order_number, rider_name (or rider_phone), assigned_at (optional). Non‑Shopify orders only.</p>
+            <form id="riderImportForm" action="{{ route('operations.rider-import') }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <input type="file" name="csv_file" accept=".csv,.txt" class="block w-full text-sm text-gray-500 mb-3">
+                <button type="submit" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    Upload CSV
+                </button>
+            </form>
+            @if(session('rider_import_result'))
+                <div class="mt-4 p-3 bg-gray-50 border border-gray-200 rounded">
+                    {!! session('rider_import_result') !!}
+                </div>
+            @endif
+        </div>
+
+        <!-- Attendance Import Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">Import Attendance</h2>
+            </div>
+            <p class="text-sm text-gray-600 mb-4">Upload CSV with columns similar to your legacy sheet (date, employee, login time/location, logout time/location, device, meter, pictures).</p>
+            <form id="attendanceImportForm" action="{{ route('operations.attendance-import') }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <input type="file" name="csv_file" accept=".csv,.txt" class="block w-full text-sm text-gray-500 mb-3">
+                <button type="submit" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    Upload CSV
+                </button>
+            </form>
+            @if(session('attendance_import_result'))
+                <div class="mt-4 p-3 bg-gray-50 border border-gray-200 rounded">
+                    {!! session('attendance_import_result') !!}
+                </div>
+            @endif
+        </div>
     </div>
 </div>
 

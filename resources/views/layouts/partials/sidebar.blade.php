@@ -70,6 +70,17 @@
                           </div>
                       </a>
                   </div>
+                  @php
+                      $userRole = null;
+                      if (auth()->check()) {
+                          $userRole = \DB::table('t_sys_user_role as ur')
+                              ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                              ->where('ur.user_id', auth()->id())
+                              ->value('r.type');
+                      }
+                  @endphp
+                  
+                  @if($userRole !== 'rider')
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/order-status">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -96,6 +107,7 @@
                           </div>
                       </a>
                   </div>
+                  @endif
                   
                   <!-- Products Section -->
                   <div class="kt-menu-item pt-2.25 pb-px">
@@ -149,6 +161,8 @@
                           Administration
                       </span>
                   </div>
+                  
+                  @if($userRole !== 'rider')
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/users">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -158,6 +172,19 @@
                               </span>
                               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
                                   Users
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/riders">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-delivery text-lg">
+                                  </i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Riders
                               </span>
                           </div>
                       </a>
@@ -175,32 +202,61 @@
                           </div>
                       </a>
                   </div>
-                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                      <a href="/logs">
-                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                  <i class="ki-filled ki-file-sheet text-lg">
-                                  </i>
-                              </span>
-                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                  Error Logs
+                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                       <a href="/logs">
+                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                   <i class="ki-filled ki-file-sheet text-lg">
+                                   </i>
                                </span>
-                           </div>
-                       </a>
-                   </div>
-                 
-                 <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                     <a href="/admin/operations">
-                         <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                             <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                 <i class="ki-filled ki-import text-lg"></i>
-                             </span>
-                             <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                 Operations
-                             </span>
-                         </div>
-                     </a>
-                 </div>
+                               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                   Error Logs
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    @endif
+                    
+                    @if($userRole === 'rider')
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/attendance/mine">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-time text-lg"></i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    My Attendance
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    @else
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/attendance">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-time text-lg"></i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Attendance
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/admin/operations">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-import text-lg"></i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Operations
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    @endif
                  
                </div>
                <!-- End of Sidebar Menu -->
