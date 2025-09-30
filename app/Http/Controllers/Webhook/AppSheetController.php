@@ -340,10 +340,11 @@ class AppSheetController extends Controller
             $aliases = [
                 'pending' => 'new',
                 'on-hold' => 'on_hold',
+                'on hold' => 'on_hold',
                 'completed' => 'delivered',
                 'out for delivery' => 'out_for_delivery',
-                'delivered' => 'delivered', // Add explicit mapping
-                'processing' => 'processing', // Add explicit mapping
+                'delivered' => 'delivered',
+                'processing' => 'processing',
             ];
             $normalizedCode = $aliases[$statusCode] ?? str_replace([' ', '-'], ['_', '_'], $statusCode);
 

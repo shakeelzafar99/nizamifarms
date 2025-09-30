@@ -961,7 +961,6 @@ input:focus, select:focus, button:focus {
         </div>
     </div>
 </div>
-
 <!-- Column Settings Modal -->
 <div id="columnSettingsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999; overflow-y: auto;">
     <div style="display: flex; min-height: 100%; align-items: center; justify-content: center; padding: 20px;">
@@ -1461,7 +1460,6 @@ function viewOrderDetails(orderId) {
         `;
     });
 }
-
 // View Invoice
 let currentOrderId = null;
 
@@ -1921,7 +1919,6 @@ function resetModalStyling(modal) {
         document.title = document.title.replace('[Pop-out] ', '');
     }
 }
-
 // Apply full-screen styling for pop-out mode
 function applyPopoutStyling(modal) {
     if (!modal) return;
@@ -2416,7 +2413,6 @@ function updateLineTotal(index) {
         updateSubtotal();
     }
 }
-
 function updateSubtotal() {
     let subtotal = 0;
     const items = document.querySelectorAll('.line-item');
@@ -2853,7 +2849,6 @@ function saveOrderChanges(orderId) {
         submitBtn.disabled = false;
     });
 }
-
 function saveAndCloseOrder(orderId) {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
@@ -3334,7 +3329,6 @@ document.addEventListener('keydown', function(e) {
         closeModal('importOrderModal');
     }
 });
-
 // Close modals when clicking outside - this is now handled by onclick in the backdrop divs
 
 // Debug: Log when script loads
@@ -3773,7 +3767,6 @@ function hideProductDropdown(index) {
         }, 200);
     }
 }
-
 // Create new order with preloaded customer
 function createNewOrderWithCustomer(customerId) {
     // Fetch customer data by ID (reuses customers show endpoint that returns JSON)
@@ -4196,7 +4189,6 @@ function renderOrdersTable() {
     renderTableHeader();
     renderTableBody();
 }
-
 /* ⚠️ DEPRECATED: This function has been replaced by the newer getCellContent() function below (around line 2227)
    This older version has been commented out to avoid conflicts and duplicated code
    The newer version has better error handling, debug logging, and more features
@@ -4690,7 +4682,6 @@ function renderTableBody() {
         }
     });
 }
-
 function getCellContent(order, columnId) {
     const formatDate = (dateStr) => {
         if (!dateStr) return '<span class="text-gray-400">-</span>';
@@ -5191,7 +5182,6 @@ function showEmptyState() {
     if (loading) loading.classList.add('hidden');
     if (noResults) noResults.classList.remove('hidden');
 }
-
 function hideEmptyState() {
     const noResults = document.getElementById('no-results-state');
     const tbody = document.getElementById('table-body');
@@ -5678,7 +5668,6 @@ function selectCustomer(customerId, customerName, encodedData) {
         });
     }
 }
-
 function showSelectedCustomerDetails(customerData) {
     // Find or create customer details display area
     let detailsDiv = document.getElementById('selectedCustomerDetails');
@@ -5918,7 +5907,7 @@ async function loadOpenOrdersStatusCards() {
         console.log('Status cards API response:', data); // Debug log
         
         if (data.success) {
-            renderStatusCards(data.status_counts, data.total_open_count);
+            renderStatusCards(data.status_counts, data.total_open_count, data.delivered_today || 0);
         } else {
             console.error('Failed to load status counts:', data.message);
         }
@@ -5928,7 +5917,7 @@ async function loadOpenOrdersStatusCards() {
 }
 
 // Render status cards with modern design
-function renderStatusCards(statusCounts, totalOpenCount) {
+function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0) {
     console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount); // Debug log
     const container = document.getElementById('statusCardsContainer');
     if (!container) {
@@ -5945,6 +5934,19 @@ function renderStatusCards(statusCounts, totalOpenCount) {
                     <div class="text-sm font-medium text-gray-700">All Open</div>
                 </div>
                 <div class="text-2xl">📋</div>
+            </div>
+        </div>
+    `;
+
+    // Delivered Today card (informational)
+    cardsHtml += `
+        <div class="status-card" data-status="delivered_today">
+            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-green-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default min-w-[140px]">
+                <div>
+                    <div class="text-2xl font-bold text-green-600">${deliveredTodayCount}</div>
+                    <div class="text-sm font-medium text-gray-700">Delivered Today</div>
+                </div>
+                <div class="text-2xl">✅</div>
             </div>
         </div>
     `;
@@ -6076,65 +6078,8 @@ function switchToShopifyApprovals() {
 
 // Return to the non-Shopify Invoices list from the dynamic Shopify view
 function switchToInvoices() {
-    const tableContainer = document.querySelector('.orders-table-container');
-    if (tableContainer) tableContainer.classList.add('opacity-60');
-
-    fetch('/orders/filter?source=other')
-        .then(res => res.json())
-        .then(data => {
-            if (!data || !data.success) return false;
-
-            // Update URL for clarity
-            const url = new URL(window.location);
-            url.searchParams.set('source', 'other');
-            url.searchParams.delete('tab');
-            window.history.pushState({}, '', url);
-
-            // Update title and tabs
-            const pageTitle = document.querySelector('h1');
-            if (pageTitle) pageTitle.textContent = 'Orders';
-
-            const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
-            if (tabsContainer) {
-                tabsContainer.innerHTML = `
-                    <button class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm\">
-                        Invoices
-                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-invoices\">-</span>
-                    </button>
-                    <button onclick=\"switchToOpenOrders()\" class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50\">
-                        Open Orders
-                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-open\">${data.open_count || '-'}</span>
-                    </button>
-                    <button onclick=\"switchToShopifyApprovals()\" class=\"px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50\">
-                        Shopify Approvals
-                        <span class=\"ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold\" id=\"badge-approvals\">-</span>
-                    </button>
-                `;
-            }
-
-            // Hide status cards section
-            const statusCardsSection = document.getElementById('openOrdersStatusCards');
-            if (statusCardsSection) {
-                statusCardsSection.style.display = 'none';
-            }
-
-            // Render invoices dataset
-            rebuildTableWithOrders(data.orders, 'other', 'all');
-            
-            // Update pagination for invoices (full dataset)
-            updatePaginationForTab(data.orders, 'other', 'all', data.other_count);
-            
-            refreshPaginationInfo({
-                shopify_all_count: data.shopify_all_count,
-                shopify_approvals_count: data.shopify_approvals_count,
-                other_count: data.other_count
-            });
-        })
-        .catch(err => console.error('Failed to load invoices:', err))
-        .finally(() => {
-            if (tableContainer) tableContainer.classList.remove('opacity-60');
-        });
-
+    // Use full navigation to restore server-rendered pagination and correct pagination links
+    window.location.href = '/orders?source=other';
     return false;
 }
 
@@ -6166,7 +6111,6 @@ function updatePageForShopifyApprovals(orders, counts) {
     // Update pagination: hide if <= per-page
     refreshPaginationInfo(counts);
 }
-
 // Function to rebuild table with new orders data
 function rebuildTableWithOrders(orders, source, tab) {
     const tableContainer = document.querySelector('.orders-table-container');
@@ -6659,7 +6603,6 @@ function getSelectedOrderIds() {
     const selectedCheckboxes = document.querySelectorAll('.order-checkbox:checked');
     return Array.from(selectedCheckboxes).map(cb => parseInt(cb.value));
 }
-
 // Enhanced bulk status modal for checkbox-based selection
 function openBulkStatusModal() {
     const selectedIds = selectedOrderIds && selectedOrderIds.length ? selectedOrderIds : getSelectedOrderIds();

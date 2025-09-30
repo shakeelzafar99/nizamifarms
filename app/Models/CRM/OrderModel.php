@@ -247,16 +247,34 @@ class OrderModel extends BaseModel
                     $existingOrder->update($orderAttributes);
                     $order = $existingOrder;
 
-                    // If the incoming payload updated the status, write history via changeStatus()
+                    // New rule: For WooCommerce updates, only accept the FIRST status from Woo.
+                    // For subsequent edits, ignore status changes unless the new status is 'cancelled'.
                     if (array_key_exists('order_status', $orderAttributes)
                         && $orderAttributes['order_status'] !== null
                         && $orderAttributes['order_status'] !== $previousStatus) {
                         try {
-                            // Normalize common legacy codes before applying
-                            $normalized = str_replace([' ', '-'], ['_', '_'], strtolower($orderAttributes['order_status']));
-                            $order->changeStatus($normalized, 'WooCommerce sync');
+                            $incomingNormalized = static::normalizeStatusCode($orderAttributes['order_status']);
+
+                            // If existing order already has a non-empty status set, block Woo updates
+                            // unless the incoming status is 'cancelled'.
+                            $allowStatusChange = ($incomingNormalized === 'cancelled')
+                                || empty($previousStatus);
+
+                            if ($allowStatusChange) {
+                                $order->changeStatus($incomingNormalized, 'WooCommerce sync');
+                            } else {
+                                // Keep main order status as-is; ensure we don't overwrite it via update()
+                                // by resetting it back to previous value
+                                $order->order_status = $previousStatus;
+                                $order->save();
+                                \Log::info('WooCommerce status update ignored (non-cancelled subsequent edit)', [
+                                    'order_id' => $order->id,
+                                    'previous' => $previousStatus,
+                                    'incoming' => $incomingNormalized,
+                                ]);
+                            }
                         } catch (\Throwable $e) {
-                            \Log::warning('storeOrderFromApi: failed to write history on non-Shopify status update', [
+                            \Log::warning('storeOrderFromApi: failed to apply Woo status rule', [
                                 'order_id' => $order->id,
                                 'from' => $previousStatus,
                                 'to' => $orderAttributes['order_status'],
@@ -385,7 +403,7 @@ class OrderModel extends BaseModel
             'external_customer_id' => isset($wooOrder['customer_id']) ? (string)$wooOrder['customer_id'] : null,
             
             'order_number' => $wooOrder['number'] ?? $wooOrder['id'],
-            'order_status' => $wooOrder['status'] ?? 'pending',
+            'order_status' => static::normalizeStatusCode($wooOrder['status'] ?? 'pending'),
             'order_date' => $wooOrder['date_created'] ?? now(),
             'name' => trim(($primaryAddress['first_name'] ?? '') . ' ' . ($primaryAddress['last_name'] ?? '')),
             'currency' => $wooOrder['currency'] ?? 'PKR',
@@ -469,6 +487,33 @@ class OrderModel extends BaseModel
         ];
 
         return $statusMap[$status] ?? 'pending';
+    }
+
+    /**
+     * Normalize external status codes into our canonical codes used in the app
+     */
+    private static function normalizeStatusCode(?string $status): ?string
+    {
+        if ($status === null) return null;
+        $s = strtolower(trim($status));
+        // unify separators first
+        $s = str_replace([' ', '-'], ['_', '_'], $s);
+
+        // Map common aliases to canonical codes
+        $map = [
+            'pending' => 'new',
+            'on_hold' => 'on_hold',
+            'on-hold' => 'on_hold',
+            'on hold' => 'on_hold',
+            'processing' => 'processing',
+            'out_for_delivery' => 'out_for_delivery',
+            'out-for-delivery' => 'out_for_delivery',
+            'delivered' => 'delivered',
+            'completed' => 'delivered',
+            'cancelled' => 'cancelled',
+            'refunded' => 'refunded',
+        ];
+        return $map[$s] ?? $s; // fallback to normalized underscores
     }
 
     /**

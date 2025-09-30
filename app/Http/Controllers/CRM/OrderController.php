@@ -1043,26 +1043,37 @@ class OrderController extends Controller
             // Get all active statuses excluding completed ones
             $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             
-            $statusCounts = \DB::table('t_crm_order_status_master as sm')
-                ->leftJoin('t_crm_prod_order as o', function($join) use ($excludedStatuses) {
-                    $join->on('o.order_status', '=', 'sm.status_code')
-                         ->where(function($query) {
-                             $query->where('o.external_source', '!=', 'shopify')
-                                   ->orWhereNull('o.external_source');
-                         });
-                })
-                ->where('sm.is_active', 1)
-                ->whereNotIn('sm.status_code', $excludedStatuses)
-                ->groupBy('sm.id', 'sm.status_code', 'sm.status_name', 'sm.icon', 'sm.color_class', 'sm.sequence_order')
-                ->orderBy('sm.sequence_order')
+            // Build counts by normalizing order_status to canonical codes first
+            $statusCounts = \DB::table('t_crm_prod_order as o')
                 ->select([
-                    'sm.status_code',
-                    'sm.status_name', 
-                    'sm.icon',
-                    'sm.color_class',
+                    \DB::raw("CASE 
+                        WHEN o.order_status IN ('on-hold','on hold') THEN 'on_hold'
+                        WHEN o.order_status = 'completed' THEN 'delivered'
+                        WHEN o.order_status IN ('out-for-delivery','out for delivery') THEN 'out_for_delivery'
+                        WHEN o.order_status = 'pending' THEN 'new'
+                        ELSE o.order_status END AS normalized_code"),
                     \DB::raw('COUNT(o.id) as count')
                 ])
-                ->get();
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->groupBy('normalized_code');
+
+            // Join to master to fetch display data and filter out excluded statuses via canonical codes
+            $statusCounts = \DB::query()
+                ->fromSub($statusCounts, 'c')
+                ->join('t_crm_order_status_master as sm', 'sm.status_code', '=', 'c.normalized_code')
+                ->where('sm.is_active', 1)
+                ->whereNotIn('sm.status_code', $excludedStatuses)
+                ->orderBy('sm.sequence_order')
+                ->get([
+                    'sm.status_code',
+                    'sm.status_name',
+                    'sm.icon',
+                    'sm.color_class',
+                    'c.count'
+                ]);
 
             // Calculate total open orders count
             $totalOpenCount = \App\Models\CRM\OrderModel::where(function($q) {
@@ -1070,10 +1081,22 @@ class OrderController extends Controller
                   ->orWhereNull('external_source');
             })->whereNotIn('order_status', $excludedStatuses)->count();
 
+            // Delivered today (from history), non-shopify orders only
+            $deliveredTodayCount = \DB::table('t_crm_order_status_history as h')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
+                ->whereDate('h.changed_at', now()->toDateString())
+                ->where('h.status_code', 'delivered')
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->count();
+
             return response()->json([
                 'success' => true,
                 'status_counts' => $statusCounts,
-                'total_open_count' => $totalOpenCount
+                'total_open_count' => $totalOpenCount,
+                'delivered_today' => $deliveredTodayCount,
             ]);
 
         } catch (\Exception $e) {
