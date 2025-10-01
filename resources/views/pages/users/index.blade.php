@@ -528,21 +528,20 @@ function editUserDetails(userId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            const user = data.user;
-            
-            // Populate form fields
-            document.getElementById('fullname').value = user.fullname || '';
-            document.getElementById('email').value = user.email || '';
-            document.getElementById('password').value = '';
-            document.getElementById('user_type').value = user.user_type || '';
-            document.getElementById('description').value = user.description || '';
-            document.getElementById('is_active').value = user.is_active ? '1' : '0';
-            
-            // Set role if exists
-            if (user.user_roles && user.user_roles.length > 0) {
-                document.getElementById('role_id').value = user.user_roles[0].role_id || '';
-            }
-            
+            const user = data.user || {};
+
+            // Populate form fields (guard every element and field)
+            const el = (id) => document.getElementById(id);
+            if (el('fullname')) el('fullname').value = user.fullname ?? '';
+            if (el('email')) el('email').value = user.email ?? '';
+            if (el('password')) el('password').value = '';
+            if (el('user_type')) el('user_type').value = user.user_type ?? 'role_based';
+            if (el('description')) el('description').value = user.description ?? '';
+            if (el('is_active')) el('is_active').value = user.is_active ? '1' : '0';
+
+            // Role id provided directly by backend (safe even if null)
+            if (el('role_id')) el('role_id').value = user.role_id ?? '';
+
             modal.style.display = 'block';
         } else {
             alert('Error loading user data: ' + (data.message || 'Unknown error'));

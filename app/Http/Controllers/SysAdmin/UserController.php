@@ -41,10 +41,23 @@ class UserController extends Controller
     {
         try {
             $user = UserModel::with(['userRoles.role'])->findOrFail($id);
-            
+
+            // Compute safe defaults for fields the frontend expects
+            $roleId = optional($user->userRoles->first())->role_id; // null if none
+            $payload = [
+                'id' => $user->id,
+                'fullname' => $user->fullname ?? '',
+                'email' => $user->email ?? '',
+                'user_type' => $user->user_type ?? 'role_based',
+                'description' => $user->description ?? '',
+                'is_active' => (bool)($user->is_active ?? 1),
+                'role_id' => $roleId,
+                'user_roles' => $user->userRoles, // keep original for compatibility
+            ];
+
             return response()->json([
                 'success' => true,
-                'user' => $user
+                'user' => $payload
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -220,17 +233,17 @@ class UserController extends Controller
         $request->validate([
             'fullname' => 'required|string|max:255',
             'email' => 'required|email|unique:t_sys_user,email,' . $id,
-            'user_type' => 'required|string',
-            'role_id' => 'nullable|exists:t_sys_role,id' // Made optional
+            'role_id' => 'nullable|exists:t_sys_role,id'
         ]);
 
         try {
             $user = UserModel::findOrFail($id);
             
+            // Always default to role_based since we removed user_type from UI
             $updateData = [
                 'fullname' => $request->fullname,
                 'email' => $request->email,
-                'user_type' => $request->user_type,
+                'user_type' => 'role_based',
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
                 'updated_by' => auth()->id()

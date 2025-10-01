@@ -17,9 +17,10 @@ class RiderProfileController extends Controller
             ->where('r.type', 'rider')
             ->where('u.is_active', 1)
             ->select([
-                'u.id', 'u.fullname', 'u.email',
+                'u.id as user_id', 'u.id', 'u.fullname', 'u.email',
                 'p.phone', 'p.vehicle_type', 'p.vehicle_plate', 
-                'p.hire_date', 'p.active as profile_active'
+                'p.hire_date', 'p.active as profile_active',
+                'p.shift_start', 'p.shift_end'
             ])
             ->get();
 

@@ -193,62 +193,80 @@
   </div>
 </div>
 
-<!-- Daily Details Modal -->
-<div id="dailyDetailsModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 backdrop-blur-sm" style="z-index: 9999;">
-  <div class="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
-    <!-- Modal Header -->
-    <div class="bg-gradient-to-r from-blue-600 to-purple-600 p-6 text-white">
-      <div class="flex items-center justify-between">
-        <div>
-          <h3 class="text-2xl font-bold" id="modalEmployeeName">Employee Name</h3>
-          <p class="text-sm opacity-90 mt-1" id="modalMonthYear">Month Year</p>
+<!-- Daily Details Modal - Simplified & Guaranteed Scrollable -->
+<div id="dailyDetailsModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px;">
+  <div id="dailyDetailsCard" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1000px; height: 85vh; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;" onclick="event.stopPropagation();">
+      
+      <!-- Header -->
+      <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="width: 40px; height: 40px; border-radius: 50%; background: #dbeafe; display: flex; align-items: center; justify-content: center; color: #2563eb; font-size: 18px; font-weight: bold;">
+              👤
+            </div>
+            <div>
+              <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;" id="modalEmployeeName">Employee Name</h3>
+              <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;" id="modalMonthYear">Month Year</p>
+            </div>
+          </div>
+          <button type="button" onclick="closeDailyDetails()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
         </div>
-        <button onclick="closeDailyDetails()" class="w-10 h-10 rounded-full bg-white bg-opacity-20 hover:bg-opacity-30 transition flex items-center justify-center">
-          <span class="text-2xl leading-none">&times;</span>
+      </div>
+
+      <!-- Stats Bar -->
+      <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
+            <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="modalStatPresent">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
+            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="modalStatLate">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
+            <p style="font-size: 18px; font-weight: bold; color: #16a34a; margin: 0;" id="modalStatOT">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
+            <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="modalStatHours">0h</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scrollable Table Container - THIS IS THE KEY PART -->
+      <div style="flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; min-height: 0; background: white;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead style="position: sticky; top: 0; background: #f3f4f6; z-index: 10;">
+            <tr>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Date</th>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Login</th>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Logout</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Hours</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Late By</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Overtime</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Status</th>
+            </tr>
+          </thead>
+          <tbody id="dailyDetailsBody" style="background: white;">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Footer -->
+      <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: white; flex-shrink: 0; display: flex; justify-content: flex-end;">
+        <button 
+          type="button"
+          onclick="closeDailyDetails()" 
+          style="padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"
+        >
+          Close
         </button>
       </div>
 
-      <!-- Quick Stats -->
-      <div class="grid grid-cols-4 gap-4 mt-6">
-        <div class="text-center">
-          <p class="text-sm opacity-75">Present</p>
-          <p class="text-2xl font-bold" id="modalStatPresent">0</p>
-        </div>
-        <div class="text-center">
-          <p class="text-sm opacity-75">Late</p>
-          <p class="text-2xl font-bold" id="modalStatLate">0</p>
-        </div>
-        <div class="text-center">
-          <p class="text-sm opacity-75">Overtime</p>
-          <p class="text-2xl font-bold" id="modalStatOT">0</p>
-        </div>
-        <div class="text-center">
-          <p class="text-sm opacity-75">Total Hours</p>
-          <p class="text-2xl font-bold" id="modalStatHours">0h</p>
-        </div>
-      </div>
     </div>
-
-    <!-- Daily Details Table -->
-    <div class="overflow-y-auto max-h-[calc(90vh-280px)] p-6">
-      <table class="min-w-full divide-y divide-gray-200">
-        <thead class="bg-gray-50 sticky top-0">
-          <tr>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Login</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Logout</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-          </tr>
-        </thead>
-        <tbody id="dailyDetailsBody" class="bg-white divide-y divide-gray-200">
-          <!-- Populated by JS -->
-        </tbody>
-      </table>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -378,42 +396,86 @@ function showDailyDetails(userId) {
   console.log('Found employee:', employee);
   console.log('Employee daily data:', employee.daily);
 
-  document.getElementById('modalEmployeeName').textContent = employee.fullname;
-  document.getElementById('modalMonthYear').textContent = new Date(currentMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  document.getElementById('modalStatPresent').textContent = employee.present_days;
-  document.getElementById('modalStatLate').textContent = employee.late_days;
-  document.getElementById('modalStatOT').textContent = employee.overtime_days;
-  document.getElementById('modalStatHours').textContent = employee.total_hours.toFixed(1) + 'h';
-
+  // Ensure modal elements exist
+  const modalName = document.getElementById('modalEmployeeName');
+  const modalMonth = document.getElementById('modalMonthYear');
+  const modalPresent = document.getElementById('modalStatPresent');
+  const modalLate = document.getElementById('modalStatLate');
+  const modalOT = document.getElementById('modalStatOT');
+  const modalHours = document.getElementById('modalStatHours');
   const body = document.getElementById('dailyDetailsBody');
   
+  if (!modalName || !body) {
+    console.error('Modal elements not found!');
+    alert('Error: Modal elements missing');
+    return;
+  }
+
+  modalName.textContent = employee.fullname || 'Unknown';
+  modalMonth.textContent = new Date(currentMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  modalPresent.textContent = employee.present_days || 0;
+  modalLate.textContent = employee.late_days || 0;
+  modalOT.textContent = employee.overtime_days || 0;
+  modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';
+
   if (!employee.daily || employee.daily.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">No daily records found</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
+    console.warn('No daily data for employee');
   } else {
-    body.innerHTML = employee.daily.map(day => {
+    console.log('Rendering', employee.daily.length, 'daily records');
+    body.innerHTML = employee.daily.map((day, index) => {
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
       const hours = calculateHours(day.login_time, day.logout_time);
       const lateBy = calculateLateBy(day.login_time, day.shift_start);
       const overtime = calculateOvertime(day.logout_time, day.shift_end);
       const status = getStatus(day.login_time, day.shift_start);
+      
+      // Format date nicely
+      const date = new Date(day.attendance_date + 'T00:00:00');
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
+      const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
+      const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : '#f3f4f6';
+      const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : '#6b7280';
+      
       return `
-        <tr class="hover:bg-gray-50">
-          <td class="px-4 py-3 text-sm">${day.attendance_date}</td>
-          <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : ''}">${loginTime}</td>
-          <td class="px-4 py-3 text-sm">${logoutTime}</td>
-          <td class="px-4 py-3 text-sm font-medium">${hours}</td>
-          <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
-          <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
-          <td class="px-4 py-3 text-sm">${status}</td>
+        <tr style="background: ${rowBg}; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
+          <td style="padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #f3f4f6;">
+            <div style="font-weight: 500; color: #111827;">${formattedDate}</div>
+            <div style="font-size: 12px; color: #6b7280;">${dayName}</div>
+          </td>
+          <td style="padding: 12px 16px; font-size: 14px; color: ${lateBy.isLate ? '#dc2626' : '#374151'}; font-weight: ${lateBy.isLate ? '600' : '400'}; border-bottom: 1px solid #f3f4f6;">${loginTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; color: #374151; border-bottom: 1px solid #f3f4f6;">${logoutTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; font-weight: 600; text-align: center; color: #111827; border-bottom: 1px solid #f3f4f6;">${hours}</td>
+          <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${lateBy.isLate ? '#dc2626' : '#9ca3af'}; font-weight: ${lateBy.isLate ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${lateBy.duration}</td>
+          <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${overtime.hasOvertime ? '#16a34a' : '#9ca3af'}; font-weight: ${overtime.hasOvertime ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${overtime.duration}</td>
+          <td style="padding: 12px 16px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">
+            <span style="display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 500; background: ${statusBg}; color: ${statusColor};">
+              ${status}
+            </span>
+          </td>
         </tr>
       `;
     }).join('');
   }
 
   const modal = document.getElementById('dailyDetailsModal');
+  if (!modal) {
+    console.error('dailyDetailsModal not found in DOM!');
+    alert('Error: Modal not found');
+    return;
+  }
+  
+  // Lock background scroll
+  document.body.style.overflow = 'hidden';
+  
+  // Show modal with inline styles (overrides class="hidden")
   modal.classList.remove('hidden');
+  modal.style.display = 'flex';
+  
+  console.log('Modal displayed');
   
   // Close on background click
   modal.onclick = function(e) {
@@ -424,7 +486,13 @@ function showDailyDetails(userId) {
 }
 
 function closeDailyDetails() {
-  document.getElementById('dailyDetailsModal').classList.add('hidden');
+  const modal = document.getElementById('dailyDetailsModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    // Restore background scroll
+    document.body.style.overflow = '';
+  }
 }
 
 function calculateHours(login, logout) {

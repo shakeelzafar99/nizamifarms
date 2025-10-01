@@ -12,15 +12,32 @@
   <!-- Header with Add Button -->
   <div class="flex justify-between items-center mb-6">
     <h1 class="text-2xl font-semibold text-gray-900">Attendance Management</h1>
-    <div class="flex gap-2">
-      <a href="/attendance/reports" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium">
-        📊 Reports
+    <div class="flex gap-2 items-center">
+      <a href="/attendance/reports" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700">
+        Reports
       </a>
-      <button onclick="toggleAddForm()" id="toggleFormBtn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+      <div class="flex items-center gap-2 ml-2">
+        <label for="activeFilter" class="text-sm text-gray-700">Show:</label>
+        <select id="activeFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="onActiveFilterChange()">
+          <option value="active" selected>Active Users</option>
+          <option value="all">All Users</option>
+        </select>
+      </div>
+      <button 
+        type="button"
+        onclick="toggleAddForm()" 
+        id="toggleFormBtn" 
+        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md"
+      >
         ➕ Mark Attendance
       </button>
-      <button onclick="showShiftManager()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
-        ⏰ Manage Shifts
+      <button 
+        type="button"
+        onclick="showShiftManager(); return false;" 
+        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700"
+        style="min-width: 150px;"
+      >
+        Manage Shifts
       </button>
     </div>
   </div>
@@ -383,14 +400,16 @@
 </div>
 
 <!-- Shift Manager Modal -->
-<div id="shiftModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-  <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-    <div class="p-6 border-b border-gray-200 flex justify-between items-center">
+<div id="shiftModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+  <div id="shiftModalCard" class="bg-white rounded-xl shadow-2xl w-full overflow-hidden" onclick="event.stopPropagation();" style="width: min(92vw, 900px); max-height: 85vh;">
+    <!-- Sticky Header -->
+    <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-white sticky top-0 z-10">
       <h3 class="text-xl font-semibold text-gray-900">Manage Employee Shifts</h3>
-      <button onclick="closeShiftManager()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+      <button type="button" onclick="closeShiftManager()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
     </div>
-    <div class="p-6">
-      <div id="shiftList" class="space-y-3">
+    <!-- Scrollable Body -->
+    <div class="px-6 py-4" style="max-height: calc(85vh - 64px); overflow-y: auto;">
+      <div id="shiftList" class="space-y-1 divide-y divide-gray-100">
         <!-- Populated by JS -->
       </div>
     </div>
@@ -399,6 +418,7 @@
 
 <script>
 let allUsers = [];
+let showOnlyActive = true; // default
 let selectedUserData = null;
 let currentEditUserId = null;
 let currentEditDate = null;
@@ -445,13 +465,23 @@ function goToToday() {
 // Load all users for dropdown
 async function loadAllUsers() {
   try {
-    const res = await fetch('/users/all');
+    const endpoint = showOnlyActive ? '/users/all' : '/users/all?include_inactive=1';
+    const res = await fetch(endpoint);
     const json = await res.json();
     allUsers = json.data || [];
     populateUserDropdowns();
   } catch(e) {
     console.error('Failed to load users', e);
   }
+}
+
+function onActiveFilterChange() {
+  const val = document.getElementById('activeFilter').value;
+  showOnlyActive = (val === 'active');
+  // Reload users and table respecting filter
+  loadAllUsers().then(() => {
+    loadAttendanceForDate();
+  });
 }
 
 function populateUserDropdowns() {
@@ -1005,13 +1035,79 @@ function calculateHours(login, logout) {
 }
 
 // Shift manager
+let shiftModalOpen = false;
+
 function showShiftManager() {
+  console.log('showShiftManager called, current state:', shiftModalOpen);
+  
+  if (shiftModalOpen) {
+    console.log('Modal already open, ignoring duplicate call');
+    return;
+  }
+  
+  const modal = document.getElementById('shiftModal');
+  console.log('Shift modal element:', modal);
+  
+  if (!modal) {
+    alert('❌ Error: Shift modal not found!');
+    console.error('shiftModal element does not exist');
+    return;
+  }
+  
+  shiftModalOpen = true;
   loadShiftData();
-  document.getElementById('shiftModal').classList.remove('hidden');
+
+  // Portalize modal to body to avoid clipping/stacking issues
+  try {
+    if (modal.parentElement !== document.body) {
+      document.body.appendChild(modal);
+    }
+  } catch (e) {
+    console.warn('Could not portalize shiftModal:', e);
+  }
+
+  // Enforce centered modal overlay (not full screen)
+  modal.classList.remove('hidden');
+  Object.assign(modal.style, {
+    display: 'flex',
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    right: '0',
+    bottom: '0',
+    zIndex: '99999',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    overscrollBehavior: 'contain'
+  });
+  // Lock background scroll while modal open
+  window.__prevBodyOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  console.log('Shift modal opened successfully');
+  
+  // Close on background click
+  modal.onclick = function(e) {
+    if (e.target === modal) {
+      closeShiftManager();
+    }
+  };
+  // Ensure card keeps reasonable width even if utility classes conflict
+  const card = document.getElementById('shiftModalCard');
+  if (card) {
+    card.style.width = 'min(92vw, 900px)';
+    card.style.maxHeight = '85vh';
+  }
 }
 
 function closeShiftManager() {
-  document.getElementById('shiftModal').classList.add('hidden');
+  const modal = document.getElementById('shiftModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    shiftModalOpen = false;
+    console.log('Shift modal closed');
+    // Restore background scroll
+    document.body.style.overflow = '';
+  }
 }
 
 async function loadShiftData() {
@@ -1021,33 +1117,30 @@ async function loadShiftData() {
     const users = json.data || [];
     
     const shiftList = document.getElementById('shiftList');
-    shiftList.innerHTML = users.map(u => `
-      <div class="p-4 border border-gray-200 rounded-lg">
-        <div class="flex justify-between items-center">
-          <div>
-            <p class="font-medium text-gray-800">${u.fullname || 'User #' + u.id}</p>
-            <p class="text-sm text-gray-500">${u.role_name || 'Staff'}</p>
+    shiftList.innerHTML = `
+      <div class="grid gap-2 text-[11px] text-gray-500 uppercase tracking-wide pb-1 border-b border-gray-200" style="grid-template-columns: 1fr 110px 110px 70px;">
+        <div>Employee</div>
+        <div class="text-center">Start</div>
+        <div class="text-center">End</div>
+        <div class="text-right">Action</div>
+      </div>
+    ` + users.map(u => `
+      <div class="py-1.5 border-b border-gray-100">
+        <div class="grid gap-2 items-center" style="grid-template-columns: 1fr 110px 110px 70px;">
+          <div class="flex items-center min-w-0">
+            <div class="truncate">
+              <span class="font-medium text-gray-800">${u.fullname || 'User #' + u.id}</span>
+              <span class="ml-1 text-[10px] text-gray-500">${u.role_name || ''}</span>
+            </div>
           </div>
-          <div class="flex gap-2 items-center">
-            <input 
-              type="time" 
-              value="${u.shift_start || '09:00'}" 
-              class="px-2 py-1 border border-gray-300 rounded text-sm"
-              id="shift_start_${u.id}"
-            >
-            <span class="text-gray-500">to</span>
-            <input 
-              type="time" 
-              value="${u.shift_end || '17:00'}" 
-              class="px-2 py-1 border border-gray-300 rounded text-sm"
-              id="shift_end_${u.id}"
-            >
-            <button 
-              onclick="saveShift(${u.id})"
-              class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
-            >
-              Save
-            </button>
+          <div class="flex justify-center">
+            <input type="time" value="${u.shift_start || '09:00'}" class="px-1 py-1 border border-gray-300 rounded text-xs w-full" id="shift_start_${u.id}">
+          </div>
+          <div class="flex justify-center">
+            <input type="time" value="${u.shift_end || '17:00'}" class="px-1 py-1 border border-gray-300 rounded text-xs w-full" id="shift_end_${u.id}">
+          </div>
+          <div class="flex justify-end">
+            <button onclick="saveShift(${u.id})" class="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs whitespace-nowrap">Save</button>
           </div>
         </div>
       </div>
