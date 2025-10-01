@@ -46,12 +46,41 @@
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-lg font-medium text-gray-800">Import Rider Assignments</h2>
             </div>
-            <p class="text-sm text-gray-600 mb-4">Upload CSV: order_number, rider_name (or rider_phone), assigned_at (optional). Non‑Shopify orders only.</p>
+            
+            <!-- Enhanced Instructions -->
+            <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                <h3 class="text-sm font-semibold text-blue-800 mb-2">📋 CSV Format</h3>
+                <div class="text-xs text-blue-700 space-y-1">
+                    <p><strong>Required columns (any name format):</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li><code>Order Number</code> / <code>order_number</code> - Non-Shopify order number</li>
+                        <li><code>Delivery_Rider</code> / <code>rider_name</code> / <code>Delivery Rider</code> - Rider's full name</li>
+                    </ul>
+                    <p class="mt-2"><strong>Optional:</strong> <code>Date</code> / <code>assigned_at</code></p>
+                    
+                    <div class="mt-3 p-2 bg-white rounded border border-blue-300">
+                        <p class="font-medium mb-1">Example CSV:</p>
+                        <pre class="text-xs">Order Number,Delivery_Rider,Date
+9145,Arsalan,3/3/2025
+9144,Jazib,3/3/2025
+9141,Asim Tahir - Indri,3/3/2025</pre>
+                    </div>
+                    
+                    <p class="mt-2"><strong>✓ Smart features:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Automatically cleans rider names (removes "- indrive", "- Indri")</li>
+                        <li>Case-insensitive matching</li>
+                        <li>Partial name matching (e.g., "Arsalan" finds "Arsalan Khan")</li>
+                        <li>Only non-Shopify orders</li>
+                    </ul>
+                </div>
+            </div>
+            
             <form id="riderImportForm" action="{{ route('operations.rider-import') }}" method="POST" enctype="multipart/form-data">
                 @csrf
-                <input type="file" name="csv_file" accept=".csv,.txt" class="block w-full text-sm text-gray-500 mb-3">
+                <input type="file" name="csv_file" accept=".csv,.txt" class="block w-full text-sm text-gray-500 mb-3 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
                 <button type="submit" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                    Upload CSV
+                    📤 Upload & Assign Riders
                 </button>
             </form>
             @if(session('rider_import_result'))

@@ -22,17 +22,22 @@ class OperationsController extends Controller
         }
         // Remove header row
         $header = array_map('trim', array_shift($rows));
-        // Normalize header names
+        // Normalize header names (accept multiple formats)
         $map = array_flip(array_map('strtolower', $header));
 
         $ok = 0; $skipped = 0; $errors = []; $missingOrders = []; $missingRiders = [];
         foreach ($rows as $i => $row) {
             try {
                 $data = [];
-                $data['order_number'] = $row[$map['order_number'] ?? -1] ?? null;
-                $data['rider_name']   = $row[$map['rider_name'] ?? -1] ?? null;
-                $data['rider_phone']  = $row[$map['rider_phone'] ?? -1] ?? null;
-                $data['assigned_at']  = $row[$map['assigned_at'] ?? -1] ?? null;
+                // Accept multiple column name formats
+                $data['order_number'] = $row[$map['order_number'] ?? $map['order number'] ?? -1] ?? null;
+                $data['rider_name']   = $row[$map['rider_name'] ?? $map['rider name'] ?? $map['delivery_rider'] ?? $map['delivery rider'] ?? -1] ?? null;
+                $data['rider_phone']  = $row[$map['rider_phone'] ?? $map['rider phone'] ?? -1] ?? null;
+                $data['assigned_at']  = $row[$map['assigned_at'] ?? $map['assigned at'] ?? $map['date'] ?? -1] ?? null;
+
+                // Trim whitespace
+                $data['order_number'] = trim($data['order_number'] ?? '');
+                $data['rider_name'] = trim($data['rider_name'] ?? '');
 
                 if (!$data['order_number'] || (!$data['rider_name'] && !$data['rider_phone'])) { 
                     $errors[] = 'Row '.($i+2).': Missing order_number or rider info';
@@ -49,23 +54,27 @@ class OperationsController extends Controller
                     continue; 
                 }
 
-                // Resolve rider user id
-                $rider = DB::table('t_sys_user');
-                if ($data['rider_phone']) {
-                    $rider->where('email', $data['rider_phone'])->orWhere('fullname', 'like', $data['rider_name'].'%');
-                } else {
-                    $rider->where('fullname', 'like', $data['rider_name'].'%');
-                }
-                $rider = $rider->first();
+                // Clean rider name (remove suffixes like "- indrive", "- Indri", etc.)
+                $cleanRiderName = $this->cleanEmployeeName($data['rider_name']);
+
+                // Resolve rider user id using smart matching (same as attendance import)
+                $rider = $this->findUserByName($cleanRiderName);
+                
                 if (!$rider) { 
-                    $missingRiders[] = $data['rider_name'] ?: $data['rider_phone'];
+                    $missingRiders[] = $data['rider_name'] . ' (cleaned: ' . $cleanRiderName . ')';
                     continue; 
                 }
 
                 // Use model method for assignment
                 $model = OrderModel::find($order->id);
                 $assignedAt = $data['assigned_at'] ? new \DateTime($data['assigned_at']) : null;
-                $ok += $model && $model->assignRider((int)$rider->id, 'CSV import', null, $assignedAt) ? 1 : 0;
+                $success = $model && $model->assignRider((int)$rider->id, 'CSV import', null, $assignedAt);
+                
+                if ($success) {
+                    $ok++;
+                } else {
+                    $errors[] = 'Row '.($i+2).': Failed to assign rider (order: '.$data['order_number'].')';
+                }
             } catch (\Throwable $e) {
                 $errors[] = 'Row '.($i+2).': '.$e->getMessage();
             }
