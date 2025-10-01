@@ -55,8 +55,8 @@ class OrderController extends Controller
                 $query->where('assigned_rider_user_id', auth()->id());
             }
             
-            // If viewing open orders tab, filter to exclude completed statuses
-            if ($tab === 'open') {
+            // If viewing open orders or riders tab, filter to exclude completed statuses
+            if ($tab === 'open' || $tab === 'riders') {
                 $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
             }
         }
@@ -968,8 +968,8 @@ class OrderController extends Controller
                           ->orWhereNull('external_source');
                     });
                 
-                // Apply tab filter for open orders
-                if ($tab === 'open') {
+                // Apply tab filter for open orders and riders
+                if ($tab === 'open' || $tab === 'riders') {
                     $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
                 }
             }
@@ -1110,6 +1110,99 @@ class OrderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch status counts: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get rider-wise breakdown of open orders with status counts
+     */
+    public function getRiderOrdersCounts(Request $request)
+    {
+        try {
+            // Excluded statuses (completed orders)
+            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            // Get open orders grouped by rider with status breakdown
+            $riderCounts = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->select([
+                    'o.assigned_rider_user_id as rider_id',
+                    'u.fullname as rider_name',
+                    \DB::raw("CASE 
+                        WHEN o.order_status IN ('on-hold','on hold') THEN 'on_hold'
+                        WHEN o.order_status = 'completed' THEN 'delivered'
+                        WHEN o.order_status IN ('out-for-delivery','out for delivery') THEN 'out_for_delivery'
+                        WHEN o.order_status IN ('pending','pending payment','pending-payment') THEN 'pending'
+                        ELSE o.order_status END AS normalized_status"),
+                    \DB::raw('COUNT(o.id) as count')
+                ])
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->groupBy('o.assigned_rider_user_id', 'u.fullname', 'normalized_status')
+                ->orderBy('u.fullname')
+                ->get();
+
+            // Organize data by rider
+            $ridersData = [];
+            $unassignedCount = 0;
+            $unassignedBreakdown = [];
+
+            foreach ($riderCounts as $record) {
+                if ($record->rider_id) {
+                    // Assigned rider
+                    if (!isset($ridersData[$record->rider_id])) {
+                        $ridersData[$record->rider_id] = [
+                            'rider_id' => $record->rider_id,
+                            'rider_name' => $record->rider_name,
+                            'total_count' => 0,
+                            'status_breakdown' => []
+                        ];
+                    }
+                    $ridersData[$record->rider_id]['total_count'] += $record->count;
+                    $ridersData[$record->rider_id]['status_breakdown'][$record->normalized_status] = $record->count;
+                } else {
+                    // Unassigned orders
+                    $unassignedCount += $record->count;
+                    $unassignedBreakdown[$record->normalized_status] = $record->count;
+                }
+            }
+
+            // Convert to array for JSON response
+            $ridersArray = array_values($ridersData);
+
+            // Total open orders count
+            $totalOpenCount = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })->whereNotIn('order_status', $excludedStatuses)->count();
+
+            // Assigned orders count
+            $assignedCount = \App\Models\CRM\OrderModel::where(function($q) {
+                $q->where('external_source', '!=', 'shopify')
+                  ->orWhereNull('external_source');
+            })
+            ->whereNotNull('assigned_rider_user_id')
+            ->whereNotIn('order_status', $excludedStatuses)
+            ->count();
+
+            return response()->json([
+                'success' => true,
+                'riders' => $ridersArray,
+                'unassigned_count' => $unassignedCount,
+                'unassigned_breakdown' => $unassignedBreakdown,
+                'total_open_count' => $totalOpenCount,
+                'assigned_count' => $assignedCount,
+                'riders_count' => count($ridersArray)
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Rider orders counts error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch rider counts: ' . $e->getMessage()
             ], 500);
         }
     }

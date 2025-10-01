@@ -970,6 +970,295 @@ class AppSheetController extends Controller
     }
 
     /**
+     * Webhook: Assign rider to order from AppSheet
+     * Expected JSON body:
+     * {
+     *   "order_number": "9145",          // required
+     *   "delivery_rider": "Arsalan",     // required - rider name
+     *   "payment_method": "Cash",        // optional - will normalize and update if different
+     *   "date": "3/3/2025"              // optional - assignment date
+     * }
+     * 
+     * This endpoint mirrors the CSV import logic from OperationsController
+     */
+    public function riderAssignment(Request $request)
+    {
+        try {
+            $payload = $request->all();
+
+            // Log the incoming request for debugging
+            Log::info('AppSheet rider-assignment webhook received', [
+                'payload' => $payload,
+                'headers' => $request->headers->all()
+            ]);
+
+            // Extract fields with multiple fallback keys (case-insensitive)
+            $orderNumber = $payload['order_number'] 
+                ?? $payload['Order Number'] 
+                ?? $payload['Order_Number']
+                ?? $payload['order number'] 
+                ?? null;
+            
+            $riderName = $payload['delivery_rider'] 
+                ?? $payload['Delivery_Rider'] 
+                ?? $payload['rider_name'] 
+                ?? $payload['Rider Name']
+                ?? $payload['rider name'] 
+                ?? null;
+            
+            $paymentMethod = $payload['payment_method'] 
+                ?? $payload['Payment_method'] 
+                ?? $payload['Payment Method'] 
+                ?? $payload['payment method'] 
+                ?? null;
+            
+            $assignedAt = $payload['date'] 
+                ?? $payload['Date'] 
+                ?? $payload['assigned_at'] 
+                ?? $payload['Assigned At'] 
+                ?? null;
+
+            // Validate required fields
+            if (!$orderNumber || !$riderName) {
+                Log::error('AppSheet rider-assignment: missing required fields', [
+                    'order_number' => $orderNumber,
+                    'rider_name' => $riderName,
+                    'payload' => $payload
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Missing required fields: order_number and delivery_rider'
+                ], 422);
+            }
+
+            // Trim whitespace
+            $orderNumber = trim($orderNumber);
+            $riderName = trim($riderName);
+
+            Log::info('AppSheet rider-assignment: extracted fields', [
+                'order_number' => $orderNumber,
+                'rider_name' => $riderName,
+                'payment_method' => $paymentMethod,
+                'assigned_at' => $assignedAt
+            ]);
+
+            // Resolve order (non-shopify only)
+            $order = \DB::table('t_crm_prod_order')
+                ->where(function($q) { 
+                    $q->whereNull('external_source')
+                      ->orWhere('external_source', '!=', 'shopify'); 
+                })
+                ->where('order_number', $orderNumber)
+                ->first();
+            
+            if (!$order) {
+                Log::warning('AppSheet rider-assignment: order not found', [
+                    'order_number' => $orderNumber
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Order not found or is a Shopify order: {$orderNumber}"
+                ], 404);
+            }
+
+            Log::info('AppSheet rider-assignment: order found', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'current_rider' => $order->assigned_rider_user_id,
+                'current_payment_method' => $order->payment_method
+            ]);
+
+            // Clean rider name (remove suffixes like "- indrive", "- Indri", etc.)
+            $cleanRiderName = $this->cleanEmployeeName($riderName);
+
+            Log::info('AppSheet rider-assignment: cleaned rider name', [
+                'original' => $riderName,
+                'cleaned' => $cleanRiderName
+            ]);
+
+            // Resolve rider user id using smart matching (same as CSV import)
+            $rider = $this->findUserByName($cleanRiderName);
+            
+            if (!$rider) {
+                Log::warning('AppSheet rider-assignment: rider not found', [
+                    'original_name' => $riderName,
+                    'cleaned_name' => $cleanRiderName
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Rider not found in system: {$riderName} (cleaned: {$cleanRiderName})"
+                ], 404);
+            }
+
+            Log::info('AppSheet rider-assignment: rider found', [
+                'rider_id' => $rider->id,
+                'fullname' => $rider->fullname
+            ]);
+
+            // Handle payment method update if provided
+            $paymentMethodUpdated = false;
+            if ($paymentMethod) {
+                // Normalize payment method using OrderModel's method
+                // Access static method via reflection or use FQCN
+                $normalizedPaymentMethod = $this->normalizePaymentMethod($paymentMethod);
+                
+                // Only update if different from current
+                if ($order->payment_method !== $normalizedPaymentMethod) {
+                    \DB::table('t_crm_prod_order')
+                        ->where('id', $order->id)
+                        ->update([
+                            'payment_method' => $normalizedPaymentMethod,
+                            'updated_at' => now()
+                        ]);
+                    
+                    Log::info('AppSheet rider-assignment: payment method updated', [
+                        'order_id' => $order->id,
+                        'original_payment_method' => $paymentMethod,
+                        'old_payment_method' => $order->payment_method,
+                        'new_payment_method' => $normalizedPaymentMethod
+                    ]);
+                    
+                    $paymentMethodUpdated = true;
+                } else {
+                    Log::info('AppSheet rider-assignment: payment method unchanged', [
+                        'order_id' => $order->id,
+                        'payment_method' => $normalizedPaymentMethod
+                    ]);
+                }
+            }
+
+            // Use model method for rider assignment
+            $model = \App\Models\CRM\OrderModel::find($order->id);
+            $assignedAtDateTime = $assignedAt ? new \DateTime($assignedAt) : null;
+            $success = $model && $model->assignRider(
+                (int)$rider->id, 
+                'AppSheet webhook', 
+                null, // assigned_by (will default to system)
+                $assignedAtDateTime
+            );
+
+            if (!$success) {
+                Log::error('AppSheet rider-assignment: assignment failed', [
+                    'order_id' => $order->id,
+                    'rider_id' => $rider->id
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Failed to assign rider to order {$orderNumber}"
+                ], 500);
+            }
+
+            Log::info('AppSheet rider-assignment: assignment successful', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'rider_id' => $rider->id,
+                'rider_name' => $rider->fullname,
+                'payment_method_updated' => $paymentMethodUpdated,
+                'assigned_at' => $assignedAtDateTime ? $assignedAtDateTime->format('Y-m-d H:i:s') : 'now'
+            ]);
+
+            $response = [
+                'success' => true,
+                'message' => 'Rider assigned successfully',
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'rider_id' => $rider->id,
+                'rider_name' => $rider->fullname,
+                'assigned_at' => $assignedAtDateTime ? $assignedAtDateTime->format('Y-m-d H:i:s') : now()->format('Y-m-d H:i:s')
+            ];
+
+            if ($paymentMethodUpdated) {
+                $response['payment_method_updated'] = true;
+                $response['payment_method'] = $normalizedPaymentMethod ?? null;
+            }
+
+            return response()->json($response);
+
+        } catch (\Exception $e) {
+            Log::error('AppSheet rider-assignment error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'payload' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Internal server error processing rider-assignment: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Helper to normalize payment method (copied from OrderModel for webhook use)
+     */
+    private function normalizePaymentMethod(?string $paymentMethod): string
+    {
+        if (!$paymentMethod) {
+            return 'cash'; // Default to cash
+        }
+
+        $method = strtolower(trim($paymentMethod));
+
+        // Mapping from external payment methods to our standard values
+        $methodMap = [
+            // Cash variants
+            'cash' => 'cash',
+            'cash_on_delivery' => 'cash_on_delivery',
+            'cod' => 'cash_on_delivery',
+            
+            // Bank transfer variants
+            'bank_transfer' => 'bank_transfer',
+            'direct_bank_transfer' => 'bank_transfer',
+            'bacs' => 'bank_transfer',
+            'wire_transfer' => 'bank_transfer',
+            'manual' => 'bank_transfer',
+            
+            // Card variants
+            'card' => 'card',
+            'credit_card' => 'card',
+            'debit_card' => 'card',
+            'visa' => 'card',
+            'mastercard' => 'card',
+            'amex' => 'card',
+            
+            // Online payment variants
+            'online' => 'online',
+            'online_payment' => 'online',
+            'paypal' => 'online',
+            'stripe' => 'online',
+            'razorpay' => 'online',
+            'square' => 'online',
+            'authorize.net' => 'online',
+            'shopify_payments' => 'online',
+            'bogus' => 'online', // Shopify test gateway
+        ];
+
+        // Check for partial matches if exact match not found
+        if (!isset($methodMap[$method])) {
+            if (strpos($method, 'bank') !== false || strpos($method, 'transfer') !== false) {
+                $normalized = 'bank_transfer';
+            } elseif (strpos($method, 'cash') !== false || strpos($method, 'cod') !== false) {
+                $normalized = 'cash';
+            } elseif (strpos($method, 'card') !== false || strpos($method, 'visa') !== false || strpos($method, 'master') !== false) {
+                $normalized = 'card';
+            } elseif (strpos($method, 'online') !== false || strpos($method, 'paypal') !== false || strpos($method, 'stripe') !== false) {
+                $normalized = 'online';
+            } else {
+                $normalized = 'cash'; // Default fallback
+            }
+        } else {
+            $normalized = $methodMap[$method];
+        }
+
+        Log::info('Payment method normalized in webhook', [
+            'original' => $paymentMethod,
+            'normalized' => $normalized
+        ]);
+
+        return $normalized;
+    }
+
+    /**
      * Helper to normalize time format (handle HH:MM or HH:MM:SS)
      */
     private function normalizeTime($time)

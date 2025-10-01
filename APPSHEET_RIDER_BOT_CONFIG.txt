@@ -1,0 +1,256 @@
+===========================================
+APPSHEET RIDER ASSIGNMENT BOT - QUICK COPY/PASTE
+===========================================
+
+BOT NAME: 
+Delivery Rider Assignment Sync
+
+DESCRIPTION:
+Syncs rider assignments and payment methods to Laravel webapp in real-time
+
+===========================================
+TRIGGER: On Rider Assignment
+===========================================
+
+Event: When a row is added/updated in [Delivery Table]
+Condition: [Delivery_Rider] IS NOT BLANK AND [Order Number] IS NOT BLANK
+
+Task: Call a webhook
+
+Webhook URL:
+https://your-domain.com/webhook/appsheet/rider-assignment
+
+Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body (JSON):
+{
+   "order_number": <<[Order Number]>>,
+   "delivery_rider": <<[Delivery_Rider]>>,
+   "payment_method": <<[Payment_method]>>,
+   "date": <<[Date]>>
+}
+
+===========================================
+ALTERNATIVE: Button-Triggered Assignment
+===========================================
+
+If you want assignment on button click instead of auto:
+
+Event: Button click
+Action: Execute task
+Task: Call webhook (same config as above)
+
+===========================================
+COLUMN MAPPING REFERENCE
+===========================================
+
+AppSheet Column          → Webhook Field Name
+----------------------------------------------
+Order Number             → "order_number"
+Delivery_Rider           → "delivery_rider"
+Payment_method           → "payment_method"
+Date                     → "date"
+
+Note: The webhook accepts all these field name formats:
+- "Order Number", "order_number", "Order_Number"
+- "Delivery_Rider", "delivery_rider", "rider_name"
+- "Payment_method", "payment_method", "Payment Method"
+- "Date", "date", "assigned_at"
+
+===========================================
+TESTING THE BOT
+===========================================
+
+1. In AppSheet, create/update a delivery record:
+   - Order Number: 9145
+   - Delivery_Rider: Arsalan
+   - Payment_method: Cash
+
+2. Check Bot Execution Logs in AppSheet:
+   - Look for "Webhook succeeded" (200 status)
+   - Or error messages
+
+3. Check Laravel Logs:
+   - SSH into server
+   - Run: tail -f storage/logs/laravel.log | grep "rider-assignment"
+   - Look for: "AppSheet rider-assignment webhook received"
+
+4. Verify in Webapp:
+   - Go to Orders page
+   - Search for order 9145
+   - Check "Rider" column shows "Arsalan"
+   - Check "Payment Method" updated if changed
+
+===========================================
+EXPECTED RESPONSES
+===========================================
+
+SUCCESS (200):
+{
+  "success": true,
+  "message": "Rider assigned successfully",
+  "order_id": 12345,
+  "order_number": "9145",
+  "rider_id": 73,
+  "rider_name": "Arsalan",
+  "assigned_at": "2025-03-03 10:30:00",
+  "payment_method_updated": true,
+  "payment_method": "cash"
+}
+
+ERROR - Order Not Found (404):
+{
+  "success": false,
+  "message": "Order not found or is a Shopify order: 9145"
+}
+
+ERROR - Rider Not Found (404):
+{
+  "success": false,
+  "message": "Rider not found in system: Unknown (cleaned: Unknown)"
+}
+
+ERROR - Missing Fields (422):
+{
+  "success": false,
+  "message": "Missing required fields: order_number and delivery_rider"
+}
+
+===========================================
+TROUBLESHOOTING
+===========================================
+
+Problem: Bot not firing
+→ Check condition: [Delivery_Rider] IS NOT BLANK
+→ Verify order number is filled
+→ Check bot is enabled/published
+
+Problem: Order not found
+→ Verify order exists in Orders page
+→ Check if order is Shopify (webhook only handles non-Shopify)
+→ Check order number spelling (no spaces, commas)
+
+Problem: Rider not found
+→ Verify rider exists in Users table
+→ Check spelling matches
+→ System auto-cleans "- indrive", "- Indri" suffixes
+→ Try exact name from Users table
+
+Problem: Payment method not updating
+→ Check logs: may show "payment method unchanged"
+→ This means it already matches current value
+→ Ensure AppSheet value is different from database
+
+Problem: Webhook returns 500
+→ Check Laravel logs for detailed error
+→ May be database issue
+→ Contact system admin
+
+===========================================
+PAYMENT METHOD NORMALIZATION
+===========================================
+
+AppSheet sends     → Webapp normalizes to:
+----------------------------------------------
+"Cash"            → "cash"
+"COD"             → "cash_on_delivery"
+"Online"          → "online"
+"Card"            → "card"
+"Bank Transfer"   → "bank_transfer"
+"PayPal"          → "online"
+"Stripe"          → "online"
+
+Smart partial matching:
+- Contains "cash" or "cod" → cash
+- Contains "bank" or "transfer" → bank_transfer
+- Contains "card" or "visa" → card
+- Contains "online" or "paypal" → online
+
+===========================================
+FIELD NOTES
+===========================================
+
+REQUIRED:
+- order_number: Must be valid non-Shopify order number
+- delivery_rider: Must match a user in t_sys_user table
+
+OPTIONAL:
+- payment_method: Any format (normalized automatically)
+- date: Any date format (parsed automatically)
+
+AUTOMATIC FEATURES:
+- Rider name cleaned (removes "- indrive", "- Indri")
+- Payment method normalized to standard values
+- Only updates payment method if different
+- Creates assignment history record
+- Previous assignments preserved (is_current = 0)
+- New assignment marked current (is_current = 1)
+
+===========================================
+VERIFICATION QUERIES
+===========================================
+
+Check recent webhook assignments:
+SELECT 
+    o.order_number,
+    u.fullname AS rider_name,
+    o.payment_method,
+    h.assigned_at,
+    h.notes
+FROM t_crm_prod_order o
+LEFT JOIN t_sys_user u ON u.id = o.assigned_rider_user_id
+LEFT JOIN t_ops_order_rider_history h ON h.order_id = o.id AND h.is_current = 1
+WHERE h.notes = 'AppSheet webhook'
+ORDER BY h.assigned_at DESC
+LIMIT 10;
+
+Count today's webhook assignments:
+SELECT COUNT(*) AS today_count
+FROM t_ops_order_rider_history
+WHERE notes = 'AppSheet webhook'
+AND DATE(assigned_at) = CURDATE();
+
+===========================================
+SUCCESS CRITERIA
+===========================================
+
+✓ Webhook receives data from AppSheet
+✓ Order found in database (non-Shopify)
+✓ Rider matched in Users table
+✓ Rider assigned to order successfully
+✓ Payment method normalized if provided
+✓ Payment method updated if different
+✓ History record created
+✓ Previous assignments preserved
+✓ Frontend shows assigned rider
+✓ Logs show successful processing
+
+===========================================
+IMPORTANT NOTES
+===========================================
+
+1. SHOPIFY ORDERS EXCLUDED
+   - Webhook only handles non-Shopify orders
+   - This is intentional and by design
+   - Shopify rider assignment should be done via Shopify
+
+2. PAYMENT METHOD UPDATE
+   - Only updates if value is different
+   - Normalization happens automatically
+   - Old and new values logged
+
+3. RE-ASSIGNMENTS SAFE
+   - Can assign rider multiple times
+   - Previous assignments preserved in history
+   - No data loss
+
+4. RIDER NAME MATCHING
+   - Uses 4 strategies (exact, case-insensitive, starts-with, contains)
+   - Automatically removes suffixes
+   - Same logic as CSV bulk import
+
+===========================================
+

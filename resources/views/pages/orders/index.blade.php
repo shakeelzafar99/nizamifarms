@@ -21,6 +21,11 @@
     display: {{ $source === 'other' && ($tab ?? 'all') === 'open' ? 'block' : 'none' }};
 }
 
+/* Show riders cards only for riders tab */
+#ridersCards {
+    display: {{ $source === 'other' && ($tab ?? 'all') === 'riders' ? 'block' : 'none' }};
+}
+
 /* Responsive status cards */
 @media (max-width: 768px) {
     #statusCardsContainer {
@@ -525,6 +530,11 @@ input:focus, select:focus, button:focus {
                                 Open Orders
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $openCount }}</span>
                             </button>
+                            <button onclick="switchToRiders()" 
+                               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'other' && ($tab ?? 'all') === 'riders' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
+                                Riders
+                                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">{{ $openCount }}</span>
+                            </button>
                             <button onclick="switchToShopifyApprovals()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Shopify Approvals
@@ -583,6 +593,20 @@ input:focus, select:focus, button:focus {
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
                             Loading status cards...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Riders Cards (only show for riders tab) -->
+                <div class="mt-4 mb-6" id="ridersCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'riders') ? 'block' : 'none' }};">
+                    <div class="flex flex-wrap gap-3" id="ridersCardsContainer">
+                        <!-- Rider cards will be loaded here via JavaScript -->
+                        <div class="flex items-center justify-center py-8 text-gray-500">
+                            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Loading rider cards...
                         </div>
                     </div>
                 </div>
@@ -5112,7 +5136,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const currentTab = new URLSearchParams(window.location.search).get('tab');
     const currentSource = new URLSearchParams(window.location.search).get('source');
     
-    // Always try to load status cards if the section exists and is visible
+    // Load status cards for open orders tab
     const statusCardsSection = document.getElementById('openOrdersStatusCards');
     if (statusCardsSection) {
         const isVisible = statusCardsSection.style.display !== 'none' && 
@@ -5122,6 +5146,20 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('Initializing status cards on page load...'); // Debug log
             setTimeout(() => {
                 loadOpenOrdersStatusCards();
+            }, 200);
+        }
+    }
+    
+    // Load rider cards for riders tab
+    const ridersCardsSection = document.getElementById('ridersCards');
+    if (ridersCardsSection) {
+        const isVisible = ridersCardsSection.style.display !== 'none' && 
+                         ridersCardsSection.offsetParent !== null;
+        
+        if ((currentSource === 'other' && currentTab === 'riders') || isVisible) {
+            console.log('Initializing rider cards on page load...'); // Debug log
+            setTimeout(() => {
+                loadRiderCards();
             }, 200);
         }
     }
@@ -6034,6 +6072,10 @@ function updateTabsForOpenOrders(data) {
                 Open Orders
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-open">${data.open_count || '-'}</span>
             </button>
+            <button onclick="switchToRiders()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Riders
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">${data.open_count || '-'}</span>
+            </button>
             <button onclick="switchToShopifyApprovals()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
                 Shopify Approvals
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${data.shopify_approvals_count || '-'}</span>
@@ -6041,10 +6083,14 @@ function updateTabsForOpenOrders(data) {
         `;
     }
 
-    // Show status cards section
+    // Show status cards section, hide riders cards
     const statusCardsSection = document.getElementById('openOrdersStatusCards');
+    const ridersCards = document.getElementById('ridersCards');
     if (statusCardsSection) {
         statusCardsSection.style.display = 'block';
+    }
+    if (ridersCards) {
+        ridersCards.style.display = 'none';
     }
 }
 
@@ -6194,6 +6240,9 @@ function filterByStatus(statusCode) {
 
 // Function to switch to Shopify Approvals from main orders page
 function switchToShopifyApprovals() {
+    // Hide all card sections
+    hideAllCardSections();
+    
     // Show loading state
     const tableContainer = document.querySelector('.orders-table-container');
     if (tableContainer) {
@@ -6914,6 +6963,289 @@ async function executeBulkRiderAssign() {
         btn.textContent = originalText;
         btn.disabled = false;
     }
+}
+
+// ============================================
+// RIDERS TAB FUNCTIONS
+// ============================================
+
+/**
+ * Switch to Riders tab - shows rider-wise breakdown
+ */
+function switchToRiders() {
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    // Hide other cards
+    hideAllCardSections();
+
+    fetch('/orders/filter?source=other&tab=riders')
+        .then(res => res.json())
+        .then(data => {
+            if (!data || !data.success) return false;
+
+            // Update URL
+            const url = new URL(window.location);
+            url.searchParams.set('source', 'other');
+            url.searchParams.set('tab', 'riders');
+            window.history.pushState({}, '', url);
+
+            // Update page title
+            const pageTitle = document.querySelector('h1');
+            if (pageTitle) pageTitle.textContent = 'Orders';
+
+            // Update tabs
+            updateTabsForRiders(data);
+
+            // Load rider cards after a short delay
+            console.log('Switching to Riders - loading rider cards...');
+            setTimeout(() => {
+                loadRiderCards();
+            }, 200);
+
+            // Render open orders dataset (same as open orders tab)
+            rebuildTableWithOrders(data.orders, 'other', 'riders');
+            
+            // Update pagination for filtered results
+            updatePaginationForTab(data.orders, 'other', 'riders', data.open_count);
+            
+            // Remove opacity
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        })
+        .catch(err => {
+            console.error('Error switching to riders:', err);
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        });
+}
+
+/**
+ * Update tabs for riders view
+ */
+function updateTabsForRiders(data) {
+    const tabsContainer = document.querySelector('.flex.space-x-1.bg-gray-100');
+    if (tabsContainer) {
+        tabsContainer.innerHTML = `
+            <a href="#" onclick="return switchToInvoices()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Invoices
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-invoices">${data.other_count || '-'}</span>
+            </a>
+            <button onclick="switchToOpenOrders()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Open Orders
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-open">${data.open_count || '-'}</span>
+            </button>
+            <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm">
+                Riders
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">${data.open_count || '-'}</span>
+            </button>
+            <button onclick="switchToShopifyApprovals()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
+                Shopify Approvals
+                <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${data.shopify_approvals_count || '-'}</span>
+            </button>
+        `;
+    }
+
+    // Show riders cards section, hide status cards
+    const ridersCards = document.getElementById('ridersCards');
+    const statusCards = document.getElementById('openOrdersStatusCards');
+    if (ridersCards) ridersCards.style.display = 'block';
+    if (statusCards) statusCards.style.display = 'none';
+}
+
+/**
+ * Load rider cards from API
+ */
+async function loadRiderCards() {
+    console.log('Loading rider cards...');
+    const container = document.getElementById('ridersCardsContainer');
+    
+    try {
+        const response = await fetch('/orders/rider-counts', {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        console.log('Rider cards API response:', data);
+        
+        if (data.success) {
+            renderRiderCards(data);
+        } else {
+            console.error('Failed to load rider counts:', data.message);
+            if (container) {
+                container.innerHTML = '<div class="flex items-center justify-center py-8 text-red-500">Failed to load rider data: ' + (data.message || 'Unknown error') + '</div>';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading rider cards:', error);
+        if (container) {
+            container.innerHTML = '<div class="flex items-center justify-center py-8 text-red-500">Error loading rider cards. Please refresh the page.</div>';
+        }
+    }
+}
+
+/**
+ * Render rider cards with modern design
+ */
+function renderRiderCards(data) {
+    console.log('Rendering rider cards:', data);
+    const container = document.getElementById('ridersCardsContainer');
+    if (!container) {
+        console.log('Rider cards container not found!');
+        return;
+    }
+
+    const { riders, unassigned_count, unassigned_breakdown, total_open_count, assigned_count, riders_count } = data;
+
+    // Start with summary cards
+    let cardsHtml = '';
+
+    // Card 1: Total Open Orders
+    cardsHtml += `
+        <div class="rider-card">
+            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default min-w-[160px]">
+                <div>
+                    <div class="text-2xl font-bold text-blue-600">${total_open_count}</div>
+                    <div class="text-sm font-medium text-gray-700">Total Open</div>
+                </div>
+                <div class="text-2xl">📦</div>
+            </div>
+        </div>
+    `;
+
+    // Card 2: Assigned Orders
+    cardsHtml += `
+        <div class="rider-card">
+            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-green-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default min-w-[160px]">
+                <div>
+                    <div class="text-2xl font-bold text-green-600">${assigned_count}</div>
+                    <div class="text-sm font-medium text-gray-700">Assigned</div>
+                    <div class="text-xs text-gray-500 mt-1">${riders_count} Riders</div>
+                </div>
+                <div class="text-2xl">✅</div>
+            </div>
+        </div>
+    `;
+
+    // Card 3: Unassigned Orders
+    const unassignedBreakdownText = formatStatusBreakdown(unassigned_breakdown);
+    cardsHtml += `
+        <div class="rider-card" onclick="filterByRider(null)">
+            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-amber-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[160px]">
+                <div>
+                    <div class="text-2xl font-bold text-amber-600">${unassigned_count}</div>
+                    <div class="text-sm font-medium text-gray-700">Unassigned</div>
+                    ${unassignedBreakdownText ? `<div class="text-xs text-gray-500 mt-1">${unassignedBreakdownText}</div>` : ''}
+                </div>
+                <div class="text-2xl">❓</div>
+            </div>
+        </div>
+    `;
+
+    // Add individual rider cards
+    riders.forEach(rider => {
+        const breakdownText = formatStatusBreakdown(rider.status_breakdown);
+        cardsHtml += `
+            <div class="rider-card" onclick="filterByRider(${rider.rider_id})">
+                <div class="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all duration-200 cursor-pointer min-w-[180px]">
+                    <div class="flex-1">
+                        <div class="text-2xl font-bold text-gray-800">${rider.total_count}</div>
+                        <div class="text-sm font-semibold text-gray-900">${rider.rider_name}</div>
+                        ${breakdownText ? `<div class="text-xs text-gray-500 mt-1.5 leading-relaxed">${breakdownText}</div>` : ''}
+                    </div>
+                    <div class="text-2xl ml-2">🏍️</div>
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = cardsHtml;
+}
+
+/**
+ * Format status breakdown for display in rider cards
+ */
+function formatStatusBreakdown(breakdown) {
+    if (!breakdown || Object.keys(breakdown).length === 0) {
+        return '';
+    }
+
+    const statusNames = {
+        'new': 'New',
+        'pending': 'Pending',
+        'processing': 'Processing',
+        'on_hold': 'On Hold',
+        'out_for_delivery': 'Out',
+        'delivered': 'Delivered'
+    };
+
+    const parts = [];
+    for (const [status, count] of Object.entries(breakdown)) {
+        const name = statusNames[status] || status;
+        parts.push(`${name}: ${count}`);
+    }
+
+    return parts.join(' • ');
+}
+
+/**
+ * Filter orders by rider
+ */
+function filterByRider(riderId) {
+    console.log('Filtering by rider:', riderId);
+    
+    // Get all table rows
+    const rows = document.querySelectorAll('.orders-table-container tbody tr');
+    
+    rows.forEach(row => {
+        // Get the rider cell - it contains the rider data
+        const cells = row.querySelectorAll('td');
+        let riderCell = null;
+        
+        // Find rider column by checking cell content
+        cells.forEach(cell => {
+            const cellText = cell.textContent.trim();
+            const cellHtml = cell.innerHTML;
+            // Check if this cell contains rider badge or "Unassigned"
+            if (cellHtml.includes('rider') || cellText === 'Unassigned' || cellHtml.includes('bg-blue-100') || cellHtml.includes('bg-amber-100')) {
+                // This might be the rider cell
+                const hasRiderData = cellHtml.includes('text-blue-700') || cellText === 'Unassigned';
+                if (hasRiderData) {
+                    riderCell = cell;
+                }
+            }
+        });
+
+        if (riderId === null) {
+            // Show unassigned orders - check if cell contains "Unassigned"
+            if (riderCell && riderCell.textContent.includes('Unassigned')) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
+        } else {
+            // Show orders for specific rider - check if the order has this rider assigned
+            // We'll need to match by rider name since we don't have data attributes
+            // For now, show all assigned orders (you may need to refine this based on actual data structure)
+            if (riderCell && !riderCell.textContent.includes('Unassigned')) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+            }
+        }
+    });
+}
+
+/**
+ * Helper function to hide all card sections
+ */
+function hideAllCardSections() {
+    const ridersCards = document.getElementById('ridersCards');
+    const statusCards = document.getElementById('openOrdersStatusCards');
+    if (ridersCards) ridersCards.style.display = 'none';
+    if (statusCards) statusCards.style.display = 'none';
 }
 
 </script>

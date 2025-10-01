@@ -41,6 +41,7 @@ Route::prefix('webhook/appsheet')->group(function () {
     Route::any('/test', [AppSheetController::class, 'test']); // For testing
     Route::post('/status-update', [AppSheetController::class, 'statusUpdate']);
     Route::post('/attendance-update', [AppSheetController::class, 'attendanceUpdate']);
+    Route::post('/rider-assignment', [AppSheetController::class, 'riderAssignment']);
 });
 
 Route::middleware(['auth'])->group(function () {
@@ -66,6 +67,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
+    Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');
