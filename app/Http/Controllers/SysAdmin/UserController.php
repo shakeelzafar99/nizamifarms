@@ -79,6 +79,106 @@ class UserController extends Controller
         ]);
     }
 
+    // Bulk user creation
+    public function bulkStore(Request $request)
+    {
+        $request->validate([
+            'names' => 'required|string',
+            'role_id' => 'required|exists:t_sys_role,id'
+        ]);
+
+        try {
+            $names = array_filter(array_map('trim', explode("\n", $request->names)));
+            
+            $created = [];
+            $errors = [];
+            $skipped = [];
+
+            foreach ($names as $fullname) {
+                if (empty($fullname)) continue;
+
+                // Generate email from fullname
+                $email = $this->generateEmail($fullname);
+
+                // Check if email already exists
+                $existing = UserModel::where('email', $email)->first();
+                if ($existing) {
+                    $skipped[] = [
+                        'name' => $fullname,
+                        'reason' => 'Email already exists: ' . $email
+                    ];
+                    continue;
+                }
+
+                try {
+                    $user = UserModel::create([
+                        'fullname' => $fullname,
+                        'email' => $email,
+                        'password' => Hash::make('nf123456'), // Default password
+                        'user_type' => 'role_based',
+                        'is_active' => 1,
+                        'company_id' => 1,
+                        'branch_id' => 1,
+                        'created_by' => auth()->id()
+                    ]);
+
+                    // Assign role
+                    UserRoleModel::create([
+                        'user_id' => $user->id,
+                        'role_id' => $request->role_id
+                    ]);
+
+                    $created[] = [
+                        'name' => $fullname,
+                        'email' => $email,
+                        'id' => $user->id
+                    ];
+
+                } catch (\Exception $e) {
+                    $errors[] = [
+                        'name' => $fullname,
+                        'error' => $e->getMessage()
+                    ];
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'created' => $created,
+                'errors' => $errors,
+                'skipped' => $skipped,
+                'summary' => [
+                    'total' => count($names),
+                    'created' => count($created),
+                    'skipped' => count($skipped),
+                    'errors' => count($errors)
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error processing bulk users: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Helper function to generate email from fullname
+    private function generateEmail($fullname)
+    {
+        // Convert to lowercase
+        $email = strtolower($fullname);
+        
+        // Remove special characters and replace spaces with dots
+        $email = preg_replace('/[^a-z0-9\s]/', '', $email);
+        $email = preg_replace('/\s+/', '.', trim($email));
+        
+        // Add domain
+        $email = $email . '@nizamifarms.com';
+        
+        return $email;
+    }
+
     public function store(Request $request)
     {
         $request->validate([

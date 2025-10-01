@@ -54,10 +54,15 @@
                         <h3 class="kt-card-title text-lg font-semibold">User Management</h3>
                     </div>
 
-                    <!-- Right: Add User Button -->
-                    <button onclick="openAddUserModal()" class="kt-btn kt-btn-primary">
-                        <i class="ki-filled ki-plus"></i> Add New User
-                    </button>
+                    <!-- Right: Buttons -->
+                    <div class="flex gap-2">
+                        <button onclick="openBulkImportModal()" class="kt-btn kt-btn-light">
+                            <i class="ki-filled ki-file-up"></i> Bulk Import
+                        </button>
+                        <button onclick="openAddUserModal()" class="kt-btn kt-btn-primary">
+                            <i class="ki-filled ki-plus"></i> Add New User
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -255,6 +260,80 @@
                     <button type="submit" 
                             style="padding: 10px 20px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
                         Save User
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Import Modal -->
+<div id="bulkImportModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <!-- Modal Header -->
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Bulk Import Users</h3>
+            <button onclick="closeModal('bulkImportModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 20px;">
+            <!-- Instructions -->
+            <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 16px; margin-bottom: 20px;">
+                <h4 style="font-size: 14px; font-weight: 600; color: #1e40af; margin: 0 0 8px 0;">📝 Instructions:</h4>
+                <ul style="margin: 0; padding-left: 20px; color: #1e40af; font-size: 13px; line-height: 1.6;">
+                    <li>Enter one name per line</li>
+                    <li>Email will be auto-generated: <code style="background: white; padding: 2px 4px; border-radius: 3px;">firstname.lastname@nizamifarms.com</code></li>
+                    <li>Default password will be: <code style="background: white; padding: 2px 4px; border-radius: 3px;">nf123456</code></li>
+                    <li>Users will be prompted to change password on first login</li>
+                    <li>Duplicate emails will be automatically skipped</li>
+                </ul>
+            </div>
+
+            <form id="bulkImportForm" onsubmit="handleBulkImport(event)">
+                @csrf
+                
+                <!-- Role Selection -->
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                        Select Role <span style="color: #dc2626;">*</span>
+                    </label>
+                    <select name="role_id" id="bulkRoleId" required
+                            style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; background-color: white;">
+                        <option value="">-- Select Role --</option>
+                        @foreach($roles as $role)
+                            <option value="{{ $role->id }}" {{ $role->urole_name == 'rider' ? 'selected' : '' }}>
+                                {{ $role->urole_name }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <!-- Names Textarea -->
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                        User Names <span style="color: #dc2626;">*</span>
+                        <span style="font-size: 12px; color: #6b7280; font-weight: 400;">(One name per line)</span>
+                    </label>
+                    <textarea name="names" id="bulkNames" rows="10" required placeholder="Arsalan&#10;Asim Tahir&#10;Haider&#10;Jazib&#10;Waseem"
+                              style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; font-family: monospace; resize: vertical;"></textarea>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; color: #6b7280;">
+                        Count: <span id="nameCount" style="font-weight: 600;">0</span> names
+                    </p>
+                </div>
+
+                <!-- Results Section (Hidden initially) -->
+                <div id="bulkResults" style="display: none; margin-bottom: 20px;"></div>
+
+                <!-- Buttons -->
+                <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                    <button type="button" onclick="closeModal('bulkImportModal')" 
+                            style="padding: 10px 20px; border: 1px solid #d1d5db; border-radius: 6px; color: #374151; background-color: white; cursor: pointer; font-size: 14px;">
+                        Cancel
+                    </button>
+                    <button type="submit" id="bulkImportBtn"
+                            style="padding: 10px 20px; background-color: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+                        <i class="ki-filled ki-file-up"></i> Import Users
                     </button>
                 </div>
             </form>
@@ -520,6 +599,162 @@ function openAddUserModal() {
 
 function closeModal(modalId) {
     document.getElementById(modalId).style.display = 'none';
+}
+
+// Bulk Import Functions
+function openBulkImportModal() {
+    const modal = document.getElementById('bulkImportModal');
+    const form = document.getElementById('bulkImportForm');
+    const results = document.getElementById('bulkResults');
+    
+    // Reset form and results
+    form.reset();
+    results.style.display = 'none';
+    results.innerHTML = '';
+    updateNameCount();
+    
+    modal.style.display = 'block';
+}
+
+// Update name count as user types
+document.addEventListener('DOMContentLoaded', function() {
+    const bulkNames = document.getElementById('bulkNames');
+    if (bulkNames) {
+        bulkNames.addEventListener('input', updateNameCount);
+    }
+});
+
+function updateNameCount() {
+    const textarea = document.getElementById('bulkNames');
+    const countSpan = document.getElementById('nameCount');
+    if (!textarea || !countSpan) return;
+    
+    const lines = textarea.value.split('\n').filter(line => line.trim() !== '');
+    countSpan.textContent = lines.length;
+}
+
+async function handleBulkImport(event) {
+    event.preventDefault();
+    
+    const form = document.getElementById('bulkImportForm');
+    const btn = document.getElementById('bulkImportBtn');
+    const results = document.getElementById('bulkResults');
+    
+    // Disable button and show loading
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display: inline-block; width: 16px; height: 16px; border: 2px solid white; border-top: 2px solid transparent; border-radius: 50%; animation: spin 0.6s linear infinite;"></span> Processing...';
+    
+    try {
+        const formData = new FormData(form);
+        
+        const response = await fetch('/users/bulk', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            displayBulkResults(data);
+            
+            // If all successful, reload page after 2 seconds
+            if (data.summary.errors === 0 && data.summary.skipped === 0) {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            }
+        } else {
+            alert('Error: ' + (data.message || 'Failed to import users'));
+        }
+        
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error processing bulk import');
+    } finally {
+        // Re-enable button
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ki-filled ki-file-up"></i> Import Users';
+    }
+}
+
+function displayBulkResults(data) {
+    const results = document.getElementById('bulkResults');
+    const summary = data.summary;
+    
+    let html = '<div style="border-radius: 6px; overflow: hidden;">';
+    
+    // Summary
+    html += `<div style="background-color: #f9fafb; padding: 16px; border-bottom: 2px solid #e5e7eb;">
+        <h4 style="font-size: 16px; font-weight: 600; margin: 0 0 12px 0;">Import Summary</h4>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+            <div style="text-align: center; padding: 8px; background: white; border-radius: 6px;">
+                <div style="font-size: 24px; font-weight: 700; color: #6b7280;">${summary.total}</div>
+                <div style="font-size: 12px; color: #6b7280;">Total</div>
+            </div>
+            <div style="text-align: center; padding: 8px; background: #dcfce7; border-radius: 6px;">
+                <div style="font-size: 24px; font-weight: 700; color: #166534;">${summary.created}</div>
+                <div style="font-size: 12px; color: #166534;">Created</div>
+            </div>
+            <div style="text-align: center; padding: 8px; background: #fef3c7; border-radius: 6px;">
+                <div style="font-size: 24px; font-weight: 700; color: #92400e;">${summary.skipped}</div>
+                <div style="font-size: 12px; color: #92400e;">Skipped</div>
+            </div>
+            <div style="text-align: center; padding: 8px; background: #fee2e2; border-radius: 6px;">
+                <div style="font-size: 24px; font-weight: 700; color: #dc2626;">${summary.errors}</div>
+                <div style="font-size: 12px; color: #dc2626;">Errors</div>
+            </div>
+        </div>
+    </div>`;
+    
+    // Created users
+    if (data.created && data.created.length > 0) {
+        html += `<div style="padding: 16px; background: white; border-bottom: 1px solid #e5e7eb;">
+            <h5 style="font-size: 14px; font-weight: 600; color: #166534; margin: 0 0 8px 0;">✓ Successfully Created (${data.created.length})</h5>
+            <div style="max-height: 150px; overflow-y: auto;">`;
+        data.created.forEach(user => {
+            html += `<div style="padding: 6px 8px; margin-bottom: 4px; background: #f0fdf4; border-radius: 4px; font-size: 13px;">
+                <strong>${user.name}</strong> → ${user.email}
+            </div>`;
+        });
+        html += `</div></div>`;
+    }
+    
+    // Skipped users
+    if (data.skipped && data.skipped.length > 0) {
+        html += `<div style="padding: 16px; background: #fffbeb; border-bottom: 1px solid #e5e7eb;">
+            <h5 style="font-size: 14px; font-weight: 600; color: #92400e; margin: 0 0 8px 0;">⚠ Skipped (${data.skipped.length})</h5>
+            <div style="max-height: 150px; overflow-y: auto;">`;
+        data.skipped.forEach(item => {
+            html += `<div style="padding: 6px 8px; margin-bottom: 4px; background: white; border-radius: 4px; font-size: 13px;">
+                <strong>${item.name}</strong><br>
+                <span style="color: #92400e; font-size: 12px;">${item.reason}</span>
+            </div>`;
+        });
+        html += `</div></div>`;
+    }
+    
+    // Errors
+    if (data.errors && data.errors.length > 0) {
+        html += `<div style="padding: 16px; background: #fef2f2;">
+            <h5 style="font-size: 14px; font-weight: 600; color: #dc2626; margin: 0 0 8px 0;">✕ Errors (${data.errors.length})</h5>
+            <div style="max-height: 150px; overflow-y: auto;">`;
+        data.errors.forEach(item => {
+            html += `<div style="padding: 6px 8px; margin-bottom: 4px; background: white; border-radius: 4px; font-size: 13px;">
+                <strong>${item.name}</strong><br>
+                <span style="color: #dc2626; font-size: 12px;">${item.error}</span>
+            </div>`;
+        });
+        html += `</div></div>`;
+    }
+    
+    html += '</div>';
+    
+    results.innerHTML = html;
+    results.style.display = 'block';
 }
 
 </script>
