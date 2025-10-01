@@ -87,9 +87,11 @@ Route::middleware(['auth'])->group(function () {
 
     // Attendance (admin/manager view)
     Route::get('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'index'])->name('attendance.index');
+    Route::get('/attendance/reports', function() { return view('pages.attendance.reports'); })->name('attendance.reports');
     Route::get('/attendance/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'data'])->name('attendance.data');
     Route::post('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'store'])->name('attendance.store');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
+    Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/users/all', [\App\Http\Controllers\SysAdmin\UserController::class, 'allActive'])->name('users.all');
     Route::post('/orders/{id}/convert', [OrderController::class, 'convertOrder'])->name('orders.convert');
     Route::post('/orders/{id}/ignore', [OrderController::class, 'ignoreOrder'])->name('orders.ignore');

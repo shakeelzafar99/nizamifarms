@@ -1,26 +1,40 @@
 @extends('layouts.app')
 
 @section('content')
+<script>
+  // Pass logged-in user info to JavaScript
+  window.currentUser = {
+    id: {{ auth()->id() }},
+    name: "{{ auth()->user()->fullname ?? 'User' }}"
+  };
+</script>
 <div class="max-w-7xl mx-auto p-6">
+  <!-- Header with Add Button -->
   <div class="flex justify-between items-center mb-6">
     <h1 class="text-2xl font-semibold text-gray-900">Attendance Management</h1>
     <div class="flex gap-2">
+      <a href="/attendance/reports" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-medium">
+        📊 Reports
+      </a>
+      <button onclick="toggleAddForm()" id="toggleFormBtn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+        ➕ Mark Attendance
+      </button>
       <button onclick="showShiftManager()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">
         ⏰ Manage Shifts
-      </button>
-      <button onclick="showSummary()" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition">
-        📊 View Summary
       </button>
     </div>
   </div>
 
-  <!-- Add/Mark Attendance Card -->
-  <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-6 mb-6">
-    <h2 class="text-lg font-semibold text-gray-800 mb-4">Mark Attendance</h2>
+  <!-- Mark Attendance Modal -->
+  <div id="addAttendanceForm" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full p-6" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-lg font-semibold text-gray-800">Mark Attendance</h2>
+        <button onclick="toggleAddForm()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+      </div>
     
     <!-- Employee and Date Selection -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-      <!-- User Select Dropdown -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-2">Select Employee *</label>
         <select 
@@ -32,7 +46,6 @@
         </select>
       </div>
 
-      <!-- Date -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-2">Date *</label>
         <input 
@@ -45,7 +58,7 @@
       </div>
     </div>
 
-    <!-- Quick Info Display -->
+    <!-- Employee Info -->
     <div id="userInfo" class="mb-4 p-4 bg-blue-50 border-2 border-blue-200 rounded-lg hidden">
       <div class="flex items-center gap-3">
         <span class="text-3xl">👤</span>
@@ -58,7 +71,6 @@
 
     <!-- Time Inputs -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-      <!-- Login Time -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-2">Login Time</label>
         <input 
@@ -69,7 +81,6 @@
         >
       </div>
 
-      <!-- Logout Time -->
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-2">Logout Time</label>
         <input 
@@ -81,7 +92,7 @@
       </div>
     </div>
 
-    <!-- Action Buttons - Large and Prominent -->
+    <!-- Action Buttons -->
     <div class="grid grid-cols-2 gap-3">
       <button 
         onclick="clearForm()" 
@@ -96,55 +107,144 @@
         💾 Save Attendance
       </button>
     </div>
+    </div>
   </div>
 
-  <!-- Filter & Records -->
-  <div class="bg-white border border-gray-200 rounded-lg shadow-sm">
-    <!-- Filter Bar -->
-    <div class="p-4 border-b border-gray-200 bg-gray-50 flex items-center gap-3 flex-wrap">
-      <div class="flex-1 min-w-[200px]">
-        <select id="filterUser" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
-          <option value="">All Employees</option>
-        </select>
+  <!-- Summary Cards - Compact One Row with Day/Month Toggle -->
+  <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-4">
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="text-sm font-semibold text-gray-700">Summary</h3>
+      <div class="flex bg-gray-100 rounded-lg p-1">
+        <button 
+          id="btnDaySummary" 
+          onclick="toggleSummaryPeriod('day')" 
+          class="px-3 py-1 rounded-md text-xs font-medium bg-blue-600 text-white transition"
+        >
+          Today
+        </button>
+        <button 
+          id="btnMonthSummary" 
+          onclick="toggleSummaryPeriod('month')" 
+          class="px-3 py-1 rounded-md text-xs font-medium text-gray-600 hover:text-gray-900 transition"
+        >
+          This Month
+        </button>
       </div>
-      <input 
-        id="filterDate" 
-        type="date" 
-        class="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-      >
-      <select id="filterStatus" class="border border-gray-300 rounded-lg px-3 py-2 text-sm">
-        <option value="">All Status</option>
-        <option value="present">Present</option>
-        <option value="absent">Absent</option>
-        <option value="late">Late</option>
-      </select>
-      <button 
-        onclick="loadAttendance()" 
-        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-      >
-        🔍 Filter
-      </button>
-      <button 
-        onclick="clearFilters()" 
-        class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition"
-      >
-        ✕ Clear
-      </button>
+    </div>
+    
+    <div class="grid grid-cols-4 gap-3">
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+            <span class="text-xl">✓</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-green-600" id="cardPresent">0</p>
+        <p class="text-xs text-gray-500 mt-1">Present</p>
+      </div>
+
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+            <span class="text-xl">⏰</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-blue-600" id="cardOnTime">0</p>
+        <p class="text-xs text-gray-500 mt-1">On Time</p>
+      </div>
+
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+            <span class="text-xl">⚠</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-red-600" id="cardLate">0</p>
+        <p class="text-xs text-gray-500 mt-1">Late</p>
+      </div>
+
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+            <span class="text-xl">⏱</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-purple-600" id="cardOvertime">0</p>
+        <p class="text-xs text-gray-500 mt-1">Overtime</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Attendance Table -->
+  <div class="bg-white border border-gray-200 rounded-lg shadow-sm">
+    <!-- Date Navigation & Filters -->
+    <div class="p-4 border-b border-gray-200 bg-gray-50">
+      <div class="flex flex-wrap items-center gap-3 justify-between">
+        <!-- Date Navigation -->
+        <div class="flex items-center gap-2">
+          <button onclick="navigateDate(-1)" class="px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition">
+            ← Prev
+          </button>
+          <input 
+            type="date" 
+            id="tableDate" 
+            value="<?php echo date('Y-m-d'); ?>"
+            onchange="loadAttendanceForDate()"
+            class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+          <button onclick="navigateDate(1)" class="px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition">
+            Next →
+          </button>
+          <button onclick="goToToday()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium">
+            Today
+          </button>
+        </div>
+
+        <!-- User Filter (Admin Only) -->
+        <div id="userFilterSection" class="flex items-center gap-2">
+          <label class="text-sm font-medium text-gray-700">Show:</label>
+          <select 
+            id="userFilter" 
+            class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+            onchange="loadAttendanceForDate()"
+          >
+            <option value="all">All Users</option>
+            <option value="riders">Riders Only</option>
+            <option value="staff">Staff Only</option>
+          </select>
+        </div>
+
+        <!-- Status Filter -->
+        <div class="flex items-center gap-2">
+          <label class="text-sm font-medium text-gray-700">Filter:</label>
+          <select 
+            id="statusFilter" 
+            class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+            onchange="filterTableByStatus()"
+          >
+            <option value="all">All Status</option>
+            <option value="present">Present</option>
+            <option value="late">Late</option>
+            <option value="overtime">Overtime</option>
+            <option value="absent">Absent</option>
+          </select>
+        </div>
+      </div>
     </div>
 
-    <!-- Attendance Table -->
+    <!-- Table -->
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expected</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expected Shift</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Login</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Logout</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="attBody" class="bg-white divide-y divide-gray-200">
@@ -157,54 +257,141 @@
   </div>
 </div>
 
-<!-- Shift Manager Modal -->
-<div id="shiftModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-  <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-    <div class="p-6 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white">
-      <h3 class="text-xl font-semibold text-gray-900">Manage Employee Shifts</h3>
-      <button onclick="closeShiftManager()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+<!-- Quick Add Time Modal - Modern Design -->
+<div id="quickTimeModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 backdrop-blur-sm" style="z-index: 9999;">
+  <div class="bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-2xl max-w-lg w-full p-8 transform transition-all" onclick="event.stopPropagation()">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
+          <span class="text-2xl">⏰</span>
+        </div>
+        <div>
+          <h3 class="text-xl font-bold text-gray-900" id="quickTimeModalTitle">Mark Time</h3>
+          <p class="text-sm text-gray-500">Quick attendance marking</p>
+        </div>
+      </div>
+      <button onclick="closeQuickTime()" class="w-10 h-10 rounded-full hover:bg-gray-200 transition flex items-center justify-center text-gray-400 hover:text-gray-600">
+        <span class="text-2xl leading-none">&times;</span>
+      </button>
     </div>
-    <div class="p-6">
-      <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-        <p class="text-sm text-blue-800">💡 <strong>Note:</strong> Set custom shift timings for each employee. Default is 09:00 - 17:00. Riders can have flexible timings.</p>
+    
+    <!-- Employee Info Card -->
+    <div class="bg-white rounded-xl p-4 mb-6 border border-gray-100 shadow-sm">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 bg-gradient-to-br from-green-400 to-cyan-500 rounded-full flex items-center justify-center text-white font-bold">
+          <span id="quickTimeUserInitial">?</span>
+        </div>
+        <div class="flex-1">
+          <p class="font-semibold text-gray-900" id="quickTimeUser"></p>
+          <p class="text-xs text-gray-500" id="quickTimeDate"></p>
+        </div>
       </div>
-      <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200">
-          <thead class="bg-gray-50">
-            <tr>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Shift Start</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Shift End</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
-            </tr>
-          </thead>
-          <tbody id="shiftTableBody" class="bg-white divide-y divide-gray-200">
-            <tr>
-              <td colspan="5" class="px-4 py-8 text-center text-gray-500 text-sm">Loading employees...</td>
-            </tr>
-          </tbody>
-        </table>
+    </div>
+
+    <!-- Time Inputs - Conditional Display -->
+    <div class="space-y-4 mb-6">
+      <div id="loginTimeSection" class="hidden">
+        <label class="block text-sm font-semibold text-gray-700 mb-2">🌅 Login Time</label>
+        <div class="relative">
+          <input 
+            id="quickLoginTimeInput" 
+            type="time" 
+            class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+          >
+        </div>
       </div>
+
+      <div id="logoutTimeSection" class="hidden">
+        <label class="block text-sm font-semibold text-gray-700 mb-2">🌆 Logout Time</label>
+        <div class="relative">
+          <input 
+            id="quickLogoutTimeInput" 
+            type="time" 
+            class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-lg focus:ring-2 focus:ring-green-500 focus:border-green-500 transition"
+          >
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="flex gap-3">
+      <button 
+        onclick="closeQuickTime()" 
+        class="flex-1 px-6 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition font-semibold"
+      >
+        Cancel
+      </button>
+      <button 
+        onclick="saveQuickTime()" 
+        class="flex-1 px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl hover:from-blue-700 hover:to-purple-700 transition font-semibold shadow-lg"
+      >
+        💾 Save Time
+      </button>
     </div>
   </div>
 </div>
 
-<!-- Summary Modal -->
-<div id="summaryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+<!-- Quick Edit Modal -->
+<div id="quickEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+  <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6" onclick="event.stopPropagation()">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-semibold text-gray-900">Edit Attendance</h3>
+      <button onclick="closeQuickEdit()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    
+    <div class="mb-4">
+      <p class="text-sm text-gray-600 mb-1">Employee:</p>
+      <p class="text-base font-semibold text-gray-800" id="quickEditUser"></p>
+      <p class="text-xs text-gray-500" id="quickEditDate"></p>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4 mb-6">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">Login Time</label>
+        <input 
+          id="quickLoginTime" 
+          type="time" 
+          class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+        >
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">Logout Time</label>
+        <input 
+          id="quickLogoutTime" 
+          type="time" 
+          class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+        >
+      </div>
+    </div>
+
+    <div class="flex gap-2">
+      <button 
+        onclick="closeQuickEdit()" 
+        class="flex-1 px-4 py-3 bg-gray-100 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium"
+      >
+        Cancel
+      </button>
+      <button 
+        onclick="saveQuickEdit()" 
+        class="flex-1 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+      >
+        💾 Save
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Shift Manager Modal -->
+<div id="shiftModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
   <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
     <div class="p-6 border-b border-gray-200 flex justify-between items-center">
-      <h3 class="text-xl font-semibold text-gray-900">Attendance Summary</h3>
-      <button onclick="closeSummary()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+      <h3 class="text-xl font-semibold text-gray-900">Manage Employee Shifts</h3>
+      <button onclick="closeShiftManager()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
     </div>
     <div class="p-6">
-      <div class="flex gap-4 mb-6">
-        <input id="summaryStartDate" type="date" class="border rounded-lg px-3 py-2 text-sm">
-        <input id="summaryEndDate" type="date" class="border rounded-lg px-3 py-2 text-sm" value="<?php echo date('Y-m-d'); ?>">
-        <button onclick="loadSummary()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Generate</button>
-      </div>
-      <div id="summaryContent">
-        <p class="text-gray-500 text-center py-8">Select date range and click Generate</p>
+      <div id="shiftList" class="space-y-3">
+        <!-- Populated by JS -->
       </div>
     </div>
   </div>
@@ -213,32 +400,64 @@
 <script>
 let allUsers = [];
 let selectedUserData = null;
+let currentEditUserId = null;
+let currentEditDate = null;
+let allAttendanceData = [];
+let currentSummaryPeriod = 'day'; // 'day' or 'month'
+let currentTimeModalMode = null; // 'login' or 'logout'
 
-// Load all users on page load
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  loadAllUsers();
+  loadAttendanceForDate();
+});
+
+// Toggle add form modal
+function toggleAddForm() {
+  const modal = document.getElementById('addAttendanceForm');
+  if (modal.classList.contains('hidden')) {
+    modal.classList.remove('hidden');
+    modal.onclick = function(e) {
+      if (e.target === modal) {
+        toggleAddForm();
+      }
+    };
+  } else {
+    modal.classList.add('hidden');
+    clearForm();
+  }
+}
+
+// Date navigation
+function navigateDate(days) {
+  const dateInput = document.getElementById('tableDate');
+  const currentDate = new Date(dateInput.value);
+  currentDate.setDate(currentDate.getDate() + days);
+  dateInput.value = currentDate.toISOString().split('T')[0];
+  loadAttendanceForDate();
+}
+
+function goToToday() {
+  document.getElementById('tableDate').value = new Date().toISOString().split('T')[0];
+  loadAttendanceForDate();
+}
+
+// Load all users for dropdown
 async function loadAllUsers() {
   try {
-    const res = await fetch('/users/all', { headers: { 'Accept': 'application/json' }});
+    const res = await fetch('/users/all');
     const json = await res.json();
-    if (json.success) {
-      allUsers = json.data || [];
-      populateUserDropdowns();
-    }
+    allUsers = json.data || [];
+    populateUserDropdowns();
   } catch(e) {
     console.error('Failed to load users', e);
-    alert('Failed to load users. Please refresh the page.');
   }
 }
 
 function populateUserDropdowns() {
-  // Populate main select dropdown
   const select = document.getElementById('userSelect');
   select.innerHTML = '<option value="">-- Select Employee --</option>' + 
     allUsers.map(u => `<option value="${u.id}" data-shift-start="${u.shift_start}" data-shift-end="${u.shift_end}" data-fullname="${u.fullname}" data-role="${u.role_name || 'Staff'}">${u.fullname || 'User #' + u.id} (${u.role_name || 'Staff'})</option>`).join('');
-
-  // Populate filter dropdown
-  const filterSelect = document.getElementById('filterUser');
-  filterSelect.innerHTML = '<option value="">All Employees</option>' + 
-    allUsers.map(u => `<option value="${u.id}">${u.fullname || 'User #' + u.id}</option>`).join('');
 }
 
 function selectUserFromDropdown() {
@@ -301,14 +520,6 @@ function clearForm() {
   document.getElementById('logoutTime').value = '';
 }
 
-function clearLoginTime() {
-  document.getElementById('loginTime').value = '';
-}
-
-function clearLogoutTime() {
-  document.getElementById('logoutTime').value = '';
-}
-
 async function saveAttendance() {
   if (!selectedUserData) {
     alert('Please select an employee');
@@ -340,69 +551,392 @@ async function saveAttendance() {
     const res = await fetch('/attendance', {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
       },
       body: JSON.stringify(payload)
     });
 
     const json = await res.json();
-    if (json && json.success) {
-      alert('✓ Attendance saved successfully!');
-      loadAttendance();
+    if (json.success) {
+      alert('✅ Attendance recorded successfully!');
+      clearForm();
+      toggleAddForm();
+      loadAttendanceForDate();
     } else {
-      alert(json.message || 'Failed to save attendance');
+      alert('❌ Error: ' + (json.message || 'Failed to save attendance'));
     }
   } catch(e) {
-    alert('Error: ' + e.message);
+    console.error('Error saving attendance', e);
+    alert('❌ Error saving attendance');
   }
 }
 
-async function loadAttendance() {
-  const params = new URLSearchParams();
-  const userId = document.getElementById('filterUser').value;
-  const date = document.getElementById('filterDate').value;
-  const status = document.getElementById('filterStatus').value;
+// Load attendance for the current date - Show ALL users
+async function loadAttendanceForDate() {
+  const date = document.getElementById('tableDate').value;
+  const userFilter = document.getElementById('userFilter').value;
   
-  if (userId) params.set('user_id', userId);
-  if (date) params.set('date', date);
-  if (status) params.set('status', status);
-
   try {
-    const res = await fetch('/attendance/data?' + params.toString(), { headers: { 'Accept': 'application/json' }});
-    const json = await res.json();
-    const body = document.getElementById('attBody');
+    // Fetch attendance data for the date
+    const attRes = await fetch(`/attendance/data?date=${date}`);
+    const attJson = await attRes.json();
+    const attendanceData = attJson.success ? attJson.data : [];
     
-    if (!json.data || json.data.length === 0) {
-      body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found</td></tr>';
-      return;
+    // Create a map of user_id => attendance record
+    const attendanceMap = {};
+    attendanceData.forEach(att => {
+      attendanceMap[att.user_id] = att;
+    });
+    
+    // Merge all users with their attendance (or null if no attendance)
+    allAttendanceData = allUsers.map(user => {
+      const attendance = attendanceMap[user.id];
+      return {
+        user_id: user.id,
+        fullname: user.fullname,
+        shift_start: user.shift_start || '09:00',
+        shift_end: user.shift_end || '17:00',
+        login_time: attendance ? attendance.login_time : null,
+        logout_time: attendance ? attendance.logout_time : null,
+        attendance_date: date
+      };
+    });
+    
+    // Apply user filter
+    let filteredData = allAttendanceData;
+    if (userFilter === 'riders') {
+      filteredData = allAttendanceData.filter(u => {
+        const user = allUsers.find(usr => usr.id == u.user_id);
+        return user && user.role_name && user.role_name.toLowerCase().includes('rider');
+      });
+    } else if (userFilter === 'staff') {
+      filteredData = allAttendanceData.filter(u => {
+        const user = allUsers.find(usr => usr.id == u.user_id);
+        return user && user.role_name && !user.role_name.toLowerCase().includes('rider');
+      });
     }
-
-    body.innerHTML = json.data.map(r => {
-      const hours = calculateHours(r.login_time, r.logout_time);
-      const lateBy = calculateLateBy(r.login_time, r.shift_start);
-      const overtime = calculateOvertime(r.logout_time, r.shift_end, r.login_time);
-      
-      return `
-        <tr class="hover:bg-gray-50">
-          <td class="px-4 py-3 text-sm font-medium text-gray-900">${r.fullname || '#' + r.user_id}</td>
-          <td class="px-4 py-3 text-sm text-gray-600">${r.attendance_date}</td>
-          <td class="px-4 py-3 text-sm text-gray-600">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</td>
-          <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
-          <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
-          <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
-          <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
-          <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
-        </tr>
-      `;
-    }).join('');
+    
+    renderAttendanceTable(filteredData);
+    updateSummaryCards(filteredData);
   } catch(e) {
     console.error('Error loading attendance', e);
     document.getElementById('attBody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
   }
 }
 
+function renderAttendanceTable(data) {
+  const body = document.getElementById('attBody');
+  
+  if (!data || data.length === 0) {
+    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    return;
+  }
+
+  body.innerHTML = data.map(r => {
+    const hours = calculateHours(r.login_time, r.logout_time);
+    const lateBy = calculateLateBy(r.login_time, r.shift_start);
+    const overtime = calculateOvertime(r.logout_time, r.shift_end, r.login_time);
+    
+    return `
+      <tr class="hover:bg-gray-50" data-status="${getRowStatus(r, lateBy, overtime)}">
+        <td class="px-4 py-3 text-sm font-medium text-gray-900">${r.fullname || '#' + r.user_id}</td>
+        <td class="px-4 py-3 text-sm text-gray-600">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</td>
+        <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
+        <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
+        <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
+        <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
+        <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
+        <td class="px-4 py-3 text-sm">
+          <div class="flex gap-2">
+            ${!r.logout_time ? `
+              <button 
+                onclick="quickAddLogout(${r.user_id}, '${r.fullname}')"
+                class="px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition text-xs font-medium"
+                title="Add logout time"
+              >
+                ➕
+              </button>
+            ` : ''}
+            <button 
+              onclick="openQuickEdit(${r.user_id}, '${r.fullname}', '${r.login_time || ''}', '${r.logout_time || ''}', '${r.attendance_date}')"
+              class="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
+              title="Edit attendance"
+            >
+              ✏️
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function getRowStatus(r, lateBy, overtime) {
+  if (!r.login_time) return 'absent';
+  if (overtime.hasOvertime) return 'overtime';
+  if (lateBy.isLate) return 'late';
+  return 'present';
+}
+
+function filterTableByStatus() {
+  const filter = document.getElementById('statusFilter').value;
+  const rows = document.querySelectorAll('#attBody tr[data-status]');
+  
+  rows.forEach(row => {
+    if (filter === 'all') {
+      row.style.display = '';
+    } else {
+      const status = row.getAttribute('data-status');
+      row.style.display = status === filter ? '' : 'none';
+    }
+  });
+}
+
+function updateSummaryCards(data) {
+  let present = 0, onTime = 0, late = 0, overtime = 0;
+  
+  data.forEach(r => {
+    if (r.login_time) {
+      present++;
+      const shift = r.shift_start || '09:00';
+      if (r.login_time <= shift) {
+        onTime++;
+      } else {
+        late++;
+      }
+      
+      if (r.logout_time && r.logout_time > (r.shift_end || '17:00')) {
+        overtime++;
+      }
+    }
+  });
+  
+  document.getElementById('cardPresent').textContent = present;
+  document.getElementById('cardOnTime').textContent = onTime;
+  document.getElementById('cardLate').textContent = late;
+  document.getElementById('cardOvertime').textContent = overtime;
+}
+
+// Smart quick add - handles both login and logout
+function quickAddLogout(userId, userName) {
+  const user = allAttendanceData.find(u => u.user_id == userId);
+  currentEditUserId = userId;
+  currentEditDate = document.getElementById('tableDate').value;
+  
+  // Set current time as default
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const currentTime = `${hours}:${minutes}`;
+  
+  // Determine what to show based on current attendance
+  const hasLogin = user && user.login_time;
+  const hasLogout = user && user.logout_time;
+  
+  // Set user info
+  document.getElementById('quickTimeUser').textContent = userName;
+  document.getElementById('quickTimeDate').textContent = currentEditDate;
+  document.getElementById('quickTimeUserInitial').textContent = userName.charAt(0).toUpperCase();
+  
+  // Show appropriate sections
+  const loginSection = document.getElementById('loginTimeSection');
+  const logoutSection = document.getElementById('logoutTimeSection');
+  const modalTitle = document.getElementById('quickTimeModalTitle');
+  
+  if (!hasLogin) {
+    // No login yet - ask for login time
+    currentTimeModalMode = 'login';
+    loginSection.classList.remove('hidden');
+    logoutSection.classList.add('hidden');
+    document.getElementById('quickLoginTimeInput').value = currentTime;
+    modalTitle.textContent = 'Mark Login Time';
+  } else if (!hasLogout) {
+    // Has login, no logout - ask for logout time
+    currentTimeModalMode = 'logout';
+    loginSection.classList.add('hidden');
+    logoutSection.classList.remove('hidden');
+    document.getElementById('quickLogoutTimeInput').value = currentTime;
+    modalTitle.textContent = 'Mark Logout Time';
+  } else {
+    // Both exist - should not happen (use edit button)
+    alert('Attendance already complete. Use edit button to modify.');
+    return;
+  }
+  
+  const modal = document.getElementById('quickTimeModal');
+  modal.classList.remove('hidden');
+  modal.onclick = function(e) {
+    if (e.target === modal) closeQuickTime();
+  };
+}
+
+function closeQuickTime() {
+  document.getElementById('quickTimeModal').classList.add('hidden');
+  currentEditUserId = null;
+  currentEditDate = null;
+  currentTimeModalMode = null;
+}
+
+async function saveQuickTime() {
+  let payload = {
+    user_id: currentEditUserId,
+    attendance_date: currentEditDate
+  };
+  
+  if (currentTimeModalMode === 'login') {
+    const loginTime = document.getElementById('quickLoginTimeInput').value;
+    if (!loginTime) {
+      alert('Please enter a login time');
+      return;
+    }
+    payload.login_time = loginTime;
+  } else if (currentTimeModalMode === 'logout') {
+    const logoutTime = document.getElementById('quickLogoutTimeInput').value;
+    if (!logoutTime) {
+      alert('Please enter a logout time');
+      return;
+    }
+    payload.logout_time = logoutTime;
+  }
+
+  try {
+    const res = await fetch('/attendance', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const json = await res.json();
+    if (json.success) {
+      console.log(`${currentTimeModalMode === 'login' ? 'Login' : 'Logout'} recorded by user ID: ${window.currentUser.id} (${window.currentUser.name})`);
+      closeQuickTime();
+      loadAttendanceForDate();
+    } else {
+      alert('❌ Error: ' + (json.message || 'Failed to save time'));
+    }
+  } catch(e) {
+    console.error('Error saving time', e);
+    alert('❌ Error saving time');
+  }
+}
+
+// Toggle summary period
+async function toggleSummaryPeriod(period) {
+  currentSummaryPeriod = period;
+  
+  // Update button styles
+  const dayBtn = document.getElementById('btnDaySummary');
+  const monthBtn = document.getElementById('btnMonthSummary');
+  
+  if (period === 'day') {
+    dayBtn.classList.add('bg-blue-600', 'text-white');
+    dayBtn.classList.remove('text-gray-600');
+    monthBtn.classList.remove('bg-blue-600', 'text-white');
+    monthBtn.classList.add('text-gray-600');
+    
+    // Update with current date data
+    updateSummaryCards(allAttendanceData);
+  } else {
+    monthBtn.classList.add('bg-blue-600', 'text-white');
+    monthBtn.classList.remove('text-gray-600');
+    dayBtn.classList.remove('bg-blue-600', 'text-white');
+    dayBtn.classList.add('text-gray-600');
+    
+    // Fetch month data
+    await loadMonthSummary();
+  }
+}
+
+async function loadMonthSummary() {
+  const date = new Date(document.getElementById('tableDate').value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const startDate = `${year}-${month}-01`;
+  const endDate = new Date(year, date.getMonth() + 1, 0).toISOString().split('T')[0];
+  
+  try {
+    const res = await fetch(`/attendance/summary?start=${startDate}&end=${endDate}`);
+    const json = await res.json();
+    
+    if (json.success) {
+      document.getElementById('cardPresent').textContent = json.data.on_time + json.data.late;
+      document.getElementById('cardOnTime').textContent = json.data.on_time;
+      document.getElementById('cardLate').textContent = json.data.late;
+      document.getElementById('cardOvertime').textContent = json.data.absent; // Reuse for now
+    }
+  } catch(e) {
+    console.error('Error loading month summary', e);
+  }
+}
+
+// Quick edit modal
+function openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate) {
+  currentEditUserId = userId;
+  currentEditDate = attendanceDate || document.getElementById('tableDate').value;
+  
+  document.getElementById('quickEditUser').textContent = userName;
+  document.getElementById('quickEditDate').textContent = currentEditDate;
+  document.getElementById('quickLoginTime').value = loginTime;
+  document.getElementById('quickLogoutTime').value = logoutTime;
+  
+  const modal = document.getElementById('quickEditModal');
+  modal.classList.remove('hidden');
+  modal.onclick = function(e) {
+    if (e.target === modal) closeQuickEdit();
+  };
+}
+
+function closeQuickEdit() {
+  document.getElementById('quickEditModal').classList.add('hidden');
+  currentEditUserId = null;
+  currentEditDate = null;
+}
+
+async function saveQuickEdit() {
+  const loginTime = document.getElementById('quickLoginTime').value;
+  const logoutTime = document.getElementById('quickLogoutTime').value;
+
+  if (!loginTime && !logoutTime) {
+    alert('Please enter at least one time');
+    return;
+  }
+
+  const payload = {
+    user_id: currentEditUserId,
+    attendance_date: currentEditDate,
+    login_time: loginTime || null,
+    logout_time: logoutTime || null
+  };
+
+  try {
+    const res = await fetch('/attendance', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const json = await res.json();
+    if (json.success) {
+      alert('✅ Attendance updated successfully!');
+      closeQuickEdit();
+      loadAttendanceForDate();
+    } else {
+      alert('❌ Error: ' + (json.message || 'Failed to update attendance'));
+    }
+  } catch(e) {
+    console.error('Error updating attendance', e);
+    alert('❌ Error updating attendance');
+  }
+}
+
+// Utility functions
 function calculateLateBy(loginTime, shiftStart) {
   if (!loginTime) {
     return { isLate: false, duration: '-' };
@@ -413,7 +947,6 @@ function calculateLateBy(loginTime, shiftStart) {
     return { isLate: false, duration: '-' };
   }
   
-  // Calculate difference
   const [lh, lm] = loginTime.split(':').map(Number);
   const [sh, sm] = shift.split(':').map(Number);
   const loginMinutes = lh * 60 + lm;
@@ -439,7 +972,6 @@ function calculateOvertime(logoutTime, shiftEnd, loginTime) {
     return { hasOvertime: false, duration: '-' };
   }
   
-  // Calculate difference
   const [lh, lm] = logoutTime.split(':').map(Number);
   const [eh, em] = end.split(':').map(Number);
   const logoutMinutes = lh * 60 + lm;
@@ -463,21 +995,16 @@ function calculateHours(login, logout) {
   if (!login || !logout) return '-';
   const [lh, lm] = login.split(':').map(Number);
   const [oh, om] = logout.split(':').map(Number);
-  const minutes = (oh * 60 + om) - (lh * 60 + lm);
-  if (minutes < 0) return '-';
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hours}h ${mins}m`;
+  const loginM = lh * 60 + lm;
+  const logoutM = oh * 60 + om;
+  const diff = logoutM - loginM;
+  if (diff < 0) return '-';
+  const h = Math.floor(diff / 60);
+  const m = diff % 60;
+  return `${h}h ${m}m`;
 }
 
-function clearFilters() {
-  document.getElementById('filterUser').value = '';
-  document.getElementById('filterDate').value = '';
-  document.getElementById('filterStatus').value = '';
-  loadAttendance();
-}
-
-// Shift Manager
+// Shift manager
 function showShiftManager() {
   loadShiftData();
   document.getElementById('shiftModal').classList.remove('hidden');
@@ -488,145 +1015,73 @@ function closeShiftManager() {
 }
 
 async function loadShiftData() {
-  const tbody = document.getElementById('shiftTableBody');
-  tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500 text-sm">Loading...</td></tr>';
-
   try {
-    const res = await fetch('/users/all', { headers: { 'Accept': 'application/json' }});
+    const res = await fetch('/users/all');
     const json = await res.json();
+    const users = json.data || [];
     
-    if (json.success && json.data) {
-      tbody.innerHTML = json.data.map(u => `
-        <tr>
-          <td class="px-4 py-3 text-sm font-medium text-gray-900">${u.fullname || 'User #' + u.id}</td>
-          <td class="px-4 py-3 text-sm text-gray-600">${u.role_name || 'Staff'}</td>
-          <td class="px-4 py-3 text-sm">
-            <input type="time" id="shift_start_${u.id}" value="${u.shift_start || '09:00'}" class="border border-gray-300 rounded px-2 py-1 text-sm">
-          </td>
-          <td class="px-4 py-3 text-sm">
-            <input type="time" id="shift_end_${u.id}" value="${u.shift_end || '17:00'}" class="border border-gray-300 rounded px-2 py-1 text-sm">
-          </td>
-          <td class="px-4 py-3 text-sm">
-            <button onclick="saveShift(${u.id})" class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs">Save</button>
-          </td>
-        </tr>
-      `).join('');
-    }
+    const shiftList = document.getElementById('shiftList');
+    shiftList.innerHTML = users.map(u => `
+      <div class="p-4 border border-gray-200 rounded-lg">
+        <div class="flex justify-between items-center">
+          <div>
+            <p class="font-medium text-gray-800">${u.fullname || 'User #' + u.id}</p>
+            <p class="text-sm text-gray-500">${u.role_name || 'Staff'}</p>
+          </div>
+          <div class="flex gap-2 items-center">
+            <input 
+              type="time" 
+              value="${u.shift_start || '09:00'}" 
+              class="px-2 py-1 border border-gray-300 rounded text-sm"
+              id="shift_start_${u.id}"
+            >
+            <span class="text-gray-500">to</span>
+            <input 
+              type="time" 
+              value="${u.shift_end || '17:00'}" 
+              class="px-2 py-1 border border-gray-300 rounded text-sm"
+              id="shift_end_${u.id}"
+            >
+            <button 
+              onclick="saveShift(${u.id})"
+              class="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('');
   } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+    console.error('Failed to load shift data', e);
   }
 }
 
 async function saveShift(userId) {
-  const shiftStart = document.getElementById(`shift_start_${userId}`).value;
-  const shiftEnd = document.getElementById(`shift_end_${userId}`).value;
-
-  if (!shiftStart || !shiftEnd) {
-    alert('Please enter both start and end times');
-    return;
-  }
+  const start = document.getElementById(`shift_start_${userId}`).value;
+  const end = document.getElementById(`shift_end_${userId}`).value;
 
   try {
     const res = await fetch('/riders/shift', {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
       },
-      body: JSON.stringify({ user_id: userId, shift_start: shiftStart, shift_end: shiftEnd })
+      body: JSON.stringify({ user_id: userId, shift_start: start, shift_end: end })
     });
 
     const json = await res.json();
     if (json.success) {
-      alert('✓ Shift times saved successfully');
-      loadAllUsers(); // Refresh the main dropdowns
+      alert('✅ Shift updated!');
+      loadAllUsers();
     } else {
-      alert(json.message || 'Failed to save');
+      alert('❌ Error updating shift');
     }
   } catch(e) {
-    alert('Error: ' + e.message);
+    console.error('Error saving shift', e);
+    alert('❌ Error saving shift');
   }
 }
-
-// Summary Modal
-function showSummary() {
-  const endDate = new Date();
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - 30);
-  
-  document.getElementById('summaryStartDate').value = startDate.toISOString().split('T')[0];
-  document.getElementById('summaryEndDate').value = endDate.toISOString().split('T')[0];
-  document.getElementById('summaryModal').classList.remove('hidden');
-}
-
-function closeSummary() {
-  document.getElementById('summaryModal').classList.add('hidden');
-}
-
-async function loadSummary() {
-  const start = document.getElementById('summaryStartDate').value;
-  const end = document.getElementById('summaryEndDate').value;
-  
-  if (!start || !end) {
-    alert('Please select date range');
-    return;
-  }
-
-  try {
-    const res = await fetch(`/attendance/summary?start=${start}&end=${end}`, { headers: { 'Accept': 'application/json' }});
-    const json = await res.json();
-    
-    if (json.success && json.data) {
-      const content = document.getElementById('summaryContent');
-      content.innerHTML = `
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div class="bg-green-50 border border-green-200 rounded-lg p-4">
-            <div class="text-green-700 text-sm font-medium">On Time</div>
-            <div class="text-2xl font-bold text-green-900">${json.data.on_time || 0}</div>
-          </div>
-          <div class="bg-red-50 border border-red-200 rounded-lg p-4">
-            <div class="text-red-700 text-sm font-medium">Late Arrivals</div>
-            <div class="text-2xl font-bold text-red-900">${json.data.late || 0}</div>
-          </div>
-          <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
-            <div class="text-gray-700 text-sm font-medium">Absent</div>
-            <div class="text-2xl font-bold text-gray-900">${json.data.absent || 0}</div>
-          </div>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Employee</th>
-                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Present</th>
-                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Late</th>
-                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500">Absent</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-gray-200">
-              ${(json.data.by_user || []).map(u => `
-                <tr>
-                  <td class="px-4 py-2 text-sm font-medium">${u.name}</td>
-                  <td class="px-4 py-2 text-sm">${u.present}</td>
-                  <td class="px-4 py-2 text-sm text-red-600">${u.late}</td>
-                  <td class="px-4 py-2 text-sm text-gray-600">${u.absent}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
-  } catch(e) {
-    alert('Failed to load summary');
-  }
-}
-
-// Initialize
-document.addEventListener('DOMContentLoaded', function() {
-  loadAllUsers();
-  loadAttendance();
-});
 </script>
 @endsection
