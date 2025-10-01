@@ -40,6 +40,7 @@ Route::prefix('webhook/appsheet')->group(function () {
     Route::post('/flag-update', [AppSheetController::class, 'handleFlagUpdate']);
     Route::any('/test', [AppSheetController::class, 'test']); // For testing
     Route::post('/status-update', [AppSheetController::class, 'statusUpdate']);
+    Route::post('/attendance-update', [AppSheetController::class, 'attendanceUpdate']);
 });
 
 Route::middleware(['auth'])->group(function () {

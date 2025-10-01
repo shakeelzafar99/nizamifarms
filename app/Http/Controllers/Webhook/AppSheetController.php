@@ -629,4 +629,371 @@ class AppSheetController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Webhook: Record attendance from AppSheet
+     * Expected JSON body:
+     * {
+     *   "date": "2025-09-27",              // attendance_date
+     *   "employee": "John Doe",             // fullname to match in t_sys_user
+     *   "login_time": "09:15:00",          // optional HH:MM:SS or HH:MM
+     *   "logout_time": "17:30:00",         // optional HH:MM:SS or HH:MM
+     *   "login_location": "33.7, 73.0",    // optional lat,lng
+     *   "logout_location": "33.7, 73.0",   // optional lat,lng
+     *   "device_id": "ABC123",             // optional
+     *   "meter_start": 1234,               // optional
+     *   "meter_end": 5678,                 // optional
+     *   "picture_start": "url",            // optional
+     *   "picture_end": "url",              // optional
+     *   "notes": "optional notes"          // optional
+     * }
+     * 
+     * This endpoint mirrors the CSV import logic from OperationsController
+     */
+    public function attendanceUpdate(Request $request)
+    {
+        try {
+            $payload = $request->all();
+
+            // Log the incoming request for debugging
+            Log::info('AppSheet attendance-update webhook received', [
+                'payload' => $payload,
+                'headers' => $request->headers->all()
+            ]);
+
+            // Extract fields with multiple fallback keys (case-insensitive)
+            $date = $payload['date'] 
+                ?? $payload['Date'] 
+                ?? $payload['attendance_date'] 
+                ?? $payload['Attendance Date'] 
+                ?? null;
+            
+            $employee = $payload['employee'] 
+                ?? $payload['Employee'] 
+                ?? $payload['employee_name'] 
+                ?? $payload['Employee Name'] 
+                ?? null;
+            
+            $loginTime = $payload['login_time'] 
+                ?? $payload['Login Time'] 
+                ?? $payload['login time'] 
+                ?? null;
+            
+            $logoutTime = $payload['logout_time'] 
+                ?? $payload['Logout Time'] 
+                ?? $payload['logout time'] 
+                ?? $payload['log_out_time'] 
+                ?? $payload['Log Out Time'] 
+                ?? null;
+            
+            $loginLoc = $payload['login_location'] 
+                ?? $payload['Login Location'] 
+                ?? $payload['login_lat_lng'] 
+                ?? null;
+            
+            $logoutLoc = $payload['logout_location'] 
+                ?? $payload['Logout Location'] 
+                ?? $payload['logout_lat_lng'] 
+                ?? null;
+            
+            $device = $payload['device_id'] 
+                ?? $payload['Device ID'] 
+                ?? $payload['Device Id'] 
+                ?? null;
+            
+            $meterStart = $payload['meter_start'] 
+                ?? $payload['Meter Start'] 
+                ?? null;
+            
+            $meterEnd = $payload['meter_end'] 
+                ?? $payload['Meter End'] 
+                ?? null;
+            
+            $picStart = $payload['picture_start'] 
+                ?? $payload['Picture Start'] 
+                ?? null;
+            
+            $picEnd = $payload['picture_end'] 
+                ?? $payload['Picture End'] 
+                ?? null;
+            
+            $notes = $payload['notes'] 
+                ?? $payload['Notes'] 
+                ?? null;
+
+            // Validate required fields
+            if (!$date || !$employee) {
+                Log::error('AppSheet attendance-update: missing required fields', [
+                    'date' => $date,
+                    'employee' => $employee,
+                    'payload' => $payload
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Missing required fields: date and employee'
+                ], 422);
+            }
+
+            // Clean employee name (remove suffixes like "- indrive", extra spaces, etc.)
+            $cleanName = $this->cleanEmployeeName($employee);
+
+            Log::info('AppSheet attendance-update: cleaned employee name', [
+                'original' => $employee,
+                'cleaned' => $cleanName
+            ]);
+
+            // Try multiple matching strategies to find user
+            $user = $this->findUserByName($cleanName);
+            
+            if (!$user) {
+                Log::warning('AppSheet attendance-update: employee not found', [
+                    'original_name' => $employee,
+                    'cleaned_name' => $cleanName
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Employee not found in system: {$employee} (cleaned: {$cleanName})"
+                ], 404);
+            }
+
+            Log::info('AppSheet attendance-update: user found', [
+                'user_id' => $user->id,
+                'fullname' => $user->fullname
+            ]);
+
+            // Parse lat,lng from a single cell like "33.7, 73.0"
+            [$loginLat, $loginLng] = $this->splitLatLng($loginLoc);
+            [$logoutLat, $logoutLng] = $this->splitLatLng($logoutLoc);
+
+            // Parse date properly
+            try {
+                $attendanceDate = date('Y-m-d', strtotime($date));
+            } catch (\Exception $e) {
+                Log::error('AppSheet attendance-update: invalid date format', [
+                    'date' => $date,
+                    'error' => $e->getMessage()
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => "Invalid date format: {$date}"
+                ], 422);
+            }
+
+            // Normalize time formats (handle HH:MM or HH:MM:SS)
+            $loginTime = $this->normalizeTime($loginTime);
+            $logoutTime = $this->normalizeTime($logoutTime);
+
+            // Check if record already exists
+            $existingRecord = \DB::table('t_ops_attendance')
+                ->where('user_id', $user->id)
+                ->where('attendance_date', $attendanceDate)
+                ->first();
+
+            Log::info('AppSheet attendance-update: preparing to save', [
+                'user_id' => $user->id,
+                'attendance_date' => $attendanceDate,
+                'login_time' => $loginTime,
+                'logout_time' => $logoutTime,
+                'existing' => $existingRecord ? true : false,
+                'existing_has_login' => $existingRecord ? ($existingRecord->login_time ? true : false) : false,
+                'existing_has_logout' => $existingRecord ? ($existingRecord->logout_time ? true : false) : false
+            ]);
+
+            // Build update data - only update fields that are provided (not null)
+            // This allows partial updates: login first, then logout later
+            $updateData = [];
+
+            // Handle login-related fields (only update if provided)
+            if ($loginTime !== null) {
+                $updateData['login_time'] = $loginTime;
+            }
+            if ($loginLat !== null || $loginLng !== null) {
+                $updateData['login_lat'] = $loginLat;
+                $updateData['login_lng'] = $loginLng;
+            }
+            if ($picStart !== null) {
+                $updateData['picture_start'] = $picStart;
+            }
+            if (is_numeric($meterStart)) {
+                $updateData['meter_start'] = (int)$meterStart;
+            }
+
+            // Handle logout-related fields (only update if provided)
+            if ($logoutTime !== null) {
+                $updateData['logout_time'] = $logoutTime;
+            }
+            if ($logoutLat !== null || $logoutLng !== null) {
+                $updateData['logout_lat'] = $logoutLat;
+                $updateData['logout_lng'] = $logoutLng;
+            }
+            if ($picEnd !== null) {
+                $updateData['picture_end'] = $picEnd;
+            }
+            if (is_numeric($meterEnd)) {
+                $updateData['meter_end'] = (int)$meterEnd;
+            }
+
+            // Device ID can come with either login or logout
+            if ($device !== null) {
+                $updateData['device_id'] = $device;
+            }
+
+            // Notes: append to existing if present, or set default
+            if ($existingRecord && $existingRecord->notes && $notes) {
+                // Append new notes if different
+                if (strpos($existingRecord->notes, $notes) === false) {
+                    $updateData['notes'] = $existingRecord->notes . ' | ' . $notes;
+                }
+            } elseif ($notes) {
+                $updateData['notes'] = $notes;
+            } elseif (!$existingRecord) {
+                $updateData['notes'] = 'AppSheet webhook';
+            }
+
+            // Audit fields: use employee name as "created_by" and "updated_by" in notes for tracking
+            // But use system admin (1) for the actual user_id fields
+            if (!$existingRecord) {
+                $updateData['created_at'] = now();
+                $updateData['created_by'] = 1; // System admin
+                $auditNote = " (Created by: {$user->fullname} via AppSheet)";
+            } else {
+                $auditNote = " (Updated by: {$user->fullname} via AppSheet)";
+            }
+            
+            $updateData['updated_by'] = 1; // System admin
+            $updateData['updated_at'] = now();
+
+            // Append audit note to notes field
+            if (isset($updateData['notes'])) {
+                $updateData['notes'] .= $auditNote;
+            } else {
+                $updateData['notes'] = 'AppSheet webhook' . $auditNote;
+            }
+
+            // Use updateOrInsert to avoid duplicates
+            \DB::table('t_ops_attendance')->updateOrInsert(
+                [
+                    'user_id' => $user->id,
+                    'attendance_date' => $attendanceDate
+                ],
+                $updateData
+            );
+
+            Log::info('AppSheet attendance-update: record saved', [
+                'user_id' => $user->id,
+                'fullname' => $user->fullname,
+                'attendance_date' => $attendanceDate,
+                'action' => $existing ? 'updated' : 'created'
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => $existing ? 'Attendance record updated' : 'Attendance record created',
+                'user_id' => $user->id,
+                'fullname' => $user->fullname,
+                'attendance_date' => $attendanceDate,
+                'login_time' => $loginTime,
+                'logout_time' => $logoutTime
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('AppSheet attendance-update error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'payload' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Internal server error processing attendance-update: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Helper to clean employee names - reused from OperationsController
+     * Removes common suffixes and extra spaces
+     */
+    private function cleanEmployeeName($name)
+    {
+        // Remove common suffixes
+        $name = preg_replace('/\s*-\s*(indrive|indriver|indri)/i', '', $name);
+        
+        // Remove extra spaces
+        $name = preg_replace('/\s+/', ' ', $name);
+        
+        // Trim
+        $name = trim($name);
+        
+        return $name;
+    }
+
+    /**
+     * Helper to find user by name with multiple strategies - reused from OperationsController
+     * Searches ALL users (active and inactive) - historical data may reference inactive users
+     */
+    private function findUserByName($name)
+    {
+        // Strategy 1: Exact match
+        $user = \DB::table('t_sys_user')->where('fullname', $name)->first();
+        if ($user) return $user;
+
+        // Strategy 2: Case-insensitive exact match
+        $user = \DB::table('t_sys_user')->whereRaw('LOWER(fullname) = ?', [strtolower($name)])->first();
+        if ($user) return $user;
+
+        // Strategy 3: LIKE match (starts with)
+        $user = \DB::table('t_sys_user')->where('fullname', 'like', $name.'%')->first();
+        if ($user) return $user;
+
+        // Strategy 4: Contains match
+        $user = \DB::table('t_sys_user')->where('fullname', 'like', '%'.$name.'%')->first();
+        if ($user) return $user;
+
+        return null;
+    }
+
+    /**
+     * Helper to split lat,lng from a single cell like "33.7, 73.0" - reused from OperationsController
+     */
+    private function splitLatLng($cell)
+    {
+        if (!$cell) return [null, null];
+        if (strpos($cell, ',') !== false) {
+            $parts = array_map('trim', explode(',', $cell));
+            return [
+                is_numeric($parts[0] ?? null) ? (float)$parts[0] : null,
+                is_numeric($parts[1] ?? null) ? (float)$parts[1] : null
+            ];
+        }
+        return [null, null];
+    }
+
+    /**
+     * Helper to normalize time format (handle HH:MM or HH:MM:SS)
+     */
+    private function normalizeTime($time)
+    {
+        if (!$time) return null;
+        
+        $time = trim($time);
+        
+        // If already HH:MM:SS format, return as-is
+        if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
+            return $time;
+        }
+        
+        // If HH:MM format, append :00
+        if (preg_match('/^\d{2}:\d{2}$/', $time)) {
+            return $time . ':00';
+        }
+        
+        // Try to parse and format
+        try {
+            $parsed = date('H:i:s', strtotime($time));
+            return $parsed;
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
 }

@@ -1,0 +1,222 @@
+===========================================
+APPSHEET BOT CONFIGURATION - QUICK COPY/PASTE
+===========================================
+
+BOT NAME: 
+Attendance Sync to Webapp
+
+DESCRIPTION:
+Syncs attendance data (login/logout) to Laravel webapp in real-time
+
+===========================================
+TRIGGER 1: On Login
+===========================================
+
+Event: When a row is added/updated in [Attendance Table]
+Condition: [login time] IS NOT BLANK AND [Date] = TODAY()
+
+Task: Call a webhook
+
+Webhook URL:
+https://your-domain.com/webhook/appsheet/attendance-update
+
+Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body (JSON):
+{
+   "Date": <<[Date]>>,
+   "employee": <<[employee]>>,
+   "login time": <<[login time]>>,
+   "login location": <<[login location]>>,
+   "log out time": <<[log out time]>>,
+   "logout location": <<[logout location]>>,
+   "device id": <<[device id]>>,
+   "picture start": <<[picture start]>>,
+   "meter start": <<[meter start]>>,
+   "meter end": <<[meter end]>>,
+   "picture end": <<[picture end]>>
+}
+
+===========================================
+TRIGGER 2: On Logout
+===========================================
+
+Event: When a row is added/updated in [Attendance Table]
+Condition: [log out time] IS NOT BLANK AND [Date] = TODAY()
+
+Task: Call a webhook
+
+Webhook URL:
+https://your-domain.com/webhook/appsheet/attendance-update
+
+Method: POST
+
+Headers:
+Content-Type: application/json
+
+Body (JSON):
+{
+   "Date": <<[Date]>>,
+   "employee": <<[employee]>>,
+   "login time": <<[login time]>>,
+   "login location": <<[login location]>>,
+   "log out time": <<[log out time]>>,
+   "logout location": <<[logout location]>>,
+   "device id": <<[device id]>>,
+   "picture start": <<[picture start]>>,
+   "meter start": <<[meter start]>>,
+   "meter end": <<[meter end]>>,
+   "picture end": <<[picture end]>>
+}
+
+===========================================
+ALTERNATIVE: Single Trigger (Simpler)
+===========================================
+
+If you want a single trigger instead of two:
+
+Event: When a row is added/updated in [Attendance Table]
+Condition: [Date] = TODAY()
+
+(This will trigger on both login and logout, sending the entire record each time)
+
+===========================================
+COLUMN MAPPING REFERENCE
+===========================================
+
+AppSheet Column          → Webhook Field Name
+----------------------------------------------
+Date                     → "Date"
+employee                 → "employee"
+login time               → "login time"
+login location           → "login location"
+log out time             → "log out time"
+logout location          → "logout location"
+device id                → "device id"
+picture start            → "picture start"
+meter start              → "meter start"
+meter end                → "meter end"
+picture end              → "picture end"
+
+Note: The webhook accepts all these field name formats:
+- Exact match: "login time", "Date", "employee"
+- Case variations: "Login Time", "LOGIN TIME"
+- Underscore format: "login_time", "log_out_time"
+
+===========================================
+TESTING THE BOT
+===========================================
+
+1. In AppSheet, create a test attendance record:
+   - Date: Today
+   - Employee: [Existing user from your Users table]
+   - Login time: 09:00
+
+2. Check Bot Execution Logs in AppSheet:
+   - Look for "Webhook succeeded" or error messages
+
+3. Check Laravel Logs:
+   - SSH into server
+   - Run: tail -f storage/logs/laravel.log | grep "attendance-update"
+   - Look for: "AppSheet attendance-update webhook received"
+
+4. Verify in Webapp:
+   - Go to Attendance page
+   - Select today's date
+   - Find the employee
+   - Should see login time populated
+
+5. Add logout time to the same record in AppSheet:
+   - Log out time: 17:00
+
+6. Check that the SAME database record is updated (no duplicate)
+
+===========================================
+TROUBLESHOOTING
+===========================================
+
+Problem: Bot not firing
+→ Check condition: [Date] = TODAY()
+→ Verify behavior is set to "Allow edits"
+→ Check bot is enabled/published
+
+Problem: Webhook returns 404 (Employee not found)
+→ Verify employee name exactly matches t_sys_user.fullname
+→ Try removing suffixes like "- indrive" from AppSheet
+→ Check if user exists and is active
+
+Problem: Webhook returns 422 (Missing fields)
+→ Ensure "Date" and "employee" columns are not blank
+→ Check column expressions if using virtuals
+
+Problem: Duplicate records in database
+→ Should NOT happen with updateOrInsert
+→ Check if Date + employee are the same
+→ Review logs for multiple webhook calls
+
+Problem: Login data overwritten by logout webhook
+→ Should NOT happen - only non-null fields update
+→ Check logs to see what data is being sent
+→ Verify AppSheet is sending the full record, not just changed fields
+
+===========================================
+RECOMMENDED SETUP
+===========================================
+
+Option A: Two Triggers (More Efficient)
+- Trigger 1: When login time is filled → send webhook
+- Trigger 2: When logout time is filled → send webhook
+- Pros: Only sends when needed
+- Cons: Two triggers to manage
+
+Option B: Single Trigger (Simpler)
+- Trigger: When any field changes → send webhook
+- Pros: One trigger, guaranteed sync
+- Cons: More webhook calls (but they're cheap)
+
+RECOMMENDED: Option A for production, Option B for testing
+
+===========================================
+FIELD NOTES
+===========================================
+
+REQUIRED:
+- Date: Must be valid date format
+- employee: Must match a user in t_sys_user table
+
+OPTIONAL (can be null/empty):
+- login time: HH:MM or HH:MM:SS format
+- log out time: HH:MM or HH:MM:SS format
+- login location: "lat, lng" format (e.g., "33.7, 73.0")
+- logout location: "lat, lng" format
+- device id: Any string
+- meter start: Numeric only
+- meter end: Numeric only
+- picture start: URL string
+- picture end: URL string
+
+AUTOMATIC FEATURES:
+- Employee name cleaned (removes "- indrive")
+- Time converted to HH:MM:SS if needed
+- Lat/lng parsed from comma-separated string
+- Duplicate prevention (same employee + same date)
+- Partial updates (login now, logout later)
+
+===========================================
+SUCCESS CRITERIA
+===========================================
+
+✓ First webhook (login) creates database record
+✓ Second webhook (logout) updates same record
+✓ No duplicate records per employee per day
+✓ All GPS, meter, and picture data preserved
+✓ Notes field tracks who created/updated via AppSheet
+✓ Frontend Attendance page shows correct data
+✓ Attendance Reports calculate hours correctly
+✓ Works with employee names containing "- indrive"
+
+===========================================
+
