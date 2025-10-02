@@ -47,6 +47,8 @@
     /* Custom scrollbar for better UX */
     scrollbar-width: thin;
     scrollbar-color: #cbd5e1 #f8fafc;
+    font-size: 15px;
+    line-height: 1.5;
 }
 
 .orders-table-container::-webkit-scrollbar {
@@ -69,15 +71,19 @@
     background: linear-gradient(135deg, #94a3b8, #64748b);
 }
 
+/* Zebra stripes for better readability */
+.orders-table-container tbody tr:nth-child(even) {
+    background-color: #f9fafb;
+}
+
 /* Modern table row hover effects */
 .orders-table-container tbody tr {
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .orders-table-container tbody tr:hover {
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.08);
-    transform: translateY(-1px);
+    background: #f0f9ff !important;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
     position: relative;
     z-index: 1;
 }
@@ -94,17 +100,17 @@
 
 .orders-table-container thead th {
     padding: 12px 16px;
-    font-weight: 500;
-    font-size: 12px;
-    color: #6d7175;
+    font-weight: 600;
+    font-size: 13px;
+    color: #6b7280;
     text-transform: none;
-    letter-spacing: 0;
-    border-bottom: 1px solid #e1e5e9;
-    border-right: 1px solid #f6f6f7;
+    letter-spacing: -0.01em;
+    border-bottom: 2px solid #e5e7eb;
+    border-right: 1px solid #f3f4f6;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    background: #fafbfb;
+    background: #fafbfc;
 }
 
 .orders-table-container thead th:last-child {
@@ -118,19 +124,19 @@
     width: 100%;
 }
 
-/* Enhanced table cell styling - Shopify inspired */
+/* Enhanced table cell styling - Modern design */
 .orders-table-container td {
-    padding: 13px 16px;
-    border-bottom: 1px solid #e1e5e9;
+    padding: 10px 16px;
+    border-bottom: 1px solid #e5e7eb;
     vertical-align: middle;
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 15px;
+    line-height: 1.5;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 0;
-    color: #202223;
-    border-right: 1px solid #f6f6f7;
+    color: #111827;
+    border-right: 1px solid #f3f4f6;
 }
 
 .orders-table-container td:last-child {
@@ -425,6 +431,157 @@ input:focus, select:focus, button:focus {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
+/* Three-dot action menu */
+.action-menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 0.25rem;
+    min-width: 10rem;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    z-index: 50;
+    display: none;
+}
+
+.action-menu.show {
+    display: block;
+}
+
+.action-menu-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    font-size: 14px;
+    color: #374151;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.action-menu-item:hover {
+    background-color: #f3f4f6;
+}
+
+.action-menu-item:first-child {
+    border-radius: 0.5rem 0.5rem 0 0;
+}
+
+.action-menu-item:last-child {
+    border-radius: 0 0 0.5rem 0.5rem;
+}
+
+.action-menu-item svg {
+    width: 1rem;
+    height: 1rem;
+    margin-right: 0.5rem;
+    color: #6b7280;
+}
+
+/* Floating bulk action bar */
+.bulk-action-bar {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+    color: white;
+    padding: 1rem 1.5rem;
+    border-radius: 1rem;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    z-index: 40;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bulk-action-bar.show {
+    transform: translateX(-50%) translateY(0);
+}
+
+.bulk-action-bar button {
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.bulk-action-bar button:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(-1px);
+}
+
+/* Toast notifications */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.toast {
+    min-width: 20rem;
+    background: white;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    padding: 1rem;
+    display: flex;
+    align-items: start;
+    gap: 0.75rem;
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.toast.success {
+    border-left: 4px solid #10b981;
+}
+
+.toast.error {
+    border-left: 4px solid #ef4444;
+}
+
+.toast-icon {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+.toast-content {
+    flex: 1;
+}
+
+.toast-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: #111827;
+    margin-bottom: 0.25rem;
+}
+
+.toast-message {
+    font-size: 13px;
+    color: #6b7280;
+}
+
 /* Floating Create Order button - always visible top-right */
 .floating-create-order {
     position: fixed;
@@ -489,12 +646,12 @@ input:focus, select:focus, button:focus {
 
 @endif
 
-<!-- Shopify-Inspired Layout -->
-<div class="min-h-screen bg-gray-100">
+<!-- Modern Orders Layout -->
+<div class="min-h-screen bg-gray-50">
     
-    <!-- Shopify-Inspired Header -->
-    <div class="bg-white border-b border-gray-200">
-<div class="kt-container-fixed">
+    <!-- Modern Sticky Header with Blur -->
+    <div class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 lg:px-6">
             <!-- Compact Header Section -->
             <div class="py-1">
                 <div class="flex items-center justify-between mb-1">
@@ -610,8 +767,8 @@ input:focus, select:focus, button:focus {
                         </div>
                     </div>
                 </div>
-                <!-- Shopify-Style Search and Filters -->
-                <div class="mt-1 space-y-1">
+                <!-- Modern Search and Filters -->
+                <div class="mt-3 space-y-2">
                     <!-- Main Search Bar -->
                     <div class="relative">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -622,40 +779,39 @@ input:focus, select:focus, button:focus {
                         <input type="text" 
                                id="orderSearch" 
                                placeholder="Search orders, customers, or order numbers..." 
-                               class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm">
+                               class="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-[15px] shadow-sm transition-shadow">
                     </div>
                     
-                    <!-- Filter Row -->
-                    <div class="flex flex-wrap items-center gap-3">
-                        <div class="flex items-center space-x-2">
-                            <span class="text-sm font-medium text-gray-700">Filter:</span>
-                            
-                            <select id="statusFilter" class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
+                    <!-- Filter Row with Better Spacing -->
+                    <div class="flex flex-wrap items-center gap-2 pb-2">
+                        <span class="text-[15px] font-medium text-gray-600">Filters:</span>
+                        
+                        <select id="statusFilter" class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
                                 <option value="">All status</option>
                     </select>
                             
                             <input type="date" 
                                    id="dateFilter" 
-                                   class="block text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-white">
+                               class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
                             
                             <button onclick="clearFilters()" 
-                                    class="inline-flex items-center px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded border border-gray-300" 
+                                class="inline-flex items-center px-3 py-2 text-[15px] font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg border border-gray-300 shadow-sm transition-all" 
                                     title="Clear filters">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                                 </svg>
+                            Clear
                             </button>
-                    </div>
                     </div>
                 </div>
             </div>
         </div>
             </div>
 
-    <!-- Professional Orders Table Container -->
-    <div class="kt-container-fixed pt-0 pb-1">
-        <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-            <div class="orders-table-container relative" style="height: calc(100vh - 160px); overflow: auto; border: 1px solid #e1e5e9;">
+    <!-- Modern Orders Table Container -->
+    <div class="max-w-7xl mx-auto px-4 lg:px-6 pt-4 pb-6">
+        <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+            <div class="orders-table-container relative" style="height: calc(100vh - 180px); overflow: auto;">
                 <table class="min-w-full divide-y divide-gray-200" style="width: max-content; min-width: 100%;">
                     <colgroup id="table-colgroup"></colgroup>
                     <thead class="bg-gray-50 sticky top-0 z-20">
@@ -668,26 +824,86 @@ input:focus, select:focus, button:focus {
                             </tbody>
                         </table>
 
-                <!-- Loading State -->
+                <!-- Modern Skeleton Loading State -->
                 <div id="loading-state" class="hidden">
-                    <div class="flex items-center justify-center py-12">
-                        <div class="flex items-center space-x-3">
-                            <div class="animate-spin rounded-full h-6 w-6 border-2 border-blue-600 border-t-transparent"></div>
-                            <span class="text-gray-600 font-medium">Loading orders...</span>
+                    <div class="p-4">
+                        <!-- Skeleton rows -->
+                        <div class="space-y-3 animate-pulse">
+                            <!-- Repeat 5 skeleton rows -->
+                            <div class="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                                <div class="h-4 w-4 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-32 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-40 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-28 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-20 bg-gray-200 rounded"></div>
+                                <div class="flex-1"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
                     </div>
+                            <div class="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                                <div class="h-4 w-4 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-32 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-40 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-28 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-20 bg-gray-200 rounded"></div>
+                                <div class="flex-1"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                            </div>
+                            <div class="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                                <div class="h-4 w-4 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-32 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-40 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-28 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-20 bg-gray-200 rounded"></div>
+                                <div class="flex-1"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                            </div>
+                            <div class="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                                <div class="h-4 w-4 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-32 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-40 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-28 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-20 bg-gray-200 rounded"></div>
+                                <div class="flex-1"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                            </div>
+                            <div class="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                                <div class="h-4 w-4 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-32 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-40 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-28 bg-gray-200 rounded"></div>
+                                <div class="h-4 w-20 bg-gray-200 rounded"></div>
+                                <div class="flex-1"></div>
+                                <div class="h-4 w-24 bg-gray-200 rounded"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
-                <!-- Empty State -->
+                <!-- Modern Empty State Card -->
                 <div id="no-results-state" class="hidden">
-                    <div class="flex flex-col items-center justify-center py-12 text-gray-500">
-                        <svg class="w-12 h-12 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    <div class="flex flex-col items-center justify-center py-16 px-4">
+                        <!-- Icon with background -->
+                        <div class="mb-4 p-4 bg-gray-100 rounded-full">
+                            <svg class="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                         </svg>
-                        <p class="text-lg font-medium text-gray-900 mb-2">No orders found</p>
-                        <p class="text-sm text-gray-500 mb-4">Try adjusting your search or filter criteria</p>
-                        <button onclick="clearFilters()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                            Clear Filters
+                        </div>
+                        <!-- Message -->
+                        <h3 class="text-lg font-semibold text-gray-900 mb-2">No orders found</h3>
+                        <p class="text-[15px] text-gray-500 mb-6 text-center max-w-sm">
+                            We couldn't find any orders matching your criteria. Try adjusting your filters or search terms.
+                        </p>
+                        <!-- Action button -->
+                        <button onclick="clearFilters()" class="inline-flex items-center px-5 py-2.5 bg-blue-600 text-white text-[15px] font-medium rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 shadow-sm transition-all">
+                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                            Reset Filters
                         </button>
                     </div>
                 </div>
@@ -834,8 +1050,41 @@ input:focus, select:focus, button:focus {
 
 </div>
 
+<!-- Toast Notification Container -->
+<div id="toast-container" class="toast-container"></div>
 
-
+<!-- Floating Bulk Action Bar -->
+<div id="bulk-action-bar" class="bulk-action-bar">
+    <div class="flex items-center gap-3">
+        <span id="bulk-count" class="font-semibold text-white">0 selected</span>
+        <div class="h-6 w-px bg-white/30"></div>
+        <button onclick="clearAllSelections()" class="inline-flex items-center">
+            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+            Clear All
+        </button>
+        <div class="h-6 w-px bg-white/30"></div>
+        <button onclick="bulkAssignRider()" class="inline-flex items-center">
+            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+            </svg>
+            Assign Rider
+        </button>
+        <button onclick="bulkChangeStatus()" class="inline-flex items-center">
+            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+            </svg>
+            Change Status
+        </button>
+        <button onclick="exportSelected()" class="inline-flex items-center">
+            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+            </svg>
+            Export
+        </button>
+    </div>
+</div>
 
 </div>
 
@@ -2699,7 +2948,7 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
             modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:560px;padding:16px;border:1px solid #e5e7eb;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                     <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Assign Rider</h3>
-                    <button onclick="document.getElementById('quickRiderModal').remove()" style="background:none;border:0;font-size:20px;color:#6b7280;cursor:pointer">Ã—</button>
+                    <button onclick="document.getElementById('quickRiderModal').remove()" style="background:none;border:0;font-size:24px;color:#6b7280;cursor:pointer;line-height:1;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:background 0.15s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">&times;</button>
                 </div>
                 <div style="display:flex;gap:16px;">
                     <div style="flex:1;display:flex;flex-direction:column;gap:12px;">
@@ -5343,6 +5592,9 @@ function renderOrdersWithFilters(data) {
     
     if (data.length === 0) {
         showEmptyState();
+        // Also clear the table body to ensure nothing shows
+        const tbody = document.getElementById('table-body');
+        if (tbody) tbody.innerHTML = '';
     } else {
         hideEmptyState();
         renderOrdersTable(); // Re-render the table
@@ -7378,5 +7630,117 @@ function hideAllCardSections() {
         </div>
     </div>
 </div>
+
+<script>
+// ============= Phase 3: Toast Notifications =============
+function showToast(title, message, type = 'success') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    
+    const icon = type === 'success' 
+        ? '<svg class="toast-icon text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>'
+        : '<svg class="toast-icon text-red-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>';
+    
+    toast.innerHTML = `
+        ${icon}
+        <div class="toast-content">
+            <div class="toast-title">${title}</div>
+            <div class="toast-message">${message}</div>
+        </div>
+    `;
+    
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
+
+// ============= Phase 3: Bulk Action Bar =============
+function updateBulkActionBar() {
+    const checkboxes = document.querySelectorAll('.order-checkbox:checked');
+    const bar = document.getElementById('bulk-action-bar');
+    const count = document.getElementById('bulk-count');
+    
+    if (checkboxes.length > 0) {
+        count.textContent = `${checkboxes.length} selected`;
+        bar.classList.add('show');
+    } else {
+        bar.classList.remove('show');
+    }
+}
+
+// Override the existing toggleOrderSelection to also update bulk bar
+const originalToggleOrderSelection = window.toggleOrderSelection;
+window.toggleOrderSelection = function(orderId) {
+    if (originalToggleOrderSelection) {
+        originalToggleOrderSelection(orderId);
+    }
+    updateBulkActionBar();
+};
+
+// Override toggleAllOrdersSelection to also update bulk bar
+const originalToggleAllOrdersSelection = window.toggleAllOrdersSelection;
+window.toggleAllOrdersSelection = function() {
+    if (originalToggleAllOrdersSelection) {
+        originalToggleAllOrdersSelection();
+    }
+    updateBulkActionBar();
+};
+
+// Bulk action functions
+function bulkAssignRider() {
+    const checkboxes = document.querySelectorAll('.order-checkbox:checked');
+    if (checkboxes.length === 0) {
+        showToast('No Orders Selected', 'Please select orders to assign rider', 'error');
+        return;
+    }
+    openBulkRiderModal();
+}
+
+function bulkChangeStatus() {
+    const checkboxes = document.querySelectorAll('.order-checkbox:checked');
+    if (checkboxes.length === 0) {
+        showToast('No Orders Selected', 'Please select orders to change status', 'error');
+        return;
+    }
+    openBulkStatusModal();
+}
+
+function exportSelected() {
+    const checkboxes = document.querySelectorAll('.order-checkbox:checked');
+    if (checkboxes.length === 0) {
+        showToast('No Orders Selected', 'Please select orders to export', 'error');
+        return;
+    }
+    showToast('Export Started', `Exporting ${checkboxes.length} orders...`, 'success');
+    // Actual export logic would go here
+}
+
+// Clear all selections
+function clearAllSelections() {
+    const checkboxes = document.querySelectorAll('.order-checkbox:checked');
+    checkboxes.forEach(checkbox => checkbox.checked = false);
+    
+    const selectAll = document.getElementById('selectAllOrders');
+    if (selectAll) selectAll.checked = false;
+    
+    // Clear the selected IDs array
+    if (window.selectedOrderIds) {
+        window.selectedOrderIds = [];
+    }
+    
+    updateBulkActionBar();
+    showToast('Selection Cleared', 'All orders have been deselected', 'success');
+}
+
+// Initialize bulk bar on page load
+document.addEventListener('DOMContentLoaded', function() {
+    updateBulkActionBar();
+});
+</script>
 
 @endpush
