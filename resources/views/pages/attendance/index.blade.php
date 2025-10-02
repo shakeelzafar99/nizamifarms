@@ -427,8 +427,8 @@ let currentSummaryPeriod = 'day'; // 'day' or 'month'
 let currentTimeModalMode = null; // 'login' or 'logout'
 
 // Initialize on page load
-document.addEventListener('DOMContentLoaded', function() {
-  loadAllUsers();
+document.addEventListener('DOMContentLoaded', async function() {
+  await loadAllUsers();
   loadAttendanceForDate();
 });
 

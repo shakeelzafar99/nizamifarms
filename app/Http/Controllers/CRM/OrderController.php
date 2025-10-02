@@ -1268,24 +1268,38 @@ class OrderController extends Controller
             }
             
             Log::debug('Open Quantities Excluded Statuses:', ['excluded' => $excludedStatuses]);
+            Log::debug('Open Quantities Join Strategy:', [
+                'note' => 'Trying multiple join paths for line_item -> product',
+                'paths' => [
+                    '1' => 'li.variant_id -> pv.shopify_variant_id -> pv.product_id -> p.id',
+                    '2' => 'li.product_id -> pv.shopify_variant_id -> pv.product_id -> p.id',
+                    '3' => 'li.product_id -> p.id (direct)',
+                    '4' => 'li.name -> p.title (name match fallback)'
+                ]
+            ]);
 
             // Build base query for open orders with line items
-            // Smart join: match by product_id if available, otherwise try to match by name
+            // Multiple join paths to match products:
+            // Path 1: li.variant_id -> pv.shopify_variant_id -> p.id
+            // Path 2: li.product_id -> pv.shopify_variant_id -> p.id  
+            // Path 3: li.product_id -> p.id (direct)
+            // Path 4: li.name -> p.title (name match)
             $query = \DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
+                    // Try multiple variant matching strategies
+                    $join->where(function($q) {
+                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')  // Path 1: variant_id field
+                          ->orWhereColumn('li.variant_id', 'pv.id')
+                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id') // Path 2: product_id as variant
+                          ->orWhereColumn('li.product_id', 'pv.id');
+                    });
+                })
                 ->leftJoin('t_crm_prod_product as p', function($join) {
-                    $join->on(\DB::raw('1'), '=', \DB::raw('1'))
-                         ->where(function($q) {
-                             $q->where(function($subQ) {
-                                 // Match by product_id if it exists
-                                 $subQ->whereColumn('li.product_id', 'p.id')
-                                      ->whereNotNull('li.product_id');
-                             })->orWhere(function($subQ) {
-                                 // Otherwise match by exact name (case-insensitive)
-                                 $subQ->whereNull('li.product_id')
-                                      ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
-                             });
-                         });
+                    $join->where(function($q) {
+                        $q->whereColumn('pv.product_id', 'p.id')  // Via variant table
+                          ->orWhereColumn('li.product_id', 'p.id'); // Direct match
+                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))'); // Name fallback
                 })
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')
@@ -1364,15 +1378,31 @@ class OrderController extends Controller
 
             // Execute query with debug logging
             $sql = $query->toSql();
-            Log::debug('Open Quantities SQL:', ['sql' => $sql, 'bindings' => $query->getBindings()]);
+            Log::debug('Open Quantities SQL:', [
+                'sql' => $sql, 
+                'bindings' => $query->getBindings(),
+                'current_level' => $level,
+                'current_field' => $currentField
+            ]);
             
             $results = $query
                 ->orderByDesc('total_quantity')
                 ->get();
             
+            // Get sample line item data to understand the join
+            $sampleLineItems = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->select('li.product_id', 'li.variant_id', 'li.name', 'o.order_number')
+                ->whereIn('o.order_number', ['15890', '15888', '15872'])
+                ->limit(5)
+                ->get();
+            
             Log::debug('Open Quantities Results:', [
                 'count' => $results->count(),
-                'sample' => $results->take(3)->toArray()
+                'sample_results' => $results->take(5)->toArray(),
+                'sample_line_items' => $sampleLineItems->toArray(),
+                'all_group_names' => $results->pluck('group_name')->unique()->toArray(),
+                'note' => 'Multiple join paths attempted'
             ]);
 
             // Calculate totals for summary

@@ -557,30 +557,30 @@
 
 @section('content')
 <div class="open-qty-container">
-    <!-- Sticky Header -->
+    <!-- Compact Header -->
     <div class="open-qty-header">
-        <div class="max-w-7xl mx-auto px-4 lg:px-6 py-4">
+        <div class="max-w-7xl mx-auto px-4 lg:px-6 py-2.5">
             <div class="flex items-center justify-between">
                 <div>
-                    <h1 class="text-2xl font-bold text-gray-900">Open Order Quantities</h1>
-                    <p class="text-sm text-gray-500 mt-1">Hierarchical breakdown of quantities in open orders</p>
+                    <h1 class="text-lg font-bold text-gray-900">Open Order Quantities</h1>
+                    <p class="text-xs text-gray-500">Hierarchical breakdown of quantities in open orders</p>
                 </div>
                 <div class="flex items-center gap-2">
-                    <button onclick="openStatusSettings()" class="action-btn secondary" title="Configure which order statuses to include">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <button onclick="openStatusSettings()" class="action-btn secondary" title="Configure which order statuses to include" style="padding: 6px 10px; font-size: 13px;">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path>
                         </svg>
                         Settings
-                        <span id="status-filter-indicator" class="ml-1 px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" style="display: none;"></span>
+                        <span id="status-filter-indicator" class="ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" style="display: none;"></span>
                     </button>
-                    <button onclick="refreshData()" class="action-btn secondary">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <button onclick="refreshData()" class="action-btn secondary" style="padding: 6px 10px; font-size: 13px;">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                         </svg>
                         Refresh
                     </button>
-                    <button onclick="exportData()" class="action-btn primary">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <button onclick="exportData()" class="action-btn primary" style="padding: 6px 10px; font-size: 13px;">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                         </svg>
                         Export
@@ -591,46 +591,44 @@
     </div>
 
     <!-- Main Content -->
-    <div class="max-w-7xl mx-auto px-4 lg:px-6 py-6">
+    <div class="max-w-7xl mx-auto px-4 lg:px-6 py-3">
         
-        <!-- Summary Cards -->
-        <div class="summary-cards" id="summary-cards">
-            <div class="summary-card">
-                <div class="icon" style="background: #dbeafe; color: #1e40af;">
-                    📦
+        <!-- Compact Combined Section: Cards + Hierarchy -->
+        <div class="flex items-center gap-4 mb-3" style="background: #f9fafb; padding: 12px; border-radius: 12px; border: 1px solid #e5e7eb;">
+            <!-- Summary Cards (Horizontal Compact) -->
+            <div class="flex gap-3 flex-shrink-0">
+                <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
+                    <div class="text-2xl">📦</div>
+                    <div>
+                        <div class="text-lg font-bold text-gray-900" id="total-orders">-</div>
+                        <div class="text-xs text-gray-500">Orders</div>
+                    </div>
                 </div>
-                <div class="value" id="total-orders">-</div>
-                <div class="label">Open Orders</div>
-            </div>
-            <div class="summary-card">
-                <div class="icon" style="background: #dcfce7; color: #166534;">
-                    📊
+                <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
+                    <div class="text-2xl">📊</div>
+                    <div>
+                        <div class="text-lg font-bold text-gray-900" id="total-quantity">-</div>
+                        <div class="text-xs text-gray-500">Quantity</div>
+                    </div>
                 </div>
-                <div class="value" id="total-quantity">-</div>
-                <div class="label">Total Quantity</div>
-            </div>
-            <div class="summary-card">
-                <div class="icon" style="background: #fef3c7; color: #92400e;">
-                    🏷️
+                <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
+                    <div class="text-2xl">🏷️</div>
+                    <div>
+                        <div class="text-lg font-bold text-gray-900" id="category-count">-</div>
+                        <div class="text-xs text-gray-500">Categories</div>
+                    </div>
                 </div>
-                <div class="value" id="category-count">-</div>
-                <div class="label">Categories</div>
             </div>
-        </div>
 
-        <!-- Hierarchy Configuration -->
-        <div class="hierarchy-config">
-            <div class="flex items-center justify-between mb-3">
-                <label class="text-sm font-semibold text-gray-700">
-                    Drill-Down Levels:
-                    <span class="text-xs font-normal text-gray-500 ml-1">(Click + to add, × to remove, ↕ to reorder)</span>
-                </label>
-                <button onclick="resetHierarchy()" class="text-sm text-blue-600 hover:text-blue-700 font-medium">
-                    🔄 Reset
+            <!-- Hierarchy Configuration (Inline) -->
+            <div class="flex-1 flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200">
+                <span class="text-xs font-semibold text-gray-600 whitespace-nowrap">Levels:</span>
+                <div class="flex-1 flex flex-wrap items-center gap-2" id="hierarchy-display">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+                <button onclick="resetHierarchy()" class="text-xs text-gray-500 hover:text-blue-600 whitespace-nowrap ml-2">
+                    🔄
                 </button>
-            </div>
-            <div class="hierarchy-pills" id="hierarchy-display" style="gap: 0.75rem;">
-                <!-- Will be populated by JavaScript -->
             </div>
         </div>
 
@@ -751,7 +749,7 @@
 <script>
 // Global state management
 window.openQtyState = {
-    hierarchy: ['product_type', 'product_name', 'orders'],
+    hierarchy: ['product_type', 'product_name', 'orders'], // Will be loaded from localStorage
     currentLevel: 0,
     breadcrumbs: [],
     filters: {},
@@ -759,6 +757,9 @@ window.openQtyState = {
     cachedData: new Map(),
     excludedStatuses: [] // Will be loaded from localStorage
 };
+
+// Default hierarchy
+window.defaultHierarchy = ['product_type', 'product_name', 'orders'];
 
 // All available order statuses
 window.allOrderStatuses = [
@@ -779,15 +780,33 @@ window.defaultExcludedStatuses = ['delivered', 'completed', 'cancelled', 'refund
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     // Load excluded statuses from localStorage
-    const saved = localStorage.getItem('openQtyExcludedStatuses');
-    if (saved) {
+    const savedStatuses = localStorage.getItem('openQtyExcludedStatuses');
+    if (savedStatuses) {
         try {
-            window.openQtyState.excludedStatuses = JSON.parse(saved);
+            window.openQtyState.excludedStatuses = JSON.parse(savedStatuses);
         } catch (e) {
             window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
         }
     } else {
         window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
+    }
+    
+    // Load hierarchy from localStorage
+    const savedHierarchy = localStorage.getItem('openQtyHierarchy');
+    if (savedHierarchy) {
+        try {
+            const parsed = JSON.parse(savedHierarchy);
+            // Validate that it's an array and contains 'orders' at the end
+            if (Array.isArray(parsed) && parsed.length >= 2 && parsed[parsed.length - 1] === 'orders') {
+                window.openQtyState.hierarchy = parsed;
+            } else {
+                window.openQtyState.hierarchy = [...window.defaultHierarchy];
+            }
+        } catch (e) {
+            window.openQtyState.hierarchy = [...window.defaultHierarchy];
+        }
+    } else {
+        window.openQtyState.hierarchy = [...window.defaultHierarchy];
     }
     
     updateStatusFilterIndicator();
@@ -1060,11 +1079,22 @@ function resetFilters() {
 }
 
 // Reset hierarchy
+// Save hierarchy to localStorage
+function saveHierarchy() {
+    try {
+        localStorage.setItem('openQtyHierarchy', JSON.stringify(window.openQtyState.hierarchy));
+        console.log('Hierarchy saved:', window.openQtyState.hierarchy);
+    } catch (e) {
+        console.error('Failed to save hierarchy:', e);
+    }
+}
+
 function resetHierarchy() {
-    window.openQtyState.hierarchy = ['product_type', 'product_name', 'orders'];
+    window.openQtyState.hierarchy = [...window.defaultHierarchy];
     window.openQtyState.currentLevel = 0;
     window.openQtyState.breadcrumbs = [];
     window.openQtyState.filters = {};
+    saveHierarchy();
     updateHierarchyDisplay();
     loadData();
 }
@@ -1178,6 +1208,7 @@ function addHierarchyLevel(field) {
         window.openQtyState.breadcrumbs = [];
         window.openQtyState.filters = {};
         
+        saveHierarchy();
         updateHierarchyDisplay();
         document.getElementById('add-level-dropdown').style.display = 'none';
         loadData();
@@ -1194,6 +1225,7 @@ function removeHierarchyLevel(index) {
         window.openQtyState.breadcrumbs = [];
         window.openQtyState.filters = {};
         
+        saveHierarchy();
         updateHierarchyDisplay();
         loadData();
     }
@@ -1211,6 +1243,7 @@ function moveHierarchyUp(index) {
         window.openQtyState.breadcrumbs = [];
         window.openQtyState.filters = {};
         
+        saveHierarchy();
         updateHierarchyDisplay();
         loadData();
     }
@@ -1228,6 +1261,7 @@ function moveHierarchyDown(index) {
         window.openQtyState.breadcrumbs = [];
         window.openQtyState.filters = {};
         
+        saveHierarchy();
         updateHierarchyDisplay();
         loadData();
     }
