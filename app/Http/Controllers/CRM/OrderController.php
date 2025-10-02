@@ -1217,4 +1217,246 @@ class OrderController extends Controller
             ->where('ur.user_id', $user->id)
             ->value('r.type');
     }
+
+    /**
+     * Open Order Quantities - Main Page
+     * Shows hierarchical breakdown of quantities in open orders
+     */
+    public function openQuantities(Request $request)
+    {
+        // Get attribute labels from JSON file
+        $labels = $this->getAttributeLabels();
+        
+        // Get available categories for filters
+        $categories = \DB::table('t_crm_prod_product')
+            ->select('product_type')
+            ->whereNotNull('product_type')
+            ->where('product_type', '!=', '')
+            ->distinct()
+            ->orderBy('product_type')
+            ->pluck('product_type');
+
+        return view('pages.orders.open-quantities', compact('labels', 'categories'));
+    }
+
+    /**
+     * Open Order Quantities - Data API
+     * Returns hierarchical quantity data based on drill-down level
+     */
+    public function openQuantitiesData(Request $request)
+    {
+        try {
+            // Decode JSON parameters
+            $hierarchy = json_decode($request->get('hierarchy', '["product_type", "product_name"]'), true);
+            if (!is_array($hierarchy)) {
+                $hierarchy = ['product_type', 'product_name'];
+            }
+            
+            $level = (int) $request->get('level', 0); // Current drill-down level
+            
+            $filters = json_decode($request->get('filters', '{}'), true);
+            if (!is_array($filters)) {
+                $filters = [];
+            }
+            
+            $dateRange = $request->get('date_range', 0); // Days to look back (0 = all time)
+
+            // Excluded order statuses (from user preferences or default to closed statuses)
+            $excludedStatuses = json_decode($request->get('excluded_statuses', '["delivered", "completed", "cancelled", "refunded"]'), true);
+            if (!is_array($excludedStatuses)) {
+                $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            }
+            
+            Log::debug('Open Quantities Excluded Statuses:', ['excluded' => $excludedStatuses]);
+
+            // Build base query for open orders with line items
+            // Smart join: match by product_id if available, otherwise try to match by name
+            $query = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product as p', function($join) {
+                    $join->on(\DB::raw('1'), '=', \DB::raw('1'))
+                         ->where(function($q) {
+                             $q->where(function($subQ) {
+                                 // Match by product_id if it exists
+                                 $subQ->whereColumn('li.product_id', 'p.id')
+                                      ->whereNotNull('li.product_id');
+                             })->orWhere(function($subQ) {
+                                 // Otherwise match by exact name (case-insensitive)
+                                 $subQ->whereNull('li.product_id')
+                                      ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                             });
+                         });
+                })
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses);
+
+            // Apply date filter if specified
+            if ($dateRange > 0) {
+                $query->where('o.order_date', '>=', Carbon::now()->subDays($dateRange));
+            }
+
+            // Apply parent filters from breadcrumb navigation
+            foreach ($filters as $field => $value) {
+                if ($field === 'product_name') {
+                    $query->where('li.name', $value);
+                } elseif ($field === 'product_type') {
+                    $query->where(function($q) use ($value) {
+                        if ($value === 'Uncategorized') {
+                            $q->whereNull('p.product_type')
+                              ->orWhere('p.product_type', '');
+                        } else {
+                            $q->where('p.product_type', $value);
+                        }
+                    });
+                } elseif (in_array($field, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+                    $query->where(function($q) use ($field, $value) {
+                        if ($value === 'Uncategorized') {
+                            $q->whereNull('p.' . $field)
+                              ->orWhere('p.' . $field, '');
+                        } else {
+                            $q->where('p.' . $field, $value);
+                        }
+                    });
+                } else {
+                    $query->where('p.' . $field, $value);
+                }
+            }
+
+            // Determine grouping field based on current level in hierarchy
+            $currentField = $hierarchy[$level] ?? 'product_name';
+            
+            // Build select and group by based on current field
+            if ($currentField === 'orders') {
+                // Final level: show individual orders
+                $query->select([
+                    'o.order_number as group_name',
+                    'o.id as order_id',
+                    'o.order_status',
+                    'o.order_date',
+                    \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
+                ])
+                ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date')
+                ->orderBy('o.order_date', 'desc');
+            } elseif ($currentField === 'product_name') {
+                $query->select([
+                    'li.name as group_name',
+                    'li.product_id',
+                    \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
+                ])
+                ->groupBy('li.name', 'li.product_id');
+            } else {
+                // Use COALESCE to handle null fields by showing as 'Uncategorized'
+                $query->select([
+                    \DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as group_name"),
+                    \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    \DB::raw('COUNT(DISTINCT CASE WHEN li.product_id IS NOT NULL THEN li.product_id END) as product_count'),
+                    \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
+                ])
+                ->groupBy(\DB::raw("COALESCE(p.{$currentField}, 'Uncategorized')"));
+            }
+
+            // Execute query with debug logging
+            $sql = $query->toSql();
+            Log::debug('Open Quantities SQL:', ['sql' => $sql, 'bindings' => $query->getBindings()]);
+            
+            $results = $query
+                ->orderByDesc('total_quantity')
+                ->get();
+            
+            Log::debug('Open Quantities Results:', [
+                'count' => $results->count(),
+                'sample' => $results->take(3)->toArray()
+            ]);
+
+            // Calculate totals for summary
+            $totalQuantity = $results->sum('total_quantity');
+            $totalOrders = \DB::table('t_crm_prod_order')
+                ->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+                })
+                ->whereNotIn('order_status', $excludedStatuses)
+                ->when($dateRange > 0, function($q) use ($dateRange) {
+                    $q->where('order_date', '>=', Carbon::now()->subDays($dateRange));
+                })
+                ->count();
+
+            // Add percentage to each result
+            $results = $results->map(function($item) use ($totalQuantity) {
+                $item->percentage = $totalQuantity > 0 ? round(($item->total_quantity / $totalQuantity) * 100, 1) : 0;
+                return $item;
+            });
+
+            // Check if we can drill down further
+            $hasNextLevel = isset($hierarchy[$level + 1]);
+
+            return response()->json([
+                'success' => true,
+                'data' => $results,
+                'summary' => [
+                    'total_quantity' => $totalQuantity,
+                    'total_orders' => $totalOrders,
+                    'category_count' => $results->count(),
+                    'current_level' => $level,
+                    'current_field' => $currentField,
+                    'has_next_level' => $hasNextLevel
+                ],
+                'hierarchy' => $hierarchy
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Open quantities data error: ' . $e->getMessage(), [
+                'line' => $e->getLine(),
+                'file' => $e->getFile(),
+                'trace' => $e->getTraceAsString(),
+                'request_params' => [
+                    'hierarchy' => $request->get('hierarchy'),
+                    'level' => $request->get('level'),
+                    'filters' => $request->get('filters'),
+                    'date_range' => $request->get('date_range')
+                ]
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch quantity data: ' . $e->getMessage(),
+                'error_details' => config('app.debug') ? $e->getTraceAsString() : null
+            ], 500);
+        }
+    }
+
+    /**
+     * Helper: Read attribute labels from JSON file
+     */
+    private function getAttributeLabels(): array
+    {
+        $path = storage_path('app/private/attribute_labels.json');
+        $defaults = [
+            '1' => 'Category Level 1',
+            '2' => 'Category Level 2',
+            '3' => 'Category Level 3'
+        ];
+        
+        if (!file_exists($path)) {
+            return $defaults;
+        }
+
+        $json = file_get_contents($path);
+        $data = json_decode($json, true) ?: [];
+        
+        // Normalize to ensure string keys
+        $normalized = [];
+        foreach ([1, 2, 3] as $key) {
+            $stringKey = (string)$key;
+            $normalized[$stringKey] = $data[$stringKey] ?? $data[$key] ?? $defaults[$stringKey];
+        }
+        
+        return $normalized;
+    }
 }
