@@ -97,6 +97,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'store'])->name('attendance.store');
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
+    Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
     Route::get('/users/all', [\App\Http\Controllers\SysAdmin\UserController::class, 'allActive'])->name('users.all');
     Route::post('/orders/{id}/convert', [OrderController::class, 'convertOrder'])->name('orders.convert');
     Route::post('/orders/{id}/ignore', [OrderController::class, 'ignoreOrder'])->name('orders.ignore');

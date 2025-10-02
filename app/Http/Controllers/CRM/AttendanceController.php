@@ -5,6 +5,7 @@ namespace App\Http\Controllers\CRM;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class AttendanceController extends Controller
 {
@@ -256,6 +257,199 @@ class AttendanceController extends Controller
         $rows = DB::table('t_ops_attendance')->where('user_id', $userId)
             ->orderByDesc('attendance_date')->limit(500)->get();
         return response()->json(['success' => true, 'data' => $rows]);
+    }
+
+    // Get employee details for last 30 days with order delivery stats
+    public function employeeDetails(Request $request)
+    {
+        try {
+            $userId = $request->input('user_id');
+            $fromDate = $request->input('from_date');
+            
+            if (!$userId || !$fromDate) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'user_id and from_date are required'
+                ], 400);
+            }
+
+            // Calculate date range (30 days before from_date)
+            $endDate = $fromDate;
+            $startDate = date('Y-m-d', strtotime($fromDate . ' -30 days'));
+
+            // Get user info
+            $user = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->select(
+                    'u.id',
+                    'u.fullname',
+                    DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
+                    DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end')
+                )
+                ->where('u.id', $userId)
+                ->first();
+
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User not found'
+                ], 404);
+            }
+
+            // Build per-day delivered orders via subquery to avoid cross-day aggregation
+            // Filter by the selected rider and the requested date range, and only current assignments
+            $deliveredPerDay = DB::table('t_ops_order_rider_history as orh')
+                ->join('t_crm_order_status_history as osh', function($join) {
+                    $join->on('osh.order_id', '=', 'orh.order_id')
+                         ->where('osh.status_code', 'delivered')
+                         ->where('osh.is_current', 1);
+                })
+                ->select(
+                    'orh.rider_user_id as rider_id',
+                    DB::raw('DATE(osh.changed_at) as delivered_date'),
+                    DB::raw('COUNT(DISTINCT osh.order_id) as orders_delivered'),
+                    DB::raw('MIN(TIME(osh.changed_at)) as first_delivery_time'),
+                    DB::raw('MAX(TIME(osh.changed_at)) as last_delivery_time')
+                )
+                ->where('orh.rider_user_id', '=', $userId)
+                ->where('orh.is_current', '=', 1)
+                ->whereBetween(DB::raw('DATE(osh.changed_at)'), [$startDate, $endDate])
+                ->groupBy('orh.rider_user_id', DB::raw('DATE(osh.changed_at)'));
+
+            // Attendance rows joined with per-day delivered orders for this user
+            $query = DB::table('t_ops_attendance as a')
+                ->leftJoinSub($deliveredPerDay, 'd', function($join) {
+                    $join->on('d.rider_id', '=', 'a.user_id')
+                         ->on('d.delivered_date', '=', 'a.attendance_date');
+                })
+                ->where('a.user_id', '=', $userId)
+                ->whereBetween('a.attendance_date', [$startDate, $endDate])
+                ->select(
+                    'a.attendance_date',
+                    'a.login_time',
+                    'a.logout_time',
+                    DB::raw('COALESCE(d.orders_delivered, 0) as total_orders_delivered'),
+                    DB::raw('COALESCE(d.first_delivery_time, NULL) as first_delivery_time'),
+                    DB::raw('COALESCE(d.last_delivery_time, NULL) as last_delivery_time')
+                )
+                ->orderByDesc('a.attendance_date');
+            
+            // Log the SQL query for debugging
+            $sql = $query->toSql();
+            $bindings = $query->getBindings();
+            
+            // Replace ? with actual values for easier debugging
+            $fullSql = $sql;
+            foreach ($bindings as $binding) {
+                $value = is_numeric($binding) ? $binding : "'{$binding}'";
+                $fullSql = preg_replace('/\?/', $value, $fullSql, 1);
+            }
+            
+            Log::info('Employee details query', [
+                'user_id' => $userId,
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'sql' => $sql,
+                'bindings' => $bindings,
+                'full_sql' => $fullSql
+            ]);
+            
+            $records = $query->get();
+            
+            // Log results for debugging
+            Log::info('Employee details results', [
+                'user_id' => $userId,
+                'record_count' => $records->count(),
+                'first_3_records' => $records->take(3)->toArray(),
+                'total_orders_sum' => $records->sum('total_orders_delivered')
+            ]);
+
+            // Calculate statistics
+            $totalDays = $records->count();
+            $presentDays = $records->where('login_time', '!=', null)->count();
+            $lateDays = 0;
+            $overtimeDays = 0;
+            $totalHours = 0;
+            $totalOrdersDelivered = 0;
+
+            foreach ($records as $record) {
+                // Calculate hours worked
+                if ($record->login_time && $record->logout_time) {
+                    $login = strtotime($record->login_time);
+                    $logout = strtotime($record->logout_time);
+                    $hours = ($logout - $login) / 3600;
+                    $totalHours += $hours;
+                    $record->hours_worked = round($hours, 1);
+                } else {
+                    $record->hours_worked = 0;
+                }
+
+                // Check if late
+                if ($record->login_time && $user->shift_start) {
+                    $shiftStart = strtotime($record->attendance_date . ' ' . $user->shift_start);
+                    $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
+                    if ($actualLogin > $shiftStart) {
+                        $lateDays++;
+                        $record->late_minutes = round(($actualLogin - $shiftStart) / 60);
+                    } else {
+                        $record->late_minutes = 0;
+                    }
+                } else {
+                    $record->late_minutes = 0;
+                }
+
+                // Check if overtime
+                if ($record->logout_time && $user->shift_end) {
+                    $shiftEnd = strtotime($record->attendance_date . ' ' . $user->shift_end);
+                    $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
+                    if ($actualLogout > $shiftEnd) {
+                        $overtimeDays++;
+                        $record->overtime_minutes = round(($actualLogout - $shiftEnd) / 60);
+                    } else {
+                        $record->overtime_minutes = 0;
+                    }
+                } else {
+                    $record->overtime_minutes = 0;
+                }
+
+                // Add order count to total
+                $totalOrdersDelivered += $record->total_orders_delivered;
+
+                // Format delivery times for display
+                $record->first_delivery_time = $record->first_delivery_time ? date('H:i', strtotime($record->first_delivery_time)) : '-';
+                $record->last_delivery_time = $record->last_delivery_time ? date('H:i', strtotime($record->last_delivery_time)) : '-';
+            }
+
+            return response()->json([
+                'success' => true,
+                'employee' => [
+                    'user_id' => $user->id,
+                    'fullname' => $user->fullname,
+                    'shift_start' => $user->shift_start,
+                    'shift_end' => $user->shift_end,
+                    'present_days' => $presentDays,
+                    'late_days' => $lateDays,
+                    'overtime_days' => $overtimeDays,
+                    'total_hours' => round($totalHours, 1),
+                    'total_orders_delivered' => $totalOrdersDelivered,
+                    'date_range' => [
+                        'start' => $startDate,
+                        'end' => $endDate
+                    ]
+                ],
+                'daily_records' => $records
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Error in employeeDetails: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error loading employee details: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
 

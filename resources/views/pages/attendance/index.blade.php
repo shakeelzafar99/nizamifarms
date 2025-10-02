@@ -416,12 +416,97 @@
   </div>
 </div>
 
+<!-- Employee Details Modal (Last 30 Days with Order Stats) -->
+<div id="employeeDetailsModal" style="display: none;" onclick="if(event.target === this) closeEmployeeDetails();">
+  <div style="background: white; border-radius: 16px; width: 95%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);" onclick="event.stopPropagation();">
+    
+    <!-- Header -->
+    <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div style="width: 40px; height: 40px; border-radius: 50%; background: #dbeafe; display: flex; align-items: center; justify-content: center; color: #2563eb; font-size: 18px; font-weight: bold;">
+            👤
+          </div>
+          <div>
+            <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;" id="detailsEmployeeName">Employee Name</h3>
+            <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;" id="detailsDateRange">Date Range</p>
+          </div>
+        </div>
+        <button type="button" onclick="closeEmployeeDetails()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+      </div>
+    </div>
+
+    <!-- Stats Bar -->
+    <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;">
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
+          <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatPresent">0</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
+          <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="detailsStatLate">0</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
+          <p style="font-size: 18px; font-weight: bold; color: #16a34a; margin: 0;" id="detailsStatOT">0</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
+          <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatHours">0h</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Orders Delivered</p>
+          <p style="font-size: 18px; font-weight: bold; color: #2563eb; margin: 0;" id="detailsStatOrders">0</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scrollable Table Container -->
+    <div style="flex: 1 1 auto; overflow-y: auto; overflow-x: auto; min-height: 0; background: white;">
+      <table style="width: 100%; border-collapse: collapse; min-width: 900px;">
+        <thead style="position: sticky; top: 0; background: #f3f4f6; z-index: 10;">
+          <tr>
+            <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Date</th>
+            <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Login</th>
+            <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Logout</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Hours</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Late By</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Overtime</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Orders</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">1st Delivery</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Last Delivery</th>
+          </tr>
+        </thead>
+        <tbody id="employeeDetailsBody" style="background: white;">
+          <tr>
+            <td colspan="9" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: white; flex-shrink: 0; display: flex; justify-content: flex-end;">
+      <button 
+        type="button"
+        onclick="closeEmployeeDetails()" 
+        style="padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"
+      >
+        Close
+      </button>
+    </div>
+
+  </div>
+</div>
+
 <script>
 let allUsers = [];
 let showOnlyActive = true; // default
 let selectedUserData = null;
 let currentEditUserId = null;
 let currentEditDate = null;
+let employeeDetailsData = null; // Store employee details modal data
 let allAttendanceData = [];
 let currentSummaryPeriod = 'day'; // 'day' or 'month'
 let currentTimeModalMode = null; // 'login' or 'logout'
@@ -670,7 +755,15 @@ function renderAttendanceTable(data) {
     
     return `
       <tr class="hover:bg-gray-50" data-status="${getRowStatus(r, lateBy, overtime)}">
-        <td class="px-4 py-3 text-sm font-medium text-gray-900">${r.fullname || '#' + r.user_id}</td>
+        <td class="px-4 py-3 text-sm font-medium">
+          <button 
+            onclick="showEmployeeDetails(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`, '${r.attendance_date}')"
+            class="text-blue-600 hover:text-blue-800 hover:underline font-medium cursor-pointer text-left"
+            title="View last 30 days attendance with order details"
+          >
+            ${r.fullname || '#' + r.user_id}
+          </button>
+        </td>
         <td class="px-4 py-3 text-sm text-gray-600">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</td>
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
         <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
@@ -1176,5 +1269,132 @@ async function saveShift(userId) {
     alert('❌ Error saving shift');
   }
 }
+
+// Employee Details Modal Functions
+async function showEmployeeDetails(userId, fullname, fromDate) {
+  console.log('showEmployeeDetails called:', { userId, fullname, fromDate });
+  
+  const modal = document.getElementById('employeeDetailsModal');
+  const body = document.getElementById('employeeDetailsBody');
+  
+  if (!modal || !body) {
+    console.error('Modal elements not found');
+    return;
+  }
+
+  // Show modal - Force display with !important
+  modal.classList.remove('hidden');
+  modal.style.cssText = 'display: flex !important; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 10000; background-color: rgba(0, 0, 0, 0.5); align-items: center; justify-content: center; padding: 1rem;';
+  
+  // Debug: Check modal dimensions and visibility
+  const rect = modal.getBoundingClientRect();
+  const computedStyle = window.getComputedStyle(modal);
+  console.log('Modal should be visible now', { 
+    display: modal.style.display, 
+    computedDisplay: computedStyle.display,
+    visibility: computedStyle.visibility,
+    opacity: computedStyle.opacity,
+    zIndex: computedStyle.zIndex,
+    dimensions: { width: rect.width, height: rect.height, top: rect.top, left: rect.left },
+    classList: modal.classList.toString() 
+  });
+  
+  // Set loading state
+  body.innerHTML = '<tr><td colspan="9" style="padding: 20px; text-align: center; color: #6b7280;">Loading employee details...</td></tr>';
+  
+  // Set employee name
+  document.getElementById('detailsEmployeeName').textContent = fullname || 'Employee';
+  
+  try {
+    // Fetch employee details with order stats
+    const res = await fetch(`/attendance/employee-details?user_id=${userId}&from_date=${fromDate}`, {
+      headers: { 'Accept': 'application/json' }
+    });
+    
+    const json = await res.json();
+    
+    if (!json.success) {
+      body.innerHTML = `<tr><td colspan="9" style="padding: 20px; text-align: center; color: #dc2626;">Error: ${json.message || 'Failed to load data'}</td></tr>`;
+      return;
+    }
+    
+    employeeDetailsData = json;
+    const emp = json.employee;
+    const records = json.daily_records;
+    
+    // Update header
+    const dateRange = new Date(emp.date_range.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + 
+                     ' - ' + 
+                     new Date(emp.date_range.end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
+    
+    // Update stats
+    document.getElementById('detailsStatPresent').textContent = emp.present_days || 0;
+    document.getElementById('detailsStatLate').textContent = emp.late_days || 0;
+    document.getElementById('detailsStatOT').textContent = emp.overtime_days || 0;
+    document.getElementById('detailsStatHours').textContent = (emp.total_hours || 0) + 'h';
+    document.getElementById('detailsStatOrders').textContent = emp.total_orders_delivered || 0;
+    
+    // Render table
+    if (!records || records.length === 0) {
+      body.innerHTML = '<tr><td colspan="9" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
+      return;
+    }
+    
+    body.innerHTML = records.map((day, index) => {
+      const date = new Date(day.attendance_date + 'T00:00:00');
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
+      
+      const loginTime = day.login_time || '-';
+      const logoutTime = day.logout_time || '-';
+      const hours = day.hours_worked ? day.hours_worked.toFixed(1) + 'h' : '-';
+      const lateBy = day.late_minutes > 0 ? day.late_minutes + ' min' : '-';
+      const overtime = day.overtime_minutes > 0 ? day.overtime_minutes + ' min' : '-';
+      
+      const ordersDelivered = day.total_orders_delivered || 0;
+      const firstDelivery = day.first_delivery_time || '-';
+      const lastDelivery = day.last_delivery_time || '-';
+      
+      return `
+        <tr style="background: ${rowBg};">
+          <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">
+            <div style="font-weight: 600;">${dayName}</div>
+            <div style="font-size: 11px; color: #6b7280;">${formattedDate}</div>
+          </td>
+          <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${loginTime}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${logoutTime}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: #111827; text-align: center; border-bottom: 1px solid #e5e7eb;">${hours}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: ${day.late_minutes > 0 ? '#dc2626' : '#9ca3af'}; font-weight: ${day.late_minutes > 0 ? '600' : '400'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${lateBy}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: ${day.overtime_minutes > 0 ? '#16a34a' : '#9ca3af'}; font-weight: ${day.overtime_minutes > 0 ? '600' : '400'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${overtime}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: ${ordersDelivered > 0 ? '#2563eb' : '#9ca3af'}; font-weight: ${ordersDelivered > 0 ? '700' : '400'}; text-align: center; border-bottom: 1px solid #e5e7eb;">
+            ${ordersDelivered > 0 ? '📦 ' + ordersDelivered : '-'}
+          </td>
+          <td style="padding: 12px 16px; font-size: 13px; color: ${firstDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${firstDelivery}</td>
+          <td style="padding: 12px 16px; font-size: 13px; color: ${lastDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${lastDelivery}</td>
+        </tr>
+      `;
+    }).join('');
+    
+    console.log('Employee details loaded successfully');
+    
+  } catch(e) {
+    console.error('Error loading employee details:', e);
+    body.innerHTML = `<tr><td colspan="9" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+  }
+}
+
+function closeEmployeeDetails() {
+  const modal = document.getElementById('employeeDetailsModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.cssText = 'display: none !important;';
+  }
+}
+
+// Make functions globally accessible
+window.showEmployeeDetails = showEmployeeDetails;
+window.closeEmployeeDetails = closeEmployeeDetails;
 </script>
 @endsection
