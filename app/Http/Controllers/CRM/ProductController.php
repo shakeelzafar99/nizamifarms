@@ -252,13 +252,17 @@ class ProductController extends Controller
 
     public function saveAutoRules(Request $request)
     {
-        $validated = $request->validate([
-            'attribute_key' => 'required|in:1,2,3',
-            'rules' => 'required|array',
-            'rules.*.match' => 'required|string',
-            'rules.*.group' => 'required|string',
-            'rules.*.priority' => 'nullable|integer',
-        ]);
+        try {
+            $validated = $request->validate([
+                'attribute_key' => 'required|in:1,2,3',
+                'rules' => 'nullable|array', // Changed from 'required' to 'nullable' to allow empty array
+                'rules.*.match' => 'required|string',
+                'rules.*.group' => 'required|string',
+                'rules.*.priority' => 'nullable|integer',
+            ]);
+            
+            // Ensure rules is an array even if null
+            $validated['rules'] = $validated['rules'] ?? [];
         $all = $this->readAttributeAutoRules();
         $all[(string)$validated['attribute_key']] = array_values($validated['rules']);
         $this->writeAttributeAutoRules($all);
@@ -294,13 +298,141 @@ class ProductController extends Controller
             ->count();
         $uncategorizedProducts = $totalProducts - $categorizedProducts;
         
+        // Get sample of uncategorized products (top 20)
+        $uncategorizedSample = \DB::table('t_crm_prod_product')
+            ->select('id', 'title', 'product_type', 'vendor')
+            ->where(function($q) use ($column) {
+                $q->whereNull($column)
+                  ->orWhere($column, '=', '');
+            })
+            ->orderBy('id', 'desc')
+            ->limit(20)
+            ->get();
+        
         return response()->json([
             'success' => true,
             'summary' => $summary,
             'total_products' => $totalProducts,
             'categorized_products' => $categorizedProducts,
-            'uncategorized_products' => $uncategorizedProducts
+            'uncategorized_products' => $uncategorizedProducts,
+            'uncategorized_sample' => $uncategorizedSample
         ]);
+        
+        } catch (\Exception $e) {
+            \Log::error('Error in saveAutoRules: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+                'request' => $request->all()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error saving rules: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Get coverage summary without saving rules
+    public function getCoverageSummary(Request $request)
+    {
+        try {
+            // Validate input
+            $validated = $request->validate([
+                'attribute_key' => 'required|in:1,2,3'
+            ]);
+            
+            $attributeKey = (int) $validated['attribute_key'];
+            
+            \Log::info('Getting coverage summary', [
+                'attribute_key' => $attributeKey
+            ]);
+            
+            // Read existing saved rules from file
+            $allRules = $this->readAttributeAutoRules();
+            $rules = $allRules[(string)$attributeKey] ?? [];
+            
+            \Log::info('Found rules for level', [
+                'level' => $attributeKey,
+                'rule_count' => count($rules)
+            ]);
+            
+            $column = 'attribute_' . $attributeKey;
+            $summary = [];
+            
+            // Calculate matches for each rule
+            foreach ($rules as $rule) {
+                $needle = trim((string)($rule['match'] ?? ''));
+                $group = trim((string)($rule['group'] ?? ''));
+                if ($needle === '' || $group === '') continue;
+                
+                $count = \DB::table('t_crm_prod_product')
+                    ->where('title', 'LIKE', '%'.$needle.'%')
+                    ->count();
+                
+                $summary[] = [
+                    'match' => $needle,
+                    'group' => $group,
+                    'priority' => $rule['priority'] ?? 0,
+                    'matching_products' => $count
+                ];
+            }
+            
+            // Count categorized vs uncategorized
+            $totalProducts = \DB::table('t_crm_prod_product')->count();
+            $categorizedProducts = \DB::table('t_crm_prod_product')
+                ->whereNotNull($column)
+                ->where($column, '!=', '')
+                ->count();
+            $uncategorizedProducts = $totalProducts - $categorizedProducts;
+            
+            // Get sample of uncategorized products
+            $uncategorizedSample = \DB::table('t_crm_prod_product')
+                ->select('id', 'title', 'product_type', 'vendor')
+                ->where(function($q) use ($column) {
+                    $q->whereNull($column)
+                      ->orWhere($column, '=', '');
+                })
+                ->orderBy('id', 'desc')
+                ->limit(20)
+                ->get();
+            
+            \Log::info('Coverage calculated', [
+                'total' => $totalProducts,
+                'categorized' => $categorizedProducts,
+                'uncategorized' => $uncategorizedProducts
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'summary' => $summary,
+                'total_products' => $totalProducts,
+                'categorized_products' => $categorizedProducts,
+                'uncategorized_products' => $uncategorizedProducts,
+                'uncategorized_sample' => $uncategorizedSample
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \Log::error('Validation error in getCoverageSummary', [
+                'errors' => $e->errors()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid request: ' . json_encode($e->errors())
+            ], 422);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error in getCoverageSummary: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+                'request' => $request->all(),
+                'line' => $e->getLine(),
+                'file' => $e->getFile()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error loading coverage: ' . $e->getMessage() . ' (Line: ' . $e->getLine() . ')'
+            ], 500);
+        }
     }
 
     // Preview auto-rules against existing products

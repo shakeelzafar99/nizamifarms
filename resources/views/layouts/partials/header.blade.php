@@ -4,8 +4,8 @@
         <div class="kt-container-fixed flex justify-between items-stretch lg:gap-4" id="headerContainer">
             <!-- Mobile Logo -->
             <div class="flex gap-2.5 lg:hidden items-center -ms-1">
-                <a class="shrink-0" href="html/demo1.html">
-                    <img class="max-h-[25px] w-full" src="assets/media/app/mini-logo.svg" />
+                <a class="shrink-0" href="/">
+                    <span class="text-lg font-bold text-gray-900">NF</span>
                 </a>
                 <div class="flex items-center">
                     <button class="kt-btn kt-btn-icon kt-btn-ghost" data-kt-drawer-toggle="#sidebar">
@@ -34,6 +34,7 @@
                 <!--End of Megamenu Inner-->
             </div>
             <!--End of Megamenu Contaoner-->
+            @if(false) {{-- Topbar hidden - demo content with broken image links --}}
             <!-- Topbar (hidden - legacy theme icons not used) -->
             <div class="flex items-center gap-2.5 hidden">
                 <!-- Search -->
@@ -1990,6 +1991,7 @@
                 <!-- End of User -->
             </div>
             <!-- End of Topbar -->
+            @endif {{-- End topbar hidden section --}}
         </div>
         <!-- End of Container -->
     </header>

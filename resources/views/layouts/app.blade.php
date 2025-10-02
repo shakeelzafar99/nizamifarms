@@ -41,7 +41,7 @@
         </div>
     </div>
     <!--end::Page layout-->
-    @include('layouts.partials.extra')
+    {{-- @include('layouts.partials.extra') --}} {{-- Commented out: demo template with broken image links --}}
     @include('layouts.partials.scripts')
     <script src="{{ asset('assets/js/layouts/demo1.js') }}">
     </script>

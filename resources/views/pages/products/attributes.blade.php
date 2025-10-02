@@ -94,6 +94,49 @@
                         Click "Refresh Coverage" to see current categorization status
                     </div>
                 </div>
+                
+                <!-- Uncategorized Products Modal -->
+                <div id="uncategorizedModal" onclick="if(event.target === this) closeUncategorizedModal();" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; align-items: center; justify-content: center;">
+                    <div style="background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
+                        <!-- Modal Header -->
+                        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;">
+                                <span style="color: #f59e0b;">❓</span> Uncategorized Products
+                            </h3>
+                            <button onclick="closeUncategorizedModal()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer; padding: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: background 0.15s;">
+                                &times;
+                            </button>
+                        </div>
+                        
+                        <!-- Modal Content -->
+                        <div style="padding: 20px 24px; overflow-y: auto; flex: 1;">
+                            <div id="uncategorizedInfo" class="text-sm text-gray-600 mb-3"></div>
+                            <div class="overflow-x-auto">
+                                <table class="table table-bordered" style="width: 100%; border-collapse: collapse;">
+                                    <thead style="background: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+                                        <tr>
+                                            <th style="padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #6b7280;">ID</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #6b7280;">Product Name</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #6b7280;">Vendor</th>
+                                            <th style="padding: 10px 12px; text-align: left; font-size: 13px; font-weight: 600; color: #6b7280;">Type</th>
+                                            <th style="padding: 10px 12px; text-align: center; font-size: 13px; font-weight: 600; color: #6b7280;">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="uncategorizedTableBody" style="font-size: 14px;">
+                                        <!-- Rows will be inserted here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <!-- Modal Footer -->
+                        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end;">
+                            <button onclick="closeUncategorizedModal()" class="kt-btn kt-btn-light">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -307,6 +350,9 @@ async function applySavedRulesUI(){
     }
 }
 
+// Store uncategorized products data globally
+let uncategorizedProductsData = [];
+
 async function refreshCoverageSummary() {
     const level = parseInt(document.getElementById('rulesAttribute').value, 10);
     const contentDiv = document.getElementById('coverageContent');
@@ -314,23 +360,27 @@ async function refreshCoverageSummary() {
     contentDiv.innerHTML = '<div class="text-sm text-gray-500">Loading...</div>';
     
     try {
-        // Get current rules for this level
-        const rules = rulesState[level] || [];
-        
-        // Simulate the save rules call to get coverage data
-        const res = await fetch('{{ route('products.attributes.save_rules') }}', { 
+        // Call the dedicated coverage endpoint (reads saved rules from file)
+        const res = await fetch('{{ route('products.attributes.coverage') }}', { 
             method: 'POST', 
             headers: { 
                 'X-CSRF-TOKEN': '{{ csrf_token() }}', 
                 'Accept': 'application/json',
                 'Content-Type': 'application/json' 
             }, 
-            body: JSON.stringify({ attribute_key: level, rules }) 
+            body: JSON.stringify({ attribute_key: level }) 
         });
+        
+        if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+        }
         
         const data = await res.json();
         
-        if (data.success && data.summary) {
+        if (data.success && typeof data.summary !== 'undefined') {
+            // Store uncategorized products data
+            uncategorizedProductsData = data.uncategorized_sample || [];
+            
             let html = '<div class="grid grid-cols-1 gap-2">';
             
             // Rule matches
@@ -346,7 +396,14 @@ async function refreshCoverageSummary() {
             // Summary stats
             html += '<div class="border-t pt-2 mt-2">';
             html += `<div class="text-xs text-green-600">✅ Categorized: <span class="font-medium">${data.categorized_products}</span></div>`;
-            html += `<div class="text-xs text-orange-600">❓ Uncategorized: <span class="font-medium">${data.uncategorized_products}</span></div>`;
+            
+            // Make uncategorized count clickable
+            if (data.uncategorized_products > 0) {
+                html += `<div class="text-xs text-orange-600">❓ Uncategorized: <span class="font-medium cursor-pointer hover:underline" onclick="showUncategorizedModal()" style="cursor: pointer; text-decoration: none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${data.uncategorized_products}</span> <span class="text-gray-500">(click to view)</span></div>`;
+            } else {
+                html += `<div class="text-xs text-green-600">❓ Uncategorized: <span class="font-medium">0</span> <span class="text-green-500">🎉</span></div>`;
+            }
+            
             html += `<div class="text-xs text-gray-600">📦 Total: <span class="font-medium">${data.total_products}</span></div>`;
             
             if (data.total_products > 0) {
@@ -357,24 +414,117 @@ async function refreshCoverageSummary() {
             html += '</div></div>';
             contentDiv.innerHTML = html;
         } else {
-            contentDiv.innerHTML = '<div class="text-xs text-red-600">Error loading coverage data</div>';
+            // Show backend error message if available
+            const errorMsg = data.message || 'Invalid response format';
+            console.error('Coverage API error:', data);
+            contentDiv.innerHTML = `<div class="text-xs text-red-600">Error: ${errorMsg}. Check console for details.</div>`;
         }
     } catch (error) {
-        contentDiv.innerHTML = '<div class="text-xs text-red-600">Error loading coverage data</div>';
+        console.error('Coverage refresh failed:', error);
+        contentDiv.innerHTML = `<div class="text-xs text-red-600">Error loading coverage data: ${error.message}</div>`;
     }
+}
+
+function showUncategorizedModal() {
+    console.log('showUncategorizedModal called');
+    console.log('uncategorizedProductsData:', uncategorizedProductsData);
+    
+    if (!uncategorizedProductsData || uncategorizedProductsData.length === 0) {
+        console.error('No uncategorized products data available');
+        alert('No uncategorized products data available. Please refresh coverage summary first.');
+        return;
+    }
+    
+    const modal = document.getElementById('uncategorizedModal');
+    const infoDiv = document.getElementById('uncategorizedInfo');
+    const tbody = document.getElementById('uncategorizedTableBody');
+    
+    if (!modal) {
+        console.error('Modal element not found');
+        return;
+    }
+    
+    console.log('Showing modal with', uncategorizedProductsData.length, 'products');
+    
+    // Set info message
+    const totalCount = uncategorizedProductsData.length;
+    if (infoDiv) {
+        infoDiv.innerHTML = `Showing <strong>${totalCount}</strong> uncategorized product${totalCount !== 1 ? 's' : ''} ${totalCount >= 20 ? '(limited to top 20, most recent first)' : ''}`;
+    }
+    
+    // Clear existing rows
+    if (tbody) {
+        tbody.innerHTML = '';
+        
+        // Add rows
+        uncategorizedProductsData.forEach(product => {
+            const row = document.createElement('tr');
+            row.style.borderBottom = '1px solid #e5e7eb';
+            row.innerHTML = `
+                <td style="padding: 10px 12px;">#${product.id}</td>
+                <td style="padding: 10px 12px; font-weight: 500;">${escapeHtml(product.title || 'N/A')}</td>
+                <td style="padding: 10px 12px;">${escapeHtml(product.vendor || 'N/A')}</td>
+                <td style="padding: 10px 12px;">${escapeHtml(product.product_type || 'N/A')}</td>
+                <td style="padding: 10px 12px; text-align: center;">
+                    <a href="/products/${product.id}/edit" target="_blank" class="kt-btn kt-btn-light kt-btn-sm" style="font-size: 12px; padding: 4px 12px;">
+                        <i class="ki-filled ki-notepad-edit"></i> Edit
+                    </a>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    console.log('Modal displayed');
+    
+    // Add keyboard listener
+    addModalKeyboardListener();
+}
+
+// Make function globally accessible
+window.showUncategorizedModal = showUncategorizedModal;
+
+function closeUncategorizedModal() {
+    const modal = document.getElementById('uncategorizedModal');
+    modal.style.display = 'none';
+    // Remove keyboard listener
+    document.removeEventListener('keydown', uncategorizedModalKeyHandler);
+}
+
+// Keyboard handler for modal
+function uncategorizedModalKeyHandler(e) {
+    if (e.key === 'Escape') {
+        closeUncategorizedModal();
+    }
+}
+
+// Add keyboard listener when modal opens
+function addModalKeyboardListener() {
+    document.addEventListener('keydown', uncategorizedModalKeyHandler);
+}
+
+function escapeHtml(text) {
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return String(text).replace(/[&<>"']/g, function(m) { return map[m]; });
 }
 
 function loadRulesForLevel(level){
     // Reset entry rows and list; leave saved set in rulesState
-    document.getElementById('rulesContainer').innerHTML = '';
-    renderRulesList();
+    // Note: rulesContainer element removed - no longer needed
+    renderRulesTable();
 }
 function renderRulesList(){
-    const level = document.getElementById('rulesAttribute').value;
-    const list = document.getElementById('rulesList');
-    const rules = rulesState[level] || [];
-    if (!rules.length){ list.textContent = 'No rules defined.'; return; }
-    list.innerHTML = rules.map(r => `<div>• match: "${r.match}" → set: "${r.group}" (priority ${r.priority||0})</div>`).join('');
+    // This function is deprecated but kept for compatibility
+    // Rules are now shown in the draggable table only
+    renderRulesTable();
 }
 document.addEventListener('DOMContentLoaded', function() {
     renderRulesList();

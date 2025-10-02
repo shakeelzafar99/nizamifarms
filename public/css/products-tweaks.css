@@ -24,17 +24,25 @@
 .products-index .filters-bar {
     display: flex; 
     flex-wrap: wrap; 
-    gap: 8px; 
+    gap: 10px; 
     align-items: center; 
     margin: 8px 0 6px;
 }
 .products-index .filters-bar .form-control,
 .products-index .filters-bar .btn,
 .products-index .filters-bar .dropdown-toggle {
-    height: 34px;
+    height: 38px;
+    transition: all 0.15s ease;
 }
 .products-index .filters-bar .search-input { 
     flex: 1 1 420px; 
+}
+.products-index .filters-bar select:hover {
+    border-color: #9ca3af;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.products-index .filters-bar select:focus {
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 /* Table look: modern, dense, readable */
@@ -47,29 +55,37 @@
     border: 1px solid var(--line);
     border-radius: 12px;
     overflow: hidden;
+    font-size: 15px;
+    line-height: 1.5;
 }
 .products-index .table-products thead th {
     position: sticky; 
     top: 0; 
     z-index: 2;
-    background: var(--head); 
-    color: #fff;
+    background: #fafbfc; 
+    color: #6b7280;
     text-transform: uppercase; 
-    font-size: 11px; 
+    font-size: 13px; 
+    font-weight: 600;
     letter-spacing: .35px;
-    padding: 10px; 
-    border-bottom: 1px solid #223046;
+    padding: 12px 16px; 
+    border-bottom: 2px solid #e5e7eb;
 }
 .products-index .table-products tbody td { 
-    padding: 10px; 
+    padding: 10px 16px; 
     border-bottom: 1px solid var(--line); 
-    vertical-align: middle; 
+    vertical-align: middle;
+    transition: all 0.15s ease;
 }
-.products-index .table-products tbody tr:nth-child(odd) { 
-    background: var(--band); 
+.products-index .table-products tbody tr:nth-child(even) { 
+    background: #f9fafb; 
 }
 .products-index .table-products tbody tr:hover { 
-    background: #eef2f7; 
+    background: #f0f9ff !important;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+    position: relative;
+    z-index: 1;
+    transform: translateY(-1px);
 }
 
 /* Column widths + alignment */
@@ -87,15 +103,20 @@
 /* Subtext hierarchy (category, collection under product name) */
 .products-index .product-title   { 
     font-weight: 600; 
+    font-size: 14px;
     color: var(--ink); 
     white-space: nowrap; 
     overflow: hidden; 
-    text-overflow: ellipsis; 
+    text-overflow: ellipsis;
+    transition: color 0.15s ease;
+}
+.products-index .product-title:hover {
+    color: #2563eb;
 }
 .products-index .product-sub     { 
-    font-size: 11px; 
+    font-size: 12px; 
     color: var(--muted); 
-    margin-top: 2px; 
+    margin-top: 3px; 
     white-space: nowrap; 
     overflow: hidden; 
     text-overflow: ellipsis; 
@@ -103,12 +124,19 @@
 
 /* Thumbnail */
 .products-index .thumb {
-    width: 40px; 
-    height: 40px; 
-    border-radius: 8px; 
+    width: 44px; 
+    height: 44px; 
+    border-radius: 10px; 
     object-fit: cover; 
     border: 1px solid var(--line); 
     background: #fff;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.products-index .thumb:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    z-index: 10;
 }
 
 /* Pills/badges (status, variants, inventory) */
@@ -116,28 +144,34 @@
     display: inline-flex; 
     align-items: center; 
     gap: 6px;
-    height: 26px; 
-    padding: 0 10px; 
+    height: 28px; 
+    padding: 0 12px; 
     border-radius: 999px; 
     font-weight: 600; 
     font-size: 12px;
-    border: 1px solid var(--line); 
+    border: 1px solid transparent; 
     background: #fff; 
     color: var(--ink);
+    transition: all 0.15s ease;
 }
 .products-index .pill.success { 
-    background: #ecfdf5; 
-    border-color: #a7f3d0; 
+    background: #d1fae5; 
+    border-color: #6ee7b7;
     color: #065f46; 
 }
 .products-index .pill.neutral { 
     background: #f3f4f6; 
+    border-color: #e5e7eb;
     color: #374151; 
 }
 .products-index .pill.warn    { 
-    background: #fff7ed; 
-    border-color: #fed7aa; 
+    background: #fed7aa; 
+    border-color: #fb923c; 
     color: #9a3412; 
+}
+.products-index .pill:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 /* Action buttons always visible; add subtle left shadow */
@@ -156,9 +190,17 @@
     gap: 6px; 
 }
 .products-index .actions .btn { 
-    height: 30px; 
-    padding: 0 10px; 
-    border-radius: 8px; 
+    height: 32px; 
+    padding: 0 12px; 
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.products-index .actions .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 /* Truncation to avoid column blowouts */
@@ -177,7 +219,17 @@
 
 /* Price emphasis */
 .products-index .price { 
-    font-weight: 700; 
+    font-weight: 700;
+    font-size: 14px;
+    color: #111827;
+    font-variant-numeric: tabular-nums;
+}
+
+/* SKU styling */
+.products-index .col-sku {
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #6b7280;
 }
 
 /* Density & spacing at row boundaries */
@@ -196,6 +248,18 @@
     border-top-right-radius: 12px;
 }
 
+/* Card container improvements */
+.products-index .bg-white.rounded-2xl {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    transition: box-shadow 0.15s ease;
+}
+
+/* Pagination improvements */
+.products-index nav[role="navigation"] a,
+.products-index nav[role="navigation"] span {
+    transition: all 0.15s ease;
+}
+
 /* Responsive improvements */
 @media (max-width: 768px) {
     .products-index .filters-bar {
@@ -204,5 +268,18 @@
     }
     .products-index .filters-bar .search-input {
         flex: 1 1 100%;
+    }
+    
+    .products-index .table-products {
+        font-size: 13px;
+    }
+    
+    .products-index .table-products thead th {
+        padding: 10px 12px;
+        font-size: 11px;
+    }
+    
+    .products-index .table-products tbody td {
+        padding: 8px 12px;
     }
 }

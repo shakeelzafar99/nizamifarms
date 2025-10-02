@@ -160,6 +160,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/products/lookup', [\App\Http\Controllers\CRM\ProductController::class, 'lookup'])->name('products.lookup');
     Route::post('/products/attributes/preview-auto', [\App\Http\Controllers\CRM\ProductController::class, 'previewAutoRules'])->name('products.attributes.preview_auto');
     Route::post('/products/attributes/save-rules', [\App\Http\Controllers\CRM\ProductController::class, 'saveAutoRules'])->name('products.attributes.save_rules');
+    Route::post('/products/attributes/coverage', [\App\Http\Controllers\CRM\ProductController::class, 'getCoverageSummary'])->name('products.attributes.coverage');
     Route::post('/products/attributes/apply-saved', [\App\Http\Controllers\CRM\ProductController::class, 'applySavedRules'])->name('products.attributes.apply_saved');
     Route::get('/products/create', [\App\Http\Controllers\CRM\ProductController::class, 'create'])->name('products.create');
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');
