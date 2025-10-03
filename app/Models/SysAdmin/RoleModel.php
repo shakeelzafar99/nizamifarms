@@ -67,6 +67,11 @@ class RoleModel extends BaseModel
         return $this->belongsToMany(UserModel::class, 't_sys_user_role', 'role_id', 'user_id');
     }
 
+    public function approvalLevels()
+    {
+        return $this->hasMany(RoleApprovalLevelModel::class, 'role_id', 'id');
+    }
+
 
     function List($data) //All record
     {

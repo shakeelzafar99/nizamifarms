@@ -216,6 +216,34 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/{id}/permissions', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'update'])->name('roles.permissions.update');
         Route::post('/{id}/permissions/defaults', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'setDefaults'])->name('roles.permissions.defaults');
     });
+    
+    // Request Management Routes
+    Route::prefix('requests')->group(function () {
+        // Specific routes MUST come before wildcard routes
+        Route::get('/', [\App\Http\Controllers\Request\RequestController::class, 'index'])->name('requests.index');
+        Route::get('/data', [\App\Http\Controllers\Request\RequestController::class, 'data'])->name('requests.data');
+        Route::get('/create', [\App\Http\Controllers\Request\RequestController::class, 'create'])->name('requests.create');
+        Route::get('/approval/statistics', [\App\Http\Controllers\Request\RequestApprovalController::class, 'statistics'])->name('requests.approval.statistics');
+        
+        // Settings routes (specific routes before {id})
+        Route::get('/settings', [\App\Http\Controllers\Request\RequestSettingsController::class, 'index'])->name('requests.settings.index');
+        Route::put('/settings/categories/{id}/config', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateCategoryConfig'])->name('requests.settings.category.config');
+        Route::post('/settings/roles/assign-level', [\App\Http\Controllers\Request\RequestSettingsController::class, 'assignRoleToLevel'])->name('requests.settings.roles.assign');
+        Route::delete('/settings/roles/level/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'removeRoleFromLevel'])->name('requests.settings.roles.remove');
+        Route::get('/settings/users/level/{level}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getUsersWithLevel'])->name('requests.settings.users.level');
+        Route::put('/settings/categories/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateCategory'])->name('requests.settings.category.update');
+        Route::post('/settings/categories', [\App\Http\Controllers\Request\RequestSettingsController::class, 'createCategory'])->name('requests.settings.category.create');
+        
+        // POST routes
+        Route::post('/', [\App\Http\Controllers\Request\RequestController::class, 'store'])->name('requests.store');
+        Route::post('/{id}/cancel', [\App\Http\Controllers\Request\RequestController::class, 'cancel'])->name('requests.cancel');
+        Route::post('/{id}/approve', [\App\Http\Controllers\Request\RequestApprovalController::class, 'approve'])->name('requests.approve');
+        Route::post('/{id}/reject', [\App\Http\Controllers\Request\RequestApprovalController::class, 'reject'])->name('requests.reject');
+        
+        // Wildcard routes MUST come last
+        Route::get('/{id}', [\App\Http\Controllers\Request\RequestController::class, 'show'])->name('requests.show');
+        Route::put('/{id}', [\App\Http\Controllers\Request\RequestController::class, 'update'])->name('requests.update');
+    });
 });
 
 // Rider-only scoped APIs (example view filters will check role on server side as well)

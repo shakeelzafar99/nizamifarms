@@ -10,7 +10,7 @@
 </script>
 <div class="max-w-7xl mx-auto p-6">
   <!-- Header with Add Button -->
-  <div class="flex justify-between items-center mb-6">
+  <div class="flex justify-between items-center mb-6 relative" style="z-index: 10;">
     <h1 class="text-2xl font-semibold text-gray-900">Attendance Management</h1>
     <div class="flex gap-2 items-center">
       <a href="/attendance/reports" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700">
@@ -28,6 +28,7 @@
         onclick="toggleAddForm()" 
         id="toggleFormBtn" 
         class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md"
+        style="position: relative; z-index: 20; pointer-events: auto; cursor: pointer;"
       >
         ➕ Mark Attendance
       </button>
@@ -276,7 +277,7 @@
 
 <!-- Quick Add Time Modal - Modern Design -->
 <div id="quickTimeModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 backdrop-blur-sm" style="z-index: 9999;">
-  <div class="bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-2xl max-w-lg w-full p-8 transform transition-all" onclick="event.stopPropagation()">
+  <div id="quickTimeCard" class="bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-2xl max-w-lg w-full p-8 transform transition-all" onclick="event.stopPropagation()">
     <!-- Header -->
     <div class="flex items-center justify-between mb-6">
       <div class="flex items-center gap-3">
@@ -351,7 +352,7 @@
 
 <!-- Quick Edit Modal -->
 <div id="quickEditModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-  <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-6" onclick="event.stopPropagation()">
+  <div id="quickEditCard" class="bg-white rounded-lg shadow-xl max-w-md w-full p-6" onclick="event.stopPropagation()">
     <div class="flex justify-between items-center mb-4">
       <h3 class="text-lg font-semibold text-gray-900">Edit Attendance</h3>
       <button onclick="closeQuickEdit()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
@@ -515,6 +516,36 @@ let currentTimeModalMode = null; // 'login' or 'logout'
 document.addEventListener('DOMContentLoaded', async function() {
   await loadAllUsers();
   loadAttendanceForDate();
+  
+  // Event delegation for action buttons
+  const tbody = document.getElementById('attBody');
+  if (tbody) {
+    tbody.addEventListener('click', function(e) {
+      const target = e.target.closest('button');
+      if (!target) return;
+      
+      // Handle quick add button (+ button)
+      if (target.classList.contains('quick-add-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const userId = parseInt(target.dataset.userId);
+        const userName = target.dataset.userName;
+        quickAddLogout(userId, userName);
+      }
+      
+      // Handle quick edit button (✏️ button)
+      if (target.classList.contains('quick-edit-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const userId = parseInt(target.dataset.userId);
+        const userName = target.dataset.userName;
+        const loginTime = target.dataset.loginTime;
+        const logoutTime = target.dataset.logoutTime;
+        const attendanceDate = target.dataset.attendanceDate;
+        openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate);
+      }
+    });
+  }
 });
 
 // Toggle add form modal
@@ -771,20 +802,29 @@ function renderAttendanceTable(data) {
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
         <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
         <td class="px-4 py-3 text-sm">
-          <div class="flex gap-2">
+          <div class="flex gap-2" style="position: relative; z-index: 5;">
             ${!r.logout_time ? `
               <button 
-                onclick="quickAddLogout(${r.user_id}, '${r.fullname}')"
-                class="px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition text-xs font-medium"
-                title="Add logout time"
+                type="button"
+                class="quick-add-btn px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition text-xs font-medium"
+                data-user-id="${r.user_id}"
+                data-user-name="${(r.fullname || '').replace(/"/g, '&quot;')}"
+                title="${!r.login_time ? 'Add login time' : 'Add logout time'}"
+                style="cursor: pointer;"
               >
                 ➕
               </button>
             ` : ''}
             <button 
-              onclick="openQuickEdit(${r.user_id}, '${r.fullname}', '${r.login_time || ''}', '${r.logout_time || ''}', '${r.attendance_date}')"
-              class="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
+              type="button"
+              class="quick-edit-btn px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
+              data-user-id="${r.user_id}"
+              data-user-name="${(r.fullname || '').replace(/"/g, '&quot;')}"
+              data-login-time="${r.login_time || ''}"
+              data-logout-time="${r.logout_time || ''}"
+              data-attendance-date="${r.attendance_date}"
               title="Edit attendance"
+              style="cursor: pointer;"
             >
               ✏️
             </button>
@@ -843,65 +883,140 @@ function updateSummaryCards(data) {
 
 // Smart quick add - handles both login and logout
 function quickAddLogout(userId, userName) {
-  const user = allAttendanceData.find(u => u.user_id == userId);
-  currentEditUserId = userId;
-  currentEditDate = document.getElementById('tableDate').value;
-  
-  // Set current time as default
-  const now = new Date();
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const currentTime = `${hours}:${minutes}`;
-  
-  // Determine what to show based on current attendance
-  const hasLogin = user && user.login_time;
-  const hasLogout = user && user.logout_time;
-  
-  // Set user info
-  document.getElementById('quickTimeUser').textContent = userName;
-  document.getElementById('quickTimeDate').textContent = currentEditDate;
-  document.getElementById('quickTimeUserInitial').textContent = userName.charAt(0).toUpperCase();
-  
-  // Show appropriate sections
-  const loginSection = document.getElementById('loginTimeSection');
-  const logoutSection = document.getElementById('logoutTimeSection');
-  const modalTitle = document.getElementById('quickTimeModalTitle');
-  
-  if (!hasLogin) {
-    // No login yet - ask for login time
-    currentTimeModalMode = 'login';
-    loginSection.classList.remove('hidden');
-    logoutSection.classList.add('hidden');
-    document.getElementById('quickLoginTimeInput').value = currentTime;
-    modalTitle.textContent = 'Mark Login Time';
-  } else if (!hasLogout) {
-    // Has login, no logout - ask for logout time
-    currentTimeModalMode = 'logout';
-    loginSection.classList.add('hidden');
-    logoutSection.classList.remove('hidden');
-    document.getElementById('quickLogoutTimeInput').value = currentTime;
-    modalTitle.textContent = 'Mark Logout Time';
-  } else {
-    // Both exist - should not happen (use edit button)
-    alert('Attendance already complete. Use edit button to modify.');
-    return;
+  try {
+    const user = allAttendanceData.find(u => u.user_id == userId);
+    currentEditUserId = userId;
+    currentEditDate = document.getElementById('tableDate').value;
+    
+    // Set current time as default
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const currentTime = `${hours}:${minutes}`;
+    
+    // Determine what to show based on current attendance
+    const hasLogin = user && user.login_time;
+    const hasLogout = user && user.logout_time;
+    
+    // Set user info
+    const quickTimeUser = document.getElementById('quickTimeUser');
+    const quickTimeDate = document.getElementById('quickTimeDate');
+    const quickTimeUserInitial = document.getElementById('quickTimeUserInitial');
+    
+    if (!quickTimeUser || !quickTimeDate || !quickTimeUserInitial) {
+      console.error('Missing modal user info elements!');
+      alert('Error: Modal elements not found. Please refresh the page.');
+      return;
+    }
+    
+    quickTimeUser.textContent = userName;
+    quickTimeDate.textContent = currentEditDate;
+    quickTimeUserInitial.textContent = userName.charAt(0).toUpperCase();
+    
+    // Show appropriate sections
+    const loginSection = document.getElementById('loginTimeSection');
+    const logoutSection = document.getElementById('logoutTimeSection');
+    const modalTitle = document.getElementById('quickTimeModalTitle');
+    
+    if (!loginSection || !logoutSection || !modalTitle) {
+      console.error('Missing section elements!');
+      alert('Error: Modal section elements not found. Please refresh the page.');
+      return;
+    }
+    
+    if (!hasLogin) {
+      // No login yet - ask for login time
+      currentTimeModalMode = 'login';
+      loginSection.classList.remove('hidden');
+      logoutSection.classList.add('hidden');
+      document.getElementById('quickLoginTimeInput').value = currentTime;
+      modalTitle.textContent = 'Mark Login Time';
+    } else if (!hasLogout) {
+      // Has login, no logout - ask for logout time
+      currentTimeModalMode = 'logout';
+      loginSection.classList.add('hidden');
+      logoutSection.classList.remove('hidden');
+      document.getElementById('quickLogoutTimeInput').value = currentTime;
+      modalTitle.textContent = 'Mark Logout Time';
+    } else {
+      // Both exist - should not happen (use edit button)
+      alert('Attendance already complete. Use edit button to modify.');
+      return;
+    }
+    
+    const modal = document.getElementById('quickTimeModal');
+    
+    if (!modal) {
+      console.error('quickTimeModal not found!');
+      alert('Error: Modal not found. Please refresh the page.');
+      return;
+    }
+    
+    // Open modal with elegant styling - ensure it's visible
+    modal.classList.remove('hidden');
+    // Apply minimal overlay styling only
+    Object.assign(modal.style, {
+      display: 'flex',
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      right: '0',
+      bottom: '0',
+      zIndex: '9999',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      padding: '1rem'
+    });
+    // Ensure card stays compact and readable
+    const card = document.getElementById('quickTimeCard');
+    if (card) {
+      Object.assign(card.style, {
+        maxWidth: '520px',
+        width: '100%',
+        background: 'white',
+        color: '#111827'
+      });
+    }
+    
+    modal.onclick = function(e) {
+      if (e.target === modal) closeQuickTime();
+    };
+    
+    console.log('Modal opened for user:', userId, userName);
+    console.log('Variables set:', {currentEditUserId, currentEditDate, currentTimeModalMode});
+  } catch (error) {
+    console.error('Error in quickAddLogout:', error);
+    alert('Error: ' + error.message);
   }
-  
-  const modal = document.getElementById('quickTimeModal');
-  modal.classList.remove('hidden');
-  modal.onclick = function(e) {
-    if (e.target === modal) closeQuickTime();
-  };
 }
 
 function closeQuickTime() {
-  document.getElementById('quickTimeModal').classList.add('hidden');
+  const modal = document.getElementById('quickTimeModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    // Reset inline overlay styles to avoid accumulation
+    modal.removeAttribute('style');
+  }
   currentEditUserId = null;
   currentEditDate = null;
   currentTimeModalMode = null;
 }
 
 async function saveQuickTime() {
+  // Validate required data
+  if (!currentEditUserId) {
+    console.error('Missing currentEditUserId');
+    alert('Error: User ID is missing. Please try again.');
+    return;
+  }
+  
+  if (!currentEditDate) {
+    console.error('Missing currentEditDate');
+    alert('Error: Date is missing. Please try again.');
+    return;
+  }
+  
   let payload = {
     user_id: currentEditUserId,
     attendance_date: currentEditDate
@@ -923,6 +1038,8 @@ async function saveQuickTime() {
     payload.logout_time = logoutTime;
   }
 
+  console.log('Saving attendance with payload:', payload);
+
   try {
     const res = await fetch('/attendance', {
       method: 'POST',
@@ -934,6 +1051,8 @@ async function saveQuickTime() {
     });
 
     const json = await res.json();
+    console.log('Server response:', json);
+    
     if (json.success) {
       console.log(`${currentTimeModalMode === 'login' ? 'Login' : 'Logout'} recorded by user ID: ${window.currentUser.id} (${window.currentUser.name})`);
       closeQuickTime();
@@ -1008,13 +1127,41 @@ function openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate) 
   
   const modal = document.getElementById('quickEditModal');
   modal.classList.remove('hidden');
+  // Minimal overlay styling
+  Object.assign(modal.style, {
+    display: 'flex',
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    right: '0',
+    bottom: '0',
+    zIndex: '9999',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: '1rem'
+  });
+  const editCard = document.getElementById('quickEditCard');
+  if (editCard) {
+    Object.assign(editCard.style, {
+      maxWidth: '480px',
+      width: '100%',
+      background: 'white',
+      color: '#111827'
+    });
+  }
+  
   modal.onclick = function(e) {
     if (e.target === modal) closeQuickEdit();
   };
 }
 
 function closeQuickEdit() {
-  document.getElementById('quickEditModal').classList.add('hidden');
+  const modal = document.getElementById('quickEditModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.removeAttribute('style');
+  }
   currentEditUserId = null;
   currentEditDate = null;
 }
