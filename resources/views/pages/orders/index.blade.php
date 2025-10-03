@@ -7448,46 +7448,34 @@ function formatStatusBreakdown(breakdown) {
 function filterByRider(riderId) {
     console.log('Filtering by rider:', riderId);
     
-    // Get all table rows
-    const rows = document.querySelectorAll('.orders-table-container tbody tr');
+    // Use the orders data directly instead of parsing HTML
+    if (!window.allOrders || window.allOrders.length === 0) {
+        console.warn('No orders data available for filtering');
+        return;
+    }
     
-    rows.forEach(row => {
-        // Get the rider cell - it contains the rider data
-        const cells = row.querySelectorAll('td');
-        let riderCell = null;
-        
-        // Find rider column by checking cell content
-        cells.forEach(cell => {
-            const cellText = cell.textContent.trim();
-            const cellHtml = cell.innerHTML;
-            // Check if this cell contains rider badge or "Unassigned"
-            if (cellHtml.includes('rider') || cellText === 'Unassigned' || cellHtml.includes('bg-blue-100') || cellHtml.includes('bg-amber-100')) {
-                // This might be the rider cell
-                const hasRiderData = cellHtml.includes('text-blue-700') || cellText === 'Unassigned';
-                if (hasRiderData) {
-                    riderCell = cell;
-                }
-            }
+    let filtered;
+    
+    if (riderId === null) {
+        // Show unassigned orders only
+        filtered = window.allOrders.filter(order => {
+            const assignedRider = order.assigned_rider_user_id || order.rider_user_id;
+            return !assignedRider || assignedRider === null || assignedRider === undefined;
         });
-
-        if (riderId === null) {
-            // Show unassigned orders - check if cell contains "Unassigned"
-            if (riderCell && riderCell.textContent.includes('Unassigned')) {
-                row.style.display = '';
-            } else {
-                row.style.display = 'none';
-            }
-        } else {
-            // Show orders for specific rider - check if the order has this rider assigned
-            // We'll need to match by rider name since we don't have data attributes
-            // For now, show all assigned orders (you may need to refine this based on actual data structure)
-            if (riderCell && !riderCell.textContent.includes('Unassigned')) {
-                row.style.display = '';
-            } else {
-                row.style.display = 'none';
-            }
-        }
-    });
+        console.log(`Filtered ${filtered.length} unassigned orders`);
+    } else {
+        // Show orders for specific rider
+        filtered = window.allOrders.filter(order => {
+            const assignedRider = order.assigned_rider_user_id || order.rider_user_id;
+            return assignedRider && parseInt(assignedRider) === parseInt(riderId);
+        });
+        console.log(`Filtered ${filtered.length} orders for rider ID ${riderId}`);
+    }
+    
+    // Update filtered orders and re-render table
+    window.filteredOrders = filtered;
+    renderOrdersWithFilters(filtered);
+    updateResultsCount();
 }
 
 /**
