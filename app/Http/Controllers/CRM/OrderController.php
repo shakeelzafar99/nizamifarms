@@ -28,6 +28,8 @@ class OrderController extends Controller
     {
         $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
         $tab = $request->get('tab', 'all'); // 'all', 'approvals', or 'open'
+        $status = $request->get('status', ''); // Status filter
+        $date = $request->get('date', ''); // Date filter
 
         // Build query per source
         if ($source === 'shopify') {
@@ -61,14 +63,27 @@ class OrderController extends Controller
             }
         }
         
+        // Apply status filter if provided
+        if (!empty($status)) {
+            $query->where('order_status', $status);
+        }
+        
+        // Apply date filter if provided
+        if (!empty($date)) {
+            $query->whereDate('order_date', $date);
+        }
+        
         // Handle per_page parameter
         $perPage = $request->get('per_page', 25);
         $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 25; // Validate per_page values
         
         $orders = $query->orderBy('order_date', 'desc')->paginate($perPage);
         
-        // Append parameters to pagination links
-        $orders->appends(['source' => $source, 'per_page' => $perPage, 'tab' => $tab]);
+        // Append all parameters to pagination links so they're preserved
+        $appendParams = ['source' => $source, 'per_page' => $perPage, 'tab' => $tab];
+        if (!empty($status)) $appendParams['status'] = $status;
+        if (!empty($date)) $appendParams['date'] = $date;
+        $orders->appends($appendParams);
         
         // Counts for badges
         if ($source === 'shopify') {

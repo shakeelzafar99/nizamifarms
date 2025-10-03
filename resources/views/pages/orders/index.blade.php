@@ -5439,13 +5439,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 300); // Reduced timeout for better responsiveness
     });
     
-    // Filter functionality - use in-page filtering (no API roundtrip)
+    // Filter functionality - reload page with filter parameters to preserve pagination
     statusFilter.addEventListener('change', function() {
-        applyFilters();
+        applyFiltersToUrl();
     });
     
     dateFilter.addEventListener('change', function() {
-        applyFilters();
+        applyFiltersToUrl();
     });
     
     // Per-page selector functionality
@@ -5472,7 +5472,35 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch (e) {
         console.warn('Failed to process open=import param', e);
     }
-// Fetch filtered orders from backend
+// Apply filters to URL and reload page (for status and date filters)
+// This preserves proper server-side pagination
+function applyFiltersToUrl() {
+    const statusFilter = document.getElementById('statusFilter').value;
+    const dateFilter = document.getElementById('dateFilter').value;
+    
+    const currentUrl = new URL(window.location);
+    
+    // Update filter parameters
+    if (statusFilter) {
+        currentUrl.searchParams.set('status', statusFilter);
+    } else {
+        currentUrl.searchParams.delete('status');
+    }
+    
+    if (dateFilter) {
+        currentUrl.searchParams.set('date', dateFilter);
+    } else {
+        currentUrl.searchParams.delete('date');
+    }
+    
+    // Reset to page 1 when filters change
+    currentUrl.searchParams.set('page', '1');
+    
+    // Reload page with new parameters
+    window.location.href = currentUrl.toString();
+}
+
+// Fetch filtered orders from backend (for search only - returns up to 100 results)
 function fetchFilteredOrders() {
     const searchTerm = document.getElementById('orderSearch').value.trim();
     const statusFilter = document.getElementById('statusFilter').value;
@@ -5583,6 +5611,29 @@ function updateResultsCount() {
     if (infoElement) {
         infoElement.textContent = `${filteredCount} orders`;
     }
+    
+    // Update pagination info element (for search results only)
+    const paginationInfo = document.getElementById('pagination-info');
+    if (paginationInfo) {
+        paginationInfo.textContent = `Showing ${filteredCount} search results`;
+    }
+    
+    // Hide pagination controls when showing search results (limited to 100)
+    const pagerWrap = document.getElementById('pager-wrap');
+    const numericPager = document.getElementById('numeric-pager');
+    
+    // Only hide pagination for search results (not for status/date filters)
+    const searchTerm = document.getElementById('orderSearch').value.trim();
+    
+    if (searchTerm.length > 2 && pagerWrap) {
+        // Hide pagination when showing search results (not paginated, max 100)
+        pagerWrap.style.display = 'none';
+        if (numericPager) numericPager.style.display = 'none';
+    } else if (pagerWrap) {
+        // Show pagination for normal view and filtered views
+        pagerWrap.style.display = '';
+        if (numericPager) numericPager.style.display = '';
+    }
 }
 
 // Render table with filtered data
@@ -5607,10 +5658,15 @@ function clearFilters() {
     document.getElementById('statusFilter').value = '';
     document.getElementById('dateFilter').value = '';
     
-    // Reset to original page data without API call
-    window.filteredOrders = [...window.allOrders];
-    renderOrdersWithFilters(window.filteredOrders);
-    updateResultsCount();
+    // Remove filter parameters from URL and reset to page 1
+    const currentUrl = new URL(window.location);
+    currentUrl.searchParams.delete('search');
+    currentUrl.searchParams.delete('status');
+    currentUrl.searchParams.delete('date');
+    currentUrl.searchParams.set('page', '1');
+    
+    // Navigate to the clean URL to reload with default data
+    window.location.href = currentUrl.toString();
 }
 // Loading state functions
 function showLoadingState() {
@@ -7455,15 +7511,15 @@ function filterByRider(riderId) {
     }
     
     let filtered;
-    
-    if (riderId === null) {
+
+        if (riderId === null) {
         // Show unassigned orders only
         filtered = window.allOrders.filter(order => {
             const assignedRider = order.assigned_rider_user_id || order.rider_user_id;
             return !assignedRider || assignedRider === null || assignedRider === undefined;
         });
         console.log(`Filtered ${filtered.length} unassigned orders`);
-    } else {
+            } else {
         // Show orders for specific rider
         filtered = window.allOrders.filter(order => {
             const assignedRider = order.assigned_rider_user_id || order.rider_user_id;
