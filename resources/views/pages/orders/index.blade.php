@@ -692,11 +692,13 @@ input:focus, select:focus, button:focus {
                                 Riders
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">{{ $openCount }}</span>
                             </button>
+                            @if($canViewShopify ?? false)
                             <button onclick="switchToShopifyApprovals()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
                                 Shopify Approvals
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
                             </button>
+                            @endif
                         @endif
                     </div>
                     

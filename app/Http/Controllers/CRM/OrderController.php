@@ -26,10 +26,21 @@ class OrderController extends Controller
 
     public function index(Request $request)
     {
+        $user = auth()->user();
         $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
         $tab = $request->get('tab', 'all'); // 'all', 'approvals', or 'open'
         $status = $request->get('status', ''); // Status filter
         $date = $request->get('date', ''); // Date filter
+
+        // Check permissions for Shopify orders
+        $canViewShopify = $user->hasPermission('view_shopify_orders');
+        $canViewAllOrders = $user->hasPermission('view_all_orders');
+
+        // If trying to view Shopify but don't have permission, redirect to main orders
+        if ($source === 'shopify' && !$canViewShopify) {
+            return redirect()->route('orders.index', ['source' => 'other'])
+                ->with('error', 'You do not have permission to view Shopify orders.');
+        }
 
         // Build query per source
         if ($source === 'shopify') {
@@ -51,9 +62,8 @@ class OrderController extends Controller
                       ->orWhereNull('external_source');
                 });
             
-            // Role-based filtering: riders see only their assigned orders
-            $userRole = $this->getUserRole($request);
-            if ($userRole === 'rider') {
+            // Permission-based filtering: users without view_all_orders see only their assigned orders
+            if (!$canViewAllOrders) {
                 $query->where('assigned_rider_user_id', auth()->id());
             }
             
@@ -96,21 +106,33 @@ class OrderController extends Controller
             $openCount = 0; // Not relevant for Shopify page
         } else {
             // For main Invoices page: count as before
-            $shopifyCount = \App\Models\CRM\ShopifyOrderModel::where(function($q){
+            // Only show Shopify count if user has permission
+            $shopifyCount = $canViewShopify ? \App\Models\CRM\ShopifyOrderModel::where(function($q){
                 $q->whereNull('converted')->orWhere('converted', 0);
-            })->count();
+            })->count() : 0;
             $approvalsCount = 0; // Not relevant for main page
-            $otherCount = \App\Models\CRM\OrderModel::where(function($q) {
+            
+            // If user can't view all orders, count only their assigned orders
+            $otherCountQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
-            })->count();
-            $openCount = \App\Models\CRM\OrderModel::where(function($q) {
+            });
+            if (!$canViewAllOrders) {
+                $otherCountQuery->where('assigned_rider_user_id', auth()->id());
+            }
+            $otherCount = $otherCountQuery->count();
+            
+            $openCountQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
-            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])->count();
+            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+            if (!$canViewAllOrders) {
+                $openCountQuery->where('assigned_rider_user_id', auth()->id());
+            }
+            $openCount = $openCountQuery->count();
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount'));
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders'));
     }
 
     public function show($id)
@@ -958,14 +980,28 @@ class OrderController extends Controller
     public function filter(Request $request)
     {
         try {
+            $user = auth()->user();
             $source = $request->get('source', 'other');
             $tab = $request->get('tab', 'all');
             $search = $request->get('search', '');
             $status = $request->get('status', '');
             $date = $request->get('date', '');
             
+            // Check permissions
+            $canViewShopify = $user->hasPermission('view_shopify_orders');
+            $canViewAllOrders = $user->hasPermission('view_all_orders');
+            
             // Start with base query based on source
             if ($source === 'shopify') {
+                // Return empty if user can't view Shopify
+                if (!$canViewShopify) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You do not have permission to view Shopify orders.',
+                        'data' => []
+                    ], 403);
+                }
+                
                 // Use Shopify orders table
                 $query = \App\Models\CRM\ShopifyOrderModel::with(['customer', 'lineItems']);
                 
@@ -982,6 +1018,11 @@ class OrderController extends Controller
                         $q->where('external_source', '!=', 'shopify')
                           ->orWhereNull('external_source');
                     });
+                
+                // Filter by assigned rider if user doesn't have view_all_orders permission
+                if (!$canViewAllOrders) {
+                    $query->where('assigned_rider_user_id', auth()->id());
+                }
                 
                 // Apply tab filter for open orders and riders
                 if ($tab === 'open' || $tab === 'riders') {
@@ -1239,6 +1280,13 @@ class OrderController extends Controller
      */
     public function openQuantities(Request $request)
     {
+        // Check permission
+        $user = auth()->user();
+        if (!$user->hasPermission('view_open_quantities')) {
+            return redirect()->route('dashboard')
+                ->with('error', 'You do not have permission to view Open Order Quantities.');
+        }
+        
         // Get attribute labels from JSON file
         $labels = $this->getAttributeLabels();
         
@@ -1261,6 +1309,15 @@ class OrderController extends Controller
     public function openQuantitiesData(Request $request)
     {
         try {
+            // Check permission
+            $user = auth()->user();
+            if (!$user->hasPermission('view_open_quantities')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view this data.'
+                ], 403);
+            }
+            
             // Decode JSON parameters
             $hierarchy = json_decode($request->get('hierarchy', '["product_type", "product_name"]'), true);
             if (!is_array($hierarchy)) {

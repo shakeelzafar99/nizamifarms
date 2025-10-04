@@ -20,9 +20,11 @@
 
                     <!-- Right: Buttons -->
                     <div class="flex gap-2">
+                        @if(auth()->user()->hasPermission('manage_request_settings'))
                         <a href="{{ route('requests.settings.index') }}" class="kt-btn kt-btn-light">
                             <i class="ki-filled ki-setting-2"></i> Settings
                         </a>
+                        @endif
                         <a href="{{ route('requests.create') }}" class="kt-btn kt-btn-primary">
                             <i class="ki-filled ki-plus"></i> New Request
                         </a>
@@ -52,8 +54,7 @@
                 @if(!$canApproveLevel1 && !$canApproveLevel2)
                 <div class="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
                     <p class="text-sm text-yellow-800">
-                        <strong>ℹ️ Notice:</strong> You can submit requests, but you don't have approval rights yet. 
-                        <a href="{{ route('requests.settings.index') }}" class="underline font-medium">Contact your admin</a> to get approval permissions assigned.
+                        <strong>ℹ️ Notice:</strong> You can submit requests, but you don't have approval rights yet. Contact your admin to get approval permissions assigned.
                     </p>
                 </div>
                 @endif

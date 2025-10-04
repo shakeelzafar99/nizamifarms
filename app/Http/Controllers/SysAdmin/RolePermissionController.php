@@ -13,29 +13,51 @@ class RolePermissionController extends Controller
     private function getAvailablePermissions()
     {
         return [
+            // Core Navigation
             'view_dashboard' => 'View Dashboard',
+            
+            // Orders & Deliveries
             'view_orders' => 'View Orders',
             'view_all_orders' => 'View All Orders (vs own assigned)',
-            'edit_orders' => 'Edit Orders', 
+            'edit_orders' => 'Edit Orders',
+            'view_shopify_orders' => 'View Shopify Orders',
+            'view_order_status' => 'Manage Order Status',
+            'view_status_history' => 'View Status History',
+            'assign_riders' => 'Assign Riders to Orders',
+            'bulk_operations' => 'Bulk Operations (status, rider assign)',
+            
+            // Invoices & Quantities
+            'view_invoices' => 'View Invoices',
+            'view_all_invoices' => 'View All Invoices (vs own orders)',
+            'view_open_quantities' => 'View Open Order Quantities',
+            
+            // Riders
+            'view_riders' => 'View Riders List',
+            'view_all_riders' => 'View All Riders (vs only self)',
+            'edit_riders' => 'Edit Rider Profiles',
+            
+            // Customers & Products
             'view_customers' => 'View Customers',
             'edit_customers' => 'Edit Customers',
             'view_products' => 'View Products',
             'edit_products' => 'Edit Products',
-            'view_order_status' => 'Manage Order Status',
-            'view_status_history' => 'View Status History',
-            'view_users' => 'Manage Users',
-            'view_roles' => 'Manage Roles',
-            'view_logs' => 'View Error Logs',
+            
+            // Attendance
             'view_attendance' => 'View Attendance',
             'view_all_attendance' => 'View All Attendance (vs own)',
-            'view_operations' => 'Access Operations (imports, bulk actions)',
-            'assign_riders' => 'Assign Riders to Orders',
-            'bulk_operations' => 'Bulk Operations (status, rider assign)',
+            
+            // Requests & Approvals
             'view_requests' => 'View Requests',
             'view_all_requests' => 'View All Requests (vs own)',
             'create_requests' => 'Create Requests',
             'approve_requests' => 'Approve/Reject Requests',
             'manage_request_settings' => 'Manage Request Settings',
+            
+            // Administration
+            'view_users' => 'Manage Users',
+            'view_roles' => 'Manage Roles',
+            'view_logs' => 'View Error Logs',
+            'view_operations' => 'Access Operations (imports, bulk actions)',
         ];
     }
 
@@ -92,14 +114,25 @@ class RolePermissionController extends Controller
         // Default permissions by role type
         $defaults = [
             'rider' => [
-                'view_dashboard', 'view_orders', 'view_attendance',
-                'view_requests', 'create_requests'
+                'view_dashboard',
+                'view_orders', // Only assigned orders (no view_all_orders)
+                'view_invoices', // Only own orders (no view_all_invoices)
+                'view_riders', // Can see riders list but only self (no view_all_riders)
+                'view_attendance', // Only own (no view_all_attendance)
+                'view_requests', // Only own (no view_all_requests)
+                'create_requests',
+                // NOT: edit_orders, view_shopify_orders, view_open_quantities, view_all_*
             ],
             'manager' => [
-                'view_dashboard', 'view_orders', 'view_all_orders', 'edit_orders',
-                'view_customers', 'edit_customers', 'view_products', 'edit_products',
-                'view_attendance', 'view_all_attendance', 'assign_riders', 'bulk_operations',
-                'view_requests', 'view_all_requests', 'create_requests', 'approve_requests'
+                'view_dashboard',
+                'view_orders', 'view_all_orders', 'edit_orders', 'view_shopify_orders',
+                'view_order_status', 'view_status_history', 'assign_riders', 'bulk_operations',
+                'view_invoices', 'view_all_invoices', 'view_open_quantities',
+                'view_riders', 'view_all_riders', 'edit_riders',
+                'view_customers', 'edit_customers',
+                'view_products', 'edit_products',
+                'view_attendance', 'view_all_attendance',
+                'view_requests', 'view_all_requests', 'create_requests', 'approve_requests',
             ],
             'admin' => array_keys($availablePermissions), // All permissions
             'super_admin' => array_keys($availablePermissions) // All permissions

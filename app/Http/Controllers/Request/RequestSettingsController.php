@@ -14,10 +14,28 @@ use Illuminate\Support\Facades\Log;
 class RequestSettingsController extends Controller
 {
     /**
+     * Check if user has permission to manage request settings
+     */
+    private function checkPermission()
+    {
+        $user = auth()->user();
+        if (!$user->hasPermission('manage_request_settings')) {
+            abort(403, 'You do not have permission to manage request settings.');
+        }
+    }
+    
+    /**
      * Display request settings page
      */
     public function index()
     {
+        // Check permission
+        $user = auth()->user();
+        if (!$user->hasPermission('manage_request_settings')) {
+            return redirect()->route('requests.index')
+                ->with('error', 'You do not have permission to manage request settings.');
+        }
+        
         $categories = RequestCategoryModel::with('approvalConfig')->active()->ordered()->get();
         $roles = RoleModel::where('is_active', 1)->get();
         
@@ -33,6 +51,8 @@ class RequestSettingsController extends Controller
      */
     public function updateCategoryConfig(Request $request, $categoryId)
     {
+        $this->checkPermission();
+        
         $validated = $request->validate([
             'requires_level_1' => 'required|boolean',
             'requires_level_2' => 'required|boolean',
@@ -74,6 +94,8 @@ class RequestSettingsController extends Controller
      */
     public function assignRoleToLevel(Request $request)
     {
+        $this->checkPermission();
+        
         $validated = $request->validate([
             'role_id' => 'required|exists:t_sys_role,id',
             'approval_level' => 'required|integer|in:1,2'
@@ -122,6 +144,8 @@ class RequestSettingsController extends Controller
      */
     public function removeRoleFromLevel($id)
     {
+        $this->checkPermission();
+        
         try {
             $roleLevel = RoleApprovalLevelModel::findOrFail($id);
             $roleLevel->delete();
@@ -146,6 +170,8 @@ class RequestSettingsController extends Controller
      */
     public function getUsersWithLevel($level)
     {
+        $this->checkPermission();
+        
         try {
             $users = RoleApprovalLevelModel::getUsersWithApprovalLevel($level);
 
@@ -169,6 +195,8 @@ class RequestSettingsController extends Controller
      */
     public function updateCategory(Request $request, $id)
     {
+        $this->checkPermission();
+        
         $validated = $request->validate([
             'category_name' => 'required|string|max:100',
             'description' => 'nullable|string',
@@ -213,6 +241,8 @@ class RequestSettingsController extends Controller
      */
     public function createCategory(Request $request)
     {
+        $this->checkPermission();
+        
         $validated = $request->validate([
             'category_code' => 'required|string|max:50|unique:t_req_category,category_code',
             'category_name' => 'required|string|max:100',
