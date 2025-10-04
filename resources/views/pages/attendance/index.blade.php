@@ -128,11 +128,11 @@
     </div>
   </div>
 
-  <!-- Summary Cards - Compact One Row with Day/Month Toggle -->
-  <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-4">
-    <div class="flex justify-between items-center mb-3">
+  <!-- Summary Cards - Elegant Horizontal Row -->
+  <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-3 mb-4">
+    <div class="flex justify-between items-center mb-2">
       <h3 class="text-sm font-semibold text-gray-700">Summary</h3>
-      <div class="flex bg-gray-100 rounded-lg p-1">
+      <div class="flex bg-gray-100 rounded-lg p-0.5">
         <button 
           id="btnDaySummary" 
           onclick="toggleSummaryPeriod('day')" 
@@ -150,65 +150,66 @@
       </div>
     </div>
     
-    <div class="grid grid-cols-4 gap-3">
-      <div class="text-center">
+    <!-- All 6 cards in one elegant horizontal row -->
+    <div class="flex items-stretch justify-between gap-1">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-            <span class="text-xl">✓</span>
+          <div class="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+            <span class="text-base">✓</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-green-600" id="cardPresent">0</p>
-        <p class="text-xs text-gray-500 mt-1">Present</p>
+        <p class="text-xl font-bold text-green-600" id="cardPresent">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">Present</p>
       </div>
 
-      <div class="text-center">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-            <span class="text-xl">⏰</span>
+          <div class="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+            <span class="text-base">⏰</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-blue-600" id="cardOnTime">0</p>
-        <p class="text-xs text-gray-500 mt-1">On Time</p>
+        <p class="text-xl font-bold text-blue-600" id="cardOnTime">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">On Time</p>
       </div>
 
-      <div class="text-center">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-            <span class="text-xl">⚠</span>
+          <div class="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center">
+            <span class="text-base">⚠</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-red-600" id="cardLate">0</p>
-        <p class="text-xs text-gray-500 mt-1">Late</p>
+        <p class="text-xl font-bold text-red-600" id="cardLate">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">Late</p>
       </div>
 
-      <div class="text-center">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-            <span class="text-xl">⏱</span>
+          <div class="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+            <span class="text-base">⏱</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-purple-600" id="cardOvertime">0</p>
-        <p class="text-xs text-gray-500 mt-1">Overtime</p>
+        <p class="text-xl font-bold text-purple-600" id="cardOvertime">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">Overtime</p>
       </div>
 
-      <div class="text-center">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
-            <span class="text-xl">🏖️</span>
+          <div class="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center">
+            <span class="text-base">🏖️</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-orange-600" id="cardOnLeave">0</p>
-        <p class="text-xs text-gray-500 mt-1">On Leave</p>
+        <p class="text-xl font-bold text-orange-600" id="cardOnLeave">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">On Leave</p>
       </div>
 
-      <div class="text-center">
+      <div class="flex-1 text-center p-2 rounded-lg hover:bg-gray-50 transition min-w-0">
         <div class="flex justify-center mb-1">
-          <div class="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center">
-            <span class="text-xl">❌</span>
+          <div class="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
+            <span class="text-base">❌</span>
           </div>
         </div>
-        <p class="text-2xl font-bold text-gray-700" id="cardAbsent">0</p>
-        <p class="text-xs text-gray-500 mt-1">Absent (No Leave)</p>
+        <p class="text-xl font-bold text-gray-700" id="cardAbsent">0</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">Absent</p>
       </div>
     </div>
   </div>
@@ -460,26 +461,34 @@
 
     <!-- Stats Bar -->
     <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
-      <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;">
+      <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px;">
         <div style="text-align: center;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
-          <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatPresent">0</p>
+          <p style="font-size: 16px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatPresent">0</p>
         </div>
         <div style="text-align: center;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
-          <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="detailsStatLate">0</p>
+          <p style="font-size: 16px; font-weight: bold; color: #dc2626; margin: 0;" id="detailsStatLate">0</p>
         </div>
         <div style="text-align: center;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
-          <p style="font-size: 18px; font-weight: bold; color: #16a34a; margin: 0;" id="detailsStatOT">0</p>
+          <p style="font-size: 16px; font-weight: bold; color: #16a34a; margin: 0;" id="detailsStatOT">0</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">On Leave</p>
+          <p style="font-size: 16px; font-weight: bold; color: #ea580c; margin: 0;" id="detailsStatOnLeave">0</p>
+        </div>
+        <div style="text-align: center;">
+          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Absent</p>
+          <p style="font-size: 16px; font-weight: bold; color: #6b7280; margin: 0;" id="detailsStatAbsent">0</p>
         </div>
         <div style="text-align: center;">
           <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
-          <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatHours">0h</p>
+          <p style="font-size: 16px; font-weight: bold; color: #111827; margin: 0;" id="detailsStatHours">0h</p>
         </div>
         <div style="text-align: center;">
-          <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Orders Delivered</p>
-          <p style="font-size: 18px; font-weight: bold; color: #2563eb; margin: 0;" id="detailsStatOrders">0</p>
+          <p style="font-size: 10px; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Orders</p>
+          <p style="font-size: 16px; font-weight: bold; color: #2563eb; margin: 0;" id="detailsStatOrders">0</p>
         </div>
       </div>
     </div>
@@ -1520,10 +1529,21 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
                      new Date(emp.date_range.end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
     
-    // Update stats
+    // Use backend-calculated statistics
+    console.log('Employee stats from backend:', {
+      working_days: emp.working_days,
+      present_days: emp.present_days,
+      on_leave_days: emp.on_leave_days,
+      absent_days: emp.absent_days,
+      calculation: `${emp.working_days} working days - ${emp.present_days} present - ${emp.on_leave_days} on leave = ${emp.absent_days} absent`
+    });
+    
+    // Update stats with backend-calculated values
     document.getElementById('detailsStatPresent').textContent = emp.present_days || 0;
     document.getElementById('detailsStatLate').textContent = emp.late_days || 0;
     document.getElementById('detailsStatOT').textContent = emp.overtime_days || 0;
+    document.getElementById('detailsStatOnLeave').textContent = emp.on_leave_days || 0;
+    document.getElementById('detailsStatAbsent').textContent = emp.absent_days || 0;
     document.getElementById('detailsStatHours').textContent = (emp.total_hours || 0) + 'h';
     document.getElementById('detailsStatOrders').textContent = emp.total_orders_delivered || 0;
     

@@ -353,11 +353,33 @@ class AttendanceController extends Controller
                 ->whereBetween(DB::raw('DATE(osh.changed_at)'), [$startDate, $endDate])
                 ->groupBy('orh.rider_user_id', DB::raw('DATE(osh.changed_at)'));
 
-            // Attendance rows joined with per-day delivered orders for this user
+            // Leave requests subquery
+            $leaveSub = DB::table('t_req_master')
+                ->select(
+                    'requester_user_id',
+                    'id as leave_request_id',
+                    'status as leave_status',
+                    'leave_type',
+                    'leave_start_date',
+                    'leave_end_date'
+                )
+                ->where('category_id', function($q) {
+                    $q->select('id')
+                      ->from('t_req_category')
+                      ->where('category_code', 'leave')
+                      ->limit(1);
+                });
+
+            // Attendance rows joined with per-day delivered orders and leave requests for this user
             $query = DB::table('t_ops_attendance as a')
                 ->leftJoinSub($deliveredPerDay, 'd', function($join) {
                     $join->on('d.rider_id', '=', 'a.user_id')
                          ->on('d.delivered_date', '=', 'a.attendance_date');
+                })
+                ->leftJoinSub($leaveSub, 'lr', function($join) {
+                    $join->on('lr.requester_user_id', '=', 'a.user_id')
+                         ->whereColumn('a.attendance_date', '>=', 'lr.leave_start_date')
+                         ->whereColumn('a.attendance_date', '<=', 'lr.leave_end_date');
                 })
                 ->where('a.user_id', '=', $userId)
                 ->whereBetween('a.attendance_date', [$startDate, $endDate])
@@ -365,6 +387,9 @@ class AttendanceController extends Controller
                     'a.attendance_date',
                     'a.login_time',
                     'a.logout_time',
+                    'lr.leave_request_id',
+                    'lr.leave_status',
+                    'lr.leave_type',
                     DB::raw('COALESCE(d.orders_delivered, 0) as total_orders_delivered'),
                     DB::raw('COALESCE(d.first_delivery_time, NULL) as first_delivery_time'),
                     DB::raw('COALESCE(d.last_delivery_time, NULL) as last_delivery_time')
@@ -401,9 +426,38 @@ class AttendanceController extends Controller
                 'total_orders_sum' => $records->sum('total_orders_delivered')
             ]);
 
+            // Calculate working days in date range (excluding off days)
+            // For now, assume Tuesday is off (day 2). You can make this configurable later.
+            $workingDays = 0;
+            $currentDate = new \DateTime($startDate);
+            $endDateObj = new \DateTime($endDate);
+            
+            while ($currentDate <= $endDateObj) {
+                $dayOfWeek = (int)$currentDate->format('N'); // 1=Monday, 7=Sunday
+                // Exclude Tuesday (2) - you can make this configurable
+                if ($dayOfWeek != 2) {
+                    $workingDays++;
+                }
+                $currentDate->modify('+1 day');
+            }
+
             // Calculate statistics
             $totalDays = $records->count();
             $presentDays = $records->where('login_time', '!=', null)->count();
+            
+            // Count leave days
+            $onLeaveDays = 0;
+            foreach ($records as $record) {
+                if ($record->leave_request_id && 
+                    in_array(strtolower($record->leave_status), ['approved', 'pending'])) {
+                    $onLeaveDays++;
+                }
+            }
+            
+            // Calculate absent days = working days - present - on leave
+            $absentDays = $workingDays - $presentDays - $onLeaveDays;
+            if ($absentDays < 0) $absentDays = 0; // Safety check
+            
             $lateDays = 0;
             $overtimeDays = 0;
             $totalHours = 0;
@@ -464,7 +518,10 @@ class AttendanceController extends Controller
                     'fullname' => $user->fullname,
                     'shift_start' => $user->shift_start,
                     'shift_end' => $user->shift_end,
+                    'working_days' => $workingDays,
                     'present_days' => $presentDays,
+                    'on_leave_days' => $onLeaveDays,
+                    'absent_days' => $absentDays,
                     'late_days' => $lateDays,
                     'overtime_days' => $overtimeDays,
                     'total_hours' => round($totalHours, 1),
