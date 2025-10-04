@@ -31,6 +31,11 @@ class RolePermissionController extends Controller
             'view_operations' => 'Access Operations (imports, bulk actions)',
             'assign_riders' => 'Assign Riders to Orders',
             'bulk_operations' => 'Bulk Operations (status, rider assign)',
+            'view_requests' => 'View Requests',
+            'view_all_requests' => 'View All Requests (vs own)',
+            'create_requests' => 'Create Requests',
+            'approve_requests' => 'Approve/Reject Requests',
+            'manage_request_settings' => 'Manage Request Settings',
         ];
     }
 
@@ -87,12 +92,14 @@ class RolePermissionController extends Controller
         // Default permissions by role type
         $defaults = [
             'rider' => [
-                'view_dashboard', 'view_orders', 'view_attendance'
+                'view_dashboard', 'view_orders', 'view_attendance',
+                'view_requests', 'create_requests'
             ],
             'manager' => [
                 'view_dashboard', 'view_orders', 'view_all_orders', 'edit_orders',
                 'view_customers', 'edit_customers', 'view_products', 'edit_products',
-                'view_attendance', 'view_all_attendance', 'assign_riders', 'bulk_operations'
+                'view_attendance', 'view_all_attendance', 'assign_riders', 'bulk_operations',
+                'view_requests', 'view_all_requests', 'create_requests', 'approve_requests'
             ],
             'admin' => array_keys($availablePermissions), // All permissions
             'super_admin' => array_keys($availablePermissions) // All permissions

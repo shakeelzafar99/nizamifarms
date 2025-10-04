@@ -190,6 +190,26 @@
         <p class="text-2xl font-bold text-purple-600" id="cardOvertime">0</p>
         <p class="text-xs text-gray-500 mt-1">Overtime</p>
       </div>
+
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+            <span class="text-xl">🏖️</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-orange-600" id="cardOnLeave">0</p>
+        <p class="text-xs text-gray-500 mt-1">On Leave</p>
+      </div>
+
+      <div class="text-center">
+        <div class="flex justify-center mb-1">
+          <div class="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center">
+            <span class="text-xl">❌</span>
+          </div>
+        </div>
+        <p class="text-2xl font-bold text-gray-700" id="cardAbsent">0</p>
+        <p class="text-xs text-gray-500 mt-1">Absent (No Leave)</p>
+      </div>
     </div>
   </div>
 
@@ -262,6 +282,7 @@
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Leave</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
@@ -745,7 +766,11 @@ async function loadAttendanceForDate() {
         shift_end: user.shift_end || '17:00',
         login_time: attendance ? attendance.login_time : null,
         logout_time: attendance ? attendance.logout_time : null,
-        attendance_date: date
+        attendance_date: date,
+        // Include leave fields from attendance data
+        leave_request_id: attendance ? attendance.leave_request_id : null,
+        leave_status: attendance ? attendance.leave_status : null,
+        leave_type_from_req: attendance ? attendance.leave_type_from_req : null
       };
     });
     
@@ -775,7 +800,7 @@ function renderAttendanceTable(data) {
   const body = document.getElementById('attBody');
   
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
@@ -801,6 +826,15 @@ function renderAttendanceTable(data) {
         <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
         <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
+        
+        <!-- Leave badge -->
+        ${r.leave_request_id ? `
+          <td class="px-4 py-3 text-sm">
+            <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${r.leave_status === 'approved' ? 'bg-green-100 text-green-700' : (r.leave_status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}">
+              ${r.leave_type_from_req || 'Leave'} · ${r.leave_status}
+            </span>
+          </td>
+        ` : '<td class="px-4 py-3 text-sm text-gray-400">-</td>'}
         <td class="px-4 py-3 text-sm">
           <div class="flex gap-2" style="position: relative; z-index: 5;">
             ${!r.logout_time ? `
@@ -857,10 +891,15 @@ function filterTableByStatus() {
 }
 
 function updateSummaryCards(data) {
-  let present = 0, onTime = 0, late = 0, overtime = 0;
+  let present = 0, onTime = 0, late = 0, overtime = 0, onLeave = 0, absent = 0;
   
   data.forEach(r => {
-    if (r.login_time) {
+    // Check if on leave (approved or pending)
+    if (r.leave_request_id && (r.leave_status === 'approved' || r.leave_status === 'pending')) {
+      onLeave++;
+    }
+    // If has attendance
+    else if (r.login_time) {
       present++;
       const shift = r.shift_start || '09:00';
       if (r.login_time <= shift) {
@@ -873,12 +912,18 @@ function updateSummaryCards(data) {
         overtime++;
       }
     }
+    // Absent (no attendance and no leave)
+    else {
+      absent++;
+    }
   });
   
   document.getElementById('cardPresent').textContent = present;
   document.getElementById('cardOnTime').textContent = onTime;
   document.getElementById('cardLate').textContent = late;
   document.getElementById('cardOvertime').textContent = overtime;
+  document.getElementById('cardOnLeave').textContent = onLeave;
+  document.getElementById('cardAbsent').textContent = absent;
 }
 
 // Smart quick add - handles both login and logout

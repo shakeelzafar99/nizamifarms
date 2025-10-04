@@ -42,9 +42,11 @@
                         <span class="kt-badge kt-badge-sm kt-badge-warning ml-2" id="approval-count"></span>
                     </button>
                     @endif
+                    @if(auth()->user()->hasPermission('view_all_requests'))
                     <button class="kt-tab-btn" data-view="all" onclick="switchView('all')">
                         All Requests
                     </button>
+                    @endif
                 </div>
                 
                 @if(!$canApproveLevel1 && !$canApproveLevel2)

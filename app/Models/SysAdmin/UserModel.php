@@ -258,4 +258,18 @@ class UserModel extends BaseModel
         $this->intlSrvError();
         return $this->setResponse();
     }
+
+    /**
+     * Check if user has a specific permission
+     * Checks across all roles the user has
+     */
+    public function hasPermission(string $permissionKey): bool
+    {
+        foreach ($this->roles as $role) {
+            if (RolePermissionModel::hasPermission($role->id, $permissionKey)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

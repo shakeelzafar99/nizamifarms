@@ -110,12 +110,6 @@
                         <div class="mt-2 text-sm text-gray-600" id="approval-info"></div>
                     </div>
 
-                    <!-- Title -->
-                    <div class="mb-6">
-                        <label class="kt-label required">Title</label>
-                        <input type="text" name="title" class="kt-input" placeholder="Brief description of your request" required>
-                    </div>
-
                     <!-- Leave-specific fields (hidden by default) -->
                     <div id="leave-fields" style="display: none;">
                         <div class="grid grid-cols-2 gap-4 mb-6">
@@ -129,17 +123,8 @@
                             </div>
                         </div>
 
-                        <div class="mb-6">
-                            <label class="kt-label required">Leave Type</label>
-                            <select name="leave_type" class="kt-select">
-                                <option value="">Select Leave Type</option>
-                                <option value="sick">Sick Leave</option>
-                                <option value="annual">Annual Leave</option>
-                                <option value="casual">Casual Leave</option>
-                                <option value="emergency">Emergency Leave</option>
-                                <option value="unpaid">Unpaid Leave</option>
-                            </select>
-                        </div>
+                        <!-- Hidden field: Leave Type defaults to 'annual' -->
+                        <input type="hidden" name="leave_type" value="annual">
 
                         <div class="mb-6">
                             <div class="kt-alert kt-alert-info" id="leave-days-info" style="display: none;">
@@ -149,6 +134,9 @@
                             </div>
                         </div>
                     </div>
+                    
+                    <!-- Title - hidden for leave requests, auto-filled -->
+                    <input type="hidden" name="title" id="hidden-title" value="leave">
 
                     <!-- Amount field (for advance/expense) -->
                     <div id="amount-field" style="display: none;" class="mb-6">
@@ -156,10 +144,10 @@
                         <input type="number" name="amount" class="kt-input" placeholder="0.00" step="0.01" min="0">
                     </div>
 
-                    <!-- Description -->
+                    <!-- Description - Optional for leave requests -->
                     <div class="mb-6">
-                        <label class="kt-label required">Description</label>
-                        <textarea name="description" class="kt-input" rows="4" placeholder="Provide detailed information about your request" required></textarea>
+                        <label class="kt-label" id="description-label">Description</label>
+                        <textarea name="description" id="description-field" class="kt-input" rows="4" placeholder="Provide detailed information about your request (optional for leave requests)"></textarea>
                     </div>
 
                     <!-- Priority -->
@@ -199,6 +187,8 @@ function handleCategoryChange() {
     // Show/hide fields based on category
     const leaveFields = document.getElementById('leave-fields');
     const amountField = document.getElementById('amount-field');
+    const descriptionLabel = document.getElementById('description-label');
+    const descriptionField = document.getElementById('description-field');
     
     if (categoryCode === 'leave') {
         leaveFields.style.display = 'block';
@@ -206,8 +196,11 @@ function handleCategoryChange() {
         // Make leave fields required
         document.querySelector('[name="leave_start_date"]').required = true;
         document.querySelector('[name="leave_end_date"]').required = true;
-        document.querySelector('[name="leave_type"]').required = true;
         document.querySelector('[name="amount"]').required = false;
+        // Description optional for leave
+        descriptionField.required = false;
+        descriptionLabel.classList.remove('required');
+        descriptionField.placeholder = 'Optional: Provide additional details about your leave';
     } else if (categoryCode === 'advance' || categoryCode === 'expense') {
         leaveFields.style.display = 'none';
         amountField.style.display = 'block';
@@ -215,14 +208,20 @@ function handleCategoryChange() {
         document.querySelector('[name="amount"]').required = true;
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
-        document.querySelector('[name="leave_type"]').required = false;
+        // Description required for advance/expense
+        descriptionField.required = true;
+        descriptionLabel.classList.add('required');
+        descriptionField.placeholder = 'Provide detailed information about your request';
     } else {
         leaveFields.style.display = 'none';
         amountField.style.display = 'none';
         document.querySelector('[name="amount"]').required = false;
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
-        document.querySelector('[name="leave_type"]').required = false;
+        // Description required for other types
+        descriptionField.required = true;
+        descriptionLabel.classList.add('required');
+        descriptionField.placeholder = 'Provide detailed information about your request';
     }
     
     // Show approval info

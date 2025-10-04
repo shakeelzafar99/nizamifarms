@@ -81,6 +81,20 @@
                     </label>
                     @endforeach
                 </div>
+
+                <!-- Requests & Approvals -->
+                <div class="space-y-4">
+                    <h3 class="text-lg font-medium text-gray-900 border-b pb-2">Requests & Approvals</h3>
+                    
+                    @foreach(['view_requests' => 'View Requests', 'view_all_requests' => 'View All Requests (vs own)', 'create_requests' => 'Create Requests', 'approve_requests' => 'Approve/Reject Requests', 'manage_request_settings' => 'Manage Request Settings'] as $key => $name)
+                    <label class="flex items-center">
+                        <input type="checkbox" name="permissions[{{ $key }}]" value="1" 
+                               {{ ($currentPermissions[$key] ?? false) ? 'checked' : '' }}
+                               class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
+                        <span class="ml-3 text-sm text-gray-700">{{ $name }}</span>
+                    </label>
+                    @endforeach
+                </div>
             </div>
         </div>
 

@@ -17,18 +17,58 @@ class AttendanceController extends Controller
 
     public function data(Request $request)
     {
-        $query = DB::table('t_ops_attendance as a')
-            ->join('t_sys_user as u', 'u.id', '=', 'a.user_id')
-            ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+        // Build subquery of leave requests (category=leave) with fields we need
+        $leaveSub = DB::table('t_req_master as r')
+            ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+            ->where('c.category_code', '=', 'leave')
             ->select(
-                'a.*', 
-                'u.fullname',
-                DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
-                DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end')
+                'r.id',
+                'r.requester_user_id',
+                'r.status',
+                'r.leave_type',
+                'r.leave_start_date',
+                'r.leave_end_date'
             );
 
+        // Start from users and LEFT JOIN everything else so users on leave without attendance still show
+        $selectedDate = $request->input('date', now()->toDateString());
+        
+        $query = DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_attendance as a', function($join) use ($selectedDate) {
+                $join->on('u.id', '=', 'a.user_id')
+                     ->whereDate('a.attendance_date', '=', $selectedDate);
+            })
+            ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+            // Join leave subquery matching the selected date
+            ->leftJoinSub($leaveSub, 'lr', function($join) use ($selectedDate) {
+                $join->on('lr.requester_user_id', '=', 'u.id')
+                    ->whereIn('lr.status', ['approved', 'pending'])
+                    ->whereRaw('? BETWEEN lr.leave_start_date AND lr.leave_end_date', [$selectedDate]);
+            })
+            ->select(
+                'u.id as user_id',
+                'u.fullname',
+                'a.id as attendance_id',
+                'a.attendance_date',
+                'a.login_time',
+                'a.logout_time',
+                'a.notes',
+                DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
+                DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end'),
+                // Leave fields
+                'lr.id as leave_request_id',
+                'lr.status as leave_status',
+                'lr.leave_type as leave_type_from_req'
+            )
+            // Only show users who have: attendance record OR leave request for this date
+            ->where(function($q) use ($selectedDate) {
+                $q->whereNotNull('a.id')  // Has attendance
+                  ->orWhereNotNull('lr.id'); // Has leave
+            })
+            ->orderBy('u.fullname');
+
         if ($request->filled('user_id')) {
-            $query->where('a.user_id', (int)$request->input('user_id'));
+            $query->where('u.id', (int)$request->input('user_id'));
         }
         if ($request->filled('user')) {
             $search = $request->input('user');
@@ -37,11 +77,8 @@ class AttendanceController extends Controller
                   ->orWhere('u.id', '=', $search);
             });
         }
-        if ($request->filled('date')) {
-            $query->whereDate('a.attendance_date', $request->input('date'));
-        }
 
-        $rows = $query->orderByDesc('a.attendance_date')->limit(500)->get();
+        $rows = $query->limit(500)->get();
         return response()->json(['success' => true, 'data' => $rows]);
     }
 

@@ -38,6 +38,9 @@ class RequestController extends Controller
         $query = RequestModel::with(['category', 'requester', 'approvals.approver', 'createdBy'])
             ->orderByDesc('created_at');
 
+        // Check if user has permission to view all requests
+        $canViewAllRequests = $user->hasPermission('view_all_requests');
+        
         // Filter based on view
         if ($view === 'my') {
             $query->where('requester_user_id', $user->id);
@@ -66,6 +69,13 @@ class RequestController extends Controller
                     });
                 }
             });
+        } elseif ($view === 'all') {
+            // Only users with 'view_all_requests' permission can view all
+            if (!$canViewAllRequests) {
+                // Fall back to 'my requests' if they don't have permission
+                $query->where('requester_user_id', $user->id);
+            }
+            // Otherwise, show all (no filter applied)
         }
 
         // Additional filters

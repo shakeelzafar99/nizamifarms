@@ -246,8 +246,8 @@ Route::middleware(['auth'])->group(function () {
     });
 });
 
-// Rider-only scoped APIs (example view filters will check role on server side as well)
-Route::middleware(['auth', \App\Http\Middleware\EnsureRole::class.':rider'])->group(function () {
+// User attendance - accessible by anyone with view_attendance permission
+Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/mine', [\App\Http\Controllers\CRM\AttendanceController::class, 'mine'])->name('attendance.mine');
     Route::get('/attendance/mine/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'mineData'])->name('attendance.mine.data');
 });

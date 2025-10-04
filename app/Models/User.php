@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use App\Models\SysAdmin\RoleModel;
+use App\Models\SysAdmin\RolePermissionModel;
 
 class User extends Authenticatable 
 {
@@ -38,4 +40,26 @@ class User extends Authenticatable
     protected $casts = [
         'email_verified_at' => 'datetime',
     ];
+
+    /**
+     * User roles relationship
+     */
+    public function roles()
+    {
+        return $this->belongsToMany(RoleModel::class, 't_sys_user_role', 'user_id', 'role_id');
+    }
+
+    /**
+     * Check if user has a specific permission
+     * Checks across all roles the user has
+     */
+    public function hasPermission(string $permissionKey): bool
+    {
+        foreach ($this->roles as $role) {
+            if (RolePermissionModel::hasPermission($role->id, $permissionKey)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

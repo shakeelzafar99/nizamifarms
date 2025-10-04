@@ -148,17 +148,21 @@ class RequestModel extends BaseModel
 
     public function isPending(): bool
     {
-        return $this->status === self::STATUS_PENDING;
+        // Use getAttribute to bypass the BaseModel property and get the DB column
+        $status = $this->getAttribute('status') ?? $this->getAttributeValue('status') ?? '';
+        return strtolower(trim($status)) === 'pending';
     }
 
     public function isApproved(): bool
     {
-        return $this->status === self::STATUS_APPROVED;
+        $status = $this->getAttribute('status') ?? '';
+        return strtolower(trim($status)) === 'approved';
     }
 
     public function isRejected(): bool
     {
-        return $this->status === self::STATUS_REJECTED;
+        $status = $this->getAttribute('status') ?? '';
+        return strtolower(trim($status)) === 'rejected';
     }
 
     public function canBeApprovedByLevel(int $level): bool
@@ -212,13 +216,13 @@ class RequestModel extends BaseModel
 
             // If rejected at any level, mark entire request as rejected
             if ($action === 'rejected') {
-                $this->status = self::STATUS_REJECTED;
+                $this->setAttribute('status', self::STATUS_REJECTED);
                 $this->rejection_reason = $comments;
                 $this->completed_at = now();
             }
             // Check if all required approvals are complete
             elseif ($this->areAllApprovalsComplete()) {
-                $this->status = self::STATUS_APPROVED;
+                $this->setAttribute('status', self::STATUS_APPROVED);
                 $this->completed_at = now();
                 
                 // If it's a leave request, create attendance records
@@ -277,7 +281,6 @@ class RequestModel extends BaseModel
                     'attendance_date' => $currentDate->format('Y-m-d'),
                     'login_time' => null,
                     'logout_time' => null,
-                    'status' => 'leave',
                     'notes' => "Approved leave: {$this->leave_type}",
                     'leave_request_id' => $this->id,
                     'leave_type' => $this->leave_type,
@@ -292,15 +295,17 @@ class RequestModel extends BaseModel
 
     public function getApprovalStatusText(): string
     {
-        if ($this->status === self::STATUS_APPROVED) {
+        $status = $this->getAttribute('status');
+        
+        if ($status === self::STATUS_APPROVED) {
             return 'Approved';
         }
 
-        if ($this->status === self::STATUS_REJECTED) {
+        if ($status === self::STATUS_REJECTED) {
             return 'Rejected';
         }
 
-        if ($this->status === self::STATUS_CANCELLED) {
+        if ($status === self::STATUS_CANCELLED) {
             return 'Cancelled';
         }
 
