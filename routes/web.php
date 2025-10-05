@@ -98,6 +98,29 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/summary', [\App\Http\Controllers\CRM\AttendanceController::class, 'summary'])->name('attendance.summary');
     Route::get('/attendance/monthly-report', [\App\Http\Controllers\CRM\AttendanceController::class, 'monthlyReport'])->name('attendance.monthly-report');
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
+    Route::get('/attendance/users-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'getUsersVisibility'])->name('attendance.users-visibility');
+    Route::post('/attendance/update-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateUserVisibility'])->name('attendance.update-visibility');
+
+    // Shift Management
+    Route::get('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'index'])->name('shifts.index');
+    Route::get('/shifts/clear-cache', [\App\Http\Controllers\Ops\ShiftController::class, 'clearCache'])->name('shifts.clear-cache');
+    Route::get('/shifts/list', [\App\Http\Controllers\Ops\ShiftController::class, 'list'])->name('shifts.list');
+    Route::post('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'store'])->name('shifts.store');
+    Route::put('/shifts/{id}', [\App\Http\Controllers\Ops\ShiftController::class, 'update'])->name('shifts.update');
+    Route::delete('/shifts/{id}', [\App\Http\Controllers\Ops\ShiftController::class, 'destroy'])->name('shifts.destroy');
+    Route::post('/shifts/{id}/set-default', [\App\Http\Controllers\Ops\ShiftController::class, 'setDefault'])->name('shifts.set-default');
+    Route::get('/shifts/users-with-shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'getUsersWithShifts'])->name('shifts.users-with-shifts');
+    Route::post('/shifts/assign', [\App\Http\Controllers\Ops\ShiftController::class, 'assignShiftToUser'])->name('shifts.assign');
+    Route::post('/shifts/bulk-assign', [\App\Http\Controllers\Ops\ShiftController::class, 'bulkAssignShift'])->name('shifts.bulk-assign');
+    Route::delete('/shifts/remove-assignment', [\App\Http\Controllers\Ops\ShiftController::class, 'removeShiftAssignment'])->name('shifts.remove-assignment');
+
+    // Holiday Management
+    Route::get('/holidays', [\App\Http\Controllers\Ops\HolidayController::class, 'index'])->name('holidays.index');
+    Route::get('/holidays/list', [\App\Http\Controllers\Ops\HolidayController::class, 'list'])->name('holidays.list');
+    Route::post('/holidays', [\App\Http\Controllers\Ops\HolidayController::class, 'store'])->name('holidays.store');
+    Route::delete('/holidays/{id}', [\App\Http\Controllers\Ops\HolidayController::class, 'destroy'])->name('holidays.destroy');
+    Route::get('/holidays/upcoming', [\App\Http\Controllers\Ops\HolidayController::class, 'upcoming'])->name('holidays.upcoming');
+    Route::get('/holidays/years', [\App\Http\Controllers\Ops\HolidayController::class, 'getYears'])->name('holidays.years');
     Route::get('/users/all', [\App\Http\Controllers\SysAdmin\UserController::class, 'allActive'])->name('users.all');
     Route::post('/orders/{id}/convert', [OrderController::class, 'convertOrder'])->name('orders.convert');
     Route::post('/orders/{id}/ignore', [OrderController::class, 'ignoreOrder'])->name('orders.ignore');

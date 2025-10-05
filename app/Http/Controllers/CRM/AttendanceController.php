@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Services\ShiftResolutionService;
 
 class AttendanceController extends Controller
 {
@@ -13,6 +14,69 @@ class AttendanceController extends Controller
     public function index(Request $request)
     {
         return view('pages.attendance.index');
+    }
+
+    // Get all users with their attendance visibility status
+    public function getUsersVisibility(Request $request)
+    {
+        $users = DB::table('t_sys_user as u')
+            ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->select(
+                'u.id',
+                'u.fullname',
+                'r.urole_name as role_name',
+                DB::raw('COALESCE(av.is_visible, 1) as is_visible'),
+                'av.notes as hide_reason'
+            )
+            ->orderBy('u.fullname')
+            ->get();
+
+        return response()->json(['success' => true, 'data' => $users]);
+    }
+
+    // Update user visibility in attendance
+    public function updateUserVisibility(Request $request)
+    {
+        $validated = $request->validate([
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'is_visible' => 'required|boolean',
+            'notes' => 'nullable|string|max:500'
+        ]);
+
+        $userId = $validated['user_id'];
+        $isVisible = $validated['is_visible'];
+        $notes = $validated['notes'] ?? null;
+
+        // Check if record exists
+        $existing = DB::table('t_ops_attendance_visibility')->where('user_id', $userId)->first();
+
+        if ($existing) {
+            // Update existing record
+            DB::table('t_ops_attendance_visibility')
+                ->where('user_id', $userId)
+                ->update([
+                    'is_visible' => $isVisible,
+                    'notes' => $notes,
+                    'hidden_by' => $isVisible ? null : auth()->id(),
+                    'hidden_at' => $isVisible ? null : now(),
+                    'updated_at' => now()
+                ]);
+        } else {
+            // Insert new record
+            DB::table('t_ops_attendance_visibility')->insert([
+                'user_id' => $userId,
+                'is_visible' => $isVisible,
+                'notes' => $notes,
+                'hidden_by' => $isVisible ? null : auth()->id(),
+                'hidden_at' => $isVisible ? null : now(),
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+        }
+
+        return response()->json(['success' => true, 'message' => 'Visibility updated successfully']);
     }
 
     public function data(Request $request)
@@ -39,6 +103,11 @@ class AttendanceController extends Controller
                      ->whereDate('a.attendance_date', '=', $selectedDate);
             })
             ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+            // Join role information for filtering
+            ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+            ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            // Join attendance visibility (default to visible if no record exists)
+            ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
             // Join leave subquery matching the selected date
             ->leftJoinSub($leaveSub, 'lr', function($join) use ($selectedDate) {
                 $join->on('lr.requester_user_id', '=', 'u.id')
@@ -48,25 +117,36 @@ class AttendanceController extends Controller
             ->select(
                 'u.id as user_id',
                 'u.fullname',
+                'u.is_active',
+                'r.urole_name as role_name',
                 'a.id as attendance_id',
                 'a.attendance_date',
                 'a.login_time',
                 'a.logout_time',
                 'a.notes',
-                DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
-                DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end'),
+                // Keep legacy shifts for fallback only (will be replaced by ShiftResolutionService)
+                DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
+                DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                 // Leave fields
                 'lr.id as leave_request_id',
                 'lr.status as leave_status',
-                'lr.leave_type as leave_type_from_req'
+                'lr.leave_type as leave_type_from_req',
+                // Visibility (default to 1 if no record)
+                DB::raw('COALESCE(av.is_visible, 1) as is_attendance_visible')
             )
-            // Only show users who have: attendance record OR leave request for this date
-            ->where(function($q) use ($selectedDate) {
-                $q->whereNotNull('a.id')  // Has attendance
-                  ->orWhereNotNull('lr.id'); // Has leave
+            // Only show users that are visible in attendance (default to visible if no record)
+            ->where(function($q) {
+                $q->whereNull('av.is_visible')  // No visibility record = visible
+                  ->orWhere('av.is_visible', 1); // Explicitly visible
             })
             ->orderBy('u.fullname');
 
+        // Filter by active/all users (default to active only)
+        $activeFilter = $request->input('active_filter', 'active');
+        if ($activeFilter === 'active') {
+            $query->where('u.is_active', 1);
+        }
+        
         if ($request->filled('user_id')) {
             $query->where('u.id', (int)$request->input('user_id'));
         }
@@ -79,6 +159,17 @@ class AttendanceController extends Controller
         }
 
         $rows = $query->limit(500)->get();
+        
+        // Resolve actual shifts using ShiftResolutionService
+        $shiftService = new ShiftResolutionService();
+        foreach ($rows as $row) {
+            $shiftData = $shiftService->getUserShift($row->user_id);
+            $row->shift_start = $shiftData['shift_start'];
+            $row->shift_end = $shiftData['shift_end'];
+            $row->shift_name = $shiftData['shift_name'];
+            $row->shift_source = $shiftData['source'];
+        }
+        
         return response()->json(['success' => true, 'data' => $rows]);
     }
 
@@ -140,31 +231,81 @@ class AttendanceController extends Controller
     // Monthly report for all employees
     public function monthlyReport(Request $request)
     {
-        $month = $request->input('month', date('Y-m'));
-        $startDate = $month . '-01';
-        $endDate = date('Y-m-t', strtotime($startDate));
-        
-        $data = DB::table('t_ops_attendance as a')
-            ->join('t_sys_user as u', 'u.id', '=', 'a.user_id')
-            ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
-            ->whereBetween('a.attendance_date', [$startDate, $endDate])
-            ->select(
-                'a.*',
-                'u.fullname',
-                DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
-                DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end')
-            )
-            ->orderBy('u.fullname')
-            ->orderBy('a.attendance_date')
-            ->get();
+        try {
+            $month = $request->input('month', date('Y-m'));
+            $startDate = $month . '-01';
+            $endDate = date('Y-m-t', strtotime($startDate));
             
-        // Group by user
+            Log::info('Monthly report requested', [
+                'month' => $month,
+                'startDate' => $startDate,
+                'endDate' => $endDate
+            ]);
+            
+            $data = DB::table('t_ops_attendance as a')
+                ->join('t_sys_user as u', 'u.id', '=', 'a.user_id')
+                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->whereBetween('a.attendance_date', [$startDate, $endDate])
+                ->select(
+                    'a.*',
+                    'u.fullname',
+                    'u.id as user_id',
+                    DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
+                    DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end')
+                )
+                ->orderBy('u.fullname')
+                ->orderBy('a.attendance_date')
+                ->get();
+            
+            Log::info('Monthly report data fetched', ['record_count' => $data->count()]);
+            
+            // Initialize ShiftResolutionService
+            $shiftService = new ShiftResolutionService();
+            
+        // Group by user and resolve shifts
         $byUser = [];
         foreach ($data as $record) {
             if (!isset($byUser[$record->user_id])) {
+                try {
+                    // Get user's shift info using the most recent date (end date or today, whichever is earlier)
+                    // This ensures we get the current/latest shift assignment
+                    $lookupDate = min($endDate, date('Y-m-d'));
+                    $shiftData = $shiftService->getUserShift($record->user_id, $lookupDate);
+                    
+                    Log::info('User shift resolved', [
+                        'user_id' => $record->user_id,
+                        'fullname' => $record->fullname,
+                        'shift_data' => $shiftData
+                    ]);
+                    
+                    // Calculate working days for this user in this month
+                    $workingDays = $shiftService->calculateWorkingDays($record->user_id, $startDate, $endDate);
+                    
+                    Log::info('Working days calculated', [
+                        'user_id' => $record->user_id,
+                        'working_days' => $workingDays
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Error resolving shift for user', [
+                        'user_id' => $record->user_id,
+                        'error' => $e->getMessage()
+                    ]);
+                    // Fall back to legacy/default values
+                    $shiftData = [
+                        'shift_start' => $record->legacy_shift_start ?? '09:00',
+                        'shift_end' => $record->legacy_shift_end ?? '17:00',
+                        'shift_name' => 'Legacy Shift'
+                    ];
+                    $workingDays = 27;
+                }
+                
                 $byUser[$record->user_id] = [
                     'user_id' => $record->user_id,
                     'fullname' => $record->fullname,
+                    'working_days' => $workingDays,
+                    'shift_name' => $shiftData['shift_name'],
+                    'shift_start' => $shiftData['shift_start'],
+                    'shift_end' => $shiftData['shift_end'],
                     'total_days' => 0,
                     'present_days' => 0,
                     'late_days' => 0,
@@ -176,21 +317,24 @@ class AttendanceController extends Controller
                 ];
             }
             
+            $userShiftStart = $byUser[$record->user_id]['shift_start'];
+            $userShiftEnd = $byUser[$record->user_id]['shift_end'];
+            
             $byUser[$record->user_id]['total_days']++;
             if ($record->login_time) {
                 $byUser[$record->user_id]['present_days']++;
                 
-                // Calculate late
-                if ($record->login_time > $record->shift_start) {
+                // Calculate late using user's actual shift
+                if ($record->login_time > $userShiftStart) {
                     $byUser[$record->user_id]['late_days']++;
-                    $late_mins = (strtotime($record->login_time) - strtotime($record->shift_start)) / 60;
+                    $late_mins = (strtotime($record->login_time) - strtotime($userShiftStart)) / 60;
                     $byUser[$record->user_id]['total_late_minutes'] += $late_mins;
                 }
                 
-                // Calculate overtime
-                if ($record->logout_time && $record->logout_time > $record->shift_end) {
+                // Calculate overtime using user's actual shift
+                if ($record->logout_time && $record->logout_time > $userShiftEnd) {
                     $byUser[$record->user_id]['overtime_days']++;
-                    $ot_mins = (strtotime($record->logout_time) - strtotime($record->shift_end)) / 60;
+                    $ot_mins = (strtotime($record->logout_time) - strtotime($userShiftEnd)) / 60;
                     $byUser[$record->user_id]['total_overtime_minutes'] += $ot_mins;
                 }
                 
@@ -206,12 +350,25 @@ class AttendanceController extends Controller
                 'attendance_date' => $record->attendance_date,
                 'login_time' => $record->login_time,
                 'logout_time' => $record->logout_time,
-                'shift_start' => $record->shift_start,
-                'shift_end' => $record->shift_end
+                'shift_start' => $userShiftStart,
+                'shift_end' => $userShiftEnd
             ];
         }
         
+        Log::info('Monthly report processed', [
+            'user_count' => count($byUser),
+            'sample_user' => array_values($byUser)[0] ?? null
+        ]);
+        
         return response()->json(['success' => true, 'data' => array_values($byUser), 'month' => $month]);
+        
+        } catch (\Exception $e) {
+            Log::error('Monthly report error', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
     }
 
     // Get summary/reports
@@ -316,13 +473,7 @@ class AttendanceController extends Controller
 
             // Get user info
             $user = DB::table('t_sys_user as u')
-                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
-                ->select(
-                    'u.id',
-                    'u.fullname',
-                    DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
-                    DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end')
-                )
+                ->select('u.id', 'u.fullname')
                 ->where('u.id', $userId)
                 ->first();
 
@@ -332,6 +483,14 @@ class AttendanceController extends Controller
                     'message' => 'User not found'
                 ], 404);
             }
+
+            // Get shift info using ShiftResolutionService
+            $shiftService = new ShiftResolutionService();
+            $shiftInfo = $shiftService->getUserShift($userId, $fromDate);
+            
+            // Add shift times to user object for backward compatibility
+            $user->shift_start = $shiftInfo['shift_start'];
+            $user->shift_end = $shiftInfo['shift_end'];
 
             // Build per-day delivered orders via subquery to avoid cross-day aggregation
             // Filter by the selected rider and the requested date range, and only current assignments
@@ -391,8 +550,8 @@ class AttendanceController extends Controller
                     'lr.leave_status',
                     'lr.leave_type',
                     DB::raw('COALESCE(d.orders_delivered, 0) as total_orders_delivered'),
-                    DB::raw('COALESCE(d.first_delivery_time, NULL) as first_delivery_time'),
-                    DB::raw('COALESCE(d.last_delivery_time, NULL) as last_delivery_time')
+                    DB::raw("COALESCE(d.first_delivery_time, '-') as first_delivery_time"),
+                    DB::raw("COALESCE(d.last_delivery_time, '-') as last_delivery_time")
                 )
                 ->orderByDesc('a.attendance_date');
             
@@ -418,6 +577,16 @@ class AttendanceController extends Controller
             
             $records = $query->get();
             
+            // Clean up any null values in the records immediately after fetch
+            foreach ($records as $record) {
+                if ($record->first_delivery_time === null) {
+                    $record->first_delivery_time = '-';
+                }
+                if ($record->last_delivery_time === null) {
+                    $record->last_delivery_time = '-';
+                }
+            }
+            
             // Log results for debugging
             Log::info('Employee details results', [
                 'user_id' => $userId,
@@ -426,20 +595,10 @@ class AttendanceController extends Controller
                 'total_orders_sum' => $records->sum('total_orders_delivered')
             ]);
 
-            // Calculate working days in date range (excluding off days)
-            // For now, assume Tuesday is off (day 2). You can make this configurable later.
-            $workingDays = 0;
-            $currentDate = new \DateTime($startDate);
-            $endDateObj = new \DateTime($endDate);
-            
-            while ($currentDate <= $endDateObj) {
-                $dayOfWeek = (int)$currentDate->format('N'); // 1=Monday, 7=Sunday
-                // Exclude Tuesday (2) - you can make this configurable
-                if ($dayOfWeek != 2) {
-                    $workingDays++;
-                }
-                $currentDate->modify('+1 day');
-            }
+            // Calculate working days using ShiftResolutionService
+            // This considers user's shift schedule AND public holidays
+            $shiftService = new ShiftResolutionService();
+            $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $endDate);
 
             // Calculate statistics
             $totalDays = $records->count();
@@ -506,9 +665,26 @@ class AttendanceController extends Controller
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;
 
-                // Format delivery times for display
-                $record->first_delivery_time = $record->first_delivery_time ? date('H:i', strtotime($record->first_delivery_time)) : '-';
-                $record->last_delivery_time = $record->last_delivery_time ? date('H:i', strtotime($record->last_delivery_time)) : '-';
+                // Format delivery times for display (handle null values)
+                if ($record->first_delivery_time && $record->first_delivery_time !== '-') {
+                    try {
+                        $record->first_delivery_time = date('H:i', strtotime($record->first_delivery_time));
+                    } catch (\Exception $e) {
+                        $record->first_delivery_time = '-';
+                    }
+                } else {
+                    $record->first_delivery_time = '-';
+                }
+                
+                if ($record->last_delivery_time && $record->last_delivery_time !== '-') {
+                    try {
+                        $record->last_delivery_time = date('H:i', strtotime($record->last_delivery_time));
+                    } catch (\Exception $e) {
+                        $record->last_delivery_time = '-';
+                    }
+                } else {
+                    $record->last_delivery_time = '-';
+                }
             }
 
             return response()->json([
@@ -526,6 +702,11 @@ class AttendanceController extends Controller
                     'overtime_days' => $overtimeDays,
                     'total_hours' => round($totalHours, 1),
                     'total_orders_delivered' => $totalOrdersDelivered,
+                    'shift_info' => [
+                        'shift_name' => $shiftInfo['shift_name'],
+                        'shift_source' => $shiftInfo['source'],
+                        'working_days_per_week' => count($shiftInfo['working_days'])
+                    ],
                     'date_range' => [
                         'start' => $startDate,
                         'end' => $endDate

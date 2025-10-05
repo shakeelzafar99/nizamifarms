@@ -338,14 +338,18 @@ function renderReportTable(data) {
   }
 
   body.innerHTML = data.map(emp => {
-    // Use calculated working days instead of total calendar days
-    const attendancePerc = calculatedWorkingDays > 0 ? ((emp.present_days / calculatedWorkingDays) * 100).toFixed(1) : 0;
+    // Use each employee's individual working days from their shift schedule
+    const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
+    const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
     const avgLate = emp.late_days > 0 ? (emp.total_late_minutes / emp.late_days).toFixed(0) : 0;
     
     return `
       <tr class="hover:bg-gray-50">
-        <td class="px-4 py-3 text-sm font-medium text-gray-900">${emp.fullname || 'Unknown'}</td>
-        <td class="px-4 py-3 text-sm text-center">${emp.present_days} / ${calculatedWorkingDays}</td>
+        <td class="px-4 py-3 text-sm font-medium text-gray-900">
+          <div>${emp.fullname || 'Unknown'}</div>
+          <div class="text-xs text-gray-500 mt-1">${emp.shift_name || 'Default Shift'}</div>
+        </td>
+        <td class="px-4 py-3 text-sm text-center">${emp.present_days} / ${userWorkingDays}</td>
         <td class="px-4 py-3 text-sm text-center">
           <span class="px-2 py-1 rounded-full text-xs font-medium ${attendancePerc >= 90 ? 'bg-green-100 text-green-700' : attendancePerc >= 75 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}">
             ${attendancePerc}%
@@ -371,7 +375,11 @@ function renderReportTable(data) {
 function updateStatistics(data, month) {
   const totalEmployees = data.length;
   const totalPresent = data.reduce((sum, emp) => sum + (emp.present_days || 0), 0);
-  const avgAttendance = totalEmployees > 0 && calculatedWorkingDays > 0 ? ((totalPresent / (totalEmployees * calculatedWorkingDays)) * 100).toFixed(1) : 0;
+  
+  // Calculate average attendance using each employee's individual working days
+  const totalPossibleDays = data.reduce((sum, emp) => sum + (emp.working_days || calculatedWorkingDays || 27), 0);
+  const avgAttendance = totalPossibleDays > 0 ? ((totalPresent / totalPossibleDays) * 100).toFixed(1) : 0;
+  
   const totalLate = data.reduce((sum, emp) => sum + (emp.late_days || 0), 0);
   const totalHours = data.reduce((sum, emp) => sum + (emp.total_hours || 0), 0);
 
@@ -563,12 +571,13 @@ function getStatus(loginTime, shiftStart) {
 }
 
 function exportToCSV() {
-  let csv = 'Employee,Present Days,Attendance %,Late Days,Avg Late (min),OT Days,Total Hours\n';
+  let csv = 'Employee,Shift,Present Days,Attendance %,Late Days,Avg Late (min),OT Days,Total Hours\n';
   
   reportData.forEach(emp => {
-    const attendancePerc = calculatedWorkingDays > 0 ? ((emp.present_days / calculatedWorkingDays) * 100).toFixed(1) : 0;
+    const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
+    const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
     const avgLate = emp.late_days > 0 ? (emp.total_late_minutes / emp.late_days).toFixed(0) : 0;
-    csv += `${emp.fullname},${emp.present_days}/${calculatedWorkingDays},${attendancePerc}%,${emp.late_days},${avgLate},${emp.overtime_days},${emp.total_hours.toFixed(1)}\n`;
+    csv += `${emp.fullname},${emp.shift_name || 'Default'},${emp.present_days}/${userWorkingDays},${attendancePerc}%,${emp.late_days},${avgLate},${emp.overtime_days},${emp.total_hours.toFixed(1)}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv' });

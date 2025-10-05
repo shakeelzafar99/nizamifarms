@@ -293,6 +293,32 @@
                     </div>
                     
                     <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/shifts">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-calendar text-lg"></i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Shift Management
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                        <a href="/holidays">
+                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                    <i class="ki-filled ki-abstract-39 text-lg"></i>
+                                </span>
+                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                    Public Holidays
+                                </span>
+                            </div>
+                        </a>
+                    </div>
+                    
+                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                         <a href="/admin/operations">
                             <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                                 <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">

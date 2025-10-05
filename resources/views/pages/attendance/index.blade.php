@@ -40,6 +40,13 @@
       >
         Manage Shifts
       </button>
+      <button 
+        type="button"
+        onclick="openCustomizeUserList(); return false;" 
+        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-semibold shadow-md"
+      >
+        ⚙️ Customize User List
+      </button>
     </div>
   </div>
 
@@ -531,6 +538,74 @@
   </div>
 </div>
 
+<!-- Customize User List Modal -->
+<div id="customizeUserListModal" style="display: none;" onclick="if(event.target === this) closeCustomizeUserList();">
+  <div style="background: white; border-radius: 16px; width: 95%; max-width: 800px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);" onclick="event.stopPropagation();">
+    <!-- Header -->
+    <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Customize Attendance User List</h2>
+          <p style="font-size: 14px; color: #6b7280; margin-top: 4px;">Hide system users or test accounts from attendance tracking. By default, all users are visible.</p>
+        </div>
+        <button onclick="closeCustomizeUserList()" style="color: #9ca3af; font-size: 28px; line-height: 1; border: none; background: none; cursor: pointer; padding: 0;" onmouseover="this.style.color='#4b5563'" onmouseout="this.style.color='#9ca3af'">
+          ×
+        </button>
+      </div>
+    </div>
+    
+    <!-- Users List (Scrollable) -->
+    <div style="overflow-y: auto; flex: 1; padding: 24px;">
+      <table style="width: 100%;">
+        <thead style="background: #f9fafb; position: sticky; top: 0;">
+          <tr style="text-align: left; font-size: 12px; font-weight: 500; color: #6b7280; text-transform: uppercase;">
+            <th style="padding: 12px; width: 50px;">
+              <input type="checkbox" id="selectAllUsersVis" onchange="toggleSelectAllUsersVis(this)" checked>
+            </th>
+            <th style="padding: 12px;">Employee</th>
+            <th style="padding: 12px;">Role</th>
+            <th style="padding: 12px; width: 120px;">Show in Attendance</th>
+          </tr>
+        </thead>
+        <tbody id="usersVisibilityTableBody">
+          <tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    
+    <!-- Footer -->
+    <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
+      <div style="font-size: 13px; color: #6b7280;">
+        <span id="visibleUsersCount">0</span> users will appear in attendance tracking
+      </div>
+      <div style="display: flex; gap: 12px;">
+        <button onclick="closeCustomizeUserList()" style="padding: 10px 20px; background: white; color: #374151; border: 1px solid #d1d5db; border-radius: 8px; cursor: pointer; font-weight: 500;">
+          Cancel
+        </button>
+        <button onclick="saveUserVisibilityChanges()" style="padding: 10px 20px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500;">
+          Save Changes
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  #customizeUserListModal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-y: auto;
+  }
+</style>
+
 <script>
 let allUsers = [];
 let showOnlyActive = true; // default
@@ -541,6 +616,8 @@ let employeeDetailsData = null; // Store employee details modal data
 let allAttendanceData = [];
 let currentSummaryPeriod = 'day'; // 'day' or 'month'
 let currentTimeModalMode = null; // 'login' or 'logout'
+let allUsersVisibility = [];
+let visibilityChanges = {};
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', async function() {
@@ -561,6 +638,15 @@ document.addEventListener('DOMContentLoaded', async function() {
         const userId = parseInt(target.dataset.userId);
         const userName = target.dataset.userName;
         quickAddLogout(userId, userName);
+      }
+      
+      // Handle manage shift button (📅 button)
+      if (target.classList.contains('manage-shift-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const userId = parseInt(target.dataset.userId);
+        const userName = target.dataset.userName;
+        openShiftManagerForUser(userId, userName);
       }
       
       // Handle quick edit button (✏️ button)
@@ -624,7 +710,8 @@ async function loadAllUsers() {
 function onActiveFilterChange() {
   const val = document.getElementById('activeFilter').value;
   showOnlyActive = (val === 'active');
-  // Reload users and table respecting filter
+  // Reload attendance table with the new filter
+  // Also need to reload allUsers for the dropdowns
   loadAllUsers().then(() => {
     loadAttendanceForDate();
   });
@@ -752,48 +839,27 @@ async function saveAttendance() {
 async function loadAttendanceForDate() {
   const date = document.getElementById('tableDate').value;
   const userFilter = document.getElementById('userFilter').value;
+  const activeFilter = document.getElementById('activeFilter')?.value || 'active';
   
   try {
-    // Fetch attendance data for the date
-    const attRes = await fetch(`/attendance/data?date=${date}`);
+    // Fetch attendance data for the date (includes shift data from ShiftResolutionService)
+    const attRes = await fetch(`/attendance/data?date=${date}&active_filter=${activeFilter}`);
     const attJson = await attRes.json();
     const attendanceData = attJson.success ? attJson.data : [];
     
-    // Create a map of user_id => attendance record
-    const attendanceMap = {};
-    attendanceData.forEach(att => {
-      attendanceMap[att.user_id] = att;
-    });
+    // Just use the attendance API data directly - it already has correct shifts!
+    // The backend now returns ALL users (not just those with attendance/leave)
+    allAttendanceData = attendanceData;
     
-    // Merge all users with their attendance (or null if no attendance)
-    allAttendanceData = allUsers.map(user => {
-      const attendance = attendanceMap[user.id];
-      return {
-        user_id: user.id,
-        fullname: user.fullname,
-        shift_start: user.shift_start || '09:00',
-        shift_end: user.shift_end || '17:00',
-        login_time: attendance ? attendance.login_time : null,
-        logout_time: attendance ? attendance.logout_time : null,
-        attendance_date: date,
-        // Include leave fields from attendance data
-        leave_request_id: attendance ? attendance.leave_request_id : null,
-        leave_status: attendance ? attendance.leave_status : null,
-        leave_type_from_req: attendance ? attendance.leave_type_from_req : null
-      };
-    });
-    
-    // Apply user filter
+    // Apply user filter (using role_name from attendance API data)
     let filteredData = allAttendanceData;
     if (userFilter === 'riders') {
       filteredData = allAttendanceData.filter(u => {
-        const user = allUsers.find(usr => usr.id == u.user_id);
-        return user && user.role_name && user.role_name.toLowerCase().includes('rider');
+        return u.role_name && u.role_name.toLowerCase().includes('rider');
       });
     } else if (userFilter === 'staff') {
       filteredData = allAttendanceData.filter(u => {
-        const user = allUsers.find(usr => usr.id == u.user_id);
-        return user && user.role_name && !user.role_name.toLowerCase().includes('rider');
+        return !u.role_name || !u.role_name.toLowerCase().includes('rider');
       });
     }
     
@@ -829,7 +895,10 @@ function renderAttendanceTable(data) {
             ${r.fullname || '#' + r.user_id}
           </button>
         </td>
-        <td class="px-4 py-3 text-sm text-gray-600">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</td>
+        <td class="px-4 py-3 text-sm">
+          <div class="text-gray-900 font-medium">${r.shift_name || 'Default Shift'}</div>
+          <div class="text-xs text-gray-500">${r.shift_start || '09:00'} - ${r.shift_end || '17:00'}</div>
+        </td>
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
         <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
         <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
@@ -858,6 +927,16 @@ function renderAttendanceTable(data) {
                 ➕
               </button>
             ` : ''}
+            <button 
+              type="button"
+              class="manage-shift-btn px-2 py-1 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition text-xs font-medium"
+              data-user-id="${r.user_id}"
+              data-user-name="${(r.fullname || '').replace(/"/g, '&quot;')}"
+              title="Manage shift for ${(r.fullname || '').replace(/"/g, '&quot;')}"
+              style="cursor: pointer;"
+            >
+              📅
+            </button>
             <button 
               type="button"
               class="quick-edit-btn px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition text-xs font-medium"
@@ -1392,6 +1471,13 @@ function showShiftManager() {
   }
 }
 
+// Open shift manager for specific user (from attendance row action button)
+function openShiftManagerForUser(userId, userName) {
+  console.log('Opening shift manager for user:', userId, userName);
+  // Redirect to shifts page with user filter in URL
+  window.location.href = `/shifts?user=${userId}&name=${encodeURIComponent(userName)}`;
+}
+
 function closeShiftManager() {
   const modal = document.getElementById('shiftModal');
   if (modal) {
@@ -1475,6 +1561,14 @@ async function saveShift(userId) {
 async function showEmployeeDetails(userId, fullname, fromDate) {
   console.log('showEmployeeDetails called:', { userId, fullname, fromDate });
   
+  // If fromDate is null/undefined, use current selected date from date picker or today
+  if (!fromDate || fromDate === 'null' || fromDate === 'undefined') {
+    const dateInput = document.getElementById('attendanceDate');
+    fromDate = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
+  }
+  
+  console.log('Using fromDate:', fromDate);
+  
   const modal = document.getElementById('employeeDetailsModal');
   const body = document.getElementById('employeeDetailsBody');
   
@@ -1523,11 +1617,19 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     const emp = json.employee;
     const records = json.daily_records;
     
-    // Update header
-    const dateRange = new Date(emp.date_range.start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + 
-                     ' - ' + 
-                     new Date(emp.date_range.end).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
+    // Update header with error handling
+    try {
+      const startDate = emp.date_range && emp.date_range.start ? new Date(emp.date_range.start + 'T00:00:00') : new Date();
+      const endDate = emp.date_range && emp.date_range.end ? new Date(emp.date_range.end + 'T00:00:00') : new Date();
+      
+      const dateRange = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + 
+                       ' - ' + 
+                       endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
+    } catch(e) {
+      console.error('Error formatting date range:', e);
+      document.getElementById('detailsDateRange').textContent = 'Last 30 Days';
+    }
     
     // Use backend-calculated statistics
     console.log('Employee stats from backend:', {
@@ -1608,5 +1710,170 @@ function closeEmployeeDetails() {
 // Make functions globally accessible
 window.showEmployeeDetails = showEmployeeDetails;
 window.closeEmployeeDetails = closeEmployeeDetails;
+
+// ==================== Customize User List Functions ====================
+
+async function openCustomizeUserList() {
+  try {
+    console.log('Opening customize user list modal...');
+    const modal = document.getElementById('customizeUserListModal');
+    modal.style.display = 'flex';
+    
+    // Load users with visibility status
+    const res = await fetch('/attendance/users-visibility');
+    const json = await res.json();
+    
+    if (json.success) {
+      allUsersVisibility = json.data;
+      visibilityChanges = {}; // Reset changes
+      renderUsersVisibility();
+      updateVisibleUsersCount();
+    } else {
+      alert('Error loading users: ' + (json.message || 'Unknown error'));
+    }
+  } catch(e) {
+    console.error('Error opening customize user list:', e);
+    alert('Failed to load user list');
+  }
+}
+
+function closeCustomizeUserList() {
+  const modal = document.getElementById('customizeUserListModal');
+  modal.style.display = 'none';
+  visibilityChanges = {}; // Reset unsaved changes
+}
+
+function renderUsersVisibility() {
+  const tbody = document.getElementById('usersVisibilityTableBody');
+  
+  if (!allUsersVisibility || allUsersVisibility.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">No users found</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = allUsersVisibility.map((user, index) => {
+    const rowBg = index % 2 === 0 ? '#ffffff' : '#f9fafb';
+    // Check if this user has pending changes
+    const currentVisibility = visibilityChanges.hasOwnProperty(user.id) 
+      ? visibilityChanges[user.id] 
+      : user.is_visible;
+    
+    return `
+      <tr style="background: ${rowBg};" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='${rowBg}'">
+        <td style="padding: 12px;">
+          <input 
+            type="checkbox" 
+            class="user-visibility-checkbox" 
+            data-user-id="${user.id}"
+            ${currentVisibility ? 'checked' : ''}
+            onchange="toggleUserVisibility(${user.id}, this.checked)"
+          >
+        </td>
+        <td style="padding: 12px; font-weight: 500; color: #111827;">${user.fullname}</td>
+        <td style="padding: 12px; color: #6b7280; font-size: 13px;">${user.role_name || 'N/A'}</td>
+        <td style="padding: 12px;">
+          <span style="font-size: 12px; padding: 4px 8px; border-radius: 6px; background: ${currentVisibility ? '#dcfce7' : '#fee2e2'}; color: ${currentVisibility ? '#166534' : '#991b1b'};">
+            ${currentVisibility ? '✓ Visible' : '✗ Hidden'}
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function toggleUserVisibility(userId, isVisible) {
+  // Track the change
+  visibilityChanges[userId] = isVisible;
+  
+  // Re-render to update the status badge
+  renderUsersVisibility();
+  updateVisibleUsersCount();
+  updateSelectAllCheckbox();
+}
+
+function toggleSelectAllUsersVis(checkbox) {
+  const isChecked = checkbox.checked;
+  
+  // Update all users' visibility
+  allUsersVisibility.forEach(user => {
+    visibilityChanges[user.id] = isChecked;
+  });
+  
+  // Re-render
+  renderUsersVisibility();
+  updateVisibleUsersCount();
+}
+
+function updateSelectAllCheckbox() {
+  const checkboxes = document.querySelectorAll('.user-visibility-checkbox');
+  const selectAllCheckbox = document.getElementById('selectAllUsersVis');
+  
+  if (checkboxes.length === 0) return;
+  
+  const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+  const noneChecked = Array.from(checkboxes).every(cb => !cb.checked);
+  
+  selectAllCheckbox.checked = allChecked;
+  selectAllCheckbox.indeterminate = !allChecked && !noneChecked;
+}
+
+function updateVisibleUsersCount() {
+  const visibleCount = allUsersVisibility.filter(user => {
+    const currentVisibility = visibilityChanges.hasOwnProperty(user.id) 
+      ? visibilityChanges[user.id] 
+      : user.is_visible;
+    return currentVisibility;
+  }).length;
+  
+  document.getElementById('visibleUsersCount').textContent = visibleCount;
+}
+
+async function saveUserVisibilityChanges() {
+  if (Object.keys(visibilityChanges).length === 0) {
+    alert('No changes to save');
+    closeCustomizeUserList();
+    return;
+  }
+  
+  try {
+    console.log('Saving visibility changes:', visibilityChanges);
+    
+    // Save each changed user
+    const promises = Object.keys(visibilityChanges).map(userId => {
+      return fetch('/attendance/update-visibility', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({
+          user_id: parseInt(userId),
+          is_visible: visibilityChanges[userId] ? 1 : 0,
+          notes: visibilityChanges[userId] ? null : 'Hidden from attendance tracking'
+        })
+      });
+    });
+    
+    await Promise.all(promises);
+    
+    alert('✓ User visibility preferences saved successfully!');
+    closeCustomizeUserList();
+    
+    // Reload attendance table to reflect changes
+    loadAttendanceForDate();
+    
+  } catch(e) {
+    console.error('Error saving visibility changes:', e);
+    alert('Failed to save changes. Please try again.');
+  }
+}
+
+// Make customize user list functions globally accessible
+window.openCustomizeUserList = openCustomizeUserList;
+window.closeCustomizeUserList = closeCustomizeUserList;
+window.toggleUserVisibility = toggleUserVisibility;
+window.toggleSelectAllUsersVis = toggleSelectAllUsersVis;
+window.saveUserVisibilityChanges = saveUserVisibilityChanges;
+
 </script>
 @endsection
