@@ -3695,6 +3695,217 @@ function openCreateInTab() {
     const url = '/orders?create_new_order=1';
     window.open(url, '_blank');
 }
+
+// ============================================================================
+// Pop-out Notification System
+// Shows visual indicators on tab when order needs attention
+// Blue Dot (🔵) = Needs editing (disappears on save)
+// Bell Icon (🔔) = Needs printing (disappears on print)
+// ============================================================================
+let popoutNotificationState = {
+    orderId: null,
+    orderStatus: null,
+    needsEdit: true,      // Blue dot - starts true, disappears on save
+    needsPrint: true,     // Bell icon - starts true, disappears on print
+    originalTitle: '',
+    faviconInterval: null
+};
+
+function initPopoutNotification(orderId) {
+    if (!window.isPopoutMode) return;
+    
+    popoutNotificationState.orderId = orderId;
+    popoutNotificationState.originalTitle = document.title;
+    
+    // Fetch order details to check status
+    fetch('/orders/' + orderId, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.order) {
+            popoutNotificationState.orderStatus = data.order.order_status;
+            
+            // Check if status requires notification
+            // Exclude: new, delivered, completed, cancelled
+            // Include: processing, out for delivery, pending, etc.
+            if (shouldShowNotification(data.order.order_status)) {
+                showPopoutNotification();
+                attachPopoutEventListeners();
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error checking order status for notification:', error);
+    });
+}
+
+function shouldShowNotification(status) {
+    if (!status) return false;
+    
+    const statusLower = status.toLowerCase().trim();
+    const excludedStatuses = ['new', 'delivered', 'completed', 'cancelled'];
+    
+    return !excludedStatuses.includes(statusLower);
+}
+
+function showPopoutNotification() {
+    // Update title with indicators
+    updatePopoutTitle();
+    
+    // Start animated favicon
+    startFaviconAnimation();
+}
+
+function hidePopoutNotification() {
+    // Update title (will show remaining indicators if any)
+    updatePopoutTitle();
+    
+    // Update favicon animation based on remaining indicators
+    if (!popoutNotificationState.needsEdit && !popoutNotificationState.needsPrint) {
+        stopFaviconAnimation();
+    } else {
+        // Restart animation to reflect current state
+        stopFaviconAnimation();
+        startFaviconAnimation();
+    }
+}
+
+function updatePopoutTitle() {
+    let prefix = '';
+    
+    // Add blue dot if needs editing
+    if (popoutNotificationState.needsEdit) {
+        prefix += '🔵 ';
+    }
+    
+    // Add bell icon if needs printing
+    if (popoutNotificationState.needsPrint) {
+        prefix += '🔔 ';
+    }
+    
+    document.title = prefix + popoutNotificationState.originalTitle;
+}
+
+function startFaviconAnimation() {
+    // Create animated favicon with dual indicators
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    
+    let isPulse = false;
+    popoutNotificationState.faviconInterval = setInterval(() => {
+        // Clear canvas
+        ctx.clearRect(0, 0, 32, 32);
+        
+        // Draw base circle (blue)
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.arc(16, 16, 14, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Draw blue dot (top-left) if needs editing
+        if (popoutNotificationState.needsEdit) {
+            ctx.fillStyle = isPulse ? '#3b82f6' : '#60a5fa'; // Alternate blue shades
+            ctx.beginPath();
+            ctx.arc(8, 8, 5, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // White border
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+        
+        // Draw red/orange dot (top-right) if needs printing
+        if (popoutNotificationState.needsPrint) {
+            ctx.fillStyle = isPulse ? '#ef4444' : '#f97316'; // Alternate red/orange
+            ctx.beginPath();
+            ctx.arc(24, 8, 5, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // White border
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+        
+        // Update favicon
+        const link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+        link.type = 'image/x-icon';
+        link.rel = 'shortcut icon';
+        link.href = canvas.toDataURL();
+        document.getElementsByTagName('head')[0].appendChild(link);
+        
+        isPulse = !isPulse;
+    }, 800);
+}
+
+function stopFaviconAnimation() {
+    if (popoutNotificationState.faviconInterval) {
+        clearInterval(popoutNotificationState.faviconInterval);
+        popoutNotificationState.faviconInterval = null;
+    }
+    
+    // Restore default favicon
+    const link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+    link.type = 'image/x-icon';
+    link.rel = 'shortcut icon';
+    link.href = '/favicon.ico';
+    document.getElementsByTagName('head')[0].appendChild(link);
+}
+
+function attachPopoutEventListeners() {
+    // Listen for save button clicks (editing complete)
+    // We track save, not just typing, so blue dot disappears on save
+    const originalSaveOrderChanges = window.saveOrderChanges;
+    
+    window.saveOrderChanges = function(orderId) {
+        // Call original function first
+        if (originalSaveOrderChanges) {
+            originalSaveOrderChanges.apply(this, arguments);
+        }
+        
+        // Mark as edited (blue dot disappears)
+        if (popoutNotificationState.needsEdit) {
+            popoutNotificationState.needsEdit = false;
+            hidePopoutNotification();
+        }
+    };
+    
+    // Listen for print button clicks
+    // Override the existing functions to track printing
+    const originalPrintPdf = window.printInvoicePdf;
+    const originalDownloadImage = window.downloadInvoiceImage;
+    
+    window.printInvoicePdf = function() {
+        // Mark as printed (bell icon disappears)
+        if (popoutNotificationState.needsPrint) {
+            popoutNotificationState.needsPrint = false;
+            hidePopoutNotification();
+        }
+        
+        // Call original function
+        if (originalPrintPdf) originalPrintPdf.apply(this, arguments);
+    };
+    
+    window.downloadInvoiceImage = function() {
+        // Mark as printed (bell icon disappears)
+        if (popoutNotificationState.needsPrint) {
+            popoutNotificationState.needsPrint = false;
+            hidePopoutNotification();
+        }
+        
+        // Call original function
+        if (originalDownloadImage) originalDownloadImage.apply(this, arguments);
+    };
+}
 // Update modal header for create order with pop-out functionality
 function updateCreateOrderModalHeader() {
     const modal = document.getElementById('editOrderModal');
@@ -3770,6 +3981,9 @@ document.addEventListener('DOMContentLoaded', function() {
             // Mark this as a pop-out mode for full-screen styling
             window.isPopoutMode = true;
             editOrderDetails(editId);
+            
+            // Initialize notification tracking for pop-out mode
+            initPopoutNotification(editId);
         } else if (createNew === '1') {
             // Mark this as a pop-out mode for full-screen styling
             window.isPopoutMode = true;
