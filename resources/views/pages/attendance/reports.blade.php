@@ -8,9 +8,25 @@
       <h1 class="text-2xl font-semibold text-gray-900">Attendance Reports</h1>
       <p class="text-sm text-gray-500 mt-1">Comprehensive analytics and insights</p>
     </div>
-    <a href="/attendance" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-      ← Back to Attendance
-    </a>
+    <div class="flex items-center gap-2">
+      <a 
+        href="/shifts"
+        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
+        style="text-decoration: none;"
+      >
+        📅 Shift Management
+      </a>
+      <a 
+        href="/holidays"
+        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
+        style="text-decoration: none;"
+      >
+        🎉 Public Holidays
+      </a>
+      <a href="/attendance" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+        ← Back to Attendance
+      </a>
+    </div>
   </div>
 
   <!-- Month Selector & Working Days Config -->
@@ -176,16 +192,17 @@
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Present Days</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Attendance %</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Absent</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">On Leave</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Late Days</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Avg Late</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">OT Days</th>
-            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Total Hours</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="reportBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
+            <td colspan="9" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
           </tr>
         </tbody>
       </table>
@@ -325,7 +342,7 @@ async function loadMonthlyReport() {
     }
   } catch(e) {
     console.error('Error loading monthly report', e);
-    document.getElementById('reportBody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Error loading report</td></tr>';
+    document.getElementById('reportBody').innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-red-500 text-sm">Error loading report</td></tr>';
   }
 }
 
@@ -333,7 +350,7 @@ function renderReportTable(data) {
   const body = document.getElementById('reportBody');
 
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">No data for selected month</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-500 text-sm">No data for selected month</td></tr>';
     return;
   }
 
@@ -355,10 +372,11 @@ function renderReportTable(data) {
             ${attendancePerc}%
           </span>
         </td>
-        <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}">${emp.late_days}</td>
-        <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-red-600' : 'text-gray-400'}">${avgLate > 0 ? avgLate + 'm' : '-'}</td>
+        <td class="px-4 py-3 text-sm text-center ${emp.absent_days > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}">${emp.absent_days || 0}</td>
+        <td class="px-4 py-3 text-sm text-center ${emp.leave_days > 0 ? 'text-blue-600 font-semibold' : 'text-gray-400'}">${emp.leave_days || 0}</td>
+        <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${emp.late_days}</td>
+        <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600' : 'text-gray-400'}">${avgLate > 0 ? avgLate + 'm' : '-'}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.overtime_days > 0 ? 'text-green-600 font-semibold' : 'text-gray-400'}">${emp.overtime_days}</td>
-        <td class="px-4 py-3 text-sm text-center font-semibold">${(emp.total_hours || 0).toFixed(1)}h</td>
         <td class="px-4 py-3 text-sm text-center">
           <button 
             onclick="showDailyDetails(${emp.user_id})"
@@ -571,13 +589,13 @@ function getStatus(loginTime, shiftStart) {
 }
 
 function exportToCSV() {
-  let csv = 'Employee,Shift,Present Days,Attendance %,Late Days,Avg Late (min),OT Days,Total Hours\n';
+  let csv = 'Employee,Shift,Present Days,Attendance %,Absent,On Leave,Late Days,Avg Late (min),OT Days\n';
   
   reportData.forEach(emp => {
     const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
     const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
     const avgLate = emp.late_days > 0 ? (emp.total_late_minutes / emp.late_days).toFixed(0) : 0;
-    csv += `${emp.fullname},${emp.shift_name || 'Default'},${emp.present_days}/${userWorkingDays},${attendancePerc}%,${emp.late_days},${avgLate},${emp.overtime_days},${emp.total_hours.toFixed(1)}\n`;
+    csv += `${emp.fullname},${emp.shift_name || 'Default'},${emp.present_days}/${userWorkingDays},${attendancePerc}%,${emp.absent_days || 0},${emp.leave_days || 0},${emp.late_days},${avgLate},${emp.overtime_days}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv' });

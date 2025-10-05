@@ -103,8 +103,10 @@ class ShiftResolutionService
      */
     public function calculateWorkingDays(int $userId, string $startDate, string $endDate): int
     {
-        // Get user's shift (we can use any date in range for shift lookup, using start date)
-        $shift = $this->getUserShift($userId, $startDate);
+        // Get user's shift using today's date (current shift assignment)
+        // This ensures shifts apply retroactively to all past dates
+        $lookupDate = date('Y-m-d');
+        $shift = $this->getUserShift($userId, $lookupDate);
         $workingDaysOfWeek = $shift['working_days'];
         
         Log::info('calculateWorkingDays - shift data', [

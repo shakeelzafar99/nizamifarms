@@ -146,7 +146,7 @@ class AttendanceController extends Controller
         if ($activeFilter === 'active') {
             $query->where('u.is_active', 1);
         }
-        
+
         if ($request->filled('user_id')) {
             $query->where('u.id', (int)$request->input('user_id'));
         }
@@ -232,30 +232,62 @@ class AttendanceController extends Controller
     public function monthlyReport(Request $request)
     {
         try {
-            $month = $request->input('month', date('Y-m'));
-            $startDate = $month . '-01';
-            $endDate = date('Y-m-t', strtotime($startDate));
-            
+        $month = $request->input('month', date('Y-m'));
+        $startDate = $month . '-01';
+        $endDate = date('Y-m-t', strtotime($startDate));
+        
             Log::info('Monthly report requested', [
                 'month' => $month,
                 'startDate' => $startDate,
                 'endDate' => $endDate
             ]);
             
-            $data = DB::table('t_ops_attendance as a')
-                ->join('t_sys_user as u', 'u.id', '=', 'a.user_id')
-                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
-                ->whereBetween('a.attendance_date', [$startDate, $endDate])
-                ->select(
-                    'a.*',
-                    'u.fullname',
+            // Get all users with their attendance and leave data
+            $data = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_attendance as a', function($join) use ($startDate, $endDate) {
+                    $join->on('u.id', '=', 'a.user_id')
+                         ->whereBetween('a.attendance_date', [$startDate, $endDate]);
+                })
+            ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->leftJoin('t_req_master as lr', function($join) use ($startDate, $endDate) {
+                    $join->on('lr.requester_user_id', '=', 'u.id')
+                         ->whereIn('lr.status', ['approved', 'pending'])
+                         ->where(function($q) use ($startDate, $endDate) {
+                             $q->whereBetween('lr.leave_start_date', [$startDate, $endDate])
+                               ->orWhereBetween('lr.leave_end_date', [$startDate, $endDate])
+                               ->orWhere(function($q2) use ($startDate, $endDate) {
+                                   $q2->where('lr.leave_start_date', '<=', $startDate)
+                                      ->where('lr.leave_end_date', '>=', $endDate);
+                               });
+                         });
+                })
+                ->leftJoin('t_req_category as lc', 'lc.id', '=', 'lr.category_id')
+                ->where(function($query) {
+                    $query->where('lc.category_code', '=', 'leave')
+                          ->orWhereNull('lc.category_code');
+                })
+                ->where(function($query) {
+                    $query->where('av.is_visible', '=', 1)
+                          ->orWhereNull('av.is_visible');
+                })
+            ->select(
                     'u.id as user_id',
+                'u.fullname',
+                    'a.id as attendance_id',
+                    'a.attendance_date',
+                    'a.login_time',
+                    'a.logout_time',
                     DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
-                    DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end')
-                )
-                ->orderBy('u.fullname')
-                ->orderBy('a.attendance_date')
-                ->get();
+                    DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
+                    'lr.id as leave_request_id',
+                    'lr.status as leave_status',
+                    'lr.leave_start_date',
+                    'lr.leave_end_date'
+            )
+            ->orderBy('u.fullname')
+            ->orderBy('a.attendance_date')
+            ->get();
             
             Log::info('Monthly report data fetched', ['record_count' => $data->count()]);
             
@@ -267,9 +299,9 @@ class AttendanceController extends Controller
         foreach ($data as $record) {
             if (!isset($byUser[$record->user_id])) {
                 try {
-                    // Get user's shift info using the most recent date (end date or today, whichever is earlier)
-                    // This ensures we get the current/latest shift assignment
-                    $lookupDate = min($endDate, date('Y-m-d'));
+                    // Get user's shift info using today's date (current shift assignment)
+                    // This ensures shifts apply retroactively to all past dates
+                    $lookupDate = date('Y-m-d');
                     $shiftData = $shiftService->getUserShift($record->user_id, $lookupDate);
                     
                     Log::info('User shift resolved', [
@@ -308,11 +340,14 @@ class AttendanceController extends Controller
                     'shift_end' => $shiftData['shift_end'],
                     'total_days' => 0,
                     'present_days' => 0,
+                    'leave_days' => 0,
+                    'absent_days' => 0,
                     'late_days' => 0,
                     'overtime_days' => 0,
                     'total_hours' => 0,
                     'total_late_minutes' => 0,
                     'total_overtime_minutes' => 0,
+                    'leave_dates' => [],
                     'daily' => []
                 ];
             }
@@ -320,8 +355,24 @@ class AttendanceController extends Controller
             $userShiftStart = $byUser[$record->user_id]['shift_start'];
             $userShiftEnd = $byUser[$record->user_id]['shift_end'];
             
+            // Track leave dates for this user
+            if ($record->leave_request_id && $record->leave_start_date && $record->leave_end_date) {
+                $leaveStart = new \DateTime($record->leave_start_date);
+                $leaveEnd = new \DateTime($record->leave_end_date);
+                $current = clone $leaveStart;
+                
+                while ($current <= $leaveEnd) {
+                    $dateStr = $current->format('Y-m-d');
+                    // Only count if within the month range
+                    if ($dateStr >= $startDate && $dateStr <= $endDate) {
+                        $byUser[$record->user_id]['leave_dates'][$dateStr] = true;
+                    }
+                    $current->modify('+1 day');
+                }
+            }
+            
             $byUser[$record->user_id]['total_days']++;
-            if ($record->login_time) {
+            if ($record->login_time && $record->attendance_id) {
                 $byUser[$record->user_id]['present_days']++;
                 
                 // Calculate late using user's actual shift
@@ -353,6 +404,13 @@ class AttendanceController extends Controller
                 'shift_start' => $userShiftStart,
                 'shift_end' => $userShiftEnd
             ];
+        }
+        
+        // Calculate leave_days and absent_days for each user
+        foreach ($byUser as $userId => &$userData) {
+            $userData['leave_days'] = count($userData['leave_dates']);
+            $userData['absent_days'] = max(0, $userData['working_days'] - $userData['present_days'] - $userData['leave_days']);
+            unset($userData['leave_dates']); // Remove temporary data
         }
         
         Log::info('Monthly report processed', [

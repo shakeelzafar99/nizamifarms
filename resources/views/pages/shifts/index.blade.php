@@ -17,6 +17,21 @@
     justify-content: center;
     overflow-y: auto;
   }
+  
+  #shiftModal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    z-index: 99999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
 </style>
 <div class="p-6">
   <!-- Header -->
@@ -50,8 +65,8 @@
 </div>
 
 <!-- Create/Edit Shift Modal -->
-<div id="shiftModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
-  <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+<div id="shiftModal" class="hidden" onclick="closeShiftModal()">
+  <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl" style="position: relative; max-height: calc(100vh - 40px); overflow-y: auto; margin: auto;" onclick="event.stopPropagation();">
     <div class="p-6 border-b border-gray-200">
       <div class="flex justify-between items-center">
         <h2 id="modalTitle" class="text-xl font-semibold text-gray-900">Create Shift Template</h2>
@@ -296,7 +311,9 @@ function openCreateModal() {
   editingShiftId = null;
   document.getElementById('modalTitle').textContent = 'Create Shift Template';
   document.getElementById('shiftForm').reset();
-  document.getElementById('shiftModal').classList.remove('hidden');
+  const modal = document.getElementById('shiftModal');
+  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
 }
 
 function openEditModal(shiftId) {
@@ -308,8 +325,8 @@ function openEditModal(shiftId) {
   document.getElementById('shiftId').value = shift.id;
   document.getElementById('shiftName').value = shift.shift_name;
   document.getElementById('shiftCode').value = shift.shift_code;
-  document.getElementById('shiftStart').value = shift.shift_start;
-  document.getElementById('shiftEnd').value = shift.shift_end;
+  document.getElementById('shiftStart').value = shift.shift_start.substring(0, 5);
+  document.getElementById('shiftEnd').value = shift.shift_end.substring(0, 5);
   document.getElementById('shiftDescription').value = shift.description || '';
   
   // Set working days checkboxes
@@ -319,11 +336,15 @@ function openEditModal(shiftId) {
     if (checkbox) checkbox.checked = true;
   });
   
-  document.getElementById('shiftModal').classList.remove('hidden');
+  const modal = document.getElementById('shiftModal');
+  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
 }
 
 function closeShiftModal() {
-  document.getElementById('shiftModal').classList.add('hidden');
+  const modal = document.getElementById('shiftModal');
+  modal.classList.add('hidden');
+  modal.style.display = 'none';
   editingShiftId = null;
 }
 

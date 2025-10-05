@@ -32,18 +32,24 @@
       >
         ➕ Mark Attendance
       </button>
-      <button 
-        type="button"
-        onclick="showShiftManager(); return false;" 
-        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold shadow-md border-2 border-blue-700"
-        style="min-width: 150px;"
+      <a 
+        href="/shifts"
+        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
+        style="text-decoration: none;"
       >
-        Manage Shifts
-      </button>
+        📅 Shift Management
+      </a>
+      <a 
+        href="/holidays"
+        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
+        style="text-decoration: none;"
+      >
+        🎉 Public Holidays
+      </a>
       <button 
         type="button"
         onclick="openCustomizeUserList(); return false;" 
-        class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition font-semibold shadow-md"
+        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300"
       >
         ⚙️ Customize User List
       </button>
@@ -907,7 +913,7 @@ function renderAttendanceTable(data) {
         
         <!-- Leave badge -->
         ${r.leave_request_id ? `
-          <td class="px-4 py-3 text-sm">
+        <td class="px-4 py-3 text-sm">
             <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${r.leave_status === 'approved' ? 'bg-green-100 text-green-700' : (r.leave_status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700')}">
               ${r.leave_type_from_req || 'Leave'} · ${r.leave_status}
             </span>
@@ -1017,21 +1023,21 @@ function updateSummaryCards(data) {
 // Smart quick add - handles both login and logout
 function quickAddLogout(userId, userName) {
   try {
-    const user = allAttendanceData.find(u => u.user_id == userId);
-    currentEditUserId = userId;
-    currentEditDate = document.getElementById('tableDate').value;
-    
-    // Set current time as default
-    const now = new Date();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    const currentTime = `${hours}:${minutes}`;
-    
-    // Determine what to show based on current attendance
-    const hasLogin = user && user.login_time;
-    const hasLogout = user && user.logout_time;
-    
-    // Set user info
+  const user = allAttendanceData.find(u => u.user_id == userId);
+  currentEditUserId = userId;
+  currentEditDate = document.getElementById('tableDate').value;
+  
+  // Set current time as default
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const currentTime = `${hours}:${minutes}`;
+  
+  // Determine what to show based on current attendance
+  const hasLogin = user && user.login_time;
+  const hasLogout = user && user.logout_time;
+  
+  // Set user info
     const quickTimeUser = document.getElementById('quickTimeUser');
     const quickTimeDate = document.getElementById('quickTimeDate');
     const quickTimeUserInitial = document.getElementById('quickTimeUserInitial');
@@ -1045,39 +1051,39 @@ function quickAddLogout(userId, userName) {
     quickTimeUser.textContent = userName;
     quickTimeDate.textContent = currentEditDate;
     quickTimeUserInitial.textContent = userName.charAt(0).toUpperCase();
-    
-    // Show appropriate sections
-    const loginSection = document.getElementById('loginTimeSection');
-    const logoutSection = document.getElementById('logoutTimeSection');
-    const modalTitle = document.getElementById('quickTimeModalTitle');
+  
+  // Show appropriate sections
+  const loginSection = document.getElementById('loginTimeSection');
+  const logoutSection = document.getElementById('logoutTimeSection');
+  const modalTitle = document.getElementById('quickTimeModalTitle');
     
     if (!loginSection || !logoutSection || !modalTitle) {
       console.error('Missing section elements!');
       alert('Error: Modal section elements not found. Please refresh the page.');
       return;
     }
-    
-    if (!hasLogin) {
-      // No login yet - ask for login time
-      currentTimeModalMode = 'login';
-      loginSection.classList.remove('hidden');
-      logoutSection.classList.add('hidden');
-      document.getElementById('quickLoginTimeInput').value = currentTime;
-      modalTitle.textContent = 'Mark Login Time';
-    } else if (!hasLogout) {
-      // Has login, no logout - ask for logout time
-      currentTimeModalMode = 'logout';
-      loginSection.classList.add('hidden');
-      logoutSection.classList.remove('hidden');
-      document.getElementById('quickLogoutTimeInput').value = currentTime;
-      modalTitle.textContent = 'Mark Logout Time';
-    } else {
-      // Both exist - should not happen (use edit button)
-      alert('Attendance already complete. Use edit button to modify.');
-      return;
-    }
-    
-    const modal = document.getElementById('quickTimeModal');
+  
+  if (!hasLogin) {
+    // No login yet - ask for login time
+    currentTimeModalMode = 'login';
+    loginSection.classList.remove('hidden');
+    logoutSection.classList.add('hidden');
+    document.getElementById('quickLoginTimeInput').value = currentTime;
+    modalTitle.textContent = 'Mark Login Time';
+  } else if (!hasLogout) {
+    // Has login, no logout - ask for logout time
+    currentTimeModalMode = 'logout';
+    loginSection.classList.add('hidden');
+    logoutSection.classList.remove('hidden');
+    document.getElementById('quickLogoutTimeInput').value = currentTime;
+    modalTitle.textContent = 'Mark Logout Time';
+  } else {
+    // Both exist - should not happen (use edit button)
+    alert('Attendance already complete. Use edit button to modify.');
+    return;
+  }
+  
+  const modal = document.getElementById('quickTimeModal');
     
     if (!modal) {
       console.error('quickTimeModal not found!');
@@ -1086,7 +1092,7 @@ function quickAddLogout(userId, userName) {
     }
     
     // Open modal with elegant styling - ensure it's visible
-    modal.classList.remove('hidden');
+  modal.classList.remove('hidden');
     // Apply minimal overlay styling only
     Object.assign(modal.style, {
       display: 'flex',
@@ -1112,9 +1118,9 @@ function quickAddLogout(userId, userName) {
       });
     }
     
-    modal.onclick = function(e) {
-      if (e.target === modal) closeQuickTime();
-    };
+  modal.onclick = function(e) {
+    if (e.target === modal) closeQuickTime();
+  };
     
     console.log('Modal opened for user:', userId, userName);
     console.log('Variables set:', {currentEditUserId, currentEditDate, currentTimeModalMode});
@@ -1625,7 +1631,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const dateRange = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + 
                        ' - ' + 
                        endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
+    document.getElementById('detailsDateRange').textContent = dateRange + ' (Last 30 Days)';
     } catch(e) {
       console.error('Error formatting date range:', e);
       document.getElementById('detailsDateRange').textContent = 'Last 30 Days';

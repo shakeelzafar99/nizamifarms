@@ -25,13 +25,54 @@
                                    Dashboards
                                </span>
                            </div>
-                       </a>
-                   </div>
-                   <div class="kt-menu-item pt-2.25 pb-px">
-                       <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
-                           Orders
-                       </span>
-                   </div>
+                      </a>
+                  </div>
+                  
+                  <!-- Get User Role -->
+                  @php
+                      $userRole = null;
+                      if (auth()->check()) {
+                          $userRole = \DB::table('t_sys_user_role as ur')
+                              ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                              ->where('ur.user_id', auth()->id())
+                              ->value('r.type');
+                      }
+                  @endphp
+                  
+                  <!-- Attendance Section -->
+                  @if($userRole === 'rider')
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/attendance/mine">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-time text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  My Attendance
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @else
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/attendance">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-time text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Attendance
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+                  
+                  <div class="kt-menu-item pt-2.25 pb-px">
+                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                          Orders
+                      </span>
+                  </div>
                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                        <a href="/orders">
                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -83,15 +124,6 @@
                           </div>
                       </a>
                   </div>
-                  @php
-                      $userRole = null;
-                      if (auth()->check()) {
-                          $userRole = \DB::table('t_sys_user_role as ur')
-                              ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
-                              ->where('ur.user_id', auth()->id())
-                              ->value('r.type');
-                      }
-                  @endphp
                   
                   @if($userRole !== 'rider')
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -259,73 +291,6 @@
                                </span>
                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
                                    Error Logs
-                                </span>
-                            </div>
-                        </a>
-                    </div>
-                    @endif
-                    
-                    @if($userRole === 'rider')
-                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                        <a href="/attendance/mine">
-                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                    <i class="ki-filled ki-time text-lg"></i>
-                                </span>
-                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                    My Attendance
-                                </span>
-                            </div>
-                        </a>
-                    </div>
-                    @else
-                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                        <a href="/attendance">
-                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                    <i class="ki-filled ki-time text-lg"></i>
-                                </span>
-                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                    Attendance
-                                </span>
-                            </div>
-                        </a>
-                    </div>
-                    
-                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                        <a href="/shifts">
-                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                    <i class="ki-filled ki-calendar text-lg"></i>
-                                </span>
-                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                    Shift Management
-                                </span>
-                            </div>
-                        </a>
-                    </div>
-                    
-                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                        <a href="/holidays">
-                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                    <i class="ki-filled ki-abstract-39 text-lg"></i>
-                                </span>
-                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                    Public Holidays
-                                </span>
-                            </div>
-                        </a>
-                    </div>
-                    
-                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                        <a href="/admin/operations">
-                            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                    <i class="ki-filled ki-import text-lg"></i>
-                                </span>
-                                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                    Operations
                                 </span>
                             </div>
                         </a>
