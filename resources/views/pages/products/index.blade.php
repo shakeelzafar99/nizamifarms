@@ -2,8 +2,8 @@
 
 @section('title', 'Products')
 
-@push('styles')
-<link rel="stylesheet" href="{{ asset('css/products-tweaks.css') }}">
+@push('custom_css')
+<link rel="stylesheet" href="{{ asset('css/products-modern.css') }}?v={{ time() }}">
 @endpush
 
 @section('content')
@@ -39,7 +39,7 @@
             </button>
                 <a href="{{ route('products.attributes') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-category text-gray-500"></i>
-                Attributes
+                Set Category
             </a>
                 <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
                     <i class="ki-filled ki-price-tag text-gray-500"></i>
@@ -55,9 +55,9 @@
 <div class="container-fixed">
     <div class="grid gap-4">
         <!-- Modern Card with Enhanced Styling -->
-        <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div class="bg-white rounded-2xl shadow-sm overflow-hidden" style="border: none;">
             <!-- Enhanced Filter Section -->
-            <div class="bg-gradient-to-r from-gray-50 to-white border-b border-gray-100 px-6 py-4">
+            <div class="bg-gradient-to-r from-gray-50 to-white px-6 py-4">
                     <form method="GET" id="productSearchForm">
                         <!-- Search Bar Row -->
                         <div class="flex items-center gap-4 mb-4">
@@ -69,7 +69,7 @@
                                 </div>
                         <input type="text" name="search" value="{{ request('search') }}" 
                                        placeholder="Search products, SKUs, vendors..." 
-                                       class="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 bg-white shadow-sm text-gray-900 placeholder-gray-500"
+                                       class="w-full pl-12 pr-4 py-3 rounded-xl transition-all duration-200 text-gray-900 placeholder-gray-500"
                                id="productSearchInput"
                                autocomplete="off">
                             </div>
@@ -86,7 +86,7 @@
                         <div class="filters-bar flex flex-wrap items-center gap-3">
                         <!-- Status Filter -->
                             <div class="relative min-w-[120px]">
-                                <select name="status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="statusFilter">
+                                <select name="status" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="statusFilter">
                             <option value="">All Status</option>
                             <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
                             <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
@@ -101,7 +101,7 @@
 
                         <!-- Category Filter -->
                             <div class="relative min-w-[140px]">
-                                <select name="product_type" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="categoryFilter">
+                                <select name="product_type" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="categoryFilter">
                             <option value="">All Categories</option>
                             @foreach($productTypes as $type)
                                 <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
@@ -118,7 +118,7 @@
 
                         <!-- Vendor Filter -->
                             <div class="relative min-w-[130px]">
-                                <select name="vendor" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="vendorFilter">
+                                <select name="vendor" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="vendorFilter">
                             <option value="">All Vendors</option>
                             @foreach($vendors as $vendor)
                                 <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
@@ -135,7 +135,7 @@
 
                         <!-- Category Level 1 Filter -->
                             <div class="relative min-w-[160px]">
-                                <select name="attribute_1" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="attr1Filter">
+                                <select name="attribute_1" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="attr1Filter">
                             <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
                             @foreach($attribute1s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
@@ -170,7 +170,7 @@
                         
                         <!-- Sync Status Filter -->
                             <div class="relative min-w-[130px]">
-                                <select name="sync_status" class="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 hover:border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 cursor-pointer" id="syncStatusFilter">
+                                <select name="sync_status" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="syncStatusFilter">
                             <option value="">All Sources</option>
                             @foreach($syncStatuses as $syncStatus)
                                 <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
@@ -202,10 +202,10 @@
                 <div class="bg-white rounded-xl border border-gray-100 overflow-hidden">
                     <div class="overflow-x-auto">
                         <table class="table-products w-full" id="productsTable">
-                            <thead id="tableHead" class="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
+                            <thead id="tableHead">
                             <!-- Dynamic headers will be inserted here -->
                         </thead>
-                            <tbody id="tableBody" class="divide-y divide-gray-100">
+                            <tbody id="tableBody">
                             <!-- Dynamic rows will be inserted here -->
                         </tbody>
                     </table>
@@ -865,6 +865,15 @@ function renderTableBody() {
     window.productsData.forEach((product, index) => {
         const row = document.createElement('tr');
         row.className = 'product-row hover:bg-blue-50 transition-colors duration-150 cursor-pointer group';
+        row.dataset.productId = product.id;
+        
+        // Add click handler to open product view modal
+        row.addEventListener('click', function(e) {
+            // Don't trigger if clicking on action buttons
+            if (!e.target.closest('.col-actions')) {
+                viewProduct(product.id);
+            }
+        });
         
         columnOrder.forEach(columnKey => {
             if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
@@ -1271,6 +1280,10 @@ function renderProductDetails(product) {
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Type:</span>
                             <span style="color: #111827; font-size: 14px;">${product.product_type || '-'}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Category Level 1:</span>
+                            <span style="color: #111827; font-size: 14px;">${product.attribute_1 || '-'}</span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Handle:</span>

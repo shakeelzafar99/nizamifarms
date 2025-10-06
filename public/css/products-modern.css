@@ -1,0 +1,274 @@
+/* ========================================
+   PRODUCTS PAGE - MODERN COLORFUL DESIGN
+   ======================================== */
+
+/* Force all styles with !important to override Tailwind */
+
+/* ===== FILTER SECTION - Refined & Compact ===== */
+.products-index .bg-gradient-to-r.from-gray-50.to-white {
+    background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%) !important;
+    border: 1px solid #E0E7FF !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.08), 0 1px 3px rgba(139, 92, 246, 0.05) !important;
+    padding: 20px !important;
+    margin-bottom: 20px !important;
+}
+
+/* ===== SEARCH INPUT - Compact & Clean ===== */
+.products-index #productSearchInput {
+    background: #FFFFFF !important;
+    border: 1.5px solid #C4B5FD !important;
+    border-radius: 10px !important;
+    box-shadow: 0 1px 3px rgba(139, 92, 246, 0.1) !important;
+    height: 42px !important;
+    padding-left: 44px !important;
+    padding-right: 14px !important;
+    font-size: 14px !important;
+    font-weight: 400 !important;
+    color: #374151 !important;
+    transition: all 0.2s ease !important;
+}
+
+.products-index #productSearchInput:hover {
+    border-color: #A78BFA !important;
+    box-shadow: 0 2px 6px rgba(139, 92, 246, 0.15) !important;
+}
+
+.products-index #productSearchInput:focus {
+    border-color: #8B5CF6 !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15) !important;
+    outline: none !important;
+}
+
+.products-index #productSearchInput::placeholder {
+    color: #9CA3AF !important;
+}
+
+/* ===== DROPDOWN FILTERS - Compact & Elegant ===== */
+.products-index .filters-bar select {
+    background: #FFFFFF !important;
+    border: 1.5px solid #C4B5FD !important;
+    border-radius: 10px !important;
+    box-shadow: 0 1px 3px rgba(139, 92, 246, 0.1) !important;
+    height: 42px !important;
+    padding: 0 14px !important;
+    padding-right: 36px !important;
+    color: #374151 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+    cursor: pointer !important;
+}
+
+.products-index .filters-bar select:hover {
+    border-color: #A78BFA !important;
+    box-shadow: 0 2px 6px rgba(139, 92, 246, 0.15) !important;
+}
+
+.products-index .filters-bar select:focus {
+    border-color: #8B5CF6 !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15) !important;
+    outline: none !important;
+}
+
+/* ===== SEARCH BUTTON - Refined ===== */
+.products-index button[onclick*="performSearch"],
+.products-index .filters-bar button[type="submit"] {
+    background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%) !important;
+    border: none !important;
+    border-radius: 10px !important;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3) !important;
+    height: 42px !important;
+    padding: 0 24px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.3px !important;
+    color: #FFFFFF !important;
+    transition: all 0.2s ease !important;
+}
+
+.products-index button[onclick*="performSearch"]:hover,
+.products-index .filters-bar button[type="submit"]:hover {
+    background: linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%) !important;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4) !important;
+    transform: translateY(-1px) !important;
+}
+
+.products-index button[onclick*="performSearch"]:active,
+.products-index .filters-bar button[type="submit"]:active {
+    transform: translateY(0) !important;
+    box-shadow: 0 1px 4px rgba(139, 92, 246, 0.3) !important;
+}
+
+/* ===== TABLE WRAPPER - Clean ===== */
+.products-index .bg-white.rounded-xl {
+    background: #FFFFFF !important;
+    border: 1px solid #E0E7FF !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.08), 0 1px 3px rgba(139, 92, 246, 0.05) !important;
+    overflow: hidden !important;
+}
+
+/* ===== TABLE STYLING ===== */
+.products-index .table-products {
+    width: 100% !important;
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+}
+
+.products-index .table-products thead th {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 10 !important;
+    background: linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%) !important;
+    color: #FFFFFF !important;
+    text-transform: uppercase !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.8px !important;
+    padding: 14px 16px !important;
+    border-bottom: 2px solid #7C3AED !important;
+    box-shadow: 0 2px 6px rgba(139, 92, 246, 0.15) !important;
+}
+
+.products-index .table-products tbody td {
+    padding: 14px 16px !important;
+    border-bottom: 1px solid #F3F4F6 !important;
+    vertical-align: middle !important;
+    transition: all 0.2s ease !important;
+    font-size: 14px !important;
+    color: #374151 !important;
+}
+
+.products-index .table-products tbody tr:nth-child(even) {
+    background: #FAFBFC !important;
+}
+
+.products-index .table-products tbody tr:nth-child(odd) {
+    background: #FFFFFF !important;
+}
+
+.products-index .table-products tbody tr {
+    cursor: pointer !important;
+}
+
+.products-index .table-products tbody tr:hover {
+    background: linear-gradient(90deg, #F5F3FF 0%, #EDE9FE 100%) !important;
+    box-shadow: inset 3px 0 0 #8B5CF6, 0 2px 8px rgba(139, 92, 246, 0.1) !important;
+    position: relative !important;
+    z-index: 2 !important;
+}
+
+/* Right-align numeric columns */
+.products-index .table-products .col-price,
+.products-index .table-products .col-variants,
+.products-index .table-products .col-inventory {
+    text-align: right !important;
+    font-weight: 600 !important;
+    color: #6D28D9 !important;
+}
+
+.products-index .table-products thead th.col-price,
+.products-index .table-products thead th.col-variants,
+.products-index .table-products thead th.col-inventory {
+    text-align: right !important;
+}
+
+/* ===== STATUS BADGES ===== */
+.products-index .pill,
+.products-index .badge {
+    display: inline-flex !important;
+    align-items: center !important;
+    padding: 6px 14px !important;
+    border-radius: 999px !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.3px !important;
+    transition: all 0.2s ease !important;
+}
+
+.products-index .pill.success,
+.products-index .badge.success {
+    background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%) !important;
+    color: #065F46 !important;
+    border: 2px solid #34D399 !important;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2) !important;
+}
+
+.products-index .pill:hover,
+.products-index .badge:hover {
+    transform: scale(1.05) !important;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3) !important;
+}
+
+/* ===== ACTION BUTTONS ===== */
+.products-index .table-products .col-actions {
+    opacity: 0.7 !important;
+    transition: opacity 0.3s ease !important;
+}
+
+.products-index .table-products tbody tr:hover .col-actions {
+    opacity: 1 !important;
+}
+
+.products-index .table-products .col-actions button,
+.products-index .table-products .col-actions a {
+    transition: all 0.2s ease !important;
+}
+
+.products-index .table-products .col-actions button:hover,
+.products-index .table-products .col-actions a:hover {
+    transform: scale(1.15) !important;
+    filter: brightness(1.2) !important;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1200px) {
+    .products-index .table-products {
+        font-size: 13px !important;
+    }
+    
+    .products-index .table-products thead th {
+        padding: 14px 16px !important;
+        font-size: 10px !important;
+    }
+    
+    .products-index .table-products tbody td {
+        padding: 14px 16px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .products-index .overflow-x-auto {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+    
+    .products-index .table-products {
+        min-width: 900px !important;
+    }
+}
+
+/* ===== OUTER CONTAINER ===== */
+.products-index .bg-white.rounded-2xl.shadow-sm {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+/* ===== HIGH PRIORITY OVERRIDES ===== */
+.products-index div.bg-gradient-to-r.from-gray-50.to-white.px-6.py-4 {
+    background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%) !important;
+    border: 1px solid #E0E7FF !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.08), 0 1px 3px rgba(139, 92, 246, 0.05) !important;
+    padding: 20px !important;
+}
+
+.products-index div.bg-white.rounded-xl.overflow-hidden {
+    background: #FFFFFF !important;
+    border: 1px solid #E0E7FF !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.08), 0 1px 3px rgba(139, 92, 246, 0.05) !important;
+}

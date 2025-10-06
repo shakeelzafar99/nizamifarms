@@ -70,8 +70,8 @@ return [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
-            // Keep 30 days by default
-            'days' => env('LOG_DAILY_DAYS', 30),
+            // Keep 14 days by default (recommended for production)
+            'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
         ],
 

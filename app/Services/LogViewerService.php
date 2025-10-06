@@ -14,7 +14,33 @@ class LogViewerService
     public function __construct()
     {
         $this->logPath = storage_path('logs');
-        $this->logFile = $this->logPath . '/laravel.log';
+        // Support both single and daily log files
+        // For daily logs, use today's file by default
+        $this->logFile = $this->getDailyLogFile();
+    }
+    
+    /**
+     * Get the appropriate log file based on Laravel's configuration
+     */
+    protected function getDailyLogFile($date = null)
+    {
+        $logChannel = config('logging.default', 'stack');
+        $stackChannels = config('logging.channels.stack.channels', ['daily']);
+        
+        // Check if using daily rotation
+        if (in_array('daily', $stackChannels) || $logChannel === 'daily') {
+            // Daily log format: laravel-YYYY-MM-DD.log
+            $dateStr = $date ? Carbon::parse($date)->format('Y-m-d') : Carbon::today()->format('Y-m-d');
+            $dailyFile = $this->logPath . '/laravel-' . $dateStr . '.log';
+            
+            // If daily file exists, use it; otherwise fall back to laravel.log
+            if (File::exists($dailyFile)) {
+                return $dailyFile;
+            }
+        }
+        
+        // Fall back to single log file
+        return $this->logPath . '/laravel.log';
     }
 
     /**
@@ -22,16 +48,32 @@ class LogViewerService
      */
     public function getErrorLogs($filters = [])
     {
-        if (!File::exists($this->logFile)) {
+        // Parse logs from all available log files
+        $allLogs = collect();
+        $logFiles = $this->getAllLogFiles();
+        
+        if (empty($logFiles)) {
             return [
                 'logs' => [],
                 'total' => 0,
                 'summary' => $this->getEmptySummary()
             ];
         }
-
-        $logs = $this->parseLogFile();
-        $filteredLogs = $this->applyFilters($logs, $filters);
+        
+        // Parse each log file and merge results
+        foreach ($logFiles as $logFile) {
+            if (File::exists($logFile)) {
+                $this->logFile = $logFile;
+                $logs = $this->parseLogFile();
+                $allLogs = $allLogs->merge($logs);
+            }
+        }
+        
+        // Reset to default log file
+        $this->logFile = $this->getDailyLogFile();
+        
+        // Apply filters
+        $filteredLogs = $this->applyFilters($allLogs, $filters);
         $summary = $this->generateSummary($filteredLogs);
 
         // Sort by date descending (newest first)
@@ -293,17 +335,49 @@ class LogViewerService
      */
     public function getAvailableDates()
     {
-        if (!File::exists($this->logFile)) {
-            return [];
-        }
-
-        $logs = $this->parseLogFile();
+        $allDates = collect();
         
-        return $logs->pluck('date')
-            ->unique()
+        // Get dates from all available log files
+        $logFiles = $this->getAllLogFiles();
+        
+        foreach ($logFiles as $logFile) {
+            if (File::exists($logFile)) {
+                $this->logFile = $logFile;
+                $logs = $this->parseLogFile();
+                $dates = $logs->pluck('date')->unique();
+                $allDates = $allDates->merge($dates);
+            }
+        }
+        
+        // Reset to default log file
+        $this->logFile = $this->getDailyLogFile();
+        
+        return $allDates->unique()
             ->sort()
             ->values()
             ->toArray();
+    }
+    
+    /**
+     * Get all available log files (supports both single and daily rotation)
+     */
+    protected function getAllLogFiles()
+    {
+        $files = [];
+        
+        // Check for single log file
+        $singleLog = $this->logPath . '/laravel.log';
+        if (File::exists($singleLog)) {
+            $files[] = $singleLog;
+        }
+        
+        // Check for daily log files
+        $dailyLogs = File::glob($this->logPath . '/laravel-*.log');
+        if ($dailyLogs) {
+            $files = array_merge($files, $dailyLogs);
+        }
+        
+        return $files;
     }
 
     /**

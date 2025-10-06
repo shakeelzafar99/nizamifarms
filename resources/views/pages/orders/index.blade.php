@@ -6,6 +6,122 @@
 
 @push('custom_css')
 <style>
+/* Sticky Action Toolbar - Always Visible */
+.sticky-action-toolbar {
+    position: sticky;
+    top: 0;
+    right: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+    padding: 12px 16px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 4px 24px rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    backdrop-filter: blur(10px);
+    margin-bottom: 16px;
+}
+
+/* Action Button Base Styles */
+.action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 10px;
+    border: 1.5px solid;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    white-space: nowrap;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.action-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.action-btn:active {
+    transform: translateY(0);
+}
+
+/* Primary Button (Create Order) */
+.action-btn-primary {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    border-color: #2563eb;
+    color: #ffffff;
+}
+
+.action-btn-primary:hover {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.3);
+}
+
+/* Secondary Button (Columns) */
+.action-btn-secondary {
+    background: #ffffff;
+    border-color: #d1d5db;
+    color: #374151;
+}
+
+.action-btn-secondary:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+}
+
+/* Purple Button (Bulk Status) */
+.action-btn-purple {
+    background: linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%);
+    border-color: #c084fc;
+    color: #7c3aed;
+}
+
+.action-btn-purple:hover {
+    background: linear-gradient(135deg, #e9d5ff 0%, #d8b4fe 100%);
+    box-shadow: 0 4px 16px rgba(168, 85, 247, 0.25);
+}
+
+/* Cyan Button (Bulk Assign Rider) */
+.action-btn-cyan {
+    background: linear-gradient(135deg, #cffafe 0%, #a5f3fc 100%);
+    border-color: #22d3ee;
+    color: #0e7490;
+}
+
+.action-btn-cyan:hover {
+    background: linear-gradient(135deg, #a5f3fc 0%, #67e8f9 100%);
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.25);
+}
+
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+    .sticky-action-toolbar {
+        gap: 8px;
+    }
+    
+    .action-btn {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+    
+    .action-btn svg {
+        width: 14px;
+        height: 14px;
+    }
+}
+
+@media (max-width: 768px) {
+    .sticky-action-toolbar {
+        position: relative;
+        top: auto;
+    }
+}
+
 /* Status Cards Styles */
 .status-card.active .border-gray-200 {
     border-color: #3b82f6 !important;
@@ -702,41 +818,35 @@ input:focus, select:focus, button:focus {
                         @endif
                     </div>
                     
-                    <!-- Action Buttons -->
-                    <div class="flex items-center gap-3">
-                        <button onclick="createNewOrder()" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 shadow-sm">
+                    <!-- Sticky Action Buttons Toolbar -->
+                    <div class="sticky-action-toolbar">
+                        <button onclick="createNewOrder()" class="action-btn action-btn-primary">
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
                             </svg>
                             Create order
                         </button>
                         
-                        <button onclick="openColumnSettings()" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        <button onclick="openColumnSettings()" class="action-btn action-btn-secondary">
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z"></path>
                             </svg>
                             Columns
                         </button>
                         
-                        <!-- Import button removed: use Administration → Operations instead -->
-                        
                         @if($source !== 'shopify')
-                        <!-- Bulk Status Change Button -->
-                        <button onclick="openBulkStatusModal()" class="inline-flex items-center px-4 py-2 border border-purple-300 text-sm font-medium rounded-md text-purple-700 bg-purple-50 hover:bg-purple-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 min-w-[120px]">
+                        <button onclick="openBulkStatusModal()" class="action-btn action-btn-purple">
                             <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                             </svg>
                             Bulk Status
                         </button>
-                        <button onclick="openBulkRiderModal()" class="inline-flex items-center px-4 py-2 border border-cyan-300 text-sm font-medium rounded-md text-cyan-700 bg-cyan-50 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 min-w-[120px]">
+                        <button onclick="openBulkRiderModal()" class="action-btn action-btn-cyan">
                             <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
                             </svg>
                             Bulk Assign Rider
                         </button>
-                        
-                        <!-- Order Status Management Link -->
-                        <!-- Manage Statuses button removed: use sidebar → Order Status -->
                         @endif
                     </div>
                 </div>
@@ -2774,8 +2884,10 @@ function updateSubtotal() {
         subtotalInput.value = subtotal.toFixed(2);
         updateOrderTotal();
         
-        // Load dynamic statuses for the edit form
-        loadEditOrderStatuses(order.order_status);
+        // Load dynamic statuses for the edit form (only if order exists)
+        if (typeof order !== 'undefined' && order && order.order_status) {
+            loadEditOrderStatuses(order.order_status);
+        }
     }
 }
 // Cache statuses so we don't refetch repeatedly
@@ -4012,9 +4124,15 @@ window.resetOrderColumns = function() {
 let productSearchTimeout = null;
 
 // Global variables for keyboard navigation
+// Global variables for keyboard navigation in product dropdown
 let currentDropdownIndex = -1;
 let currentLineItemIndex = -1;
 let currentProducts = [];
+
+// Expose functions globally for inline event handlers and pop-out windows
+window.currentDropdownIndex = -1;
+window.currentLineItemIndex = -1;
+window.currentProducts = [];
 
 function searchProducts(input, index) {
     clearTimeout(productSearchTimeout);
