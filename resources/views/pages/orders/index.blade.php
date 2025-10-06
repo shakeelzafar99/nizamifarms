@@ -1383,7 +1383,7 @@ input:focus, select:focus, button:focus {
             <!-- Modal Content (Scrollable) -->
             <div style="padding: 20px; overflow-y: auto; flex: 1;">
                 <p style="color: #6b7280; margin-bottom: 20px; font-size: 14px;">
-                    Drag and drop to reorder columns. Toggle visibility using checkboxes.
+                    <strong>Visible columns</strong> appear in the table. Drag to reorder them. <strong>Hidden columns</strong> can be enabled by checking the box, and will move to the visible section.
                 </p>
                 
                 <div id="columnList" style="background: #f9fafb; border-radius: 8px; padding: 16px; max-height: 400px; overflow-y: auto;">
@@ -4809,54 +4809,84 @@ function renderColumnSettings() {
     const columnList = document.getElementById('columnList');
     columnList.innerHTML = '';
     
-    currentColumns.forEach((column, index) => {
-        const columnConfig = availableColumns[column.id];
-        if (!columnConfig) return;
+    // Separate visible and hidden columns
+    const visibleColumns = currentColumns.filter(col => col.visible);
+    const hiddenColumns = currentColumns.filter(col => !col.visible);
+    
+    // Create visible section
+    if (visibleColumns.length > 0) {
+        const visibleHeader = document.createElement('div');
+        visibleHeader.style.cssText = 'padding: 8px 12px; margin-bottom: 12px; background: #dbeafe; border-radius: 6px; font-weight: 600; font-size: 13px; color: #1e40af;';
+        visibleHeader.textContent = `✓ Visible Columns (${visibleColumns.length})`;
+        columnList.appendChild(visibleHeader);
         
-        const item = document.createElement('div');
-        item.className = 'column-item';
-        item.draggable = true;
-        item.dataset.columnId = column.id;
-        item.style.cssText = `
-            display: flex; 
-            align-items: center; 
-            padding: 12px; 
-            margin-bottom: 8px; 
-            background: white; 
-            border: 1px solid #e5e7eb; 
-            border-radius: 6px; 
-            cursor: ${columnConfig.fixed ? 'default' : 'grab'};
-            user-select: none;
-        `;
+        visibleColumns.forEach((column, index) => {
+            columnList.appendChild(createColumnItem(column, true));
+        });
+    }
+    
+    // Create hidden section
+    if (hiddenColumns.length > 0) {
+        const hiddenHeader = document.createElement('div');
+        hiddenHeader.style.cssText = 'padding: 8px 12px; margin: 20px 0 12px 0; background: #f3f4f6; border-radius: 6px; font-weight: 600; font-size: 13px; color: #6b7280;';
+        hiddenHeader.textContent = `✕ Hidden Columns (${hiddenColumns.length})`;
+        columnList.appendChild(hiddenHeader);
         
-        item.innerHTML = `
-            <div style="display: flex; align-items: center; width: 100%;">
-                <div style="margin-right: 12px; color: #6b7280; cursor: ${columnConfig.fixed ? 'default' : 'grab'};">
-                    ${columnConfig.fixed ? '🔒' : '☰'}
-                </div>
-                <div style="flex: 1;">
-                    <div style="font-weight: 500; color: #374151;">${columnConfig.label}</div>
-                    <div style="font-size: 12px; color: #6b7280;">${column.id}</div>
-                </div>
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" ${column.visible ? 'checked' : ''} 
-                           onchange="toggleColumnVisibility('${column.id}', this.checked)"
-                           style="margin-right: 8px;">
-                    <span style="font-size: 12px; color: #6b7280;">Show</span>
-                </label>
+        hiddenColumns.forEach((column, index) => {
+            columnList.appendChild(createColumnItem(column, false));
+        });
+    }
+}
+
+function createColumnItem(column, isVisible) {
+    const columnConfig = availableColumns[column.id];
+    if (!columnConfig) return null;
+    
+    const item = document.createElement('div');
+    item.className = 'column-item';
+    item.draggable = !columnConfig.fixed;
+    item.dataset.columnId = column.id;
+    item.dataset.isVisible = isVisible;
+    item.style.cssText = `
+        display: flex; 
+        align-items: center; 
+        padding: 12px; 
+        margin-bottom: 8px; 
+        background: ${isVisible ? '#ffffff' : '#fafafa'}; 
+        border: 1px solid ${isVisible ? '#93c5fd' : '#e5e7eb'}; 
+        border-radius: 6px; 
+        cursor: ${columnConfig.fixed ? 'default' : 'grab'};
+        user-select: none;
+        transition: all 0.2s;
+    `;
+    
+    item.innerHTML = `
+        <div style="display: flex; align-items: center; width: 100%;">
+            <div style="margin-right: 12px; color: ${columnConfig.fixed ? '#9ca3af' : '#6b7280'}; cursor: ${columnConfig.fixed ? 'default' : 'grab'}; font-size: 16px;">
+                ${columnConfig.fixed ? '🔒' : '☰'}
             </div>
-        `;
-        
-        // Add drag and drop only for non-fixed columns
-        if (!columnConfig.fixed) {
-            item.addEventListener('dragstart', handleDragStart);
-            item.addEventListener('dragover', handleDragOver);
-            item.addEventListener('drop', handleDrop);
-            item.addEventListener('dragend', handleDragEnd);
-        }
-        
-        columnList.appendChild(item);
-    });
+            <div style="flex: 1;">
+                <div style="font-weight: 500; color: ${isVisible ? '#111827' : '#6b7280'};">${columnConfig.label}</div>
+                <div style="font-size: 11px; color: #9ca3af;">${column.id}</div>
+            </div>
+            <label style="display: flex; align-items: center; cursor: pointer; background: ${isVisible ? '#dbeafe' : '#f3f4f6'}; padding: 6px 12px; border-radius: 6px;">
+                <input type="checkbox" ${column.visible ? 'checked' : ''} 
+                       onchange="toggleColumnVisibility('${column.id}', this.checked)"
+                       style="margin-right: 8px; cursor: pointer; width: 16px; height: 16px;">
+                <span style="font-size: 12px; color: ${isVisible ? '#1e40af' : '#6b7280'}; font-weight: 500;">${isVisible ? 'Visible' : 'Hidden'}</span>
+            </label>
+        </div>
+    `;
+    
+    // Add drag and drop only for non-fixed columns
+    if (!columnConfig.fixed) {
+        item.addEventListener('dragstart', handleDragStart);
+        item.addEventListener('dragover', handleDragOver);
+        item.addEventListener('drop', handleDrop);
+        item.addEventListener('dragend', handleDragEnd);
+    }
+    
+    return item;
 }
 
 // Drag and drop handlers
@@ -4873,19 +4903,25 @@ function handleDragOver(e) {
 
 function handleDrop(e) {
     e.preventDefault();
-    if (this !== draggedItem) {
-        const allItems = Array.from(this.parentNode.children);
-        const draggedIndex = allItems.indexOf(draggedItem);
-        const targetIndex = allItems.indexOf(this);
+    if (this !== draggedItem && this.classList.contains('column-item')) {
+        // Only allow dropping within the same visibility group
+        const draggedVisible = draggedItem.dataset.isVisible === 'true';
+        const targetVisible = this.dataset.isVisible === 'true';
         
-        if (draggedIndex < targetIndex) {
-            this.parentNode.insertBefore(draggedItem, this.nextSibling);
-        } else {
-            this.parentNode.insertBefore(draggedItem, this);
+        if (draggedVisible === targetVisible) {
+            const allItems = Array.from(this.parentNode.children).filter(el => el.classList.contains('column-item'));
+            const draggedIndex = allItems.indexOf(draggedItem);
+            const targetIndex = allItems.indexOf(this);
+            
+            if (draggedIndex < targetIndex) {
+                this.parentNode.insertBefore(draggedItem, this.nextSibling);
+            } else {
+                this.parentNode.insertBefore(draggedItem, this);
+            }
+            
+            // Update the column order
+            reorderColumns();
         }
-        
-        // Update the column order
-        reorderColumns();
     }
 }
 
@@ -4896,14 +4932,14 @@ function handleDragEnd(e) {
 
 function reorderColumns() {
     const columnList = document.getElementById('columnList');
-    const items = Array.from(columnList.children);
+    const items = Array.from(columnList.children).filter(el => el.classList.contains('column-item'));
     
     const newOrder = items.map(item => {
         const columnId = item.dataset.columnId;
         const checkbox = item.querySelector('input[type="checkbox"]');
         return {
             id: columnId,
-            visible: checkbox.checked
+            visible: checkbox ? checkbox.checked : false
         };
     });
     
@@ -4916,6 +4952,9 @@ function toggleColumnVisibility(columnId, isVisible) {
     if (column) {
         column.visible = isVisible;
         localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
+        
+        // Re-render to move item between sections
+        renderColumnSettings();
     }
 }
 
@@ -4924,6 +4963,12 @@ function saveColumnSettings() {
     document.getElementById('columnSettingsModal').style.display = 'none';
     renderOrdersTable();
 }
+
+// Alias for backward compatibility with button onclick
+function applyColumnSettings() {
+    saveColumnSettings();
+}
+
 function resetColumnSettings() {
     localStorage.removeItem('orderTableColumns');
     currentColumns = [...defaultColumns];
@@ -4931,6 +4976,11 @@ function resetColumnSettings() {
     ensureAddressFields();
     localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
     renderColumnSettings();
+}
+
+// Alias for backward compatibility
+function resetColumns() {
+    resetColumnSettings();
 }
 // ⚠️ DEPRECATED: This function has been replaced by the modular renderTableHeader() and renderTableBody() system
 // Keeping this as a wrapper for backward compatibility, but it now calls the newer modular functions
@@ -5144,34 +5194,7 @@ function getCellContent_DEPRECATED(order, columnId) {
 // DEPRECATED: The following functions are part of the older system and have been commented out
 // to avoid conflicts. The newer implementations are used instead.
 // Ensure Actions column is always present and visible (active)
-function ensureActionsColumn() {
-    const hasActions = currentColumns.find(function(col) { return col.id === 'actions'; });
-    if (!hasActions) {
-        currentColumns.push({ id: 'actions', visible: true });
-    } else {
-        hasActions.visible = true;
-    }
-}
-
-// Ensure all address fields and rider columns are present in currentColumns (legacy copy)
-function ensureAddressFields() {
-    const addressFields = [
-        'address_first_name', 'address_last_name', 'address_full_name',
-        'address1', 'address2', 'postal_code', 'rider', 'rider_id'
-    ];
-    
-    addressFields.forEach(fieldId => {
-        const hasField = currentColumns.find(col => col.id === fieldId);
-        if (!hasField) {
-            // Add missing field (default to not visible)
-            currentColumns.push({ id: fieldId, visible: false });
-        }
-    });
-}
-
-// Initialize columns
-ensureActionsColumn();
-ensureAddressFields();
+// ⚠️ DUPLICATE INITIALIZATION REMOVED - Already exists earlier in file (around line 4687-4715)
 
 // Migration: Ensure rider columns exist for existing users
 if (!currentColumns.find(col => col.id === 'rider')) {
@@ -5196,106 +5219,8 @@ document.addEventListener('DOMContentLoaded', function() {
     renderOrdersTable();
 });
 
-function openColumnSettings() {
-    renderColumnSettings();
-    document.getElementById('columnSettingsModal').style.display = 'block';
-}
-
-function renderColumnSettings() {
-    const columnList = document.getElementById('columnList');
-    columnList.innerHTML = '';
-    
-    currentColumns.forEach((column, index) => {
-        const columnConfig = availableColumns[column.id];
-        if (!columnConfig) return;
-        
-        const item = document.createElement('div');
-        item.className = 'column-item';
-        item.draggable = true;
-        item.dataset.columnId = column.id;
-        item.style.cssText = `
-            display: flex; 
-            align-items: center; 
-            padding: 12px; 
-            margin-bottom: 8px; 
-            background: white; 
-            border: 1px solid #e5e7eb; 
-            border-radius: 6px; 
-            cursor: ${columnConfig.fixed ? 'default' : 'grab'};
-            user-select: none;
-        `;
-        
-        item.innerHTML = `
-            <div style="display: flex; align-items: center; width: 100%;">
-                ${!columnConfig.fixed ? '<div style="margin-right: 12px; color: #9ca3af;"><svg style="width: 16px; height: 16px;" fill="currentColor" viewBox="0 0 20 20"><path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path></svg></div>' : ''}
-                <input type="checkbox" ${column.visible ? 'checked' : ''} ${columnConfig.fixed ? 'disabled' : ''} 
-                       onchange="toggleColumnVisibility('${column.id}')" 
-                       style="margin-right: 12px;">
-                <label style="flex: 1; font-weight: 500; color: ${columnConfig.fixed ? '#9ca3af' : '#374151'};">
-                    ${columnConfig.label} ${columnConfig.fixed ? '(Fixed)' : ''}
-                </label>
-            </div>
-        `;
-        
-        if (!columnConfig.fixed) {
-            item.addEventListener('dragstart', handleDragStart);
-            item.addEventListener('dragover', handleDragOver);
-            item.addEventListener('drop', handleDrop);
-            item.addEventListener('dragend', handleDragEnd);
-        }
-        
-        columnList.appendChild(item);
-    });
-}
-
-function toggleColumnVisibility(columnId) {
-    const column = currentColumns.find(col => col.id === columnId);
-    if (column && !availableColumns[columnId].fixed) {
-        column.visible = !column.visible;
-    }
-}
-
-let draggedElement = null;
-
-function handleDragStart(e) {
-    draggedElement = e.target;
-    e.target.style.opacity = '0.5';
-}
-
-function handleDragOver(e) {
-    e.preventDefault();
-}
-function handleDrop(e) {
-    e.preventDefault();
-    if (draggedElement !== e.target && !availableColumns[e.target.dataset.columnId]?.fixed) {
-        const draggedId = draggedElement.dataset.columnId;
-        const targetId = e.target.dataset.columnId;
-        
-        const draggedIndex = currentColumns.findIndex(col => col.id === draggedId);
-        const targetIndex = currentColumns.findIndex(col => col.id === targetId);
-        
-        if (draggedIndex !== -1 && targetIndex !== -1) {
-            const draggedColumn = currentColumns.splice(draggedIndex, 1)[0];
-            currentColumns.splice(targetIndex, 0, draggedColumn);
-            renderColumnSettings();
-        }
-    }
-}
-function handleDragEnd(e) {
-    e.target.style.opacity = '1';
-    draggedElement = null;
-}
-
-function resetColumns() {
-    currentColumns = JSON.parse(JSON.stringify(defaultColumns));
-    renderColumnSettings();
-}
-
-function applyColumnSettings() {
-    localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
-    renderOrdersTable();
-    closeModal('columnSettingsModal');
-}
+// ⚠️ DUPLICATE COLUMN SETTINGS FUNCTIONS REMOVED
+// The proper implementation with visible/hidden sections exists earlier in the file (around line 4803)
 
 function renderOrdersTable() {
     renderTableHeader();
@@ -6129,7 +6054,7 @@ function createNewOrder() {
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Payment Method</label>
                             <select name="payment_method" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 <option value="">Select Payment Method</option>
-                                <option value="cash">Cash</option>
+                                <option value="cash" selected>Cash</option>
                                 <option value="bank_transfer">Bank Transfer</option>
                                 <option value="card">Card</option>
                                 <option value="online">Online Payment</option>

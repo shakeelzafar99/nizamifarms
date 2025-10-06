@@ -1939,9 +1939,19 @@ function openCreateOrderModal(customer = null) {
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Order Date & Time</label>
                             <input type="datetime-local" name="order_date" required value="${getCurrentLocalDateTime()}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                         </div>
-                        <div>
+                        <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Contact Email</label>
                             <input type="email" name="contact_email" value="${customer ? (customer.email || '') : ''}" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Payment Method</label>
+                            <select name="payment_method" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                <option value="">Select Payment Method</option>
+                                <option value="cash" selected>Cash</option>
+                                <option value="bank_transfer">Bank Transfer</option>
+                                <option value="card">Card</option>
+                                <option value="online">Online Payment</option>
+                            </select>
                         </div>
                     </div>
                 </div>
@@ -2489,6 +2499,151 @@ document.addEventListener('keydown', function(e) {
         closeCreateOrderModal();
     }
 });
+
+// ==================== ENHANCED PRODUCT SEARCH WITH KEYBOARD NAVIGATION ====================
+// Global variables for keyboard navigation
+let currentDropdownIndex = -1;
+let currentProducts = [];
+
+// Enhance existing selectProduct to add auto-add functionality
+const originalSelectProduct = selectProduct;
+selectProduct = function(index, productId, productName, price) {
+    // Call original function
+    originalSelectProduct(index, productId, productName, price);
+    
+    // Auto-add new line item
+    setTimeout(() => {
+        autoAddNextLineItem();
+    }, 100);
+};
+
+function autoAddNextLineItem() {
+    const container = document.getElementById('lineItemsContainer');
+    if (!container) return;
+    
+    const lineItems = container.querySelectorAll('.line-item');
+    if (lineItems.length === 0) return;
+    
+    const lastItem = lineItems[lineItems.length - 1];
+    const lastNameInput = lastItem.querySelector('input[name*="[name]"]');
+    
+    if (lastNameInput && lastNameInput.value.trim()) {
+        addLineItem();
+        
+        setTimeout(() => {
+            const newLineItems = container.querySelectorAll('.line-item');
+            if (newLineItems.length > lineItems.length) {
+                const newItem = newLineItems[newLineItems.length - 1];
+                const newNameInput = newItem.querySelector('input[name*="[name]"]');
+                if (newNameInput) {
+                    newNameInput.focus();
+                }
+            }
+        }, 50);
+    }
+}
+
+function handleProductKeydown(input, index, event) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (!dropdown || dropdown.style.display === 'none') {
+        return;
+    }
+    
+    const items = dropdown.querySelectorAll('[data-product-index]');
+    
+    switch(event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            currentDropdownIndex = Math.min(currentDropdownIndex + 1, items.length - 1);
+            updateDropdownHighlight(items);
+            break;
+            
+        case 'ArrowUp':
+            event.preventDefault();
+            currentDropdownIndex = Math.max(currentDropdownIndex - 1, -1);
+            updateDropdownHighlight(items);
+            break;
+            
+        case 'Enter':
+            event.preventDefault();
+            if (currentDropdownIndex >= 0 && items[currentDropdownIndex]) {
+                items[currentDropdownIndex].click();
+            }
+            break;
+            
+        case 'Escape':
+            event.preventDefault();
+            hideProductDropdown(index);
+            break;
+    }
+}
+
+function updateDropdownHighlight(items) {
+    items.forEach((item, idx) => {
+        if (idx === currentDropdownIndex) {
+            item.style.backgroundColor = '#3b82f6';
+            item.style.color = 'white';
+            item.scrollIntoView({ block: 'nearest' });
+        } else {
+            item.style.backgroundColor = 'white';
+            item.style.color = 'inherit';
+        }
+    });
+}
+
+// Enhance existing showProductResults to add keyboard navigation support
+const originalShowProductResults = showProductResults;
+showProductResults = function(products, index) {
+    const dropdown = document.getElementById(`productDropdown_${index}`);
+    if (!dropdown) return;
+    
+    currentDropdownIndex = -1;
+    currentProducts = products;
+    
+    if (!Array.isArray(products) || products.length === 0) {
+        dropdown.innerHTML = '<div style="padding: 8px; color: #6b7280; font-size: 12px;">No products found</div>';
+    } else {
+        dropdown.innerHTML = products.map((product, idx) => {
+            const displayName = (product.name || product.title || '').toString();
+            const safeName = displayName.replace(/'/g, "\\'");
+            const price = (product.price ?? product.price_min ?? 0);
+            return `
+            <div onclick="selectProduct(${index}, '${product.id}', '${safeName}', ${price})" 
+                 data-product-index="${idx}"
+                 style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
+                 onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
+                 onmouseout="this.style.backgroundColor='white';">
+                <div style="font-weight: 500; font-size: 13px;">${displayName}</div>
+                <div style="font-size: 11px; color: #6b7280;">
+                    ${product.sku ? 'SKU: ' + product.sku + ' | ' : ''}Price: PKR ${price}
+                </div>
+            </div>
+        `;
+        }).join('');
+    }
+    
+    dropdown.style.display = 'block';
+};
+
+// Update the addLineItem function to include keyboard event handlers
+const originalAddLineItem = addLineItem;
+addLineItem = function() {
+    originalAddLineItem();
+    
+    // Update the last added line item to include keyboard handlers
+    const container = document.getElementById('lineItemsContainer');
+    if (container) {
+        const lineItems = container.querySelectorAll('.line-item');
+        const lastItem = lineItems[lineItems.length - 1];
+        if (lastItem) {
+            const input = lastItem.querySelector('input[name*="[name]"]');
+            if (input) {
+                const currentIndex = lineItemIndex - 1;
+                input.setAttribute('onkeydown', `handleProductKeydown(this, ${currentIndex}, event)`);
+            }
+        }
+    }
+};
 </script>
 
 @endsection
