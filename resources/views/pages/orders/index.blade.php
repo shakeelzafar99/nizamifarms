@@ -4821,7 +4821,8 @@ function renderColumnSettings() {
         columnList.appendChild(visibleHeader);
         
         visibleColumns.forEach((column, index) => {
-            columnList.appendChild(createColumnItem(column, true));
+            const item = createColumnItem(column, true);
+            if (item) columnList.appendChild(item);
         });
     }
     
@@ -4833,7 +4834,8 @@ function renderColumnSettings() {
         columnList.appendChild(hiddenHeader);
         
         hiddenColumns.forEach((column, index) => {
-            columnList.appendChild(createColumnItem(column, false));
+            const item = createColumnItem(column, false);
+            if (item) columnList.appendChild(item);
         });
     }
 }
