@@ -243,7 +243,7 @@
                             
                             <div class="timeline-content" style="border-left-color: {{ getStatusColor($history->status_code) }};">
                                 <div class="flex items-start justify-between mb-2">
-                                    <div>
+                                    <div class="flex-1">
                                         <h3 class="font-semibold text-gray-900">
                                             {{ $history->status->status_name ?? ucfirst(str_replace('_', ' ', $history->status_code)) }}
                                             @if($history->is_current)
@@ -252,14 +252,24 @@
                                                 </span>
                                             @endif
                                         </h3>
-                                        <p class="text-sm text-gray-600 mt-1">
-                                            {{ $history->changed_at ? $history->changed_at->format('M j, Y g:i A') : 'Unknown time' }}
-                                            @if($history->changedBy)
-                                                • by {{ $history->changedBy->name }}
-                                            @else
-                                                • by System
+                                        <div class="flex items-center gap-3 mt-1">
+                                            <p class="text-sm text-gray-600">
+                                                <span id="timestamp-{{ $history->id }}">{{ $history->changed_at ? $history->changed_at->format('M j, Y g:i A') : 'Unknown time' }}</span>
+                                                @if($history->changedBy)
+                                                    • by {{ $history->changedBy->name }}
+                                                @else
+                                                    • by System
+                                                @endif
+                                            </p>
+                                            @if($order->external_source !== 'shopify')
+                                                <button onclick="openEditTimestampModal({{ $history->id }}, '{{ $history->changed_at ? $history->changed_at->format('Y-m-d\TH:i') : '' }}')" 
+                                                        class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 hover:text-blue-700 rounded border border-blue-200 transition-colors"
+                                                        title="Edit timestamp">
+                                                    <i class="ki-filled ki-pencil"></i>
+                                                    <span>Edit</span>
+                                                </button>
                                             @endif
-                                        </p>
+                                        </div>
                                     </div>
                                     
                                     @if($index === 0)
@@ -355,6 +365,54 @@
             </button>
             <button id="changeStatusBtn" onclick="changeOrderStatus()" style="padding: 8px 24px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
                 Change Status
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Timestamp Modal -->
+<div id="editTimestampModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        
+        <!-- Modal Header -->
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: #111827;">
+                <i class="ki-filled ki-calendar text-blue-600 mr-2"></i>
+                Edit Status Timestamp
+            </h3>
+            <button onclick="closeEditTimestampModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div style="padding: 24px;">
+            <div id="editTimestampAlert" style="display: none; margin-bottom: 16px;"></div>
+            
+            <div style="margin-bottom: 16px;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                    <i class="ki-filled ki-time mr-1"></i>
+                    New Date & Time
+                </label>
+                <input type="datetime-local" 
+                       id="editTimestampInput" 
+                       style="width: 100%; padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; color: #111827;">
+            </div>
+            
+            <div style="padding: 12px; background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; margin-bottom: 16px;">
+                <p style="font-size: 13px; color: #92400e; margin: 0;">
+                    <i class="ki-filled ki-information-2 mr-1"></i>
+                    <strong>Note:</strong> If this becomes the latest timestamp, it will automatically become the current status and update the main order.
+                </p>
+            </div>
+        </div>
+        
+        <!-- Modal Footer -->
+        <div style="padding: 16px 24px; background-color: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+            <button onclick="closeEditTimestampModal()" style="padding: 10px 20px; background: white; color: #374151; border: 1px solid #d1d5db; border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 14px;">
+                Cancel
+            </button>
+            <button id="saveTimestampBtn" onclick="saveTimestamp()" style="padding: 10px 20px; background: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; font-size: 14px;">
+                <i class="ki-filled ki-check mr-1"></i>
+                Save Timestamp
             </button>
         </div>
     </div>
@@ -477,7 +535,86 @@ document.addEventListener('click', function(e) {
     if (e.target.id === 'statusChangeModal') {
         closeStatusChangeModal();
     }
+    if (e.target.id === 'editTimestampModal') {
+        closeEditTimestampModal();
+    }
 });
+
+// Edit Timestamp Modal Functions
+let currentEditHistoryId = null;
+
+function openEditTimestampModal(historyId, currentTimestamp) {
+    currentEditHistoryId = historyId;
+    document.getElementById('editTimestampInput').value = currentTimestamp;
+    document.getElementById('editTimestampModal').style.display = 'flex';
+    hideEditTimestampAlert();
+}
+
+function closeEditTimestampModal() {
+    document.getElementById('editTimestampModal').style.display = 'none';
+    currentEditHistoryId = null;
+}
+
+async function saveTimestamp() {
+    const newTimestamp = document.getElementById('editTimestampInput').value;
+    
+    if (!newTimestamp) {
+        showEditTimestampAlert('Please select a date and time', 'error');
+        return;
+    }
+    
+    const saveBtn = document.getElementById('saveTimestampBtn');
+    const originalText = saveBtn.textContent;
+    
+    try {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+        
+        const response = await fetch(`/order-status/api/history/${currentEditHistoryId}/update-timestamp`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify({
+                changed_at: newTimestamp
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showEditTimestampAlert('Timestamp updated successfully! Page will reload...', 'success');
+            setTimeout(() => {
+                location.reload();
+            }, 1500);
+        } else {
+            showEditTimestampAlert(data.message || 'Failed to update timestamp', 'error');
+        }
+    } catch (error) {
+        console.error('Error updating timestamp:', error);
+        showEditTimestampAlert('An error occurred while updating timestamp', 'error');
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalText;
+    }
+}
+
+function showEditTimestampAlert(message, type) {
+    const alertContainer = document.getElementById('editTimestampAlert');
+    const alertClass = type === 'success' ? 'background: #d1fae5; color: #065f46; border: 1px solid #34d399;' : 'background: #fee2e2; color: #dc2626; border: 1px solid #f87171;';
+    
+    alertContainer.innerHTML = `
+        <div style="padding: 12px 16px; border-radius: 8px; font-size: 14px; ${alertClass}">
+            ${message}
+        </div>
+    `;
+    alertContainer.style.display = 'block';
+}
+
+function hideEditTimestampAlert() {
+    document.getElementById('editTimestampAlert').style.display = 'none';
+}
 </script>
 @endpush
 

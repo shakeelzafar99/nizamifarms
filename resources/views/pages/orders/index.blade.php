@@ -904,9 +904,18 @@ input:focus, select:focus, button:focus {
                                 <option value="">All status</option>
                     </select>
                             
-                            <input type="date" 
-                                   id="dateFilter" 
-                               class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
+                            <div class="flex items-center gap-2">
+                                <label for="dateFilter" class="text-sm text-gray-500">Order date</label>
+                                <input type="date" 
+                                       id="dateFilter" 
+                                   class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label for="deliveryDateFilter" class="text-sm text-gray-500">Delivery date</label>
+                                <input type="date" 
+                                       id="deliveryDateFilter" 
+                                   class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
+                            </div>
                             
                             <button onclick="clearFilters()" 
                                 class="inline-flex items-center px-3 py-2 text-[15px] font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg border border-gray-300 shadow-sm transition-all" 
@@ -5680,6 +5689,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const searchInput = document.getElementById('orderSearch');
     const statusFilter = document.getElementById('statusFilter');
     const dateFilter = document.getElementById('dateFilter');
+    const deliveryDateFilter = document.getElementById('deliveryDateFilter');
     
     let searchTimeout;
     
@@ -5707,9 +5717,8 @@ document.addEventListener('DOMContentLoaded', function() {
         applyFiltersToUrl();
     });
     
-    dateFilter.addEventListener('change', function() {
-        applyFiltersToUrl();
-    });
+    dateFilter.addEventListener('change', function() { applyFiltersToUrl(); });
+    if (deliveryDateFilter) deliveryDateFilter.addEventListener('change', function() { applyFiltersToUrl(); });
     
     // Per-page selector functionality
     const perPageSelector = document.getElementById('per-page-selector');
@@ -5740,6 +5749,7 @@ document.addEventListener('DOMContentLoaded', function() {
 function applyFiltersToUrl() {
     const statusFilter = document.getElementById('statusFilter').value;
     const dateFilter = document.getElementById('dateFilter').value;
+    const deliveryDateFilter = document.getElementById('deliveryDateFilter') ? document.getElementById('deliveryDateFilter').value : '';
     
     const currentUrl = new URL(window.location);
     
@@ -5750,11 +5760,8 @@ function applyFiltersToUrl() {
         currentUrl.searchParams.delete('status');
     }
     
-    if (dateFilter) {
-        currentUrl.searchParams.set('date', dateFilter);
-    } else {
-        currentUrl.searchParams.delete('date');
-    }
+    if (dateFilter) currentUrl.searchParams.set('date', dateFilter); else currentUrl.searchParams.delete('date');
+    if (deliveryDateFilter) currentUrl.searchParams.set('delivery_date', deliveryDateFilter); else currentUrl.searchParams.delete('delivery_date');
     
     // Reset to page 1 when filters change
     currentUrl.searchParams.set('page', '1');
@@ -5768,6 +5775,7 @@ function fetchFilteredOrders() {
     const searchTerm = document.getElementById('orderSearch').value.trim();
     const statusFilter = document.getElementById('statusFilter').value;
     const dateFilter = document.getElementById('dateFilter').value;
+    const deliveryDateFilter = document.getElementById('deliveryDateFilter') ? document.getElementById('deliveryDateFilter').value : '';
     
     // Show loading state
     showLoadingState();
@@ -5777,6 +5785,7 @@ function fetchFilteredOrders() {
     if (searchTerm) params.append('search', searchTerm);
     if (statusFilter) params.append('status', statusFilter);
     if (dateFilter) params.append('date', dateFilter);
+    if (deliveryDateFilter) params.append('delivery_date', deliveryDateFilter);
     
     // Get current source (shopify/other)
     const currentUrl = new URL(window.location);

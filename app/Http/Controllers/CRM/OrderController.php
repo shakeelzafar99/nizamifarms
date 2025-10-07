@@ -30,7 +30,8 @@ class OrderController extends Controller
         $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
         $tab = $request->get('tab', 'all'); // 'all', 'approvals', or 'open'
         $status = $request->get('status', ''); // Status filter
-        $date = $request->get('date', ''); // Date filter
+        $date = $request->get('date', ''); // Order date filter
+        $deliveryDate = $request->get('delivery_date', ''); // Delivery date filter (from status history)
 
         // Check permissions for Shopify orders
         $canViewShopify = $user->hasPermission('view_shopify_orders');
@@ -78,9 +79,20 @@ class OrderController extends Controller
             $query->where('order_status', $status);
         }
         
-        // Apply date filter if provided
+        // Apply order date filter if provided
         if (!empty($date)) {
             $query->whereDate('order_date', $date);
+        }
+
+        // Apply delivery date filter (non-Shopify orders only) using status history 'delivered' changed_at
+        if ($source !== 'shopify' && !empty($deliveryDate)) {
+            $query->whereExists(function($q) use ($deliveryDate) {
+                $q->select(\DB::raw(1))
+                  ->from('t_crm_order_status_history as h')
+                  ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                  ->where('h.status_code', 'delivered')
+                  ->whereDate('h.changed_at', $deliveryDate);
+            });
         }
         
         // Handle per_page parameter
@@ -93,6 +105,7 @@ class OrderController extends Controller
         $appendParams = ['source' => $source, 'per_page' => $perPage, 'tab' => $tab];
         if (!empty($status)) $appendParams['status'] = $status;
         if (!empty($date)) $appendParams['date'] = $date;
+        if (!empty($deliveryDate)) $appendParams['delivery_date'] = $deliveryDate;
         $orders->appends($appendParams);
         
         // Counts for badges
@@ -132,7 +145,7 @@ class OrderController extends Controller
             $openCount = $openCountQuery->count();
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders'));
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user'));
     }
 
     public function show($id)
@@ -994,6 +1007,7 @@ class OrderController extends Controller
             $search = $request->get('search', '');
             $status = $request->get('status', '');
             $date = $request->get('date', '');
+            $deliveryDate = $request->get('delivery_date', '');
             
             // Check permissions
             $canViewShopify = $user->hasPermission('view_shopify_orders');
@@ -1056,9 +1070,20 @@ class OrderController extends Controller
                 $query->where('order_status', $status);
             }
             
-            // Apply date filter
+            // Apply order date filter
             if (!empty($date)) {
                 $query->whereDate('order_date', $date);
+            }
+
+            // Apply delivery date filter on non-Shopify orders through status history
+            if ($source !== 'shopify' && !empty($deliveryDate)) {
+                $query->whereExists(function($q) use ($deliveryDate) {
+                    $q->select(\DB::raw(1))
+                      ->from('t_crm_order_status_history as h')
+                      ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                      ->where('h.status_code', 'delivered')
+                      ->whereDate('h.changed_at', $deliveryDate);
+                });
             }
             
             // Get results (limit to 100 for performance)

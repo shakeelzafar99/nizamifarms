@@ -180,6 +180,85 @@ class OrderStatusController extends Controller
     }
 
     /**
+     * Update status history timestamp (Admin only)
+     * After updating, reconciles is_current flags and main order table
+     */
+    public function updateHistoryTimestamp(Request $request, int $historyId): JsonResponse
+    {
+        try {
+            // Validate request
+            $request->validate([
+                'changed_at' => 'required|date'
+            ]);
+
+            // Find the history record
+            $history = \DB::table('t_crm_order_status_history')->where('id', $historyId)->first();
+            
+            if (!$history) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Status history record not found'
+                ], 404);
+            }
+
+            $orderId = $history->order_id;
+            $oldTimestamp = $history->changed_at;
+            $newTimestamp = $request->changed_at;
+
+            // Update the timestamp using direct DB query (table doesn't have updated_at column)
+            \DB::table('t_crm_order_status_history')
+                ->where('id', $historyId)
+                ->update(['changed_at' => $newTimestamp]);
+
+            \Log::info('Status history timestamp updated', [
+                'history_id' => $historyId,
+                'order_id' => $orderId,
+                'old_timestamp' => $oldTimestamp,
+                'new_timestamp' => $newTimestamp,
+                'updated_by' => auth()->id()
+            ]);
+
+            // Reconcile current status - this will:
+            // 1. Find the latest status by changed_at DESC, id DESC
+            // 2. Set is_current = 1 for latest, 0 for all others
+            // 3. Update main order table with the latest status
+            OrderModel::reconcileCurrentStatus($orderId);
+
+            \Log::info('Status reconciliation completed after timestamp edit', [
+                'order_id' => $orderId,
+                'history_id' => $historyId
+            ]);
+
+            // Get updated history to return
+            $updatedHistory = $this->statusService->getOrderStatusHistory($orderId);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Status timestamp updated successfully. Current status has been reconciled.',
+                'data' => $updatedHistory
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid date format',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to update status history timestamp', [
+                'history_id' => $historyId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update timestamp: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Get available transitions for a status
      */
     public function getAvailableTransitions(int $statusId): JsonResponse
