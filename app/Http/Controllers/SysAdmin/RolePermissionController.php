@@ -19,6 +19,7 @@ class RolePermissionController extends Controller
             // Orders & Deliveries
             'view_orders' => 'View Orders',
             'view_all_orders' => 'View All Orders (vs own assigned)',
+            'create_orders' => 'Create New Orders',
             'edit_orders' => 'Edit Orders',
             'view_shopify_orders' => 'View Shopify Orders',
             'view_order_status' => 'Manage Order Status',
@@ -121,11 +122,11 @@ class RolePermissionController extends Controller
                 'view_attendance', // Only own (no view_all_attendance)
                 'view_requests', // Only own (no view_all_requests)
                 'create_requests',
-                // NOT: edit_orders, view_shopify_orders, view_open_quantities, view_all_*
+                // NOT: create_orders, edit_orders, view_shopify_orders, view_open_quantities, view_all_*
             ],
             'manager' => [
                 'view_dashboard',
-                'view_orders', 'view_all_orders', 'edit_orders', 'view_shopify_orders',
+                'view_orders', 'view_all_orders', 'create_orders', 'edit_orders', 'view_shopify_orders',
                 'view_order_status', 'view_status_history', 'assign_riders', 'bulk_operations',
                 'view_invoices', 'view_all_invoices', 'view_open_quantities',
                 'view_riders', 'view_all_riders', 'edit_riders',

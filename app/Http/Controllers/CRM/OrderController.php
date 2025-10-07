@@ -461,6 +461,14 @@ class OrderController extends Controller
     
     public function store(Request $request)
     {
+        // Check permission
+        if (!auth()->user()->hasPermission('create_orders')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to create orders.'
+            ], 403);
+        }
+        
         try {
             // Validate request
             $validated = $request->validate([
