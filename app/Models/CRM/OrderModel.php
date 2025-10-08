@@ -790,6 +790,32 @@ class OrderModel extends BaseModel
                     'new_status' => $this->order_status
                 ]);
 
+                // 4. If status changed to 'delivered', post invoice to ledger
+                if ($statusCode === 'delivered') {
+                    try {
+                        $ledgerService = new \App\Services\FIN\LedgerPostingService();
+                        $result = $ledgerService->postInvoiceFromOrder($this);
+                        
+                        if ($result['success']) {
+                            \Log::info("Invoice posted to ledger", [
+                                'order_id' => $this->id,
+                                'ledger_id' => $result['ledger_id'] ?? null
+                            ]);
+                        } else {
+                            \Log::warning("Failed to post invoice to ledger", [
+                                'order_id' => $this->id,
+                                'message' => $result['message'] ?? 'Unknown error'
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Exception posting invoice to ledger", [
+                            'order_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't fail the status change if ledger posting fails
+                    }
+                }
+
                 // Refresh and return
                 $this->refresh();
                 return true;

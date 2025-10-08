@@ -138,6 +138,31 @@
                     <!-- Title - hidden for leave requests, auto-filled -->
                     <input type="hidden" name="title" id="hidden-title" value="leave">
 
+                    <!-- Expense Category (for expense requests only) -->
+                    <div id="expense-category-field" style="display: none;" class="mb-6">
+                        <label class="kt-label required">Expense Type</label>
+                        <select name="expense_category" id="expense_category" class="kt-select">
+                            <option value="">Select Expense Type</option>
+                            <option value="Petrol">Petrol</option>
+                            <option value="Rent">Rent</option>
+                            <option value="Utility Bills">Utility Bills</option>
+                            <option value="Packaging - Shrink wrap">Packaging - Shrink wrap</option>
+                            <option value="Packaging - Bags">Packaging - Bags</option>
+                            <option value="Food">Food</option>
+                            <option value="Office Supplies">Office Supplies</option>
+                            <option value="Maintenance">Maintenance</option>
+                            <option value="Transportation">Transportation</option>
+                            <option value="Communication">Communication</option>
+                            <option value="Marketing">Marketing</option>
+                            <option value="Insurance">Insurance</option>
+                            <option value="Professional Fees">Professional Fees</option>
+                            <option value="Bank Charges">Bank Charges</option>
+                            <option value="Staff Salaries">Staff Salaries</option>
+                            <option value="Miscellaneous">Miscellaneous</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">Select the type of expense for proper accounting</p>
+                    </div>
+
                     <!-- Amount field (for advance/expense) -->
                     <div id="amount-field" style="display: none;" class="mb-6">
                         <label class="kt-label">Amount (Rs.)</label>
@@ -187,28 +212,48 @@ function handleCategoryChange() {
     // Show/hide fields based on category
     const leaveFields = document.getElementById('leave-fields');
     const amountField = document.getElementById('amount-field');
+    const expenseCategoryField = document.getElementById('expense-category-field');
     const descriptionLabel = document.getElementById('description-label');
     const descriptionField = document.getElementById('description-field');
+    const expenseCategorySelect = document.getElementById('expense_category');
     
     if (categoryCode === 'leave') {
         leaveFields.style.display = 'block';
         amountField.style.display = 'none';
+        expenseCategoryField.style.display = 'none';
         // Make leave fields required
         document.querySelector('[name="leave_start_date"]').required = true;
         document.querySelector('[name="leave_end_date"]').required = true;
         document.querySelector('[name="amount"]').required = false;
+        expenseCategorySelect.required = false;
         // Description optional for leave
         descriptionField.required = false;
         descriptionLabel.classList.remove('required');
         descriptionField.placeholder = 'Optional: Provide additional details about your leave';
-    } else if (categoryCode === 'advance' || categoryCode === 'expense') {
+    } else if (categoryCode === 'expense') {
+        // EXPENSE: Show both expense category AND amount field
         leaveFields.style.display = 'none';
+        expenseCategoryField.style.display = 'block';
+        amountField.style.display = 'block';
+        // Make expense category and amount required
+        expenseCategorySelect.required = true;
+        document.querySelector('[name="amount"]').required = true;
+        document.querySelector('[name="leave_start_date"]').required = false;
+        document.querySelector('[name="leave_end_date"]').required = false;
+        // Description required for expense
+        descriptionField.required = true;
+        descriptionLabel.classList.add('required');
+    } else if (categoryCode === 'advance') {
+        // ADVANCE: Show only amount field, NO expense category
+        leaveFields.style.display = 'none';
+        expenseCategoryField.style.display = 'none';
         amountField.style.display = 'block';
         // Make amount required
         document.querySelector('[name="amount"]').required = true;
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
-        // Description required for advance/expense
+        expenseCategorySelect.required = false;
+        // Description required for advance
         descriptionField.required = true;
         descriptionLabel.classList.add('required');
         descriptionField.placeholder = 'Provide detailed information about your request';

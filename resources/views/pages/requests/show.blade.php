@@ -96,6 +96,13 @@
                     </div>
                     @endif
                     
+                    @if($request->expense_category)
+                    <div>
+                        <label class="text-sm font-semibold text-gray-700">Expense Category</label>
+                        <p class="text-base mt-1">{{ $request->expense_category }}</p>
+                    </div>
+                    @endif
+                    
                     <div class="md:col-span-2">
                         <label class="text-sm font-semibold text-gray-700">Title</label>
                         <p class="text-base mt-1">{{ $request->title }}</p>
@@ -192,6 +199,43 @@
                 <form id="approval-form">
                     @csrf
                     <input type="hidden" name="level" value="{{ $canApproveLevel1 ? 1 : 2 }}">
+                    
+                    @php
+                        // Check if this is an expense request and if user is final approver
+                        $isExpenseRequest = $request->category->category_code === 'expense' && $request->amount > 0;
+                        $isFinalApproval = ($canApproveLevel2 && $request->requires_level_2) || 
+                                          ($canApproveLevel1 && !$request->requires_level_2);
+                        
+                        // Get available payment source accounts
+                        $paymentSources = collect();
+                        if ($isExpenseRequest && $isFinalApproval) {
+                            $paymentSources = \App\Models\FIN\AccountModel::where(function($query) {
+                                    $query->whereIn('account_code', ['EXP_FUND', 'ONLINE', 'NF_CASH'])
+                                          ->orWhere('account_category', 'employee_cash');
+                                })
+                                ->where('is_active', 1)
+                                ->orderBy('account_name')
+                                ->get();
+                        }
+                    @endphp
+                    
+                    @if($isExpenseRequest && $isFinalApproval && $paymentSources->count() > 0)
+                    <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded">
+                        <label class="kt-label font-semibold text-blue-900">💰 Payment Source</label>
+                        <select name="payment_source_account_id" class="kt-select mt-2">
+                            <option value="">Expense Fund (default)</option>
+                            @foreach($paymentSources as $account)
+                                <option value="{{ $account->id }}">
+                                    {{ $account->account_name }} 
+                                    (Balance: Rs. {{ number_format($account->current_balance, 2) }})
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="text-xs text-blue-700 mt-2">
+                            ℹ️ Select which account to pay this expense from. Defaults to Expense Fund if not selected.
+                        </p>
+                    </div>
+                    @endif
                     
                     <div class="mb-4">
                         <label class="kt-label">Comments</label>

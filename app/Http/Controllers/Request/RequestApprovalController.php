@@ -17,7 +17,8 @@ class RequestApprovalController extends Controller
     {
         $validated = $request->validate([
             'level' => 'required|integer|in:1,2',
-            'comments' => 'nullable|string'
+            'comments' => 'nullable|string',
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id' // For expense requests
         ]);
 
         $requestModel = RequestModel::findOrFail($id);
@@ -41,6 +42,12 @@ class RequestApprovalController extends Controller
         }
 
         try {
+            // If payment source is provided, save it to the request
+            if (isset($validated['payment_source_account_id'])) {
+                $requestModel->payment_source_account_id = $validated['payment_source_account_id'];
+                $requestModel->save();
+            }
+            
             $success = $requestModel->processApproval(
                 $level,
                 $user->id,

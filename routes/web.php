@@ -269,6 +269,53 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/{id}', [\App\Http\Controllers\Request\RequestController::class, 'show'])->name('requests.show');
         Route::put('/{id}', [\App\Http\Controllers\Request\RequestController::class, 'update'])->name('requests.update');
     });
+
+    // Finance & Ledger Routes
+    Route::prefix('finance')->name('fin.')->group(function () {
+        
+        // Import Routes
+        Route::prefix('import')->name('import.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\ImportController::class, 'index'])->name('index');
+            Route::get('/create', [\App\Http\Controllers\FIN\ImportController::class, 'create'])->name('create');
+            Route::post('/legacy', [\App\Http\Controllers\FIN\ImportController::class, 'importLegacy'])->name('legacy');
+            Route::post('/clear-legacy', [\App\Http\Controllers\FIN\ImportController::class, 'clearLegacyData'])->name('clear-legacy');
+            Route::delete('/{id}', [\App\Http\Controllers\FIN\ImportController::class, 'deleteImport'])->name('delete');
+            Route::get('/template', [\App\Http\Controllers\FIN\ImportController::class, 'downloadTemplate'])->name('template');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\ImportController::class, 'show'])->name('show');
+        });
+
+        // Vendor Routes
+        Route::prefix('vendors')->name('vendors.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index'])->name('index');
+            Route::get('/create', [\App\Http\Controllers\FIN\VendorController::class, 'create'])->name('create');
+            Route::post('/', [\App\Http\Controllers\FIN\VendorController::class, 'store'])->name('store');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show'])->name('show');
+            Route::get('/{id}/edit', [\App\Http\Controllers\FIN\VendorController::class, 'edit'])->name('edit');
+            Route::put('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'update'])->name('update');
+            Route::post('/{id}/toggle-status', [\App\Http\Controllers\FIN\VendorController::class, 'toggleStatus'])->name('toggle-status');
+            Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase'])->name('purchase');
+            Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment'])->name('payment');
+        });
+
+        // Employee Cash Routes
+        Route::prefix('employee')->name('employee.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'index'])->name('index');
+            Route::get('/dashboard', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'dashboard'])->name('dashboard');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'show'])->name('show');
+            Route::post('/{id}/deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordDeposit'])->name('deposit');
+            Route::post('/{id}/adjustment', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordAdjustment'])->name('adjustment');
+        });
+
+        // Ledger Routes (Overall Ledger & Transfers)
+        Route::prefix('ledger')->name('ledger.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\LedgerController::class, 'index'])->name('index');
+            Route::get('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'createTransfer'])->name('transfer');
+            Route::post('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'storeTransfer'])->name('transfer.store');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'show'])->name('show');
+            Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
+            Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');
+        });
+    });
 });
 
 // User attendance - accessible by anyone with view_attendance permission

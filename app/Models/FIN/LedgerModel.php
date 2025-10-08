@@ -1,0 +1,202 @@
+<?php
+
+namespace App\Models\FIN;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use App\Models\Shared\BaseModel;
+use App\Models\SysAdmin\UserModel;
+use App\Models\Request\RequestModel;
+use App\Models\CRM\OrderModel;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class LedgerModel extends BaseModel
+{
+    use HasFactory;
+
+    protected $table = 't_fin_ledger';
+    protected $primaryKey = 'id';
+    public $timestamps = true;
+
+    protected $fillable = [
+        'transaction_date',
+        'transaction_type',
+        'description',
+        'from_account_id',
+        'to_account_id',
+        'amount',
+        'mode',
+        'approval_status',
+        'approval_date',
+        'approved_by',
+        'approved_at',
+        'approval_notes',
+        'external_source',
+        'external_txn_id',
+        'external_ref_id',
+        'content_hash',
+        'request_id',
+        'order_id',
+        'device',
+        'comments',
+        'created_by',
+        'updated_by'
+    ];
+
+    protected $casts = [
+        'transaction_date' => 'date',
+        'approval_date' => 'date',
+        'amount' => 'decimal:2'
+    ];
+
+    // Transaction type constants
+    const TYPE_INVOICE = 'invoice';
+    const TYPE_EXPENSE = 'expense';
+    const TYPE_VENDOR_PURCHASE = 'vendor_purchase';
+    const TYPE_VENDOR_PAYMENT = 'vendor_payment';
+    const TYPE_EMPLOYEE_DEPOSIT = 'employee_deposit';
+    const TYPE_REIMBURSEMENT_ACCRUAL = 'reimbursement_accrual';
+    const TYPE_REIMBURSEMENT_PAYMENT = 'reimbursement_payment';
+    const TYPE_SALARY_ADVANCE = 'salary_advance';
+    const TYPE_TRANSFER = 'transfer';
+    const TYPE_ADJUSTMENT = 'adjustment';
+    const TYPE_OPENING_BALANCE = 'opening_balance';
+
+    // Mode constants
+    const MODE_CASH = 'cash';
+    const MODE_ONLINE = 'online';
+
+    // Approval status constants
+    const STATUS_PENDING = 'pending';
+    const STATUS_APPROVED = 'approved';
+    const STATUS_REJECTED = 'rejected';
+
+    /**
+     * Relationships
+     */
+    public function fromAccount(): BelongsTo
+    {
+        return $this->belongsTo(AccountModel::class, 'from_account_id', 'id');
+    }
+
+    public function toAccount(): BelongsTo
+    {
+        return $this->belongsTo(AccountModel::class, 'to_account_id', 'id');
+    }
+
+    public function approvedBy(): BelongsTo
+    {
+        return $this->belongsTo(UserModel::class, 'approved_by', 'id');
+    }
+
+    public function createdBy(): BelongsTo
+    {
+        return $this->belongsTo(UserModel::class, 'created_by', 'id');
+    }
+
+    public function updatedBy(): BelongsTo
+    {
+        return $this->belongsTo(UserModel::class, 'updated_by', 'id');
+    }
+
+    public function request(): BelongsTo
+    {
+        return $this->belongsTo(RequestModel::class, 'request_id', 'id');
+    }
+
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(OrderModel::class, 'order_id', 'id');
+    }
+
+    /**
+     * Scopes
+     */
+    public function scopeApproved($query)
+    {
+        return $query->where('approval_status', self::STATUS_APPROVED);
+    }
+
+    public function scopePending($query)
+    {
+        return $query->where('approval_status', self::STATUS_PENDING);
+    }
+
+    public function scopeByType($query, $type)
+    {
+        return $query->where('transaction_type', $type);
+    }
+
+    public function scopeByAccount($query, $accountId)
+    {
+        return $query->where(function($q) use ($accountId) {
+            $q->where('from_account_id', $accountId)
+              ->orWhere('to_account_id', $accountId);
+        });
+    }
+
+    public function scopeDateRange($query, $startDate, $endDate)
+    {
+        return $query->whereBetween('transaction_date', [$startDate, $endDate]);
+    }
+
+    public function scopeByMode($query, $mode)
+    {
+        return $query->where('mode', $mode);
+    }
+
+    /**
+     * Helper Methods
+     */
+    public function isPending(): bool
+    {
+        return $this->approval_status === self::STATUS_PENDING;
+    }
+
+    public function isApproved(): bool
+    {
+        return $this->approval_status === self::STATUS_APPROVED;
+    }
+
+    public function requiresApproval(): bool
+    {
+        return $this->mode === self::MODE_ONLINE;
+    }
+
+    /**
+     * Generate content hash for deduplication
+     */
+    public static function generateContentHash($data): string
+    {
+        return md5(json_encode($data));
+    }
+
+    /**
+     * Check if transaction already exists
+     */
+    public static function transactionExists($source, $txnId): bool
+    {
+        return static::where('external_source', $source)
+                     ->where('external_txn_id', $txnId)
+                     ->exists();
+    }
+
+    /**
+     * Format amount for display
+     */
+    public function getFormattedAmountAttribute(): string
+    {
+        return number_format($this->amount, 2);
+    }
+
+    /**
+     * Get transaction description with from/to accounts
+     */
+    public function getFullDescriptionAttribute(): string
+    {
+        $from = $this->fromAccount ? $this->fromAccount->account_name : 'Unknown';
+        $to = $this->toAccount ? $this->toAccount->account_name : 'Unknown';
+        
+        return "{$from} → {$to}: {$this->formatted_amount}";
+    }
+}
+

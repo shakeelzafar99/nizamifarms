@@ -123,6 +123,7 @@ class RequestController extends Controller
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'amount' => 'nullable|numeric|min:0',
+            'expense_category' => 'nullable|string|max:255', // For expense requests
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
             'leave_type' => 'nullable|string',
@@ -206,6 +207,7 @@ class RequestController extends Controller
                 'title' => $validated['title'],
                 'description' => ($validated['description'] ?? '') . $createdByNote,
                 'amount' => $validated['amount'] ?? null,
+                'expense_category' => $validated['expense_category'] ?? null,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,

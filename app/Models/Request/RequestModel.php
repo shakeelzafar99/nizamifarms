@@ -24,6 +24,8 @@ class RequestModel extends BaseModel
         'title',
         'description',
         'amount',
+        'expense_category',
+        'payment_source_account_id',
         'leave_start_date',
         'leave_end_date',
         'leave_type',
@@ -39,6 +41,7 @@ class RequestModel extends BaseModel
         'rejection_reason',
         'submitted_at',
         'completed_at',
+        'ledger_transaction_id',
         'created_by',
         'updated_by'
     ];
@@ -228,6 +231,32 @@ class RequestModel extends BaseModel
                 // If it's a leave request, create attendance records
                 if ($this->category->category_code === 'leave') {
                     $this->createAttendanceRecordsForLeave();
+                }
+                
+                // If it's an expense request, post to ledger
+                if ($this->category->category_code === 'expense' && $this->amount > 0) {
+                    try {
+                        $ledgerService = new \App\Services\FIN\LedgerPostingService();
+                        $result = $ledgerService->postExpenseFromRequest($this);
+                        
+                        if ($result['success']) {
+                            \Log::info("Expense posted to ledger", [
+                                'request_id' => $this->id,
+                                'ledger_id' => $result['ledger_id'] ?? null
+                            ]);
+                        } else {
+                            \Log::warning("Failed to post expense to ledger", [
+                                'request_id' => $this->id,
+                                'message' => $result['message'] ?? 'Unknown error'
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Exception posting expense to ledger", [
+                            'request_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't fail the approval if ledger posting fails
+                    }
                 }
             }
 
