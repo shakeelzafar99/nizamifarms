@@ -57,7 +57,7 @@ class OrderController extends Controller
             // Otherwise show ALL Shopify orders
         } else {
             // Non-shopify from prod orders
-            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems', 'assignedRider'])
+            $query = \App\Models\CRM\OrderModel::with(['customer', 'lineItems', 'assignedRider', 'currentStatusHistory'])
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
                       ->orWhereNull('external_source');

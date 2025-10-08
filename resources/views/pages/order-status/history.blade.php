@@ -241,6 +241,17 @@ async function loadOrders() {
             allOrders = data.orders.data || data.orders;
             // Filter out orders without proper status (these need history records)
             allOrders = allOrders.filter(order => order.order_status && order.order_status !== '');
+            
+            // Fetch current status change date for each order from status history
+            for (let order of allOrders) {
+                if (order.current_status_history && order.current_status_history.changed_at) {
+                    order.status_changed_at = order.current_status_history.changed_at;
+                } else {
+                    // Fallback to order_date if status history not available
+                    order.status_changed_at = order.order_date || order.created_at;
+                }
+            }
+            
             filteredOrders = [...allOrders];
             renderOrders();
         } else {
@@ -377,7 +388,7 @@ function renderOrders() {
                 </div>
                 <div class="flex items-center gap-6 text-sm text-gray-600">
                     <span><i class="ki-filled ki-user mr-1"></i>${order.customer_name || 'Unknown Customer'}</span>
-                    <span><i class="ki-filled ki-calendar mr-1"></i>${formatDate(order.order_date || order.created_at)}</span>
+                    <span><i class="ki-filled ki-calendar mr-1"></i>${formatDate(order.status_changed_at || order.order_date || order.created_at)}</span>
                     <span><i class="ki-filled ki-dollar mr-1"></i>$${parseFloat(order.total_price || 0).toFixed(2)}</span>
                 </div>
             </div>
