@@ -185,25 +185,38 @@
                       </a>
                   </div>
                   
-                  <!-- Finance Section -->
-                  <div class="kt-menu-item pt-2.25 pb-px">
-                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
-                          Finance
-                      </span>
-                  </div>
-                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                      <a href="/finance/ledger">
-                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                  <i class="ki-filled ki-book text-lg">
-                                  </i>
-                              </span>
-                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                  Overall Ledger
-                              </span>
-                          </div>
-                      </a>
-                  </div>
+    <!-- Finance Section -->
+    <div class="kt-menu-item pt-2.25 pb-px">
+        <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+            Finance
+        </span>
+    </div>
+    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+        <a href="/finance/accounts">
+            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                    <i class="ki-filled ki-category text-lg">
+                    </i>
+                </span>
+                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                    Accounts
+                </span>
+            </div>
+        </a>
+    </div>
+    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+        <a href="/finance/ledger">
+            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                    <i class="ki-filled ki-book text-lg">
+                    </i>
+                </span>
+                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                    Overall Ledger
+                </span>
+            </div>
+        </a>
+    </div>
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/finance/vendors">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -231,10 +244,31 @@
                       </a>
                   </div>
                   
+                  @php
+                      $openActionItems = \App\Models\FIN\ActionItemModel::where('status', 'open')->count();
+                  @endphp
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/finance/action-items" title="Track and resolve ledger posting issues">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-information-2 text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
+                                  Action Items
+                              </span>
+                              @if($openActionItems > 0)
+                              <span class="kt-badge kt-badge-sm kt-badge-danger font-bold">
+                                  {{ $openActionItems }}
+                              </span>
+                              @endif
+                          </div>
+                      </a>
+                  </div>
+                  
                   <!-- Requests Section -->
                   <div class="kt-menu-item pt-2.25 pb-px">
                       <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
-                          Requests & Approvals
+                          Requests
                       </span>
                   </div>
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -245,12 +279,54 @@
                                   </i>
                               </span>
                               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                  Requests
+                                  My Requests
                               </span>
                           </div>
                       </a>
                   </div>
                   @if($userRole !== 'rider')
+                  @php
+                      // Calculate pending approvals count for badge (simplified)
+                      // Financial transactions
+                      $pendingLedgerCount = \App\Models\FIN\LedgerModel::where('approval_status', 'pending')->count();
+                      
+                      // Expense requests - simplified count for badge (detailed filtering happens on dashboard)
+                      $user = auth()->user();
+                      $hasLevel1Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
+                      $hasLevel2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+                      
+                      $pendingRequestsCount = 0;
+                      if ($hasLevel1Rights || $hasLevel2Rights) {
+                          // Show count of all pending requests if user has any approval rights
+                          $pendingRequestsCount = \App\Models\Request\RequestModel::where('status', 'pending')->count();
+                      }
+                      
+                      $totalPendingApprovals = $pendingLedgerCount + $pendingRequestsCount;
+                  @endphp
+                  
+                  <!-- Approvals Section -->
+                  <div class="kt-menu-item pt-2.25 pb-px">
+                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                          Approvals
+                      </span>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/approvals" title="Approve requests, invoices, payments & transfers">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-check-circle text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
+                                  Approvals Dashboard
+                              </span>
+                              @if($totalPendingApprovals > 0)
+                              <span class="kt-badge kt-badge-sm kt-badge-danger font-bold">
+                                  {{ $totalPendingApprovals }}
+                              </span>
+                              @endif
+                          </div>
+                      </a>
+                  </div>
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/requests/settings">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">

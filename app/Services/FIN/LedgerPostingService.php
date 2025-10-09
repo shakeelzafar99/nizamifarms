@@ -18,6 +18,15 @@ class LedgerPostingService
     public function postInvoiceFromOrder(OrderModel $order)
     {
         try {
+            // Check if automatic posting is enabled
+            $autoPostEnabled = ConfigModel::where('config_key', 'LEDGER_AUTO_POST_ENABLED')
+                ->value('config_value');
+            
+            if ($autoPostEnabled !== '1') {
+                Log::info("Automatic ledger posting is disabled", ['order_id' => $order->id]);
+                return ['success' => false, 'message' => 'Automatic posting disabled'];
+            }
+
             // Check if already posted
             if ($order->ledger_transaction_id) {
                 Log::info("Order already has ledger entry", ['order_id' => $order->id]);
@@ -52,9 +61,22 @@ class LedgerPostingService
                     if ($rider) {
                         $toAccount = AccountModel::createEmployeeCashAccount($rider->id, $rider->fullname ?? $rider->name);
                     } else {
+                        // Create action item for missing rider user
+                        \App\Models\FIN\ActionItemModel::create([
+                            'item_type' => 'missing_rider',
+                            'severity' => 'high',
+                            'title' => "Order #{$order->order_number} - Rider user not found",
+                            'description' => "Rider with ID {$order->assigned_rider_user_id} not found in system",
+                            'related_entity_type' => 'order',
+                            'order_id' => $order->id,
+                            'suggested_action' => 'Verify rider user exists or reassign order to valid rider',
+                            'created_by' => auth()->id() ?? 1
+                        ]);
                         throw new \Exception("Rider not found");
                     }
                 } else {
+                    // Create action item for missing rider assignment
+                    \App\Models\FIN\ActionItemModel::createMissingRiderItem($order);
                     throw new \Exception("No rider assigned to order");
                 }
                 $mode = LedgerModel::MODE_CASH;

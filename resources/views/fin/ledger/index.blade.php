@@ -23,6 +23,94 @@
         </div>
     @endif
 
+    <!-- Pending Approvals Summary -->
+    @if($pendingSummary['total_count'] > 0)
+    <div class="bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-orange-500 rounded-lg p-6 mb-6 shadow-sm">
+        <div class="flex items-start justify-between mb-4">
+            <div>
+                <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <span class="text-2xl">⚠️</span>
+                    Pending Approvals
+                </h3>
+                <p class="text-sm text-gray-600 mt-1">Transactions waiting for your approval</p>
+            </div>
+            <a href="{{ route('fin.ledger.index', ['status' => 'pending']) }}" 
+               class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-md transition">
+                View All Pending
+            </a>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <!-- Total Card -->
+            <div class="bg-white rounded-lg p-4 border-2 border-orange-200">
+                <div class="text-sm font-medium text-gray-600 mb-1">Total Pending</div>
+                <div class="text-3xl font-bold text-orange-600">{{ $pendingSummary['total_count'] }}</div>
+                <div class="text-lg font-semibold text-gray-700 mt-1">
+                    Rs. {{ number_format($pendingSummary['total_amount'], 2) }}
+                </div>
+            </div>
+            
+            <!-- Breakdown Cards -->
+            @if(isset($pendingSummary['by_type']['invoice']))
+            <div class="bg-white rounded-lg p-4 border border-gray-200">
+                <div class="text-sm font-medium text-gray-600 mb-1">Online Invoices</div>
+                <div class="text-2xl font-bold text-blue-600">{{ $pendingSummary['by_type']['invoice']->count }}</div>
+                <div class="text-sm font-semibold text-gray-600 mt-1">
+                    Rs. {{ number_format($pendingSummary['by_type']['invoice']->amount, 2) }}
+                </div>
+            </div>
+            @endif
+            
+            @if(isset($pendingSummary['by_type']['employee_deposit']))
+            <div class="bg-white rounded-lg p-4 border border-gray-200">
+                <div class="text-sm font-medium text-gray-600 mb-1">Employee Deposits</div>
+                <div class="text-2xl font-bold text-green-600">{{ $pendingSummary['by_type']['employee_deposit']->count }}</div>
+                <div class="text-sm font-semibold text-gray-600 mt-1">
+                    Rs. {{ number_format($pendingSummary['by_type']['employee_deposit']->amount, 2) }}
+                </div>
+            </div>
+            @endif
+            
+            @if(isset($pendingSummary['by_type']['vendor_payment']))
+            <div class="bg-white rounded-lg p-4 border border-gray-200">
+                <div class="text-sm font-medium text-gray-600 mb-1">Vendor Payments</div>
+                <div class="text-2xl font-bold text-purple-600">{{ $pendingSummary['by_type']['vendor_payment']->count }}</div>
+                <div class="text-sm font-semibold text-gray-600 mt-1">
+                    Rs. {{ number_format($pendingSummary['by_type']['vendor_payment']->amount, 2) }}
+                </div>
+            </div>
+            @endif
+            
+            @if(isset($pendingSummary['by_type']['transfer']))
+            <div class="bg-white rounded-lg p-4 border border-gray-200">
+                <div class="text-sm font-medium text-gray-600 mb-1">Transfers</div>
+                <div class="text-2xl font-bold text-indigo-600">{{ $pendingSummary['by_type']['transfer']->count }}</div>
+                <div class="text-sm font-semibold text-gray-600 mt-1">
+                    Rs. {{ number_format($pendingSummary['by_type']['transfer']->amount, 2) }}
+                </div>
+            </div>
+            @endif
+        </div>
+        
+        <!-- All Types Breakdown -->
+        @if($pendingSummary['by_type']->count() > 4)
+        <details class="mt-4">
+            <summary class="text-sm font-medium text-gray-700 cursor-pointer hover:text-gray-900">
+                Show all transaction types ({{ $pendingSummary['by_type']->count() }} types)
+            </summary>
+            <div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
+                @foreach($pendingSummary['by_type'] as $type => $data)
+                    <div class="text-xs bg-white px-3 py-2 rounded border border-gray-200">
+                        <span class="font-semibold text-gray-700">{{ ucfirst(str_replace('_', ' ', $type)) }}:</span>
+                        <span class="text-gray-600">{{ $data->count }} (Rs. {{ number_format($data->amount, 0) }})</span>
+                    </div>
+                @endforeach
+            </div>
+        </details>
+        @endif
+    </div>
+    @endif
+
     <!-- Filters -->
     <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
         <form method="GET" action="{{ route('fin.ledger.index') }}" class="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -206,11 +294,62 @@
         <form id="approveForm" method="POST">
             @csrf
             <div class="space-y-4">
+                <!-- Transaction Details (readonly) -->
+                <div id="txnDetails" class="p-3 bg-gray-50 border border-gray-200 rounded-md text-xs">
+                    <div class="font-semibold text-gray-900 mb-2">Transaction Details:</div>
+                    <div class="space-y-1 text-gray-700">
+                        <div>From: <span id="txnFrom" class="font-medium"></span></div>
+                        <div>To: <span id="txnTo" class="font-medium"></span></div>
+                        <div>Amount: <span id="txnAmount" class="font-medium text-green-600"></span></div>
+                    </div>
+                </div>
+                
+                <!-- Account Override Options -->
+                <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <div class="text-sm font-semibold text-blue-900 mb-2">💡 Override Accounts (Optional)</div>
+                    
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-xs font-medium text-blue-900 mb-1">Change Source Account:</label>
+                            <select name="override_source_account_id" 
+                                    class="w-full px-2 py-1.5 border border-blue-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">Keep Original</option>
+                                @php
+                                    $allAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                                        ->orderBy('account_name')
+                                        ->get();
+                                @endphp
+                                @foreach($allAccounts as $acc)
+                                    <option value="{{ $acc->id }}">
+                                        {{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                        
+                        <div>
+                            <label class="block text-xs font-medium text-blue-900 mb-1">Change Destination Account:</label>
+                            <select name="override_destination_account_id" 
+                                    class="w-full px-2 py-1.5 border border-blue-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">Keep Original</option>
+                                @foreach($allAccounts as $acc)
+                                    <option value="{{ $acc->id }}">
+                                        {{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})
+                                    </option>
+                                @endforeach
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <p class="text-xs text-blue-700 mt-2">Leave as "Keep Original" if no changes needed</p>
+                </div>
+                
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Approval Notes (optional)</label>
-                    <textarea name="approval_notes" rows="3"
+                    <textarea name="approval_notes" rows="2"
                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"></textarea>
                 </div>
+                
                 <div class="flex gap-2 pt-2">
                     <button type="submit" class="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md">
                         ✅ Approve
@@ -253,13 +392,27 @@
 </div>
 
 <script>
+let ledgerData = @json($ledger->items());
+
 function approveTransaction(id) {
+    // Find transaction in data
+    const txn = ledgerData.find(t => t.id === id);
+    
+    if (txn) {
+        // Populate transaction details
+        document.getElementById('txnFrom').textContent = txn.from_account ? txn.from_account.account_name : 'N/A';
+        document.getElementById('txnTo').textContent = txn.to_account ? txn.to_account.account_name : 'N/A';
+        document.getElementById('txnAmount').textContent = 'Rs. ' + parseFloat(txn.amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+    
     document.getElementById('approveForm').action = `/finance/ledger/${id}/approve`;
     document.getElementById('approveModal').classList.remove('hidden');
 }
 
 function closeApproveModal() {
     document.getElementById('approveModal').classList.add('hidden');
+    // Reset form
+    document.getElementById('approveForm').reset();
 }
 
 function rejectTransaction(id) {
@@ -269,6 +422,8 @@ function rejectTransaction(id) {
 
 function closeRejectModal() {
     document.getElementById('rejectModal').classList.add('hidden');
+    // Reset form
+    document.getElementById('rejectForm').reset();
 }
 </script>
 

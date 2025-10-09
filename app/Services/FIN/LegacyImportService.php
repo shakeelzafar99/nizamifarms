@@ -76,6 +76,15 @@ class LegacyImportService
             
             $this->importLog->complete($summary);
             
+            // Create action items for skipped records
+            foreach ($this->skippedRecords as $skipped) {
+                \App\Models\FIN\ActionItemModel::createEmployeeNotFoundItem(
+                    $skipped['name'],
+                    $this->importLog->id,
+                    $skipped
+                );
+            }
+            
             DB::commit();
 
             Log::info("Import completed successfully", $summary);

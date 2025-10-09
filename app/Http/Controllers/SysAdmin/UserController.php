@@ -24,6 +24,21 @@ class UserController extends Controller
         // Get users with their roles (most recent first)
         $users = UserModel::with(['userRoles.role'])->orderBy('created_at', 'desc')->paginate(10);
         
+        // Add cash account information to each user
+        $users->getCollection()->transform(function($user) {
+            // Check if user has employee cash account
+            $cashAccount = \DB::table('t_fin_accounts')
+                ->where('user_id', $user->id)
+                ->where('account_category', 'employee_cash')
+                ->where('is_active', 1)
+                ->first();
+            
+            $user->cash_account_id = $cashAccount ? $cashAccount->id : null;
+            $user->has_cash_account = ($cashAccount !== null);
+            
+            return $user;
+        });
+        
         // Debug: Log user information
         \Log::info('UserController::index - Users count: ' . $users->total());
         \Log::info('UserController::index - Users on current page: ' . $users->count());
@@ -343,6 +358,49 @@ class UserController extends Controller
         } catch (\Exception $e) {
             return $this->error($e->getMessage(),$e->getCode());
         } 
-    } 
+    }
+    
+    /**
+     * Create cash account for user (AJAX)
+     */
+    public function createCashAccount($id)
+    {
+        try {
+            $user = UserModel::findOrFail($id);
+            
+            // Check if already has account
+            $existing = \DB::table('t_fin_accounts')
+                ->where('user_id', $user->id)
+                ->where('account_category', 'employee_cash')
+                ->first();
+            
+            if ($existing) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User already has a cash account'
+                ]);
+            }
+            
+            // Create account using the AccountModel method
+            $account = \App\Models\FIN\AccountModel::createEmployeeCashAccount(
+                $user->id, 
+                $user->fullname ?? $user->name ?? 'User #' . $user->id
+            );
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Cash account created successfully!',
+                'account_id' => $account->id,
+                'account_name' => $account->account_name
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error creating cash account: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error creating account: ' . $e->getMessage()
+            ], 500);
+        }
+    }
    
 }

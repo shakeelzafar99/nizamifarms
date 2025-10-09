@@ -222,6 +222,7 @@ Route::middleware(['auth'])->group(function () {
     Route::prefix('users')->group(function () {
         Route::get('/', [\App\Http\Controllers\SysAdmin\UserController::class, 'index'])->name('users.index');
         Route::post('/bulk', [\App\Http\Controllers\SysAdmin\UserController::class, 'bulkStore'])->name('users.bulk');
+        Route::post('/{id}/create-cash-account', [\App\Http\Controllers\SysAdmin\UserController::class, 'createCashAccount'])->name('users.create-cash-account');
         Route::get('/{id}', [\App\Http\Controllers\SysAdmin\UserController::class, 'show'])->name('users.show');
         Route::post('/', [\App\Http\Controllers\SysAdmin\UserController::class, 'store'])->name('users.store');
         Route::put('/{id}', [\App\Http\Controllers\SysAdmin\UserController::class, 'update'])->name('users.update');
@@ -270,8 +271,33 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/{id}', [\App\Http\Controllers\Request\RequestController::class, 'update'])->name('requests.update');
     });
 
+    // Unified Approvals Dashboard
+    Route::get('/approvals', [\App\Http\Controllers\ApprovalController::class, 'index'])->name('approvals.index');
+    
     // Finance & Ledger Routes
     Route::prefix('finance')->name('fin.')->group(function () {
+        
+        // Action Items Routes
+        Route::prefix('action-items')->name('action-items.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\ActionItemController::class, 'index'])->name('index');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\ActionItemController::class, 'show'])->name('show');
+            Route::post('/{id}/resolve', [\App\Http\Controllers\FIN\ActionItemController::class, 'resolve'])->name('resolve');
+            Route::post('/{id}/dismiss', [\App\Http\Controllers\FIN\ActionItemController::class, 'dismiss'])->name('dismiss');
+            Route::post('/{id}/retry', [\App\Http\Controllers\FIN\ActionItemController::class, 'retryPosting'])->name('retry');
+            Route::post('/toggle-posting', [\App\Http\Controllers\FIN\ActionItemController::class, 'toggleLedgerPosting'])->name('toggle-posting');
+        });
+        
+        // Account Management Routes
+        Route::prefix('accounts')->name('accounts.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\AccountController::class, 'index'])->name('index');
+            Route::get('/create', [\App\Http\Controllers\FIN\AccountController::class, 'create'])->name('create');
+            Route::post('/', [\App\Http\Controllers\FIN\AccountController::class, 'store'])->name('store');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\AccountController::class, 'show'])->name('show');
+            Route::get('/{id}/edit', [\App\Http\Controllers\FIN\AccountController::class, 'edit'])->name('edit');
+            Route::put('/{id}', [\App\Http\Controllers\FIN\AccountController::class, 'update'])->name('update');
+            Route::post('/{id}/toggle-status', [\App\Http\Controllers\FIN\AccountController::class, 'toggleStatus'])->name('toggle-status');
+            Route::post('/{id}/adjust-balance', [\App\Http\Controllers\FIN\AccountController::class, 'adjustBalance'])->name('adjust-balance');
+        });
         
         // Import Routes
         Route::prefix('import')->name('import.')->group(function () {
@@ -304,6 +330,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'show'])->name('show');
             Route::post('/{id}/deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordDeposit'])->name('deposit');
             Route::post('/{id}/adjustment', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordAdjustment'])->name('adjustment');
+            Route::post('/{id}/expense-request', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'createExpenseRequest'])->name('expense-request');
         });
 
         // Ledger Routes (Overall Ledger & Transfers)

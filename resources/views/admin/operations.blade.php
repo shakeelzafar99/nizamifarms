@@ -1,10 +1,10 @@
 @extends('layouts.app')
 
 @section('content')
-<div class="max-w-5xl mx-auto p-6">
+<div class="container mx-auto px-4 py-6" style="max-width: 1400px;">
     <h1 class="text-2xl font-semibold text-gray-900 mb-6">Operations</h1>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <!-- Imports Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -197,7 +197,7 @@
                     <input type="text" id="confirmationText" class="block w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-red-500" placeholder="DELETE_ALL_LEGACY_DATA">
                 </div>
                 
-                <button type="submit" class="inline-flex items-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                <button type="submit" class="w-full inline-flex items-center justify-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
                     🗑️ Clear All Legacy Data
                 </button>
                 
@@ -217,6 +217,68 @@
                     {!! session('error') !!}
                 </div>
             @endif
+        </div>
+
+        <!-- Ledger Settings Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">⚙️ Ledger Settings</h2>
+            </div>
+            
+            <!-- Info -->
+            <div class="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                <h3 class="text-sm font-semibold text-blue-800 mb-2">🔄 Automatic Ledger Posting</h3>
+                <div class="text-xs text-blue-700 space-y-1">
+                    <p><strong>When ENABLED:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Orders marked as "delivered" automatically post to ledger</li>
+                        <li>Employee cash accounts are updated in real-time</li>
+                        <li>Online payments require L1/L2 approval</li>
+                    </ul>
+                    
+                    <p class="mt-2"><strong>When DISABLED:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>No automatic ledger entries</li>
+                        <li>Useful for testing or manual control</li>
+                        <li>You can manually post later</li>
+                    </ul>
+                </div>
+            </div>
+            
+            @php
+                $autoPostEnabled = \App\Models\FIN\ConfigModel::where('config_key', 'LEDGER_AUTO_POST_ENABLED')->value('config_value');
+                $isEnabled = $autoPostEnabled === '1';
+            @endphp
+            
+            <!-- Current Status & Toggle -->
+            <div class="p-4 bg-gray-50 rounded-lg mb-4">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900">Current Status</h3>
+                        <p class="text-xs text-gray-600 mt-1">Automatic posting is currently:</p>
+                    </div>
+                    <span id="statusBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $isEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
+                        {{ $isEnabled ? 'ENABLED' : 'DISABLED' }}
+                    </span>
+                </div>
+                
+                <div class="mt-4">
+                    <button type="button" 
+                            id="toggleButton" 
+                            onclick="toggleLedgerPosting()"
+                            class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $isEnabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                        {{ $isEnabled ? '⏸️ Disable Automatic Posting' : '▶️ Enable Automatic Posting' }}
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Link to Action Items -->
+            <a href="{{ route('fin.action-items.index') }}" class="w-full inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                <i class="ki-filled ki-information-2 mr-2"></i>
+                View Ledger Action Items
+            </a>
+            
+            <div id="toggleFeedback" class="mt-3 hidden"></div>
         </div>
 
         <script>
@@ -240,6 +302,87 @@
             }
             
             return false;
+        }
+        
+        function toggleLedgerPosting() {
+            const toggleButton = document.getElementById('toggleButton');
+            const feedback = document.getElementById('toggleFeedback');
+            const statusBadge = document.getElementById('statusBadge');
+            
+            console.log('Toggle function called');
+            console.log('Button element:', toggleButton);
+            
+            // Determine current state from button text
+            const currentlyEnabled = toggleButton.textContent.includes('Disable');
+            const newState = !currentlyEnabled;
+            
+            console.log('Current state:', currentlyEnabled, 'New state:', newState);
+            
+            // Show loading state
+            toggleButton.disabled = true;
+            toggleButton.textContent = '⏳ Updating...';
+            
+            feedback.innerHTML = '<div class="p-2 bg-blue-50 border border-blue-200 rounded text-blue-800 text-xs">Updating configuration...</div>';
+            feedback.classList.remove('hidden');
+            
+            const url = '{{ route("fin.action-items.toggle-posting") }}';
+            console.log('Fetching URL:', url);
+            
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({ enabled: newState })
+            })
+            .then(response => {
+                console.log('Response status:', response.status);
+                return response.json();
+            })
+            .then(data => {
+                console.log('Response data:', data);
+                console.log('data.success:', data.success, 'type:', typeof data.success);
+                console.log('data.enabled:', data.enabled, 'type:', typeof data.enabled);
+                
+                if (data.success === true || data.success === 'true') {
+                    feedback.innerHTML = '<div class="p-2 bg-green-50 border border-green-200 rounded text-green-800 text-xs">✓ ' + data.message + '</div>';
+                    
+                    // Update button and badge based on the NEW state from server
+                    const isNowEnabled = (data.enabled === true || data.enabled === 'true' || data.enabled === 1 || data.enabled === '1');
+                    console.log('Is now enabled?', isNowEnabled);
+                    
+                    if (isNowEnabled) {
+                        toggleButton.className = 'w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 bg-red-600 hover:bg-red-700 text-white';
+                        toggleButton.textContent = '⏸️ Disable Automatic Posting';
+                        statusBadge.className = 'px-4 py-2 rounded-full text-sm font-bold bg-green-100 text-green-800';
+                        statusBadge.textContent = 'ENABLED';
+                    } else {
+                        toggleButton.className = 'w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 bg-green-600 hover:bg-green-700 text-white';
+                        toggleButton.textContent = '▶️ Enable Automatic Posting';
+                        statusBadge.className = 'px-4 py-2 rounded-full text-sm font-bold bg-gray-100 text-gray-800';
+                        statusBadge.textContent = 'DISABLED';
+                    }
+                    
+                    toggleButton.disabled = false;
+                    
+                    setTimeout(() => {
+                        feedback.classList.add('hidden');
+                    }, 3000);
+                } else {
+                    console.log('Success was false or error occurred');
+                    feedback.innerHTML = '<div class="p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">❌ Error: ' + (data.message || 'Unknown error') + '</div>';
+                    toggleButton.disabled = false;
+                    toggleButton.textContent = currentlyEnabled ? '⏸️ Disable Automatic Posting' : '▶️ Enable Automatic Posting';
+                }
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                console.error('Error details:', error.message, error.stack);
+                feedback.innerHTML = '<div class="p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">❌ Connection error: ' + error.message + '</div>';
+                toggleButton.disabled = false;
+                toggleButton.textContent = currentlyEnabled ? '⏸️ Disable Automatic Posting' : '▶️ Enable Automatic Posting';
+            });
         }
         </script>
     </div>

@@ -16,7 +16,7 @@ class LedgerController extends Controller
      */
     public function index(Request $request)
     {
-        $query = LedgerModel::with(['fromAccount', 'toAccount', 'creator']);
+        $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy']);
 
         // Filter by date range
         if ($request->has('start_date') && $request->start_date) {
@@ -77,7 +77,20 @@ class LedgerController extends Controller
             LedgerModel::TYPE_OPENING_BALANCE => 'Opening Balance',
         ];
 
-        return view('fin.ledger.index', compact('ledger', 'accounts', 'transactionTypes'));
+        // Calculate pending summary (for ALL pending, not filtered)
+        $pendingSummary = [
+            'total_count' => LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)->count(),
+            'total_amount' => LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)->sum('amount'),
+            'by_type' => LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)
+                                    ->select('transaction_type', 
+                                             DB::raw('COUNT(*) as count'),
+                                             DB::raw('SUM(amount) as amount'))
+                                    ->groupBy('transaction_type')
+                                    ->get()
+                                    ->keyBy('transaction_type')
+        ];
+
+        return view('fin.ledger.index', compact('ledger', 'accounts', 'transactionTypes', 'pendingSummary'));
     }
 
     /**
@@ -183,7 +196,7 @@ class LedgerController extends Controller
      */
     public function show($id)
     {
-        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'creator', 'order', 'request'])
+        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order', 'request'])
                                   ->findOrFail($id);
 
         return view('fin.ledger.show', compact('transaction'));
@@ -195,7 +208,9 @@ class LedgerController extends Controller
     public function approve(Request $request, $id)
     {
         $request->validate([
-            'approval_notes' => 'nullable|string|max:500'
+            'approval_notes' => 'nullable|string|max:500',
+            'override_destination_account_id' => 'nullable|exists:t_fin_accounts,id',
+            'override_source_account_id' => 'nullable|exists:t_fin_accounts,id'
         ]);
 
         try {
@@ -207,6 +222,20 @@ class LedgerController extends Controller
                 throw new \Exception("Transaction is not pending approval");
             }
 
+            // Handle account overrides if provided
+            $originalFrom = $ledger->from_account_id;
+            $originalTo = $ledger->to_account_id;
+            
+            if ($request->override_source_account_id) {
+                $ledger->from_account_id = $request->override_source_account_id;
+                $ledger->comments = ($ledger->comments ?? '') . " | Source changed from Account ID {$originalFrom} to {$request->override_source_account_id}";
+            }
+            
+            if ($request->override_destination_account_id) {
+                $ledger->to_account_id = $request->override_destination_account_id;
+                $ledger->comments = ($ledger->comments ?? '') . " | Destination changed from Account ID {$originalTo} to {$request->override_destination_account_id}";
+            }
+
             // Update approval status
             $ledger->approval_status = LedgerModel::STATUS_APPROVED;
             $ledger->approved_by = auth()->id();
@@ -214,7 +243,8 @@ class LedgerController extends Controller
             $ledger->approval_notes = $request->approval_notes;
             $ledger->save();
 
-            // Update account balances
+            // Reload accounts (in case they were changed)
+            $ledger->load(['fromAccount', 'toAccount']);
             $fromAccount = $ledger->fromAccount;
             $toAccount = $ledger->toAccount;
 

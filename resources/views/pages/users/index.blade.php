@@ -77,6 +77,7 @@
                                     <th class="min-w-[150px]">Email</th>
                                     <th class="w-[100px]">User Type</th>
                                     <th class="w-[120px]">Role</th>
+                                    <th class="w-[150px]">Cash Account</th>
                                     <th class="w-[80px]">Status</th>
                                     <th class="w-[100px]">Created</th>
                                     <th class="w-[120px] text-center">Actions</th>
@@ -100,6 +101,26 @@
                                             </span>
                                         @else
                                             <span class="kt-badge kt-badge-sm kt-badge-gray">No Role</span>
+                                        @endif
+                                    </td>
+                                    <td>
+                                        @if($user->has_cash_account)
+                                            <div class="flex items-center gap-2">
+                                                <span class="kt-badge kt-badge-sm kt-badge-success">✅ Has Account</span>
+                                                <a href="/finance/accounts/{{ $user->cash_account_id }}" 
+                                                   class="text-xs text-blue-600 hover:text-blue-800 underline"
+                                                   title="View Account">View</a>
+                                            </div>
+                                        @else
+                                            <div class="flex items-center gap-2">
+                                                <span class="kt-badge kt-badge-sm kt-badge-gray">❌ No Account</span>
+                                                <button onclick="createCashAccount({{ $user->id }}, '{{ $user->fullname }}')" 
+                                                        id="createBtn-{{ $user->id }}"
+                                                        class="kt-btn kt-btn-sm kt-btn-primary text-xs"
+                                                        title="Create Cash Account">
+                                                    Create
+                                                </button>
+                                            </div>
                                         @endif
                                     </td>
                                     <td>
@@ -754,6 +775,43 @@ function displayBulkResults(data) {
     
     results.innerHTML = html;
     results.style.display = 'block';
+}
+
+// Create cash account for user (AJAX)
+function createCashAccount(userId, userName) {
+    if (!confirm(`Create cash account for ${userName}?`)) {
+        return;
+    }
+    
+    const btn = document.getElementById(`createBtn-${userId}`);
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ki-filled ki-loading"></i> Creating...';
+    
+    fetch(`/users/${userId}/create-cash-account`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ ' + data.message);
+            // Reload page to show updated status
+            window.location.reload();
+        } else {
+            alert('❌ ' + data.message);
+            btn.disabled = false;
+            btn.innerHTML = 'Create';
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error creating account. Please try again.');
+        btn.disabled = false;
+        btn.innerHTML = 'Create';
+    });
 }
 
 </script>

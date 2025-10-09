@@ -39,6 +39,21 @@ class EmployeeCashController extends Controller
 
         $employees = $query->orderBy('account_name', 'asc')->paginate(20);
 
+        // Calculate pending expenses for each employee
+        foreach ($employees as $employee) {
+            if ($employee->user_id) {
+                $pendingExpenses = \App\Models\Request\RequestModel::where('requester_user_id', $employee->user_id)
+                    ->where('status', 'pending')
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'expense');
+                    })
+                    ->sum('amount');
+                $employee->pending_expenses = $pendingExpenses ?? 0;
+            } else {
+                $employee->pending_expenses = 0;
+            }
+        }
+
         // Calculate totals
         $totalCash = AccountModel::employeeCash()->sum('current_balance');
 
@@ -48,7 +63,7 @@ class EmployeeCashController extends Controller
     /**
      * Show employee cash details
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
         $account = AccountModel::with('user')->findOrFail($id);
 
@@ -56,24 +71,43 @@ class EmployeeCashController extends Controller
             abort(404, 'Not an employee cash account');
         }
 
-        // Get ledger transactions
-        $ledger = LedgerModel::where(function($q) use ($id) {
+        // Get date filter parameters
+        $dateFrom = $request->input('date_from');
+        $dateTo = $request->input('date_to');
+
+        // Build ledger query with date filters
+        $ledgerQuery = LedgerModel::where(function($q) use ($id) {
             $q->where('from_account_id', $id)
               ->orWhere('to_account_id', $id);
-        })
-        ->with(['fromAccount', 'toAccount'])
-        ->orderBy('transaction_date', 'desc')
-        ->orderBy('created_at', 'desc')
-        ->paginate(50);
+        });
+
+        // Apply date filters if provided
+        if ($dateFrom && $dateTo) {
+            $ledgerQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+        }
+
+        // Get ledger transactions
+        $ledger = $ledgerQuery
+            ->with(['fromAccount', 'toAccount'])
+            ->orderBy('transaction_date', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->paginate(50);
 
         // Calculate running balance (from oldest to newest for calculation)
-        $allTransactions = LedgerModel::where(function($q) use ($id) {
+        $allTransactionsQuery = LedgerModel::where(function($q) use ($id) {
             $q->where('from_account_id', $id)
               ->orWhere('to_account_id', $id);
-        })
-        ->orderBy('transaction_date', 'asc')
-        ->orderBy('created_at', 'asc')
-        ->get();
+        });
+
+        // Apply same date filters to running balance calculation
+        if ($dateFrom && $dateTo) {
+            $allTransactionsQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+        }
+
+        $allTransactions = $allTransactionsQuery
+            ->orderBy('transaction_date', 'asc')
+            ->orderBy('created_at', 'asc')
+            ->get();
 
         $runningBalance = $account->opening_balance;
         $balanceMap = [];
@@ -95,22 +129,68 @@ class EmployeeCashController extends Controller
             return $transaction;
         });
 
-        // Summary
+        // Summary with date filters
+        $invoicesQuery = LedgerModel::where('to_account_id', $account->id)
+            ->where('transaction_type', LedgerModel::TYPE_INVOICE);
+        $expensesQuery = LedgerModel::where('from_account_id', $account->id)
+            ->where('transaction_type', LedgerModel::TYPE_EXPENSE);
+        $depositsQuery = LedgerModel::where('from_account_id', $account->id)
+            ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT);
+
+        // Apply date filters to summary calculations
+        if ($dateFrom && $dateTo) {
+            $invoicesQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            $expensesQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            $depositsQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+        }
+
         $summary = [
             'opening_balance' => $account->opening_balance,
             'current_balance' => $account->current_balance,
-            'total_invoices' => LedgerModel::where('to_account_id', $account->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->sum('amount'),
-            'total_expenses' => LedgerModel::where('from_account_id', $account->id)
-                ->where('transaction_type', LedgerModel::TYPE_EXPENSE)
-                ->sum('amount'),
-            'total_deposits' => LedgerModel::where('from_account_id', $account->id)
-                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
-                ->sum('amount')
+            'total_invoices' => $invoicesQuery->sum('amount'),
+            'total_expenses' => $expensesQuery->sum('amount'),
+            'total_deposits' => $depositsQuery->sum('amount')
         ];
 
-        return view('fin.employee.show', compact('account', 'ledger', 'summary'));
+        // Check user role
+        $userRole = null;
+        if (auth()->check()) {
+            $userRole = \DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', auth()->id())
+                ->value('r.type');
+        }
+
+        // Fetch expense requests for this employee with date filters
+        $expenseRequestsQuery = \App\Models\Request\RequestModel::with(['category', 'createdBy'])
+            ->where('requester_user_id', $account->user_id)
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            });
+
+        // Apply date filters to expense requests
+        if ($dateFrom && $dateTo) {
+            $expenseRequestsQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
+        }
+
+        $expenseRequests = $expenseRequestsQuery->orderBy('created_at', 'desc')->get();
+
+        // Calculate expense request summary
+        $expenseSummary = [
+            'pending' => $expenseRequests->where('status', 'pending')->sum('amount'),
+            'approved_unpaid' => $expenseRequests->where('status', 'approved')
+                ->filter(function($req) {
+                    return is_null($req->ledger_transaction_id);
+                })->sum('amount'),
+            'paid' => $expenseRequests->whereNotNull('ledger_transaction_id')->sum('amount')
+        ];
+
+        // Get expense categories for the dropdown
+        $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+            ->pluck('config_value')
+            ->toArray();
+
+        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo'));
     }
 
     /**
@@ -120,6 +200,7 @@ class EmployeeCashController extends Controller
     {
         $request->validate([
             'amount' => 'required|numeric|min:0.01',
+            'destination_account_id' => 'nullable|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
             'short_over' => 'nullable|numeric'
@@ -129,10 +210,16 @@ class EmployeeCashController extends Controller
             DB::beginTransaction();
 
             $employeeAccount = AccountModel::findOrFail($id);
-            $nfCash = ConfigModel::getNFCashAccount();
+            
+            // Get destination account (user selection or default to NF Cash)
+            if ($request->destination_account_id) {
+                $destinationAccount = AccountModel::findOrFail($request->destination_account_id);
+            } else {
+                $destinationAccount = ConfigModel::getNFCashAccount();
+            }
 
-            if (!$nfCash) {
-                throw new \Exception("NF Cash account not found");
+            if (!$destinationAccount) {
+                throw new \Exception("Destination account not found");
             }
 
             // Check if amount exceeds employee balance
@@ -140,25 +227,26 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Deposit amount cannot exceed employee cash balance");
             }
 
+            // ALL DEPOSITS NOW REQUIRE APPROVAL
+            $approvalStatus = LedgerModel::STATUS_PENDING;
+
             // Main deposit transaction
-            LedgerModel::create([
+            $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_EMPLOYEE_DEPOSIT,
-                'description' => $request->description ?? "Deposit from {$employeeAccount->account_name}",
+                'description' => $request->description ?? "Deposit from {$employeeAccount->account_name} to {$destinationAccount->account_name}",
                 'from_account_id' => $employeeAccount->id,
-                'to_account_id' => $nfCash->id,
+                'to_account_id' => $destinationAccount->id,
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
-                'approval_status' => LedgerModel::STATUS_APPROVED,
-                'created_by' => auth()->id()
+                'approval_status' => $approvalStatus,
+                'approval_date' => null,
+                'approved_by' => null,
+                'created_by' => auth()->id(),
+                'comments' => "Awaiting approval for deposit to: {$destinationAccount->account_name}"
             ]);
 
-            // Update balances
-            $employeeAccount->current_balance -= $request->amount;
-            $employeeAccount->save();
-            
-            $nfCash->current_balance += $request->amount;
-            $nfCash->save();
+            // DO NOT update balances - wait for approval
 
             // Handle short/over if provided
             if ($request->short_over && $request->short_over != 0) {
@@ -205,8 +293,10 @@ class EmployeeCashController extends Controller
 
             DB::commit();
 
+            $message = 'Deposit recorded and pending approval! Balances will update after approval.';
+
             return redirect()->route('fin.employee.show', $employeeAccount->id)
-                           ->with('success', 'Deposit recorded successfully!');
+                           ->with('success', $message);
 
         } catch (\Exception $e) {
             DB::rollBack();
@@ -332,6 +422,71 @@ class EmployeeCashController extends Controller
             'topEmployees',
             'recentTransactions'
         ));
+    }
+
+    /**
+     * Create expense request for employee
+     */
+    public function createExpenseRequest(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'expense_category' => 'required|string|max:255',
+            'amount' => 'required|numeric|min:0.01',
+            'description' => 'nullable|string|max:1000'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $employeeAccount = AccountModel::with('user')->findOrFail($id);
+            
+            if (!$employeeAccount->user) {
+                throw new \Exception("Employee user not found");
+            }
+
+            // Get expense category
+            $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
+            
+            if (!$category) {
+                throw new \Exception("Expense category not found");
+            }
+
+            $loggedInUser = auth()->user();
+            $createdByNote = "\n\n[Created by {$loggedInUser->fullname} on behalf of employee]";
+
+            // Create request
+            $requestModel = \App\Models\Request\RequestModel::create([
+                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
+                'category_id' => $category->id,
+                'requester_user_id' => $employeeAccount->user->id, // The employee
+                'title' => $validated['expense_category'],
+                'description' => ($validated['description'] ?? '') . $createdByNote,
+                'amount' => $validated['amount'],
+                'expense_category' => $validated['expense_category'],
+                'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
+                'priority' => 'normal',
+                'requires_level_1' => $category->requiresLevel1(),
+                'requires_level_2' => $category->requiresLevel2(),
+                'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                'submitted_at' => now(),
+                'created_by' => $loggedInUser->id
+            ]);
+
+            DB::commit();
+
+            $message = "Expense request created successfully for " . ($employeeAccount->user->fullname ?? $employeeAccount->account_name);
+
+            return redirect()->route('fin.employee.show', $employeeAccount->id)
+                           ->with('success', $message);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error creating expense request: " . $e->getMessage());
+            
+            return back()->withInput()
+                       ->with('error', 'Error creating expense request: ' . $e->getMessage());
+        }
     }
 }
 

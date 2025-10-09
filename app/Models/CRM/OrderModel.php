@@ -51,6 +51,7 @@ class OrderModel extends BaseModel
         'note',
         'raw_products_text',
         'converted',
+        'ledger_transaction_id',
         'created_by',
         'updated_by'
     ];

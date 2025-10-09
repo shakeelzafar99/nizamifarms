@@ -60,6 +60,7 @@
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account Code</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Current Balance</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Pending Expenses</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
@@ -81,6 +82,11 @@
                                 Rs. {{ number_format($account->current_balance, 2) }}
                             </span>
                         </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-right">
+                            <span class="text-sm font-semibold {{ $account->pending_expenses > 0 ? 'text-yellow-600' : 'text-gray-400' }}">
+                                Rs. {{ number_format($account->pending_expenses, 2) }}
+                            </span>
+                        </td>
                         <td class="px-6 py-4 whitespace-nowrap text-center">
                             <span class="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full {{ $account->is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
                                 {{ $account->is_active ? 'Active' : 'Inactive' }}
@@ -92,7 +98,7 @@
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500">
+                        <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
                             No employee cash accounts found. Import your legacy data to get started.
                         </td>
                     </tr>

@@ -18,7 +18,7 @@ class ImportController extends Controller
      */
     public function index()
     {
-        $imports = ImportLogModel::with('creator')
+        $imports = ImportLogModel::with('importedBy')
             ->orderBy('created_at', 'desc')
             ->paginate(20);
 
@@ -30,7 +30,7 @@ class ImportController extends Controller
      */
     public function show($id)
     {
-        $import = ImportLogModel::with('creator')->findOrFail($id);
+        $import = ImportLogModel::with('importedBy')->findOrFail($id);
 
         return view('fin.import.show', compact('import'));
     }

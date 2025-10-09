@@ -33,26 +33,49 @@
         ➕ Mark Attendance
       </button>
       <a 
-        href="/shifts"
-        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
+        href="/requests/create"
+        class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold shadow-md inline-block text-center"
         style="text-decoration: none;"
       >
-        📅 Shift Management
+        📝 Leave Request
       </a>
-      <a 
-        href="/holidays"
-        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-block text-center"
-        style="text-decoration: none;"
-      >
-        🎉 Public Holidays
-      </a>
-      <button 
-        type="button"
-        onclick="openCustomizeUserList(); return false;" 
-        class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300"
-      >
-        ⚙️ Customize User List
-      </button>
+      <!-- Settings Dropdown -->
+      <div class="relative inline-block" id="settingsDropdown">
+        <button 
+          type="button"
+          onclick="toggleSettingsMenu(); return false;" 
+          class="px-4 py-2 bg-white text-gray-800 rounded-lg hover:bg-gray-100 transition font-semibold shadow-md border-2 border-gray-300 inline-flex items-center gap-2"
+        >
+          ⚙️ Settings
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+          </svg>
+        </button>
+        <!-- Dropdown Menu -->
+        <div id="settingsMenu" class="hidden absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
+          <div class="py-2">
+            <a 
+              href="/shifts"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              📅 Shift Management
+            </a>
+            <a 
+              href="/holidays"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              🎉 Public Holidays
+            </a>
+            <button 
+              type="button"
+              onclick="openCustomizeUserList(); toggleSettingsMenu();" 
+              class="w-full text-left block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              👥 Customize User List
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1748,6 +1771,21 @@ function closeCustomizeUserList() {
   modal.style.display = 'none';
   visibilityChanges = {}; // Reset unsaved changes
 }
+
+// Settings dropdown toggle
+function toggleSettingsMenu() {
+  const menu = document.getElementById('settingsMenu');
+  menu.classList.toggle('hidden');
+}
+
+// Close settings menu when clicking outside
+document.addEventListener('click', function(event) {
+  const dropdown = document.getElementById('settingsDropdown');
+  const menu = document.getElementById('settingsMenu');
+  if (dropdown && menu && !dropdown.contains(event.target)) {
+    menu.classList.add('hidden');
+  }
+});
 
 function renderUsersVisibility() {
   const tbody = document.getElementById('usersVisibilityTableBody');

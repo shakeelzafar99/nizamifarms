@@ -141,7 +141,7 @@
                     <!-- Expense Category (for expense requests only) -->
                     <div id="expense-category-field" style="display: none;" class="mb-6">
                         <label class="kt-label required">Expense Type</label>
-                        <select name="expense_category" id="expense_category" class="kt-select">
+                        <select name="expense_category" id="expense_category" class="kt-select" onchange="updateExpenseTitle()">
                             <option value="">Select Expense Type</option>
                             <option value="Petrol">Petrol</option>
                             <option value="Rent">Rent</option>
@@ -208,6 +208,7 @@ function handleCategoryChange() {
     const categoryCode = selectedOption.dataset.code;
     const requiresL1 = selectedOption.dataset.requiresL1 === '1';
     const requiresL2 = selectedOption.dataset.requiresL2 === '1';
+    const hiddenTitle = document.getElementById('hidden-title');
     
     // Show/hide fields based on category
     const leaveFields = document.getElementById('leave-fields');
@@ -230,6 +231,8 @@ function handleCategoryChange() {
         descriptionField.required = false;
         descriptionLabel.classList.remove('required');
         descriptionField.placeholder = 'Optional: Provide additional details about your leave';
+        // Set title to "leave"
+        hiddenTitle.value = 'leave';
     } else if (categoryCode === 'expense') {
         // EXPENSE: Show both expense category AND amount field
         leaveFields.style.display = 'none';
@@ -243,6 +246,8 @@ function handleCategoryChange() {
         // Description required for expense
         descriptionField.required = true;
         descriptionLabel.classList.add('required');
+        // Set title to "expense" (will be updated when expense category is selected)
+        hiddenTitle.value = 'expense';
     } else if (categoryCode === 'advance') {
         // ADVANCE: Show only amount field, NO expense category
         leaveFields.style.display = 'none';
@@ -253,6 +258,8 @@ function handleCategoryChange() {
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
         expenseCategorySelect.required = false;
+        // Set title to "advance"
+        hiddenTitle.value = 'advance';
         // Description required for advance
         descriptionField.required = true;
         descriptionLabel.classList.add('required');
@@ -305,6 +312,20 @@ function calculateLeaveDays() {
         } else {
             infoDiv.style.display = 'none';
         }
+    }
+}
+
+function updateExpenseTitle() {
+    const expenseCategorySelect = document.getElementById('expense_category');
+    const hiddenTitle = document.getElementById('hidden-title');
+    const selectedExpense = expenseCategorySelect.value;
+    
+    if (selectedExpense) {
+        // Set title to the selected expense category
+        hiddenTitle.value = selectedExpense;
+    } else {
+        // Fallback to "expense" if no category selected yet
+        hiddenTitle.value = 'expense';
     }
 }
 

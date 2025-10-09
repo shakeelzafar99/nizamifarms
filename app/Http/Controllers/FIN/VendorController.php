@@ -282,7 +282,7 @@ class VendorController extends Controller
     {
         $request->validate([
             'amount' => 'required|numeric|min:0.01',
-            'mode' => 'required|in:cash,online',
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date'
         ]);
@@ -292,9 +292,9 @@ class VendorController extends Controller
 
             $vendor = VendorModel::with('account')->findOrFail($id);
             
-            // Get payment source account
-            if ($request->mode === 'online') {
-                $paymentAccount = AccountModel::getByCode('ONLINE');
+            // Get payment source account (user selection or default to NF Cash)
+            if ($request->payment_source_account_id) {
+                $paymentAccount = AccountModel::findOrFail($request->payment_source_account_id);
             } else {
                 $paymentAccount = AccountModel::getByCode('NF_CASH');
             }
@@ -308,21 +308,32 @@ class VendorController extends Controller
                 throw new \Exception("Payment amount cannot exceed vendor balance");
             }
 
+            // Determine approval status based on source account
+            // Online accounts or manager cash accounts require approval
+            $requiresApproval = in_array($paymentAccount->account_code, ['ONLINE']) || 
+                               $paymentAccount->account_category === 'employee_cash';
+            
+            $approvalStatus = $requiresApproval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
+            $mode = ($paymentAccount->account_code === 'ONLINE') ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH;
+
             // Create ledger entry
-            LedgerModel::create([
+            $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PAYMENT,
                 'description' => $request->description ?? "Payment to {$vendor->vendor_name}",
                 'from_account_id' => $vendor->account->id,
                 'to_account_id' => $paymentAccount->id,
                 'amount' => $request->amount,
-                'mode' => $request->mode,
-                'approval_status' => $request->mode === 'online' ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED,
-                'created_by' => auth()->id()
+                'mode' => $mode,
+                'approval_status' => $approvalStatus,
+                'approval_date' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? now() : null,
+                'approved_by' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? auth()->id() : null,
+                'created_by' => auth()->id(),
+                'comments' => "Paid from: {$paymentAccount->account_name}"
             ]);
 
-            // Update balances (only if approved or cash)
-            if ($request->mode === 'cash') {
+            // Update balances (only if approved)
+            if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
                 $vendor->account->current_balance -= $request->amount;
                 $vendor->account->save();
                 
@@ -332,7 +343,7 @@ class VendorController extends Controller
 
             DB::commit();
 
-            $message = $request->mode === 'online' 
+            $message = ($approvalStatus === LedgerModel::STATUS_PENDING) 
                 ? 'Payment recorded and pending approval!' 
                 : 'Payment recorded successfully!';
 

@@ -181,13 +181,31 @@
                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <p class="text-xs text-gray-500 mt-1">Current payable: Rs. {{ number_format($vendor->getBalance(), 2) }}</p>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Payment Mode</label>
-                    <select name="mode" required class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="cash">Cash (NF Cash)</option>
-                        <option value="online">Online/Bank (requires approval)</option>
+                
+                <!-- NEW: Payment Source Selection -->
+                <div class="p-3 bg-green-50 border border-green-200 rounded-md">
+                    <label class="block text-sm font-medium text-green-900 mb-2">💳 Pay From:</label>
+                    <select name="payment_source_account_id" 
+                            class="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                        <option value="">NF Cash (Auto-Approved)</option>
+                        @php
+                            $paymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
+                                ->where(function($q) {
+                                    $q->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
+                                      ->orWhere('account_category', 'employee_cash');
+                                })
+                                ->orderBy('account_name')
+                                ->get();
+                        @endphp
+                        @foreach($paymentSources as $source)
+                            <option value="{{ $source->id }}">
+                                {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
+                            </option>
+                        @endforeach
                     </select>
+                    <p class="text-xs text-green-700 mt-1">Online and Manager cash require approval</p>
                 </div>
+                
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
                     <textarea name="description" rows="2"
