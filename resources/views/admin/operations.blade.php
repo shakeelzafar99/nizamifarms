@@ -281,6 +281,55 @@
             <div id="toggleFeedback" class="mt-3 hidden"></div>
         </div>
 
+        <!-- Manage Expense Categories Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">💸 Manage Expense Categories</h2>
+            </div>
+            
+            <!-- Info -->
+            <div class="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-md">
+                <h3 class="text-sm font-semibold text-purple-800 mb-2">📁 Expense Categories</h3>
+                <div class="text-xs text-purple-700 space-y-1">
+                    <p>Expense categories are used when requesting reimbursements. Each category automatically creates an expense account in the ledger.</p>
+                    <p class="mt-2"><strong>Example:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>"Petrol" → Creates account "EXP_PETROL"</li>
+                        <li>"Office Supplies" → Creates account "EXP_OFFICE_SUPPLIES"</li>
+                    </ul>
+                </div>
+            </div>
+            
+            @php
+                $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                    ->orderBy('config_value')
+                    ->get();
+            @endphp
+            
+            <!-- Current Categories -->
+            <div class="mb-4">
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">Current Categories ({{ $expenseCategories->count() }}):</h3>
+                <div class="max-h-32 overflow-y-auto bg-gray-50 border border-gray-200 rounded p-2">
+                    @if($expenseCategories->count() > 0)
+                        <div class="flex flex-wrap gap-2">
+                            @foreach($expenseCategories as $cat)
+                                <span class="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded-full">{{ $cat->config_value }}</span>
+                            @endforeach
+                        </div>
+                    @else
+                        <p class="text-xs text-gray-500 italic">No categories yet. Add your first category below.</p>
+                    @endif
+                </div>
+            </div>
+            
+            <!-- Add New Category -->
+            <div class="border-t border-gray-200 pt-4">
+                <button onclick="openAddExpenseCategoryModal()" class="w-full inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md">
+                    ➕ Add New Expense Category
+                </button>
+            </div>
+        </div>
+
         <script>
         function confirmClear() {
             const confirmText = document.getElementById('confirmationText').value;
@@ -384,7 +433,63 @@
                 toggleButton.textContent = currentlyEnabled ? '⏸️ Disable Automatic Posting' : '▶️ Enable Automatic Posting';
             });
         }
+        
+        function openAddExpenseCategoryModal() {
+            document.getElementById('addExpenseCategoryModal').classList.remove('hidden');
+            document.getElementById('addExpenseCategoryModal').style.display = 'flex';
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function closeAddExpenseCategoryModal() {
+            document.getElementById('addExpenseCategoryModal').classList.add('hidden');
+            document.getElementById('addExpenseCategoryModal').style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
         </script>
+    </div>
+</div>
+
+<!-- Add Expense Category Modal -->
+<div id="addExpenseCategoryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">➕ Add New Expense Category</h2>
+                <button onclick="closeAddExpenseCategoryModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form action="{{ route('fin.expense-category.store') }}" method="POST">
+                @csrf
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Category Name <span class="text-red-500">*</span></label>
+                        <input type="text" name="category_name" required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                               placeholder="e.g., Petrol, Office Supplies, Rent">
+                    </div>
+                    
+                    <div class="p-3 bg-purple-50 border border-purple-200 rounded-md">
+                        <p class="text-xs text-purple-800">
+                            ℹ️ <strong>System will automatically:</strong>
+                        </p>
+                        <ul class="text-xs text-purple-700 mt-1 ml-4 list-disc">
+                            <li>Create an expense account (e.g., EXP_PETROL)</li>
+                            <li>Set account type as "Expense"</li>
+                            <li>Make it available in expense request forms</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="flex gap-3 mt-6">
+                        <button type="button" onclick="closeAddExpenseCategoryModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" class="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-md">
+                            ✓ Create Category
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
     </div>
 </div>
 

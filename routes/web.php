@@ -310,6 +310,11 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}', [\App\Http\Controllers\FIN\ImportController::class, 'show'])->name('show');
         });
 
+        // Expense Category Routes
+        Route::prefix('expense-category')->name('expense-category.')->group(function () {
+            Route::post('/', [\App\Http\Controllers\FIN\ExpenseCategoryController::class, 'store'])->name('store');
+        });
+
         // Vendor Routes
         Route::prefix('vendors')->name('vendors.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index'])->name('index');

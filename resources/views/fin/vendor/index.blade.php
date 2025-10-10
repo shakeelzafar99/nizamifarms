@@ -4,9 +4,16 @@
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Vendors</h1>
-        <a href="{{ route('admin.operations') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-            ← Back to Operations
-        </a>
+        <div class="flex gap-3">
+            <button onclick="openCreateVendorModal()" 
+                    class="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md"
+                    style="background-color: #059669 !important; color: white !important;">
+                <span style="color: white !important;">➕ Add New Vendor</span>
+            </button>
+            <a href="{{ route('admin.operations') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                ← Back to Operations
+            </a>
+        </div>
     </div>
 
     <!-- Search and Filter -->
@@ -99,5 +106,111 @@
         </div>
     @endif
 </div>
+
+<!-- Create Vendor Modal -->
+<div id="createVendorModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">➕ Add New Vendor</h2>
+                <button onclick="closeCreateVendorModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form action="{{ route('fin.vendors.store') }}" method="POST">
+                @csrf
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Vendor Name <span class="text-red-500">*</span></label>
+                        <input type="text" name="vendor_name" required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                               placeholder="e.g., ABC Suppliers">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Contact Person</label>
+                        <input type="text" name="contact_person"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                               placeholder="e.g., John Doe">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                        <input type="email" name="contact_email"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                               placeholder="e.g., vendor@example.com">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                        <input type="text" name="contact_phone"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                               placeholder="e.g., +92 300 1234567">
+                    </div>
+                    
+                    <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                        <p class="text-xs text-blue-800">
+                            ℹ️ <strong>System will automatically:</strong>
+                        </p>
+                        <ul class="text-xs text-blue-700 mt-1 ml-4 list-disc">
+                            <li>Create a payable account for this vendor</li>
+                            <li>Set account code (e.g., VEN_ABC_SUPPLIERS)</li>
+                            <li>Configure as Liability account</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="flex gap-3 mt-6">
+                        <button type="button" onclick="closeCreateVendorModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" 
+                                class="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-md"
+                                style="background-color: #059669 !important; color: white !important;">
+                            <span style="color: white !important;">✓ Create Vendor</span>
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openCreateVendorModal() {
+    const modal = document.getElementById('createVendorModal');
+    
+    // Portalize to body if not already there
+    if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+    }
+    
+    modal.classList.remove('hidden');
+    Object.assign(modal.style, {
+        display: 'flex',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        zIndex: '99999'
+    });
+    
+    document.body.style.overflow = 'hidden';
+}
+
+function closeCreateVendorModal() {
+    const modal = document.getElementById('createVendorModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+}
+
+// Close modal when clicking outside
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('createVendorModal');
+    if (event.target === modal) {
+        closeCreateVendorModal();
+    }
+});
+</script>
+
 @endsection
 

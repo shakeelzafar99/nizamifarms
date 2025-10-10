@@ -13,6 +13,29 @@
         </a>
     </div>
 
+    <!-- Quick Setup Warning -->
+    <div class="mb-6 p-4 bg-blue-50 border-l-4 border-blue-400 rounded-md">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+                </svg>
+            </div>
+            <div class="ml-3">
+                <h3 class="text-sm font-medium text-blue-800">💡 Need a simpler way?</h3>
+                <div class="mt-2 text-sm text-blue-700">
+                    <p class="mb-2">This form is for <strong>advanced users</strong> who need custom accounts. For common tasks, use these simple options:</p>
+                    <ul class="list-disc list-inside space-y-1 ml-2">
+                        <li><strong>Employee Cash Account:</strong> Go to <a href="{{ route('users.index') }}" class="underline font-semibold">Users</a> → Click "Create" button next to employee name</li>
+                        <li><strong>Vendor:</strong> Go to <a href="{{ route('fin.vendors.index') }}" class="underline font-semibold">Vendors</a> → Click "Add New Vendor" button</li>
+                        <li><strong>Expense Category:</strong> Go to <a href="{{ route('admin.operations') }}" class="underline font-semibold">Operations</a> → "Manage Expense Categories" → Click "Add New"</li>
+                    </ul>
+                    <p class="mt-2 text-xs italic">These options automatically create accounts with correct settings!</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Error Messages -->
     @if(session('error'))
         <div class="mb-4 p-4 bg-red-50 border border-red-200 rounded-md">

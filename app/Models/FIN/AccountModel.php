@@ -210,6 +210,26 @@ class AccountModel extends BaseModel
     }
 
     /**
+     * Create expense account
+     */
+    public static function createExpenseAccount($expenseCategory)
+    {
+        $code = 'EXP_' . strtoupper(str_replace([' ', '-', '.', '(', ')'], '_', $expenseCategory));
+        $code = substr($code, 0, 50); // Limit length
+        
+        return static::firstOrCreate(
+            ['account_code' => $code],
+            [
+                'account_name' => 'Expense - ' . $expenseCategory,
+                'account_type' => self::TYPE_EXPENSE,
+                'account_category' => self::CATEGORY_EXPENSE,
+                'is_active' => 1,
+                'created_by' => auth()->id() ?? 1
+            ]
+        );
+    }
+
+    /**
      * Get account balance with proper sign
      */
     public function getSignedBalance()

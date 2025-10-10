@@ -141,26 +141,26 @@
                     <!-- Expense Category (for expense requests only) -->
                     <div id="expense-category-field" style="display: none;" class="mb-6">
                         <label class="kt-label required">Expense Type</label>
-                        <select name="expense_category" id="expense_category" class="kt-select" onchange="updateExpenseTitle()">
+                        <select name="expense_category" id="expense_category" class="kt-select" onchange="handleExpenseCategoryChange()">
                             <option value="">Select Expense Type</option>
-                            <option value="Petrol">Petrol</option>
-                            <option value="Rent">Rent</option>
-                            <option value="Utility Bills">Utility Bills</option>
-                            <option value="Packaging - Shrink wrap">Packaging - Shrink wrap</option>
-                            <option value="Packaging - Bags">Packaging - Bags</option>
-                            <option value="Food">Food</option>
-                            <option value="Office Supplies">Office Supplies</option>
-                            <option value="Maintenance">Maintenance</option>
-                            <option value="Transportation">Transportation</option>
-                            <option value="Communication">Communication</option>
-                            <option value="Marketing">Marketing</option>
-                            <option value="Insurance">Insurance</option>
-                            <option value="Professional Fees">Professional Fees</option>
-                            <option value="Bank Charges">Bank Charges</option>
-                            <option value="Staff Salaries">Staff Salaries</option>
-                            <option value="Miscellaneous">Miscellaneous</option>
+                            @php
+                                $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                                    ->orderBy('config_value')
+                                    ->pluck('config_value');
+                            @endphp
+                            @if($expenseCategories->count() > 0)
+                                @foreach($expenseCategories as $cat)
+                                    <option value="{{ $cat }}">{{ $cat }}</option>
+                                @endforeach
+                            @else
+                                {{-- Fallback if no categories in database --}}
+                                <option value="Petrol">Petrol</option>
+                                <option value="Rent">Rent</option>
+                                <option value="Office Supplies">Office Supplies</option>
+                            @endif
+                            <option value="__ADD_NEW__" style="background-color: #f3f4f6; font-weight: bold; color: #059669;">➕ Add New Category...</option>
                         </select>
-                        <p class="text-xs text-gray-500 mt-1">Select the type of expense for proper accounting</p>
+                        <p class="text-xs text-gray-500 mt-1">Select the type of expense for proper accounting, or add a new category</p>
                     </div>
 
                     <!-- Amount field (for advance/expense) -->
@@ -315,18 +315,103 @@ function calculateLeaveDays() {
     }
 }
 
+function handleExpenseCategoryChange() {
+    const expenseCategorySelect = document.getElementById('expense_category');
+    const selectedValue = expenseCategorySelect.value;
+    
+    if (selectedValue === '__ADD_NEW__') {
+        // Open modal to add new category
+        openInlineExpenseCategoryModal();
+        // Reset selection
+        expenseCategorySelect.value = '';
+    } else {
+        // Update title
+        updateExpenseTitle();
+    }
+}
+
 function updateExpenseTitle() {
     const expenseCategorySelect = document.getElementById('expense_category');
     const hiddenTitle = document.getElementById('hidden-title');
     const selectedExpense = expenseCategorySelect.value;
     
-    if (selectedExpense) {
+    if (selectedExpense && selectedExpense !== '__ADD_NEW__') {
         // Set title to the selected expense category
         hiddenTitle.value = selectedExpense;
     } else {
         // Fallback to "expense" if no category selected yet
         hiddenTitle.value = 'expense';
     }
+}
+
+function openInlineExpenseCategoryModal() {
+    document.getElementById('inlineExpenseCategoryModal').classList.remove('hidden');
+    document.getElementById('inlineExpenseCategoryModal').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+
+function closeInlineExpenseCategoryModal() {
+    document.getElementById('inlineExpenseCategoryModal').classList.add('hidden');
+    document.getElementById('inlineExpenseCategoryModal').style.display = 'none';
+    document.body.style.overflow = 'auto';
+}
+
+function submitInlineCategory() {
+    const categoryName = document.getElementById('inline_category_name').value.trim();
+    
+    if (!categoryName) {
+        alert('Please enter a category name');
+        return;
+    }
+    
+    // Show loading
+    const submitBtn = document.querySelector('#inlineExpenseCategoryModal button[type="button"]');
+    const originalText = submitBtn.innerHTML;
+    submitBtn.innerHTML = '⏳ Creating...';
+    submitBtn.disabled = true;
+    
+    // Submit via AJAX
+    fetch('{{ route("fin.expense-category.store") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify({ category_name: categoryName })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success || data.message.includes('successfully')) {
+            // Add to dropdown
+            const expenseCategorySelect = document.getElementById('expense_category');
+            const newOption = document.createElement('option');
+            newOption.value = categoryName;
+            newOption.textContent = categoryName;
+            
+            // Insert before the "Add New" option
+            const addNewOption = expenseCategorySelect.querySelector('option[value="__ADD_NEW__"]');
+            expenseCategorySelect.insertBefore(newOption, addNewOption);
+            
+            // Select the new option
+            expenseCategorySelect.value = categoryName;
+            updateExpenseTitle();
+            
+            // Close modal
+            closeInlineExpenseCategoryModal();
+            document.getElementById('inline_category_name').value = '';
+            
+            alert('✓ Category "' + categoryName + '" created successfully!');
+        } else {
+            alert('Error: ' + (data.message || 'Failed to create category'));
+        }
+    })
+    .catch(error => {
+        alert('Error: ' + error.message);
+    })
+    .finally(() => {
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+    });
 }
 
 document.getElementById('request-form').addEventListener('submit', function(e) {
@@ -368,6 +453,47 @@ document.getElementById('request-form').addEventListener('submit', function(e) {
     });
 });
 </script>
+
+<!-- Inline Expense Category Modal -->
+<div id="inlineExpenseCategoryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">➕ Add New Expense Category</h2>
+                <button onclick="closeInlineExpenseCategoryModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Category Name <span class="text-red-500">*</span></label>
+                    <input type="text" id="inline_category_name"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                           placeholder="e.g., Fuel, Marketing, Travel">
+                </div>
+                
+                <div class="p-3 bg-purple-50 border border-purple-200 rounded-md">
+                    <p class="text-xs text-purple-800">
+                        ℹ️ <strong>System will automatically:</strong>
+                    </p>
+                    <ul class="text-xs text-purple-700 mt-1 ml-4 list-disc">
+                        <li>Create an expense account (e.g., EXP_FUEL)</li>
+                        <li>Add to expense type dropdown</li>
+                        <li>Make it available for all expense requests</li>
+                    </ul>
+                </div>
+                
+                <div class="flex gap-3 mt-6">
+                    <button type="button" onclick="closeInlineExpenseCategoryModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
+                        Cancel
+                    </button>
+                    <button type="button" onclick="submitInlineCategory()" class="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-md">
+                        ✓ Create & Select
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 @endsection
 

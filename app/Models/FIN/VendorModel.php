@@ -17,12 +17,16 @@ class VendorModel extends BaseModel
     public $timestamps = true;
 
     protected $fillable = [
+        'vendor_code',
         'vendor_name',
-        'vendor_contact',
-        'vendor_email',
-        'vendor_phone',
+        'contact_person',
+        'contact_phone',
+        'contact_email',
+        'address',
+        'payment_terms',
         'account_id',
         'is_active',
+        'notes',
         'created_by',
         'updated_by'
     ];

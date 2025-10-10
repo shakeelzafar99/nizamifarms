@@ -275,11 +275,11 @@ class OrderModel extends BaseModel
                 if ($existingOrder) {
                     // Capture the previous status to detect changes from WooCommerce or other non-Shopify sources
                     $previousStatus = $existingOrder->order_status;
-                    $existingOrder->update($orderAttributes);
-                    $order = $existingOrder;
-
-                    // New rule: For WooCommerce updates, only accept the FIRST status from Woo.
-                    // For subsequent edits, ignore status changes unless the new status is 'cancelled'.
+                    
+                    // Check if we should block status change BEFORE updating database
+                    $incomingNormalized = null;
+                    $shouldUseChangeStatus = false;
+                    
                     if (array_key_exists('order_status', $orderAttributes)
                         && $orderAttributes['order_status'] !== null
                         && $orderAttributes['order_status'] !== $previousStatus) {
@@ -292,26 +292,37 @@ class OrderModel extends BaseModel
                                 || empty($previousStatus);
 
                             if ($allowStatusChange) {
-                                $order->changeStatus($incomingNormalized, 'WooCommerce sync');
+                                // Remove status from orderAttributes - we'll use changeStatus() instead
+                                unset($orderAttributes['order_status']);
+                                $shouldUseChangeStatus = true;
                             } else {
-                                // Keep main order status as-is; ensure we don't overwrite it via update()
-                                // by resetting it back to previous value
-                                $order->order_status = $previousStatus;
-                                $order->save();
-                                \Log::info('WooCommerce status update ignored (non-cancelled subsequent edit)', [
-                                    'order_id' => $order->id,
+                                // Block the status change by removing it from attributes BEFORE update
+                                unset($orderAttributes['order_status']);
+                                \Log::info('WooCommerce status update blocked (non-cancelled subsequent edit)', [
+                                    'order_id' => $existingOrder->id,
                                     'previous' => $previousStatus,
                                     'incoming' => $incomingNormalized,
                                 ]);
                             }
                         } catch (\Throwable $e) {
                             \Log::warning('storeOrderFromApi: failed to apply Woo status rule', [
-                                'order_id' => $order->id,
+                                'order_id' => $existingOrder->id,
                                 'from' => $previousStatus,
-                                'to' => $orderAttributes['order_status'],
+                                'to' => $orderAttributes['order_status'] ?? 'unknown',
                                 'error' => $e->getMessage(),
                             ]);
+                            // On error, remove status to be safe
+                            unset($orderAttributes['order_status']);
                         }
+                    }
+                    
+                    // Now update order - status already removed if needed
+                    $existingOrder->update($orderAttributes);
+                    $order = $existingOrder;
+                    
+                    // If status change was allowed, apply it using changeStatus method
+                    if ($shouldUseChangeStatus && $incomingNormalized) {
+                        $order->changeStatus($incomingNormalized, 'WooCommerce sync');
                     }
                 } else {
                     $order = static::create($orderAttributes);

@@ -56,9 +56,9 @@ class VendorController extends Controller
     {
         $request->validate([
             'vendor_name' => 'required|string|max:255',
-            'vendor_contact' => 'nullable|string|max:255',
-            'vendor_email' => 'nullable|email|max:255',
-            'vendor_phone' => 'nullable|string|max:50',
+            'contact_person' => 'nullable|string|max:255',
+            'contact_email' => 'nullable|email|max:255',
+            'contact_phone' => 'nullable|string|max:50',
             'opening_balance' => 'nullable|numeric|min:0'
         ]);
 
@@ -91,12 +91,17 @@ class VendorController extends Controller
                 }
             }
 
+            // Generate vendor code
+            $vendorCode = 'VEN_' . strtoupper(str_replace([' ', '-', '.', '(', ')'], '_', $request->vendor_name));
+            $vendorCode = substr($vendorCode, 0, 50);
+            
             // Create vendor
             $vendor = VendorModel::create([
+                'vendor_code' => $vendorCode,
                 'vendor_name' => $request->vendor_name,
-                'vendor_contact' => $request->vendor_contact,
-                'vendor_email' => $request->vendor_email,
-                'vendor_phone' => $request->vendor_phone,
+                'contact_person' => $request->contact_person,
+                'contact_phone' => $request->contact_phone,
+                'contact_email' => $request->contact_email,
                 'account_id' => $account->id,
                 'is_active' => 1,
                 'created_by' => auth()->id()
@@ -128,8 +133,10 @@ class VendorController extends Controller
         
         // Calculate running balance
         $runningBalance = $vendor->account ? $vendor->account->opening_balance : 0;
-        $ledgerWithBalance = $ledger->map(function($transaction) use (&$runningBalance) {
-            if ($transaction->to_account_id === $this->vendor->account->id) {
+        $vendorAccountId = $vendor->account ? $vendor->account->id : null;
+        
+        $ledgerWithBalance = $ledger->map(function($transaction) use (&$runningBalance, $vendorAccountId) {
+            if ($transaction->to_account_id === $vendorAccountId) {
                 // Purchase - increases liability
                 $runningBalance += $transaction->amount;
             } else {

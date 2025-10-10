@@ -369,33 +369,54 @@ class LegacyImportService
 
     /**
      * Process expense transaction
-     * Dr Expense – Category → Cr Cash – Employee
+     * Dr Expense – Category → Cr Cash – Employee (or NF Cash for company expenses)
      */
     private function processExpense($date, $employeeName, $category, $mode, $amount, $source, $transactionId, $refId, $comments)
     {
         // Get or create expense account for this category
         $expenseAccount = $this->getOrCreateExpenseAccount($category);
-        $employeeAccount = $this->getOrCreateEmployeeAccount($employeeName);
-
-        // If employee not matched to user, skip this record
-        if (!$employeeAccount) {
-            if (!in_array($employeeName, $this->unmatchedEmployees)) {
-                $this->unmatchedEmployees[] = $employeeName;
+        
+        // Special handling for "NF Account" - company expenses paid from NF Cash/Online
+        $normalizedName = strtolower(trim($employeeName));
+        if ($normalizedName === 'nf account' || $normalizedName === 'nfaccount') {
+            // Company expense - use NF Cash or Online Bank based on mode
+            if ($mode === 'online') {
+                $cashAccount = ConfigModel::getOnlineBankAccount();
+            } else {
+                $cashAccount = ConfigModel::getNFCashAccount();
             }
-            $this->skippedRecords[] = [
-                'type' => 'expense',
-                'name' => $employeeName,
-                'amount' => $amount,
-                'category' => $category,
-                'date' => $date,
-                'reason' => 'Employee not found in user table'
-            ];
-            $this->stats['skipped']++;
-            $this->importLog->updateProgress(0, 1, 0);
-            return;
+            
+            if (!$cashAccount) {
+                throw new \Exception("NF Cash/Online account not found for company expense");
+            }
+            
+            $description = "Expense: {$category} (Company)";
+        } else {
+            // Regular employee expense
+            $cashAccount = $this->getOrCreateEmployeeAccount($employeeName);
+            
+            // If employee not matched to user, skip this record
+            if (!$cashAccount) {
+                if (!in_array($employeeName, $this->unmatchedEmployees)) {
+                    $this->unmatchedEmployees[] = $employeeName;
+                }
+                $this->skippedRecords[] = [
+                    'type' => 'expense',
+                    'name' => $employeeName,
+                    'amount' => $amount,
+                    'category' => $category,
+                    'date' => $date,
+                    'reason' => 'Employee not found in user table'
+                ];
+                $this->stats['skipped']++;
+                $this->importLog->updateProgress(0, 1, 0);
+                return;
+            }
+            
+            $description = "Expense: {$category} by {$employeeName}";
         }
 
-        if (!$expenseAccount || !$employeeAccount) {
+        if (!$expenseAccount || !$cashAccount) {
             throw new \Exception("Required accounts not found for expense");
         }
 
@@ -403,9 +424,9 @@ class LegacyImportService
         LedgerModel::create([
             'transaction_date' => $date,
             'transaction_type' => LedgerModel::TYPE_EXPENSE,
-            'description' => "Expense: {$category} by {$employeeName}",
+            'description' => $description,
             'from_account_id' => $expenseAccount->id,
-            'to_account_id' => $employeeAccount->id,
+            'to_account_id' => $cashAccount->id,
             'amount' => $amount,
             'mode' => $mode,
             'approval_status' => LedgerModel::STATUS_APPROVED,
@@ -420,8 +441,8 @@ class LegacyImportService
         $expenseAccount->current_balance += $amount; // Expense increases
         $expenseAccount->save();
         
-        $employeeAccount->current_balance -= $amount; // Employee cash decreases
-        $employeeAccount->save();
+        $cashAccount->current_balance -= $amount; // Cash decreases
+        $cashAccount->save();
 
         $this->stats['expenses']++;
         $this->importLog->updateProgress(1, 0, 0);

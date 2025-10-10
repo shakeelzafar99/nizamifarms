@@ -3003,7 +3003,7 @@ async function loadQuickStatusTimeline(orderId) {
         if (data.success && data.data && data.data.length > 0) {
             const timelineHtml = data.data.map((item, index) => {
                 const date = new Date(item.changed_at);
-                const timeAgo = getTimeAgo(date);
+                const timeDisplay = formatExactTime(date);
                 const isFirst = index === 0;
                 
                 return `
@@ -3014,7 +3014,7 @@ async function loadQuickStatusTimeline(orderId) {
                                 <span style="font-size:12px;font-weight:${isFirst ? '600' : '500'};color:#374151;">${item.icon} ${item.status_name}</span>
                                 ${isFirst ? '<span style="font-size:10px;background:#dcfce7;color:#166534;padding:1px 4px;border-radius:3px;">Current</span>' : ''}
                             </div>
-                            <div style="font-size:11px;color:#6b7280;margin-bottom:1px;">${timeAgo}</div>
+                            <div style="font-size:11px;color:#6b7280;margin-bottom:1px;">${timeDisplay}</div>
                             ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:11px;color:#9ca3af;font-style:italic;">${item.notes}</div>` : ''}
                         </div>
                     </div>
@@ -3049,7 +3049,23 @@ function getStatusColor(colorClass) {
     return colors[colorClass] || '#6b7280';
 }
 
-// Helper function to get time ago
+// Helper function to format exact date and time
+function formatExactTime(date) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
+    let hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; // the hour '0' should be '12'
+    const minutesStr = minutes < 10 ? '0' + minutes : minutes;
+    
+    return `${month} ${day}, ${year} ${hours}:${minutesStr} ${ampm}`;
+}
+
+// Legacy function kept for compatibility (if needed elsewhere)
 function getTimeAgo(date) {
     const now = new Date();
     const diffMs = now - date;
@@ -3160,7 +3176,7 @@ async function loadEditOrderTimeline(orderId) {
         if (data.success && data.data.length > 0) {
             const timelineHtml = data.data.map((item, index) => {
                 const date = new Date(item.changed_at);
-                const timeAgo = getTimeAgo(date);
+                const timeDisplay = formatExactTime(date);
                 const isFirst = index === 0;
                 
                 return `
@@ -3171,7 +3187,7 @@ async function loadEditOrderTimeline(orderId) {
                                 <span style="font-size:14px;font-weight:${isFirst ? '600' : '500'};color:#374151;">${item.icon} ${item.status_name}</span>
                                 ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 6px;border-radius:4px;">Current</span>' : ''}
                             </div>
-                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">${timeAgo} • ${item.changed_by_name}</div>
+                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">${timeDisplay} • ${item.changed_by_name}</div>
                             ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:12px;color:#9ca3af;font-style:italic;background:#f9fafb;padding:4px 8px;border-radius:4px;border-left:3px solid #e5e7eb;">${item.notes}</div>` : ''}
                         </div>
                     </div>
@@ -3210,7 +3226,7 @@ async function loadViewOrderTimeline(orderId) {
         if (data.success && data.data.length > 0) {
             const timelineHtml = data.data.map((item, index) => {
                 const date = new Date(item.changed_at);
-                const timeAgo = getTimeAgo(date);
+                const timeDisplay = formatExactTime(date);
                 const isFirst = index === 0;
                 
                 return `
@@ -3221,7 +3237,7 @@ async function loadViewOrderTimeline(orderId) {
                                 <span style="font-size:15px;font-weight:${isFirst ? '600' : '500'};color:#111827;">${item.icon} ${item.status_name}</span>
                                 ${isFirst ? '<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:4px;font-weight:500;">Current</span>' : ''}
                             </div>
-                            <div style="font-size:13px;color:#6b7280;margin-bottom:4px;">${timeAgo} • ${item.changed_by_name}</div>
+                            <div style="font-size:13px;color:#6b7280;margin-bottom:4px;">${timeDisplay} • ${item.changed_by_name}</div>
                             ${item.notes && item.notes !== 'Status changed to ' + item.status_code ? `<div style="font-size:13px;color:#9ca3af;font-style:italic;background:#ffffff;padding:8px 12px;border-radius:6px;border-left:4px solid #e5e7eb;margin-top:6px;">${item.notes}</div>` : ''}
                         </div>
                     </div>
