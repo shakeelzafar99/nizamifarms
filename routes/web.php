@@ -347,6 +347,14 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');
         });
+        
+        // Expense Management & Settlement Routes
+        Route::prefix('expenses')->name('expenses.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'index'])->name('index');
+            Route::post('/{id}/settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'settle'])->name('settle');
+            Route::post('/bulk-settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'bulkSettle'])->name('bulk-settle');
+            Route::get('/{id}/settlement-details', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'getSettlementDetails'])->name('settlement-details');
+        });
     });
 });
 

@@ -182,6 +182,12 @@ class LedgerPostingService
             if (!$fundingAccount) {
                 throw new \Exception("Payment source account not found");
             }
+            
+            // IMPORTANT: Save the funding account back to request if it was defaulted
+            if (!$request->payment_source_account_id) {
+                $request->payment_source_account_id = $fundingAccount->id;
+                // Don't save yet - will save with ledger_transaction_id below
+            }
 
             // Get or create expense account
             // Priority: 1) expense_category (specific), 2) category name (general)
@@ -225,6 +231,10 @@ class LedgerPostingService
 
             // Link ledger to request
             $request->ledger_transaction_id = $ledger->id;
+            
+            // Mark settlement status
+            $this->markSettlementStatus($request, $fundingAccount);
+            
             $request->save();
 
             DB::commit();
@@ -338,6 +348,31 @@ class LedgerPostingService
                 'success' => false,
                 'message' => 'Failed to approve transaction: ' . $e->getMessage()
             ];
+        }
+    }
+    
+    /**
+     * Mark expense settlement status based on payment source
+     * 
+     * @param RequestModel $request
+     * @param AccountModel $fundingAccount
+     * @return void
+     */
+    private function markSettlementStatus($request, $fundingAccount): void
+    {
+        // Get Expense Fund account
+        $expenseFund = ConfigModel::getExpenseFundingAccount();
+        
+        if (!$expenseFund) {
+            $expenseFund = AccountModel::where('account_code', 'EXP_FUND')->first();
+        }
+        
+        // If paid from Expense Fund, no settlement needed
+        if ($expenseFund && $fundingAccount->id == $expenseFund->id) {
+            $request->settlement_status = 'not_required';
+        } else {
+            // Otherwise, mark as pending settlement
+            $request->settlement_status = 'pending';
         }
     }
 }

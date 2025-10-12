@@ -208,8 +208,9 @@
                                         <td class="px-4 py-3 text-sm font-semibold text-gray-900">Rs. {{ number_format($ledger->amount, 2) }}</td>
                                         <td class="px-4 py-3 text-center">
                                             <a href="{{ route('fin.ledger.show', $ledger->id) }}" 
-                                               class="inline-flex items-center px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded transition">
-                                                View & Approve
+                                               class="inline-flex items-center px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded transition"
+                                               style="background-color: #059669 !important; color: white !important;">
+                                                <span style="color: white !important;">👁️ View & Approve</span>
                                             </a>
                                         </td>
                                     </tr>

@@ -2738,7 +2738,7 @@ function loadEditForm(order) {
         // Load rider assignment history
         if (rTimeline) {
             rTimeline.innerHTML = '<div style="color:#6b7280;padding:8px;text-align:center;">Loading history...</div>';
-            fetch(`/orders/${order.id}/rider/history`, { headers: { 'Accept':'application/json' }})
+            fetch(`/orders/${order.id}/rider/timeline`, { headers: { 'Accept':'application/json' }})
                 .then(r=>r.json())
                 .then(j=>{
                     if (j && j.success && j.data && j.data.length) {
@@ -3123,7 +3123,7 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                     rSel.innerHTML = '<option value="">-- Unassign rider --</option>' + opts;
                 }
                 try {
-                    const hRes = await fetch(`/orders/${orderId}/rider/history`, { headers: { 'Accept': 'application/json' } });
+                    const hRes = await fetch(`/orders/${orderId}/rider/timeline`, { headers: { 'Accept': 'application/json' } });
                     const hJson = await hRes.json();
                     const timeline = document.getElementById('quickRiderTimeline');
                     if (hJson && hJson.success && hJson.data && hJson.data.length > 0) {

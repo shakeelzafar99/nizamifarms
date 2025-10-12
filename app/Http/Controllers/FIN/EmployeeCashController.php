@@ -162,7 +162,7 @@ class EmployeeCashController extends Controller
         }
 
         // Fetch expense requests for this employee with date filters
-        $expenseRequestsQuery = \App\Models\Request\RequestModel::with(['category', 'createdBy'])
+        $expenseRequestsQuery = \App\Models\Request\RequestModel::with(['category', 'createdBy', 'paymentSourceAccount'])
             ->where('requester_user_id', $account->user_id)
             ->whereHas('category', function($q) {
                 $q->where('category_code', 'expense');
@@ -175,14 +175,78 @@ class EmployeeCashController extends Controller
 
         $expenseRequests = $expenseRequestsQuery->orderBy('created_at', 'desc')->get();
 
-        // Calculate expense request summary
+        // Calculate expense request summary with payment source split
+        // Key distinction: Expenses FROM rider's balance vs expenses paid by other sources
+        // IMPORTANT: Respect settlement status - settled expenses move from rider to company
+        
+        // Expenses paid FROM THIS rider's own balance (affects his balance)
+        // EXCLUDE settled expenses (they've been reconciled)
+        $paidFromRiderBalance = $expenseRequests
+            ->filter(function($req) use ($account) {
+                // Must have ledger transaction
+                if (!$req->ledger_transaction_id) {
+                    return false;
+                }
+                
+                // Exclude settled expenses (they've been reconciled)
+                if ($req->settlement_status === 'settled') {
+                    return false;
+                }
+                
+                // Check if paid from THIS employee's cash account
+                if ($req->payment_source_account_id) {
+                    $paymentAccount = \App\Models\FIN\AccountModel::find($req->payment_source_account_id);
+                    return $paymentAccount && $paymentAccount->id === $account->id;
+                }
+                
+                return false;
+            })->sum('amount');
+
+        // All other approved expenses (does NOT affect rider's balance)
+        // INCLUDES settled expenses (now company-funded after settlement)
+        $paidFromOtherSources = $expenseRequests
+            ->filter(function($req) use ($account) {
+                // Must have ledger transaction
+                if (!$req->ledger_transaction_id) {
+                    return false;
+                }
+                
+                // If settled, it's now company-funded regardless of original source
+                if ($req->settlement_status === 'settled') {
+                    return true;
+                }
+                
+                // If no payment source set, assume it's from company (NOT rider)
+                if (!$req->payment_source_account_id) {
+                    return true;
+                }
+                
+                // Otherwise, exclude only THIS rider's balance (if not settled)
+                $paymentAccount = \App\Models\FIN\AccountModel::find($req->payment_source_account_id);
+                return $paymentAccount && $paymentAccount->id !== $account->id;
+            })->sum('amount');
+
         $expenseSummary = [
             'pending' => $expenseRequests->where('status', 'pending')->sum('amount'),
-            'approved_unpaid' => $expenseRequests->where('status', 'approved')
+            'expense_from_rider_balance' => $paidFromRiderBalance, // Paid from rider's own cash
+            'expense_amount' => $paidFromOtherSources, // Paid from other sources (NF Cash, Expense Fund, etc.)
+            // Keep these for filter counts
+            'paid_from_company' => $expenseRequests->whereNotNull('ledger_transaction_id')
                 ->filter(function($req) {
-                    return is_null($req->ledger_transaction_id);
+                    if ($req->payment_source_account_id) {
+                        $account = \App\Models\FIN\AccountModel::find($req->payment_source_account_id);
+                        return $account && in_array($account->account_code, ['EXP_FUND', 'NF_CASH', 'ONLINE', 'CASH_NF_MAIN_TILL']);
+                    }
+                    return false;
                 })->sum('amount'),
-            'paid' => $expenseRequests->whereNotNull('ledger_transaction_id')->sum('amount')
+            'paid_from_employee' => $expenseRequests->whereNotNull('ledger_transaction_id')
+                ->filter(function($req) {
+                    if ($req->payment_source_account_id) {
+                        $account = \App\Models\FIN\AccountModel::find($req->payment_source_account_id);
+                        return $account && $account->account_category === 'employee_cash';
+                    }
+                    return false;
+                })->sum('amount')
         ];
 
         // Get expense categories for the dropdown

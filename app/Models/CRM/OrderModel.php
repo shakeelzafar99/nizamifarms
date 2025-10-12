@@ -8,6 +8,7 @@ use App\Models\Shared\BaseModel;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Carbon\Carbon;
 
 class OrderModel extends BaseModel
@@ -388,14 +389,39 @@ class OrderModel extends BaseModel
             $assignedAtTs = $assignedAt ? Carbon::instance($assignedAt)->format('Y-m-d H:i:s') : Carbon::now()->format('Y-m-d H:i:s');
 
             return DB::transaction(function () use ($orderId, $riderUserId, $notes, $assignedBy, $assignedAtTs) {
-                // Demote previous current
-                DB::table('t_ops_order_rider_history')
+                // Check if assigning the same rider (no-op)
+                $currentAssignment = DB::table('t_ops_order_rider_history')
                     ->where('order_id', $orderId)
                     ->where('is_current', 1)
-                    ->update(['is_current' => 0]);
+                    ->first();
+                
+                if ($currentAssignment && $currentAssignment->rider_user_id == $riderUserId) {
+                    \Log::info('Rider already assigned, skipping', [
+                        'order_id' => $orderId,
+                        'rider_user_id' => $riderUserId
+                    ]);
+                    return true; // Already assigned, treat as success
+                }
+                
+                // Demote previous current (set unassigned_at timestamp)
+                if ($currentAssignment) {
+                    $updateData = [
+                        'is_current' => 0,
+                        'unassigned_at' => Carbon::now()->format('Y-m-d H:i:s'),
+                    ];
+                    
+                    // Add is_current_order_id only if column exists
+                    if (Schema::hasColumn('t_ops_order_rider_history', 'is_current_order_id')) {
+                        $updateData['is_current_order_id'] = null;
+                    }
+                    
+                    DB::table('t_ops_order_rider_history')
+                        ->where('id', $currentAssignment->id)
+                        ->update($updateData);
+                }
 
                 // Insert new current assignment
-                DB::table('t_ops_order_rider_history')->insert([
+                $insertData = [
                     'order_id'      => $orderId,
                     'rider_user_id' => $riderUserId,
                     'is_current'    => 1,
@@ -404,7 +430,14 @@ class OrderModel extends BaseModel
                     'source'        => 'api',
                     'notes'         => $notes,
                     'created_at'    => Carbon::now()->format('Y-m-d H:i:s'),
-                ]);
+                ];
+                
+                // Add is_current_order_id only if column exists
+                if (Schema::hasColumn('t_ops_order_rider_history', 'is_current_order_id')) {
+                    $insertData['is_current_order_id'] = $orderId;
+                }
+                
+                DB::table('t_ops_order_rider_history')->insert($insertData);
 
                 // Update denormalized column on order
                 DB::table('t_crm_prod_order')

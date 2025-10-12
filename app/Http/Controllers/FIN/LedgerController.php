@@ -128,7 +128,7 @@ class LedgerController extends Controller
             $toAccount = AccountModel::findOrFail($request->to_account_id);
 
             // Check if from account has sufficient balance for asset accounts
-            if (in_array($fromAccount->account_type, ['ASSET', 'CASH_EMPLOYEE'])) {
+            if ($fromAccount->account_type === 'asset') {
                 if ($fromAccount->current_balance < $request->amount) {
                     throw new \Exception("Insufficient balance in {$fromAccount->account_name}. Current balance: Rs. " . number_format($fromAccount->current_balance, 2));
                 }
@@ -156,18 +156,21 @@ class LedgerController extends Controller
             // Update balances (only if approved or cash)
             if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
                 // From account: debit or credit based on account type
-                if (in_array($fromAccount->account_type, ['ASSET', 'CASH_EMPLOYEE'])) {
+                if ($fromAccount->account_type === 'asset') {
+                    // Money going OUT from asset = Decrease
                     $fromAccount->current_balance -= $request->amount;
                 } else {
-                    // Liability, income, expense accounts
+                    // Money going OUT from liability/income/equity = Increase
                     $fromAccount->current_balance += $request->amount;
                 }
                 $fromAccount->save();
 
                 // To account: opposite
-                if (in_array($toAccount->account_type, ['ASSET', 'CASH_EMPLOYEE'])) {
+                if ($toAccount->account_type === 'asset') {
+                    // Money coming IN to asset = Increase
                     $toAccount->current_balance += $request->amount;
                 } else {
+                    // Money coming IN to liability/income/equity = Decrease
                     $toAccount->current_balance -= $request->amount;
                 }
                 $toAccount->save();
@@ -196,7 +199,7 @@ class LedgerController extends Controller
      */
     public function show($id)
     {
-        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order', 'request'])
+        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'approvedBy', 'order', 'request'])
                                   ->findOrFail($id);
 
         return view('fin.ledger.show', compact('transaction'));
@@ -239,8 +242,14 @@ class LedgerController extends Controller
             // Update approval status
             $ledger->approval_status = LedgerModel::STATUS_APPROVED;
             $ledger->approved_by = auth()->id();
-            $ledger->approved_at = now();
-            $ledger->approval_notes = $request->approval_notes;
+            $ledger->approval_date = now()->toDateString();
+            
+            // Add approval notes to comments field
+            if ($request->approval_notes) {
+                $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
+                                   "Approval Notes: " . $request->approval_notes;
+            }
+            
             $ledger->save();
 
             // Reload accounts (in case they were changed)
@@ -249,17 +258,23 @@ class LedgerController extends Controller
             $toAccount = $ledger->toAccount;
 
             // From account adjustment
-            if (in_array($fromAccount->account_type, ['ASSET', 'CASH_EMPLOYEE'])) {
+            // For Asset accounts (Cash, Bank, Employee Cash): Debit increases, Credit decreases
+            // For Liability/Income/Equity: Credit increases, Debit decreases
+            if ($fromAccount->account_type === 'asset') {
+                // Money going OUT from asset account = Decrease
                 $fromAccount->current_balance -= $ledger->amount;
             } else {
+                // Money going OUT from liability/income/equity = Increase (reducing the liability/increasing expense)
                 $fromAccount->current_balance += $ledger->amount;
             }
             $fromAccount->save();
 
             // To account adjustment
-            if (in_array($toAccount->account_type, ['ASSET', 'CASH_EMPLOYEE'])) {
+            if ($toAccount->account_type === 'asset') {
+                // Money coming IN to asset account = Increase
                 $toAccount->current_balance += $ledger->amount;
             } else {
+                // Money coming IN to liability/income/equity = Decrease (increasing the liability/reducing expense)
                 $toAccount->current_balance -= $ledger->amount;
             }
             $toAccount->save();
@@ -295,8 +310,12 @@ class LedgerController extends Controller
 
             $ledger->approval_status = LedgerModel::STATUS_REJECTED;
             $ledger->approved_by = auth()->id();
-            $ledger->approved_at = now();
-            $ledger->approval_notes = $request->rejection_reason;
+            $ledger->approval_date = now()->toDateString();
+            
+            // Add rejection reason to comments
+            $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
+                               "Rejection Reason: " . $request->rejection_reason;
+            
             $ledger->save();
 
             return redirect()->route('fin.ledger.index')

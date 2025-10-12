@@ -42,6 +42,12 @@ class RequestModel extends BaseModel
         'submitted_at',
         'completed_at',
         'ledger_transaction_id',
+        'settlement_status',
+        'settled_at',
+        'settled_by',
+        'settlement_transaction_id',
+        'settlement_destination_account_id',
+        'settlement_notes',
         'created_by',
         'updated_by'
     ];
@@ -55,7 +61,8 @@ class RequestModel extends BaseModel
         'requires_level_2' => 'boolean',
         'attachments' => 'json',
         'submitted_at' => 'datetime',
-        'completed_at' => 'datetime'
+        'completed_at' => 'datetime',
+        'settled_at' => 'datetime'
     ];
 
     // Status constants
@@ -92,6 +99,26 @@ class RequestModel extends BaseModel
     public function updatedBy(): BelongsTo
     {
         return $this->belongsTo(UserModel::class, 'updated_by', 'id');
+    }
+
+    public function paymentSourceAccount(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\FIN\AccountModel::class, 'payment_source_account_id', 'id');
+    }
+
+    public function settledBy(): BelongsTo
+    {
+        return $this->belongsTo(UserModel::class, 'settled_by', 'id');
+    }
+
+    public function settlementTransaction(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\FIN\LedgerModel::class, 'settlement_transaction_id', 'id');
+    }
+
+    public function settlementDestinationAccount(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\FIN\AccountModel::class, 'settlement_destination_account_id', 'id');
     }
 
     // Scopes

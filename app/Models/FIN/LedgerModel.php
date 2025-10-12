@@ -28,8 +28,6 @@ class LedgerModel extends BaseModel
         'approval_status',
         'approval_date',
         'approved_by',
-        'approved_at',
-        'approval_notes',
         'external_source',
         'external_txn_id',
         'external_ref_id',
@@ -60,6 +58,7 @@ class LedgerModel extends BaseModel
     const TYPE_TRANSFER = 'transfer';
     const TYPE_ADJUSTMENT = 'adjustment';
     const TYPE_OPENING_BALANCE = 'opening_balance';
+    const TYPE_SETTLEMENT = 'expense_settlement';
 
     // Mode constants
     const MODE_CASH = 'cash';

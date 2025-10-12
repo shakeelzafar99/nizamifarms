@@ -69,36 +69,36 @@
         <div id="activeFilterText" class="mt-2 text-xs text-blue-600 hidden"></div>
     </div>
 
-    <!-- Employee Summary Cards - Redesigned (6 cards) -->
+    <!-- Employee Summary Cards - Custom 3-3 Layout -->
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        <!-- LEFT SIDE: Cash Flow -->
         <div class="bg-white border border-gray-200 rounded-lg p-3">
             <div class="text-xs text-gray-500 uppercase font-medium">💵 Invoices</div>
             <div class="text-lg font-bold text-green-600 mt-1">Rs. {{ number_format($summary['total_invoices'], 2) }}</div>
         </div>
-        <div class="bg-white border border-gray-200 rounded-lg p-3" title="Expenses paid FROM employee's cash (not reimbursements)">
-            <div class="text-xs text-gray-500 uppercase font-medium flex items-center gap-1">
-                💸 Expenses
-                <span class="text-gray-400 cursor-help" title="Expenses paid FROM employee's cash">ⓘ</span>
-            </div>
-            <div class="text-lg font-bold text-red-600 mt-1">Rs. {{ number_format($summary['total_expenses'], 2) }}</div>
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+            <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+            <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($expenseSummary['pending'], 2) }}</div>
         </div>
         <div class="bg-white border border-gray-200 rounded-lg p-3">
             <div class="text-xs text-gray-500 uppercase font-medium">🏦 Deposits</div>
             <div class="text-lg font-bold text-blue-600 mt-1">Rs. {{ number_format($summary['total_deposits'], 2) }}</div>
         </div>
-        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-            <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Reimbursements</div>
-            <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($expenseSummary['pending'], 2) }}</div>
+        
+        <!-- RIGHT SIDE: Expense Tracking & Balance -->
+        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" title="Expenses paid from rider's own balance (affects his balance)">
+            <div class="text-xs text-orange-700 uppercase font-medium">💸 Expense from Rider Balance</div>
+            <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($expenseSummary['expense_from_rider_balance'], 2) }}</div>
         </div>
         <div class="border border-gray-200 rounded-lg p-3 {{ $summary['current_balance'] > 0 ? 'bg-green-50' : ($summary['current_balance'] < 0 ? 'bg-red-50' : 'bg-white') }}">
-            <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+            <div class="text-xs text-gray-500 uppercase font-medium">💰 Balance</div>
             <div class="text-lg font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
                 Rs. {{ number_format($summary['current_balance'], 2) }}
             </div>
         </div>
-        <div class="bg-gray-50 border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-600 uppercase font-medium">🏷️ Account</div>
-            <div class="text-sm font-mono font-bold text-gray-900 mt-1">{{ $account->account_code }}</div>
+        <div class="bg-purple-50 border border-purple-200 rounded-lg p-3" title="All approved expenses paid from other sources (NF Cash, Expense Fund, etc.) - does NOT affect rider balance">
+            <div class="text-xs text-purple-700 uppercase font-medium">💰 Expense Amount</div>
+            <div class="text-lg font-bold text-purple-900 mt-1">Rs. {{ number_format($expenseSummary['expense_amount'], 2) }}</div>
         </div>
     </div>
 
@@ -167,7 +167,8 @@
         krsort($daysWithCash); // Newest first
     @endphp
     
-    @if(count($daysWithCash) > 0)
+    {{-- Cash Accountability Alert - HIDDEN (user can see in date groups anyway) --}}
+    @if(false && count($daysWithCash) > 0)
     <div class="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-300 rounded-lg p-4 mb-6">
         <div class="flex items-start justify-between">
             <div class="flex-1">
@@ -308,7 +309,7 @@
                                     @foreach($dateData['transactions'] as $transaction)
                                         <tr class="hover:bg-gray-50">
                                             <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-600">
-                                                {{ $transaction->transaction_date ? $transaction->transaction_date->format('h:i A') : '-' }}
+                                                {{ $transaction->created_at ? $transaction->created_at->format('h:i A') : '-' }}
                                             </td>
                                             <td class="px-6 py-3 whitespace-nowrap">
                                                 @php
@@ -439,24 +440,29 @@
     <!-- Tab Content: Expense Requests -->
     <div id="content-expenses" class="tab-content hidden">
         
-        <!-- Expense Summary Cards -->
-        <div class="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-lg p-6 mb-6">
-            <h3 class="text-sm font-semibold text-gray-700 mb-4">💰 Expense Requests Summary</h3>
-            <div class="grid grid-cols-3 gap-6">
-                <div>
-                    <p class="text-xs text-yellow-700 uppercase font-medium mb-1">Pending Approval</p>
-                    <p class="text-2xl font-bold text-yellow-900">Rs. {{ number_format($expenseSummary['pending'], 2) }}</p>
-                    <p class="text-xs text-yellow-600 mt-1">{{ $expenseRequests->where('status', 'pending')->count() }} request(s)</p>
-                </div>
-                <div>
-                    <p class="text-xs text-green-700 uppercase font-medium mb-1">Approved (Unpaid)</p>
-                    <p class="text-2xl font-bold text-green-900">Rs. {{ number_format($expenseSummary['approved_unpaid'], 2) }}</p>
-                    <p class="text-xs text-green-600 mt-1">{{ $expenseRequests->where('status', 'approved')->filter(fn($r) => is_null($r->ledger_transaction_id))->count() }} request(s)</p>
-                </div>
-                <div>
-                    <p class="text-xs text-blue-700 uppercase font-medium mb-1">Paid</p>
-                    <p class="text-2xl font-bold text-blue-900">Rs. {{ number_format($expenseSummary['paid'], 2) }}</p>
-                    <p class="text-xs text-blue-600 mt-1">{{ $expenseRequests->whereNotNull('ledger_transaction_id')->count() }} request(s)</p>
+        <!-- Expense Requests Filter Bar - Compact -->
+        <div class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div class="flex items-center justify-between flex-wrap gap-3">
+                <h3 class="text-sm font-semibold text-gray-700">📋 Filter by Status:</h3>
+                <div class="flex gap-2 flex-wrap">
+                    <button onclick="resetExpenseFilter()" class="filter-btn px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-md hover:bg-gray-50 transition">
+                        🔄 All ({{ $expenseRequests->count() }})
+                    </button>
+                    <button onclick="filterExpenseRequests('pending')" class="filter-btn px-3 py-1.5 text-xs font-medium border border-yellow-300 bg-yellow-50 text-yellow-700 rounded-md hover:bg-yellow-100 transition">
+                        ⏳ Pending ({{ $expenseRequests->where('status', 'pending')->count() }})
+                    </button>
+                    <button onclick="filterExpenseRequests('all_approved')" class="filter-btn px-3 py-1.5 text-xs font-medium border border-green-300 bg-green-50 text-green-700 rounded-md hover:bg-green-100 transition">
+                        ✅ Approved ({{ $expenseRequests->where('status', 'approved')->count() }})
+                    </button>
+                    <button onclick="filterExpenseRequests('company')" class="filter-btn px-3 py-1.5 text-xs font-medium border border-purple-300 bg-purple-50 text-purple-700 rounded-md hover:bg-purple-100 transition">
+                        🏢 From Company ({{ $expenseRequests->whereNotNull('ledger_transaction_id')->filter(function($r) { return $r->paymentSourceAccount && in_array($r->paymentSourceAccount->account_code, ['EXP_FUND', 'NF_CASH', 'ONLINE', 'CASH_NF_MAIN_TILL']); })->count() }})
+                    </button>
+                    <button onclick="filterExpenseRequests('employee')" class="filter-btn px-3 py-1.5 text-xs font-medium border border-indigo-300 bg-indigo-50 text-indigo-700 rounded-md hover:bg-indigo-100 transition">
+                        👤 From Employee ({{ $expenseRequests->whereNotNull('ledger_transaction_id')->filter(function($r) { return $r->paymentSourceAccount && $r->paymentSourceAccount->account_category === 'employee_cash'; })->count() }})
+                    </button>
+                    <button onclick="filterExpenseRequests('rejected')" class="filter-btn px-3 py-1.5 text-xs font-medium border border-red-300 bg-red-50 text-red-700 rounded-md hover:bg-red-100 transition">
+                        ❌ Rejected ({{ $expenseRequests->where('status', 'rejected')->count() }})
+                    </button>
                 </div>
             </div>
         </div>
@@ -477,6 +483,7 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Paid From</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created By</th>
                             <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                         </tr>
@@ -525,6 +532,23 @@
                                     <span class="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
                                         Rejected
                                     </span>
+                                @endif
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600" data-payment-source="{{ $req->paymentSourceAccount ? $req->paymentSourceAccount->account_category : '' }}">
+                                @if($req->ledger_transaction_id && $req->paymentSourceAccount)
+                                    @if(in_array($req->paymentSourceAccount->account_code, ['EXP_FUND', 'NF_CASH', 'ONLINE', 'CASH_NF_MAIN_TILL']))
+                                        <span class="px-2 py-1 text-xs font-medium bg-purple-50 text-purple-700 rounded">
+                                            🏢 {{ $req->paymentSourceAccount->account_name }}
+                                        </span>
+                                    @elseif($req->paymentSourceAccount->account_category === 'employee_cash')
+                                        <span class="px-2 py-1 text-xs font-medium bg-indigo-50 text-indigo-700 rounded">
+                                            👤 {{ $req->paymentSourceAccount->account_name }}
+                                        </span>
+                                    @else
+                                        <span class="text-xs text-gray-600">{{ $req->paymentSourceAccount->account_name }}</span>
+                                    @endif
+                                @else
+                                    <span class="text-xs text-gray-400">-</span>
                                 @endif
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
@@ -1213,10 +1237,18 @@ function setGrouping(mode) {
     }
 }
 
-// Apply date grouping (already rendered by PHP)
+// Apply date grouping (restore to original state)
 function applyDateGrouping() {
     document.querySelectorAll('.date-group').forEach(group => {
+        // Show all groups
         group.style.display = '';
+        
+        // Restore original HTML if it was modified in month view
+        const originalHtml = group.getAttribute('data-original-html');
+        if (originalHtml && group.getAttribute('data-in-month-view') === 'true') {
+            group.innerHTML = originalHtml;
+            group.removeAttribute('data-in-month-view');
+        }
     });
     applyNonZeroFilter(); // Reapply filter if active
 }
@@ -1226,28 +1258,154 @@ function applyMonthGrouping() {
     const groups = document.querySelectorAll('.date-group');
     const groupedByMonth = {};
     
-    // Group by month
+    // First, save original HTML for each group to restore later
+    groups.forEach(group => {
+        const date = group.getAttribute('data-date');
+        if (!group.hasAttribute('data-original-html')) {
+            group.setAttribute('data-original-html', group.innerHTML);
+        }
+    });
+    
+    // Group by month and calculate totals
     groups.forEach(group => {
         const month = group.getAttribute('data-month');
         if (!groupedByMonth[month]) {
-            groupedByMonth[month] = [];
+            groupedByMonth[month] = {
+                groups: [],
+                totalIn: 0,
+                totalOut: 0,
+                transactionCount: 0
+            };
         }
-        groupedByMonth[month].push(group);
+        groupedByMonth[month].groups.push(group);
+        
+        // Extract data from the summary paragraph
+        const summaryP = group.querySelector('p.text-xs.text-gray-500');
+        if (summaryP) {
+            const text = summaryP.textContent;
+            // Extract In, Out, and transaction count
+            const inMatch = text.match(/In: Rs\.\s*([\d,]+\.?\d*)/);
+            const outMatch = text.match(/Out: Rs\.\s*([\d,]+\.?\d*)/);
+            const countMatch = text.match(/(\d+)\s+transaction/);
+            
+            if (inMatch) groupedByMonth[month].totalIn += parseFloat(inMatch[1].replace(/,/g, ''));
+            if (outMatch) groupedByMonth[month].totalOut += parseFloat(outMatch[1].replace(/,/g, ''));
+            if (countMatch) groupedByMonth[month].transactionCount += parseInt(countMatch[1]);
+        }
     });
     
-    // Hide all groups first
-    groups.forEach(group => group.style.display = 'none');
-    
-    // Show only first date of each month, hide rest
-    Object.keys(groupedByMonth).sort().reverse().forEach(month => {
-        const monthGroups = groupedByMonth[month];
-        // For now, just show all groups (full month grouping would require backend changes)
-        monthGroups.forEach(group => {
-            group.style.display = '';
-        });
+    // Hide all date groups initially
+    groups.forEach(group => {
+        group.style.display = 'none';
+        // Store that it's in month view
+        group.setAttribute('data-in-month-view', 'true');
     });
     
-    applyNonZeroFilter(); // Reapply filter if active
+    // For each month, show only the first date group and modify it to show month summary
+    Object.keys(groupedByMonth).sort().reverse().forEach((month) => {
+        const monthData = groupedByMonth[month];
+        const firstGroup = monthData.groups[0];
+        
+        // Show the first group
+        firstGroup.style.display = '';
+        
+        // Get the header div
+        const header = firstGroup.querySelector(':scope > div:first-child');
+        if (header) {
+            const monthName = new Date(month + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            const net = monthData.totalIn - monthData.totalOut;
+            const isBalanced = Math.abs(net) < 0.01;
+            
+            // Replace header content with month summary
+            header.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                        </svg>
+                        <div>
+                            <h3 class="text-base font-bold text-gray-900">📅 ${monthName}</h3>
+                            <p class="text-xs text-gray-500 mt-0.5">
+                                In: Rs. ${formatNumber(monthData.totalIn)} • 
+                                Out: Rs. ${formatNumber(monthData.totalOut)} • 
+                                ${monthData.transactionCount} transaction(s) across ${monthData.groups.length} day(s)
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center gap-2">
+                        ${isBalanced 
+                            ? '<span class="px-3 py-1 bg-green-100 text-green-800 text-xs font-bold rounded-full">✅ Balanced</span>'
+                            : net > 0
+                                ? '<span class="px-3 py-1 bg-red-100 text-red-800 text-xs font-bold rounded-full">🔴 +Rs. ' + formatNumber(net) + ' held</span>'
+                                : '<span class="px-3 py-1 bg-yellow-100 text-yellow-800 text-xs font-bold rounded-full">⚠️ Rs. ' + formatNumber(Math.abs(net)) + ' short</span>'
+                        }
+                        <button onclick="toggleMonthDays('${month}')" class="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition font-medium">
+                            ▼ View ${monthData.groups.length} Days
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            // Remove the onclick from header (don't want it to toggle on click)
+            header.removeAttribute('onclick');
+            header.style.cursor = 'default';
+        }
+        
+        // Hide transactions for this first group (we're showing it as month header only)
+        const firstDate = firstGroup.getAttribute('data-date');
+        const transDiv = document.getElementById('transactions-' + firstDate);
+        if (transDiv) {
+            transDiv.classList.add('hidden');
+        }
+    });
+}
+
+// Helper to format numbers with commas
+function formatNumber(num) {
+    return num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// Toggle showing individual days within a month
+function toggleMonthDays(month) {
+    const groups = document.querySelectorAll('.date-group[data-month="' + month + '"]');
+    const allGroups = Array.from(groups);
+    
+    // Check if days are currently shown (any group after first is visible)
+    let daysShown = false;
+    for (let i = 1; i < allGroups.length; i++) {
+        if (allGroups[i].style.display === '') {
+            daysShown = true;
+            break;
+        }
+    }
+    
+    // Get the button to update text
+    const firstGroup = allGroups[0];
+    const button = firstGroup.querySelector('button[onclick*="toggleMonthDays"]');
+    
+    if (daysShown) {
+        // Hide all days except first (keep month header)
+        for (let i = 1; i < allGroups.length; i++) {
+            allGroups[i].style.display = 'none';
+        }
+        if (button) {
+            button.innerHTML = '▼ View ' + (allGroups.length) + ' Days';
+        }
+    } else {
+        // Show all days and restore their original content
+        for (let i = 1; i < allGroups.length; i++) {
+            allGroups[i].style.display = '';
+            // Restore original HTML if it was stored
+            const originalHtml = allGroups[i].getAttribute('data-original-html');
+            if (originalHtml) {
+                allGroups[i].innerHTML = originalHtml;
+            }
+        }
+        if (button) {
+            button.innerHTML = '▲ Hide Days';
+        }
+    }
 }
 
 // Toggle non-zero filter
@@ -1275,6 +1433,80 @@ function applyNonZeroFilter() {
                 group.style.display = '';
             }
         }
+    });
+}
+
+// ============================================
+// Expense Request Filtering Functions
+// ============================================
+
+function filterExpenseRequests(filterType) {
+    const rows = document.querySelectorAll('#content-expenses tbody tr');
+    
+    rows.forEach(row => {
+        let show = false;
+        
+        // Get the status and payment source
+        const statusCell = row.querySelector('td:nth-child(5)'); // Status column
+        const paymentSourceCell = row.querySelector('td:nth-child(6)'); // Paid From column
+        const statusText = statusCell ? statusCell.textContent.trim() : '';
+        
+        switch(filterType) {
+            case 'pending':
+                // Show only pending
+                show = statusText.includes('Pending');
+                break;
+            case 'all_approved':
+                // Show all approved (paid or unpaid)
+                show = statusText.includes('Paid') || statusText.includes('Approved');
+                break;
+            case 'company':
+                // Show only paid from company accounts
+                show = statusText.includes('Paid') && paymentSourceCell.innerHTML.includes('🏢');
+                break;
+            case 'employee':
+                // Show only paid from employee accounts
+                show = statusText.includes('Paid') && paymentSourceCell.innerHTML.includes('👤');
+                break;
+            case 'rejected':
+                // Show rejected requests
+                show = statusText.includes('Rejected');
+                break;
+            case 'all_paid':
+                // Show all paid transactions
+                show = statusText.includes('Paid');
+                break;
+            default:
+                show = true;
+        }
+        
+        // Show/hide the row
+        if (show) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+    
+    // Update visual feedback on filter buttons
+    document.querySelectorAll('#content-expenses .filter-btn').forEach(btn => {
+        btn.classList.remove('ring-2', 'ring-blue-500');
+    });
+    
+    // Highlight the active filter
+    if (event && event.currentTarget) {
+        event.currentTarget.classList.add('ring-2', 'ring-blue-500');
+    }
+}
+
+// Reset filter (show all)
+function resetExpenseFilter() {
+    const rows = document.querySelectorAll('#content-expenses tbody tr');
+    rows.forEach(row => row.style.display = '');
+    
+    // Remove visual feedback from all buttons
+    document.querySelectorAll('#content-expenses .filter-btn').forEach(btn => {
+        btn.classList.remove('ring-2', 'ring-blue-500');
     });
 }
 </script>
