@@ -797,10 +797,49 @@
                     <textarea name="description" rows="4" placeholder="Provide detailed information about this expense"
                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"></textarea>
                 </div>
+                
+                @if($userRole !== 'rider')
+                <!-- MANAGERS/ADMINS: Full Payment Source Selection -->
+                <div class="p-3 bg-purple-50 border border-purple-200 rounded-md">
+                    <label class="block text-sm font-medium text-purple-900 mb-2">💳 Payment Source (Default: Expense Fund):</label>
+                    <select name="payment_source_account_id" 
+                            class="w-full px-3 py-2 border border-purple-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500">
+                        <option value="">Expense Fund</option>
+                        @php
+                            // Company accounts + Current rider's account only (not other riders)
+                            $paymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
+                                ->where(function($q) use ($account) {
+                                    $q->whereIn('account_code', ['EXP_FUND', 'NF_CASH', 'ONLINE'])
+                                      ->orWhere('id', $account->id); // Only current rider's account
+                                })
+                                ->orderBy('account_name')
+                                ->get();
+                        @endphp
+                        @foreach($paymentSources as $source)
+                            <option value="{{ $source->id }}">
+                                {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
+                            </option>
+                        @endforeach
+                    </select>
+                    <p class="text-xs text-purple-700 mt-1">⚠️ Select where this expense should be paid from. Can be changed during approval.</p>
+                </div>
+                @else
+                <!-- RIDERS: Choice between Expense Fund (Default) and Company Cash -->
+                <div class="p-3 bg-purple-50 border border-purple-200 rounded-md">
+                    <label class="block text-sm font-medium text-purple-900 mb-2">💳 Payment Source:</label>
+                    <select name="payment_source_account_id" 
+                            class="w-full px-3 py-2 border border-purple-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500">
+                        <option value="">Expense Fund (Default - No Balance Impact)</option>
+                        <option value="{{ $account->id }}">Company Cash I Hold (Deducts from My Balance: Rs. {{ number_format($account->current_balance, 2) }})</option>
+                    </select>
+                    <p class="text-xs text-purple-700 mt-1">💡 Choose "Company Cash" only if you're paying from cash in hand. Otherwise, leave as "Expense Fund".</p>
+                </div>
+                @endif
+                
                 <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
                     <p class="text-xs text-blue-800">
                         <strong>Note:</strong> This request will go through L1→L2 approval workflow. 
-                        Upon approval, the expense will be paid from the Expense Fund and posted to the ledger.
+                        Upon approval, the expense will be paid and posted to the ledger.
                     </p>
                 </div>
                 <div class="flex gap-3 mt-6">
@@ -1371,36 +1410,44 @@ function toggleMonthDays(month) {
     const groups = document.querySelectorAll('.date-group[data-month="' + month + '"]');
     const allGroups = Array.from(groups);
     
-    // Check if days are currently shown (any group after first is visible)
-    let daysShown = false;
-    for (let i = 1; i < allGroups.length; i++) {
-        if (allGroups[i].style.display === '') {
-            daysShown = true;
-            break;
-        }
-    }
+    if (allGroups.length === 0) return;
     
-    // Get the button to update text
+    // First group is being used as month header
     const firstGroup = allGroups[0];
     const button = firstGroup.querySelector('button[onclick*="toggleMonthDays"]');
     
+    // Check current state - if day 2 onwards are visible, we're expanded
+    let daysShown = allGroups.length > 1 && allGroups[1].style.display !== 'none';
+    
     if (daysShown) {
-        // Hide all days except first (keep month header)
+        // COLLAPSE: Hide days 2 onwards, keep first group as month header only
         for (let i = 1; i < allGroups.length; i++) {
             allGroups[i].style.display = 'none';
         }
+        // Also ensure first group's transactions stay hidden (it's the header)
+        const firstDate = firstGroup.getAttribute('data-date');
+        const transDiv = document.getElementById('transactions-' + firstDate);
+        if (transDiv) {
+            transDiv.classList.add('hidden');
+        }
         if (button) {
-            button.innerHTML = '▼ View ' + (allGroups.length) + ' Days';
+            button.innerHTML = '▼ View ' + allGroups.length + ' Days';
         }
     } else {
-        // Show all days and restore their original content
-        for (let i = 1; i < allGroups.length; i++) {
-            allGroups[i].style.display = '';
+        // EXPAND: Show ALL groups including first (restore it as a regular day)
+        allGroups.forEach(group => {
+            group.style.display = '';
             // Restore original HTML if it was stored
-            const originalHtml = allGroups[i].getAttribute('data-original-html');
+            const originalHtml = group.getAttribute('data-original-html');
             if (originalHtml) {
-                allGroups[i].innerHTML = originalHtml;
+                group.innerHTML = originalHtml;
             }
+        });
+        // Make sure first group's transactions are visible
+        const firstDate = firstGroup.getAttribute('data-date');
+        const transDiv = document.getElementById('transactions-' + firstDate);
+        if (transDiv) {
+            transDiv.classList.remove('hidden');
         }
         if (button) {
             button.innerHTML = '▲ Hide Days';

@@ -1,4 +1,4 @@
-@extends('layouts.app')
+﻿@extends('layouts.app')
 
 @section('title', 'Expense Management')
 
@@ -12,40 +12,48 @@
         </div>
     </div>
 
-    <!-- KPI Cards - Compact -->
+    <!-- KPI Cards - Simplified & Compact -->
     @php
         $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
             ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
     @endphp
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
-        <!-- Total Expenses -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <!-- Total Expenses (Filtered) -->
         <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase font-medium">📊 Total</div>
+            <div class="text-xs text-gray-500 uppercase font-medium">📊 Total Expenses</div>
             <div class="text-lg font-bold text-gray-900 mt-1">Rs. {{ number_format($kpis['total_expenses'], 2) }}</div>
+            <div class="text-xs text-gray-500 mt-1">
+                @if($dateFrom && $dateTo)
+                    {{ date('M d', strtotime($dateFrom)) }} - {{ date('M d', strtotime($dateTo)) }}
+                @elseif($category)
+                    {{ $category }}
+                @else
+                    All time
+                @endif
+            </div>
         </div>
 
-        <!-- From Expense Fund -->
-        <div class="bg-green-50 border border-green-200 rounded-lg p-3">
-            <div class="text-xs text-green-700 uppercase font-medium">✅ From Fund</div>
-            <div class="text-lg font-bold text-green-900 mt-1">Rs. {{ number_format($kpis['from_expense_fund'], 2) }}</div>
+        <!-- Pending Approvals (Real-time) - Clickable -->
+        <div class="bg-yellow-50 border border-yellow-300 rounded-lg p-3 cursor-pointer hover:bg-yellow-100 transition-colors" 
+             onclick="openPendingApprovalsModal()"
+             title="Click to view and approve pending requests">
+            <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Approvals</div>
+            <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($kpis['pending_approvals'], 2) }}</div>
+            <div class="text-xs text-yellow-600 mt-1">
+                {{ $kpis['pending_approvals_count'] }} request(s)
+                <span class="ml-1">👆 Click to review</span>
+            </div>
         </div>
 
-        <!-- Needs Settlement -->
-        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3">
+        <!-- Needs Settlement (Real-time) -->
+        <div class="bg-orange-50 border border-orange-300 rounded-lg p-3">
             <div class="text-xs text-orange-700 uppercase font-medium">⚠️ Needs Settlement</div>
             <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($kpis['needs_settlement'], 2) }}</div>
             <div class="text-xs text-orange-600 mt-1">{{ $kpis['pending_count'] }} expense(s)</div>
         </div>
 
-        <!-- Settled -->
-        <div class="bg-purple-50 border border-purple-200 rounded-lg p-3">
-            <div class="text-xs text-purple-700 uppercase font-medium">✓ Settled</div>
-            <div class="text-lg font-bold text-purple-900 mt-1">Rs. {{ number_format($kpis['settled'], 2) }}</div>
-            <div class="text-xs text-purple-600 mt-1">{{ $kpis['settled_count'] }} done</div>
-        </div>
-
-        <!-- Expense Fund Balance -->
-        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+        <!-- Expense Fund Balance (Real-time) -->
+        <div class="bg-blue-50 border border-blue-300 rounded-lg p-3">
             <div class="text-xs text-blue-700 uppercase font-medium">💰 Fund Balance</div>
             <div class="text-lg font-bold text-blue-900 mt-1">
                 Rs. {{ $expenseFund ? number_format($expenseFund->current_balance, 2) : '0.00' }}
@@ -54,27 +62,43 @@
         </div>
     </div>
 
-    <!-- Filter Bar - Compact -->
-    <div class="bg-white border border-gray-200 rounded-lg p-3 mb-4">
+    <!-- Filter Bar - Redesigned Simple & Effective -->
+    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
         <form method="GET" action="{{ route('fin.expenses.index') }}" id="filterForm">
-            <div class="grid grid-cols-2 md:grid-cols-6 gap-2">
-                <!-- Date Range -->
-                <div>
-                    <label class="text-xs font-medium text-gray-600">From</label>
-                    <input type="date" name="date_from" value="{{ $dateFrom }}" 
-                           class="mt-1 block w-full rounded border-gray-300 text-xs p-1.5">
+            <div class="flex flex-wrap items-end gap-3">
+                <!-- Quick Month Selector -->
+                <div class="flex-shrink-0">
+                    <label class="text-xs font-medium text-gray-700 block mb-1">📅 Quick Select</label>
+                    <select onchange="setMonthRange(this.value)" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="">Custom Range</option>
+                        <option value="current_month">This Month</option>
+                        <option value="last_month">Last Month</option>
+                        <option value="last_3_months">Last 3 Months</option>
+                        <option value="last_6_months">Last 6 Months</option>
+                        <option value="this_year">This Year</option>
+                    </select>
                 </div>
-                <div>
-                    <label class="text-xs font-medium text-gray-600">To</label>
-                    <input type="date" name="date_to" value="{{ $dateTo }}" 
-                           class="mt-1 block w-full rounded border-gray-300 text-xs p-1.5">
+
+                <!-- Date Range -->
+                <div class="flex items-center gap-2">
+                    <div>
+                        <label class="text-xs font-medium text-gray-700 block mb-1">From</label>
+                        <input type="date" name="date_from" id="dateFrom" value="{{ $dateFrom }}" 
+                               class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div class="self-end pb-2 text-gray-400">→</div>
+                    <div>
+                        <label class="text-xs font-medium text-gray-700 block mb-1">To</label>
+                        <input type="date" name="date_to" id="dateTo" value="{{ $dateTo }}" 
+                               class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                    </div>
                 </div>
 
                 <!-- Category -->
                 <div>
-                    <label class="text-xs font-medium text-gray-600">Category</label>
-                    <select name="category" class="mt-1 block w-full rounded border-gray-300 text-xs p-1.5">
-                        <option value="">All</option>
+                    <label class="text-xs font-medium text-gray-700 block mb-1">Category</label>
+                    <select name="category" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Categories</option>
                         @foreach($categories as $cat)
                             <option value="{{ $cat }}" {{ $category == $cat ? 'selected' : '' }}>{{ $cat }}</option>
                         @endforeach
@@ -83,9 +107,9 @@
 
                 <!-- Payment Source -->
                 <div>
-                    <label class="text-xs font-medium text-gray-600">Source</label>
-                    <select name="payment_source" class="mt-1 block w-full rounded border-gray-300 text-xs p-1.5">
-                        <option value="">All</option>
+                    <label class="text-xs font-medium text-gray-700 block mb-1">Payment Source</label>
+                    <select name="payment_source" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Sources</option>
                         @foreach($paymentSources as $source)
                             <option value="{{ $source->id }}" {{ $paymentSource == $source->id ? 'selected' : '' }}>
                                 {{ $source->account_name }}
@@ -96,27 +120,64 @@
 
                 <!-- Settlement Status -->
                 <div>
-                    <label class="text-xs font-medium text-gray-600">Status</label>
-                    <select name="settlement_status" class="mt-1 block w-full rounded border-gray-300 text-xs p-1.5">
-                        <option value="">All</option>
-                        <option value="not_required" {{ $settlementStatus == 'not_required' ? 'selected' : '' }}>✅ From Fund</option>
-                        <option value="pending" {{ $settlementStatus == 'pending' ? 'selected' : '' }}>⚠️ Pending</option>
-                        <option value="settled" {{ $settlementStatus == 'settled' ? 'selected' : '' }}>✓ Settled</option>
+                    <label class="text-xs font-medium text-gray-700 block mb-1">Settlement</label>
+                    <select name="settlement_status" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="">All Status</option>
+                        <option value="not_required" {{ $settlementStatus == 'not_required' ? 'selected' : '' }}>No Action</option>
+                        <option value="pending" {{ $settlementStatus == 'pending' ? 'selected' : '' }}>Pending</option>
+                        <option value="settled" {{ $settlementStatus == 'settled' ? 'selected' : '' }}>Settled</option>
                     </select>
                 </div>
 
-                <!-- Buttons -->
-                <div class="flex gap-1 items-end">
-                    <button type="submit" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded">
-                        Apply
+                <!-- Action Buttons -->
+                <div class="flex gap-2 ml-auto">
+                    <button type="submit" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors">
+                        🔍 Apply Filters
                     </button>
-                    <a href="{{ route('fin.expenses.index') }}" class="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium rounded">
-                        Clear
+                    <a href="{{ route('fin.expenses.index') }}" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+                        ✕ Clear
                     </a>
                 </div>
             </div>
         </form>
     </div>
+    
+    <script>
+    // Quick month selector helper
+    function setMonthRange(period) {
+        const dateFrom = document.getElementById('dateFrom');
+        const dateTo = document.getElementById('dateTo');
+        const today = new Date();
+        
+        switch(period) {
+            case 'current_month':
+                dateFrom.value = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+                dateTo.value = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
+                break;
+            case 'last_month':
+                dateFrom.value = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0];
+                dateTo.value = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0];
+                break;
+            case 'last_3_months':
+                dateFrom.value = new Date(today.getFullYear(), today.getMonth() - 3, 1).toISOString().split('T')[0];
+                dateTo.value = today.toISOString().split('T')[0];
+                break;
+            case 'last_6_months':
+                dateFrom.value = new Date(today.getFullYear(), today.getMonth() - 6, 1).toISOString().split('T')[0];
+                dateTo.value = today.toISOString().split('T')[0];
+                break;
+            case 'this_year':
+                dateFrom.value = new Date(today.getFullYear(), 0, 1).toISOString().split('T')[0];
+                dateTo.value = today.toISOString().split('T')[0];
+                break;
+        }
+        
+        // Auto-submit if a quick period is selected
+        if (period) {
+            document.getElementById('filterForm').submit();
+        }
+    }
+    </script>
 
     <!-- Tabs -->
     <div class="bg-white border border-gray-200 rounded-lg">
@@ -353,8 +414,8 @@
 @endsection
 
 <!-- Settlement Modal (Portalized outside content to avoid clipping) -->
-<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;" onclick="closeSettlementModal()">
-    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto" style="margin: auto;" onclick="event.stopPropagation()">
+<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
         <div class="p-6">
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-lg font-semibold text-gray-800">⚙️ Settle Expense</h2>
@@ -661,6 +722,222 @@ async function bulkSettle() {
     }
 }
 
+// Open pending approvals modal
+function openPendingApprovalsModal() {
+    const modal = document.getElementById('pendingApprovalsModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        // Force proper modal display and centering
+        Object.assign(modal.style, {
+            display: 'flex',
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            right: '0',
+            bottom: '0',
+            zIndex: '9999',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0,0,0,0.5)'
+        });
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+// Close pending approvals modal
+function closePendingApprovalsModal() {
+    const modal = document.getElementById('pendingApprovalsModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+}
+
+// Open request detail modal (loads via AJAX to stay on same page)
+async function openRequestDetailModal(requestId) {
+    const modal = document.getElementById('requestDetailModal');
+    const content = document.getElementById('requestDetailContent');
+    
+    if (!modal || !content) return;
+    
+    // Force proper modal display
+    modal.classList.remove('hidden');
+    Object.assign(modal.style, {
+        display: 'flex',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        zIndex: '10000',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.5)'
+    });
+    document.body.style.overflow = 'hidden';
+    
+    try {
+        // Fetch request details
+        const response = await fetch(`/requests/${requestId}`, {
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+        
+        if (!response.ok) throw new Error('Failed to load request');
+        
+        const html = await response.text();
+        
+        // Extract just the content section (not the full page)
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const mainContent = doc.querySelector('.container, .container-fluid, main, [role="main"]') || doc.body;
+        
+        content.innerHTML = mainContent.innerHTML;
+        
+        // Wrap content in padding container if not already wrapped
+        const wrapper = content.querySelector('.p-6') || content.querySelector('.p-4');
+        if (!wrapper) {
+            const paddingDiv = document.createElement('div');
+            paddingDiv.className = 'p-6';
+            paddingDiv.innerHTML = content.innerHTML;
+            content.innerHTML = '';
+            content.appendChild(paddingDiv);
+        }
+        
+        // Add close button at the top
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-3xl leading-none z-50';
+        closeBtn.innerHTML = '&times;';
+        closeBtn.onclick = closeRequestDetailModal;
+        closeBtn.style.cssText = 'background: none; border: none; cursor: pointer;';
+        content.querySelector('.p-6, .p-4, div')?.prepend(closeBtn);
+        
+        // Re-inject approval/rejection JavaScript functions into the modal context
+        // These functions are defined in the original request page but need to be available here
+        const scriptContent = doc.querySelectorAll('script');
+        scriptContent.forEach(script => {
+            if (script.textContent.includes('approveRequest') || script.textContent.includes('rejectRequest')) {
+                // Extract the request ID from the loaded content
+                const requestIdMatch = html.match(/\/requests\/(\d+)/);
+                if (requestIdMatch) {
+                    const loadedRequestId = requestIdMatch[1];
+                    
+                    // Create wrapper functions that work in modal context
+                    window.approveRequest = function() {
+                        const form = document.getElementById('approval-form');
+                        if (!form) return;
+                        
+                        const formData = new FormData(form);
+                        const data = Object.fromEntries(formData.entries());
+                        
+                        if (!confirm('Are you sure you want to approve this request?')) {
+                            return;
+                        }
+                        
+                        fetch(`/requests/${loadedRequestId}/approve`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('[name="_token"]').value
+                            },
+                            body: JSON.stringify(data)
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Request approved successfully!');
+                                closeRequestDetailModal(false);
+                                closePendingApprovalsModal();
+                                location.reload();
+                            } else {
+                                alert('Error: ' + data.message);
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error:', error);
+                            alert('An error occurred. Please try again.');
+                        });
+                    };
+                    
+                    window.rejectRequest = function() {
+                        const comments = document.querySelector('[name="comments"]').value.trim();
+                        
+                        if (!comments) {
+                            alert('Please enter comments explaining the rejection.');
+                            document.querySelector('[name="comments"]').focus();
+                            return;
+                        }
+                        
+                        if (!confirm('Are you sure you want to reject this request?')) {
+                            return;
+                        }
+                        
+                        const form = document.getElementById('approval-form');
+                        if (!form) return;
+                        
+                        const formData = new FormData(form);
+                        const data = Object.fromEntries(formData.entries());
+                        
+                        fetch(`/requests/${loadedRequestId}/reject`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-TOKEN': document.querySelector('[name="_token"]').value
+                            },
+                            body: JSON.stringify(data)
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Request rejected.');
+                                closeRequestDetailModal(false);
+                                closePendingApprovalsModal();
+                                location.reload();
+                            } else {
+                                alert('Error: ' + data.message);
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error:', error);
+                            alert('An error occurred. Please try again.');
+                        });
+                    };
+                }
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error loading request:', error);
+        content.innerHTML = `
+            <div class="p-6 text-center">
+                <div class="text-red-600 text-xl mb-2">&#10060;</div>
+                <p class="text-gray-700 font-medium">Failed to load request details</p>
+                <p class="text-gray-500 text-sm mt-2">${error.message}</p>
+                <button onclick="closeRequestDetailModal()" class="mt-4 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded">
+                    Close
+                </button>
+            </div>
+        `;
+    }
+}
+
+// Close request detail modal and refresh if approval/rejection happened
+function closeRequestDetailModal(shouldReload = false) {
+    const modal = document.getElementById('requestDetailModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+    
+    // If request was approved/rejected, reload page to update counts
+    if (shouldReload) {
+        location.reload();
+    }
+}
+
 // Ensure all functions are globally accessible
 window.switchTab = switchTab;
 window.toggleSelectAll = toggleSelectAll;
@@ -669,10 +946,128 @@ window.openSettlementModal = openSettlementModal;
 window.closeSettlementModal = closeSettlementModal;
 window.confirmSettlement = confirmSettlement;
 window.bulkSettle = bulkSettle;
+window.openPendingApprovalsModal = openPendingApprovalsModal;
+window.closePendingApprovalsModal = closePendingApprovalsModal;
+window.openRequestDetailModal = openRequestDetailModal;
+window.closeRequestDetailModal = closeRequestDetailModal;
 
 console.log('Expense Management JS loaded. Functions:', {
     openSettlementModal: typeof window.openSettlementModal,
-    switchTab: typeof window.switchTab
+    switchTab: typeof window.switchTab,
+    openPendingApprovalsModal: typeof window.openPendingApprovalsModal
 });
 </script>
+
+
+
+
+<!-- Pending Approvals Modal (Portalized - matches working modals) -->
+<div id="pendingApprovalsModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <!-- Header -->
+            <div class="flex justify-between items-center mb-4 border-b pb-3">
+                <div>
+                    <h2 class="text-xl font-bold text-gray-900">Pending Expense Approvals</h2>
+                    <p class="text-sm text-gray-600 mt-1">Review and approve pending expense requests</p>
+                </div>
+                <button onclick="closePendingApprovalsModal()" class="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
+            </div>
+            
+            @if($pendingApprovals && $pendingApprovals->count() > 0)
+            <!-- Pending Requests List -->
+            <div class="space-y-3">
+                @foreach($pendingApprovals as $request)
+                <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                    <div class="flex items-start justify-between">
+                        <!-- Request Details -->
+                        <div class="flex-1">
+                            <div class="flex items-center gap-3 mb-2">
+                                <span class="text-sm font-semibold text-blue-600">{{ $request->request_number }}</span>
+                                <span class="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-xs font-medium rounded">
+                                    {{ $request->status }}
+                                </span>
+                                <span class="text-xs text-gray-500">
+                                    {{ $request->created_at ? $request->created_at->format('M d, Y h:i A') : '-' }}
+                                </span>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                <div>
+                                    <span class="text-gray-500">Employee:</span>
+                                    <span class="font-medium text-gray-900 ml-1">
+                                        {{ $request->requester->fullname ?? 'Unknown' }}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">Category:</span>
+                                    <span class="font-medium text-gray-900 ml-1">
+                                        {{ $request->expense_category ?? 'N/A' }}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">Amount:</span>
+                                    <span class="font-bold text-green-700 ml-1">
+                                        Rs. {{ number_format($request->amount, 2) }}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">Payment From:</span>
+                                    <span class="font-medium text-gray-900 ml-1">
+                                        {{ $request->paymentSourceAccount->account_name ?? 'Expense Fund' }}
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            @if($request->description)
+                            <div class="mt-2 text-sm text-gray-600">
+                                <span class="text-gray-500">Description:</span> {{ Str::limit($request->description, 100) }}
+                            </div>
+                            @endif
+                        </div>
+                        
+                        <!-- Action Button -->
+                        <div class="ml-4">
+                            <button onclick="openRequestDetailModal({{ $request->id }})" 
+                                    class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+                                    style="background-color: #059669 !important;">
+                                <span style="color: white !important;">View & Approve</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                @endforeach
+            </div>
+            @else
+            <!-- No Pending Requests -->
+            <div class="text-center py-12">
+                <div class="text-6xl mb-3">&#10004;</div>
+                <h3 class="text-lg font-semibold text-gray-700">All Caught Up!</h3>
+                <p class="text-gray-500 mt-1">No pending expense requests at the moment.</p>
+            </div>
+            @endif
+            
+            <!-- Footer -->
+            <div class="mt-6 pt-4 border-t flex justify-end">
+                <button onclick="closePendingApprovalsModal()" 
+                        class="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Request Detail Modal (for approving without leaving page) -->
+<div id="requestDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 10000;">
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto relative" onclick="event.stopPropagation()" style="margin: auto;">
+        <div id="requestDetailContent" class="relative">
+            <!-- Content will be loaded here via AJAX -->
+            <div class="text-center py-12">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                <p class="mt-4 text-gray-600">Loading request details...</p>
+            </div>
+        </div>
+    </div>
+</div>
 

@@ -101,13 +101,24 @@ class ExpenseManagementController extends Controller
             ->where('is_active', 1)
             ->get();
         
+        // Get pending approvals (real-time, not filtered by date)
+        $pendingApprovals = RequestModel::whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            })
+            ->where('status', RequestModel::STATUS_PENDING)
+            ->with(['requester', 'paymentSourceAccount', 'category'])
+            ->orderBy('created_at', 'asc')
+            ->get();
+        
         $kpis = [
             'total_expenses' => $totalExpenses,
             'from_expense_fund' => $fromExpenseFund,
             'needs_settlement' => $needsSettlement,
             'settled' => $settled,
             'pending_count' => $pendingSettlement->count(),
-            'settled_count' => $settlementHistory->count()
+            'settled_count' => $settlementHistory->count(),
+            'pending_approvals' => $pendingApprovals->sum('amount'),
+            'pending_approvals_count' => $pendingApprovals->count()
         ];
         
         return view('fin.expense.index', compact(
@@ -118,6 +129,7 @@ class ExpenseManagementController extends Controller
             'categories',
             'paymentSources',
             'settlementSources',
+            'pendingApprovals',
             'dateFrom',
             'dateTo',
             'category',
