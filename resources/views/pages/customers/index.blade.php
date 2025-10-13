@@ -1972,7 +1972,21 @@ function openCreateOrderModal(customer = null) {
                                            placeholder="Search coupon code..." onkeyup="searchNewOrderCoupons(this.value)" onfocus="showNewOrderCouponDropdown()" onblur="hideNewOrderCouponDropdown()">
                                     <div id="newOrderCouponDropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
                                 </div>
-                                <input type="number" step="0.01" name="discount_total" value="0" onchange="updateOrderTotal()" placeholder="Discount amount" style="flex: 1; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 6px;">Discounts</label>
+                            <div id="customerOrderDiscountsContainer" style="display: flex; flex-direction: column; gap: 6px;">
+                                <!-- Discount rows will be populated here -->
+                            </div>
+                            <button type="button" onclick="addCustomerOrderDiscountRow()" 
+                                    style="margin-top: 6px; padding: 5px 10px; background: #10b981; color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;">
+                                + Add Discount
+                            </button>
+                            <div style="margin-top: 6px; padding: 6px; background: #f3f4f6; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-weight: 600; color: #374151; font-size: 12px;">Total Discount:</span>
+                                <span id="customerOrderTotalDiscountDisplay" style="font-weight: 700; color: #ef4444; font-size: 14px;">Rs. 0.00</span>
+                            </div>
                             </div>
                         </div>
                         <div style="margin-bottom: 12px;">
@@ -2231,15 +2245,190 @@ function updateOrderSubtotal() {
 
 function updateOrderTotal() {
     const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
-    const discount = parseFloat(document.querySelector('input[name="discount_total"]')?.value) || 0;
+    
+    // Calculate total discount from all discount rows
+    let totalDiscount = 0;
+    document.querySelectorAll('#customerOrderDiscountsContainer .discount-row').forEach(row => {
+        const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
+        totalDiscount += amount;
+    });
+    
     const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
     
-    const total = subtotal - discount + shipping;
+    // Update discount display
+    const discountDisplay = document.getElementById('customerOrderTotalDiscountDisplay');
+    if (discountDisplay) {
+        discountDisplay.textContent = 'Rs. ' + totalDiscount.toFixed(2);
+    }
+    
+    // Calculate final total
+    const total = subtotal - totalDiscount + shipping;
     const totalInput = document.querySelector('input[name="total_price"]');
     if (totalInput) {
         totalInput.value = total.toFixed(2);
     }
 }
+
+// Customer order discount management functions
+let customerOrderDiscountRowIndex = 0;
+
+function addCustomerOrderDiscountRow(title = '', amount = 0) {
+    const container = document.getElementById('customerOrderDiscountsContainer');
+    if (!container) return;
+    
+    const index = customerOrderDiscountRowIndex++;
+    
+    const row = document.createElement('div');
+    row.className = 'discount-row';
+    row.setAttribute('data-index', index);
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;background:#f9fafb;padding:6px;border-radius:4px;border:1px solid #e5e7eb;position:relative;';
+    
+    row.innerHTML = `
+        <div style="flex:2;position:relative;">
+            <input type="text" 
+                   name="discounts[${index}][title]" 
+                   id="discountTitle_${index}"
+                   placeholder="Discount title (e.g. Member Discount)" 
+                   value="${title}"
+                   onkeyup="searchDiscountCoupons(${index}, this.value)"
+                   onfocus="showDiscountDropdown(${index})"
+                   onblur="hideDiscountDropdown(${index})"
+                   style="width:100%;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;">
+            <div id="discountDropdown_${index}" 
+                 style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid #d1d5db;border-radius:4px;max-height:150px;overflow-y:auto;z-index:1000;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);margin-top:2px;">
+            </div>
+        </div>
+        <input type="number" 
+               step="0.01" 
+               name="discounts[${index}][amount]" 
+               id="discountAmount_${index}"
+               placeholder="Amount" 
+               value="${amount}"
+               onchange="updateOrderTotal()"
+               style="flex:1;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;">
+        <button type="button" 
+                onclick="removeCustomerOrderDiscountRow(${index})" 
+                style="padding:4px 8px;background:#ef4444;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;">
+            ×
+        </button>
+    `;
+    
+    container.appendChild(row);
+    updateOrderTotal();
+}
+
+// Discount coupon autocomplete functionality
+let discountSearchTimeouts = {};
+function searchDiscountCoupons(rowIndex, query) {
+    clearTimeout(discountSearchTimeouts[rowIndex]);
+    
+    if (query.length < 2) {
+        const dropdown = document.getElementById(`discountDropdown_${rowIndex}`);
+        if (dropdown) dropdown.style.display = 'none';
+        return;
+    }
+    
+    discountSearchTimeouts[rowIndex] = setTimeout(() => {
+        fetch(`/coupons/search?q=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                const dropdown = document.getElementById(`discountDropdown_${rowIndex}`);
+                if (!dropdown) return;
+                
+                if (data.success && data.data && data.data.length > 0) {
+                    dropdown.innerHTML = data.data.map(coupon => `
+                        <div onmousedown="selectDiscountCoupon(${rowIndex}, '${escapeHtml(coupon.title)}', ${coupon.value}, '${coupon.value_type}')" 
+                             style="padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #f3f4f6;"
+                             onmouseover="this.style.backgroundColor='#f3f4f6'" 
+                             onmouseout="this.style.backgroundColor='white'">
+                            <div style="font-weight: 500; font-size: 12px;">${escapeHtml(coupon.display || coupon.title)}</div>
+                            <div style="font-size: 11px; color: #6b7280;">
+                                ${coupon.value_type === 'percentage' ? coupon.value + '%' : 'PKR ' + coupon.value} off
+                            </div>
+                        </div>
+                    `).join('');
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.innerHTML = '<div style="padding: 6px 10px; color: #6b7280; font-size: 11px;">No coupons found</div>';
+                    dropdown.style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error searching discount coupons:', error);
+            });
+    }, 300);
+}
+
+function showDiscountDropdown(rowIndex) {
+    const input = document.getElementById(`discountTitle_${rowIndex}`);
+    if (input && input.value.length >= 2) {
+        searchDiscountCoupons(rowIndex, input.value);
+    }
+}
+
+function hideDiscountDropdown(rowIndex) {
+    setTimeout(() => {
+        const dropdown = document.getElementById(`discountDropdown_${rowIndex}`);
+        if (dropdown) dropdown.style.display = 'none';
+    }, 200);
+}
+
+function selectDiscountCoupon(rowIndex, title, value, valueType) {
+    const titleInput = document.getElementById(`discountTitle_${rowIndex}`);
+    const amountInput = document.getElementById(`discountAmount_${rowIndex}`);
+    
+    if (titleInput) titleInput.value = title;
+    
+    // Auto-calculate discount based on subtotal if it's percentage
+    if (amountInput) {
+        if (valueType === 'percentage') {
+            const subtotal = parseFloat(document.querySelector('input[name="subtotal_price"]')?.value) || 0;
+            const discountAmount = (subtotal * value) / 100;
+            amountInput.value = discountAmount.toFixed(2);
+        } else {
+            amountInput.value = value.toFixed(2);
+        }
+    }
+    
+    updateOrderTotal();
+    
+    // Hide dropdown
+    const dropdown = document.getElementById(`discountDropdown_${rowIndex}`);
+    if (dropdown) dropdown.style.display = 'none';
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function removeCustomerOrderDiscountRow(index) {
+    const row = document.querySelector(`#customerOrderDiscountsContainer .discount-row[data-index="${index}"]`);
+    if (row) {
+        row.remove();
+        updateOrderTotal();
+    }
+}
+
+// Initialize with one empty discount row when modal opens
+document.addEventListener('DOMContentLoaded', function() {
+    // Add initial discount row when create order modal is shown
+    const createOrderModal = document.getElementById('createOrderModal');
+    if (createOrderModal) {
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.attributeName === 'style' && createOrderModal.style.display === 'block') {
+                    const container = document.getElementById('customerOrderDiscountsContainer');
+                    if (container && container.children.length === 0) {
+                        addCustomerOrderDiscountRow();
+                    }
+                }
+            });
+        });
+        observer.observe(createOrderModal, { attributes: true });
+    }
+});
 
 // Save new order
 function saveNewOrder() {
@@ -2268,6 +2457,21 @@ function saveNewOrder() {
         return;
     }
     
+    // Collect discounts
+    const discounts = [];
+    document.querySelectorAll('#customerOrderDiscountsContainer .discount-row').forEach((row) => {
+        const title = row.querySelector('[name$="[title]"]')?.value;
+        const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
+        
+        if (title && amount > 0) {
+            discounts.push({
+                title: title,
+                amount: amount,
+                type: 'fixed'
+            });
+        }
+    });
+    
     // Prepare data
     const orderData = {
         customer_id: formData.get('customer_id'),
@@ -2275,12 +2479,12 @@ function saveNewOrder() {
         order_date: formData.get('order_date') ? formData.get('order_date').replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00',
         contact_email: formData.get('contact_email'),
         subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
-        discount_total: parseFloat(formData.get('discount_total')) || 0,
         shipping_total: parseFloat(formData.get('shipping_total')) || 0,
         total_price: parseFloat(formData.get('total_price')) || 0,
         payment_method: formData.get('payment_method'),
         note: formData.get('note'),
-        items: items
+        items: items,
+        discounts: discounts // NEW: Include discounts array
     };
     
     // Submit to server
@@ -2429,13 +2633,14 @@ function searchNewOrderCoupons(query) {
             .then(response => response.json())
             .then(data => {
                 const dropdown = document.getElementById('newOrderCouponDropdown');
-                if (data.length > 0) {
-                    dropdown.innerHTML = data.map(coupon => `
-                        <div onclick="selectNewOrderCoupon('${coupon.code}', ${coupon.value}, '${coupon.value_type}', ${coupon.minimum_amount})" 
+                // Fix: API returns data.success and data.data structure
+                if (data.success && data.data && data.data.length > 0) {
+                    dropdown.innerHTML = data.data.map(coupon => `
+                        <div onclick="selectNewOrderCoupon('${coupon.code}', ${coupon.value}, '${coupon.value_type}', ${coupon.minimum_amount || 0})" 
                              style="padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #e5e7eb;"
                              onmouseover="this.style.backgroundColor='#f3f4f6'" 
                              onmouseout="this.style.backgroundColor='white'">
-                            <div style="font-weight: 500;">${coupon.code}</div>
+                            <div style="font-weight: 500;">${coupon.display || coupon.code}</div>
                             <div style="font-size: 12px; color: #6b7280;">
                                 ${coupon.value_type === 'percentage' ? coupon.value + '%' : 'PKR ' + coupon.value} off
                                 ${coupon.minimum_amount > 0 ? ' (Min: PKR ' + coupon.minimum_amount + ')' : ''}

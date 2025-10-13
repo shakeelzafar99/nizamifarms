@@ -153,10 +153,14 @@ class OrderController extends Controller
         try {
             $order = $this->findOrder($id);
             
+            // Attach discounts to the order object for frontend convenience
+            $order->discounts = $order->discounts ?? [];
+            
             return response()->json([
                 'success' => true,
                 'order' => $order,
-                'lineItems' => $order->lineItems // Explicitly include line items
+                'lineItems' => $order->lineItems, // Explicitly include line items
+                'discounts' => $order->discounts // Include discount details for frontend display (backward compat)
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -418,8 +422,28 @@ class OrderController extends Controller
                 'address_city' => 'nullable|string',
                 'address_province' => 'nullable|string',
                 'address_postal_code' => 'nullable|string',
-                'address_country' => 'nullable|string'
+                'address_country' => 'nullable|string',
+                // Multiple discounts support (NEW - optional, backward compatible)
+                'discounts' => 'nullable|array',
+                'discounts.*.title' => 'required_with:discounts|string|max:255',
+                'discounts.*.amount' => 'required_with:discounts|numeric|min:0',
+                'discounts.*.type' => 'nullable|in:fixed,percentage',
+                'discounts.*.percentage' => 'nullable|numeric|min:0|max:100',
+                'discounts.*.coupon_code' => 'nullable|string|max:100',
+                'discounts.*.notes' => 'nullable|string'
             ]);
+            
+            // If discounts array provided, calculate discount_total from it
+            // This ensures discount_total is always correct
+            if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
+                $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                $validated['discount_total'] = $calculatedDiscountTotal;
+                \Log::info('Update: Multiple discounts provided', [
+                    'order_id' => $id,
+                    'count' => count($validated['discounts']),
+                    'calculated_total' => $calculatedDiscountTotal
+                ]);
+            }
             
             // Update order
             $order->update($validated);
@@ -458,10 +482,37 @@ class OrderController extends Controller
                 $order->lineItems()->saveMany($lineItemModels);
             }
             
+            // Update discount detail records if provided
+            if (isset($validated['discounts'])) {
+                // Delete existing discount records
+                $order->discounts()->delete();
+                
+                // Create new discount records if array is not empty
+                if (is_array($validated['discounts']) && !empty($validated['discounts'])) {
+                    foreach ($validated['discounts'] as $index => $discountData) {
+                        \App\Models\CRM\OrderDiscountModel::create([
+                            'order_id' => $order->id,
+                            'discount_title' => $discountData['title'],
+                            'discount_amount' => $discountData['amount'],
+                            'discount_type' => $discountData['type'] ?? 'fixed',
+                            'discount_percentage' => $discountData['percentage'] ?? null,
+                            'coupon_code' => $discountData['coupon_code'] ?? null,
+                            'display_order' => $index,
+                            'notes' => $discountData['notes'] ?? null,
+                            'created_by' => auth()->check() ? auth()->id() : null
+                        ]);
+                    }
+                    \Log::info('Updated discount details for order', [
+                        'order_id' => $order->id,
+                        'discount_count' => count($validated['discounts'])
+                    ]);
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'message' => 'Order updated successfully',
-                'order' => $order->load(['customer', 'lineItems'])
+                'order' => $order->load(['customer', 'lineItems', 'discounts'])
             ]);
             
         } catch (\Exception $e) {
@@ -512,8 +563,27 @@ class OrderController extends Controller
                 'customer_city' => 'nullable|string',
                 'customer_province' => 'nullable|string',
                 'customer_postal_code' => 'nullable|string',
-                'customer_country' => 'nullable|string'
+                'customer_country' => 'nullable|string',
+                // Multiple discounts support (NEW - optional, backward compatible)
+                'discounts' => 'nullable|array',
+                'discounts.*.title' => 'required_with:discounts|string|max:255',
+                'discounts.*.amount' => 'required_with:discounts|numeric|min:0',
+                'discounts.*.type' => 'nullable|in:fixed,percentage',
+                'discounts.*.percentage' => 'nullable|numeric|min:0|max:100',
+                'discounts.*.coupon_code' => 'nullable|string|max:100',
+                'discounts.*.notes' => 'nullable|string'
             ]);
+            
+            // If discounts array provided, calculate discount_total from it
+            // This ensures discount_total is always correct
+            if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
+                $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                $validated['discount_total'] = $calculatedDiscountTotal;
+                \Log::info('Multiple discounts provided', [
+                    'count' => count($validated['discounts']),
+                    'calculated_total' => $calculatedDiscountTotal
+                ]);
+            }
             
             // Default order status to 'new' if not provided
             if (empty($validated['order_status'])) {
@@ -607,10 +677,31 @@ class OrderController extends Controller
             // Use existing storeOrderFromApi method to handle both order and line items
             $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
             
+            // Create discount detail records if multiple discounts were provided
+            if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
+                foreach ($validated['discounts'] as $index => $discountData) {
+                    \App\Models\CRM\OrderDiscountModel::create([
+                        'order_id' => $order->id,
+                        'discount_title' => $discountData['title'],
+                        'discount_amount' => $discountData['amount'],
+                        'discount_type' => $discountData['type'] ?? 'fixed',
+                        'discount_percentage' => $discountData['percentage'] ?? null,
+                        'coupon_code' => $discountData['coupon_code'] ?? null,
+                        'display_order' => $index,
+                        'notes' => $discountData['notes'] ?? null,
+                        'created_by' => auth()->id()
+                    ]);
+                }
+                \Log::info('Created discount details for order', [
+                    'order_id' => $order->id,
+                    'discount_count' => count($validated['discounts'])
+                ]);
+            }
+            
             return response()->json([
                 'success' => true,
                 'message' => 'Order created successfully',
-                'order' => $order->load(['customer', 'lineItems'])
+                'order' => $order->load(['customer', 'lineItems', 'discounts'])
             ]);
             
         } catch (\Exception $e) {
@@ -985,7 +1076,7 @@ class OrderController extends Controller
     /**
      * Helper method to find order from either Shopify or main orders table
      */
-    private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider'])
+    private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'])
     {
         // First try to find in Shopify orders table
         $order = \App\Models\CRM\ShopifyOrderModel::with($withRelations)->find($id);

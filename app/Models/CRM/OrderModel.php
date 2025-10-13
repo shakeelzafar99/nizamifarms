@@ -123,6 +123,14 @@ class OrderModel extends BaseModel
     }
 
     /**
+     * Get discount detail breakdown for this order
+     */
+    public function discounts(): HasMany
+    {
+        return $this->hasMany(OrderDiscountModel::class, 'order_id')->orderBy('display_order')->orderBy('id');
+    }
+
+    /**
      * Computed rider_name for frontend consumption
      */
     public function getRiderNameAttribute(): ?string
@@ -136,6 +144,52 @@ class OrderModel extends BaseModel
             return $name ?: null;
         }
         return null;
+    }
+
+    /**
+     * Get discount breakdown for display
+     * Returns detail records if they exist, otherwise returns single discount from discount_total
+     * This ensures backward compatibility with webhook orders and old manual orders
+     */
+    public function getDiscountBreakdown()
+    {
+        // Load discount details if not already loaded
+        if (!$this->relationLoaded('discounts')) {
+            $this->load('discounts');
+        }
+        
+        $discounts = $this->discounts;
+        
+        // If we have detail records, return them
+        if ($discounts->isNotEmpty()) {
+            return $discounts;
+        }
+        
+        // Fallback: If no detail records but discount_total exists, 
+        // return a single discount object for display
+        if ($this->discount_total > 0) {
+            $title = 'Discount';
+            
+            // If there's a coupon code, include it in the title
+            if ($this->coupon_code) {
+                $title = 'Discount';
+                if (strlen($this->coupon_code) > 0) {
+                    $title .= " ({$this->coupon_code})";
+                }
+            }
+            
+            return collect([
+                (object)[
+                    'discount_title' => $title,
+                    'discount_amount' => $this->discount_total,
+                    'discount_type' => 'fixed',
+                    'coupon_code' => $this->coupon_code
+                ]
+            ]);
+        }
+        
+        // No discounts at all
+        return collect([]);
     }
 
     // Helper methods

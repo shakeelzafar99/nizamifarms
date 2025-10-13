@@ -773,11 +773,16 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                     <td class="label">Subtotal:</td>
                     <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
                 </tr>
-                @if($order->discount_total && $order->discount_total > 0)
-                <tr>
-                    <td class="label">Discount:</td>
-                    <td class="amount">-Rs.{{ number_format($order->discount_total, 0) }}</td>
-                </tr>
+                @php
+                    $discountBreakdown = $order->getDiscountBreakdown();
+                @endphp
+                @if($discountBreakdown->isNotEmpty())
+                    @foreach($discountBreakdown as $discount)
+                    <tr>
+                        <td class="label">{{ $discount->discount_title }}:</td>
+                        <td class="amount">-Rs.{{ number_format($discount->discount_amount, 0) }}</td>
+                    </tr>
+                    @endforeach
                 @endif
                 @if($order->shipping_total && $order->shipping_total > 0)
                 <tr>
@@ -810,7 +815,10 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
   const url = new URL(window.location.href);
   if (url.searchParams.get('print_pdf') === '1') {
     // Auto-download PDF using server-side generation for better formatting
-    const filename = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}_{{ $order->order_number }}';
+    const customerName = '{{ preg_replace("/[^a-zA-Z0-9]/", "", trim(($order->customer->first_name ?? "") . " " . ($order->customer->last_name ?? ""))) ?: "Unknown" }}';
+    const phoneNumber = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}';
+    const orderNumber = '{{ $order->order_number }}';
+    const filename = customerName + '_' + phoneNumber + '_' + orderNumber;
     const pdfUrl = '/orders/{{ $order->id }}/invoice/pdf?auto_pdf=1&filename=' + encodeURIComponent(filename);
     
     // Try server-side PDF generation first
@@ -854,7 +862,10 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
       const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/png');
-      link.download = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}_{{ $order->order_number }}.png';
+      const customerName = '{{ preg_replace("/[^a-zA-Z0-9]/", "", trim(($order->customer->first_name ?? "") . " " . ($order->customer->last_name ?? ""))) ?: "Unknown" }}';
+      const phoneNumber = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}';
+      const orderNumber = '{{ $order->order_number }}';
+      link.download = customerName + '_' + phoneNumber + '_' + orderNumber + '.png';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -875,7 +886,10 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
       const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/png');
-      link.download = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}_{{ $order->order_number }}.png';
+      const customerName = '{{ preg_replace("/[^a-zA-Z0-9]/", "", trim(($order->customer->first_name ?? "") . " " . ($order->customer->last_name ?? ""))) ?: "Unknown" }}';
+      const phoneNumber = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->phone_original ?? "Unknown") }}';
+      const orderNumber = '{{ $order->order_number }}';
+      link.download = customerName + '_' + phoneNumber + '_' + orderNumber + '.png';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

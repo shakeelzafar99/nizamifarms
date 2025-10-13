@@ -174,34 +174,27 @@ class EmployeeCashController extends Controller
         }
         
         // === KPI 3: ALL APPROVED EXPENSES (with settlement status split) ===
-        // Total: All approved expense requests (regardless of payment source)
-        $expenseAccountCategory = AccountModel::CATEGORY_EXPENSE;
-        $allExpensesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED);
-        
-        if ($startDate && $endDate) {
-            $allExpensesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
-        }
-        
-        $totalApprovedExpenses = (clone $allExpensesQuery)->sum('amount') ?? 0;
-        
-        // Sub-value 1: Expenses waiting to be settled (approved requests with settlement_status = 'pending')
-        $waitingSettlement = \App\Models\Request\RequestModel::where('status', 'approved')
-            ->where('settlement_status', 'pending')
+        // Total: All approved expense requests from the request table
+        $allExpensesRequestQuery = \App\Models\Request\RequestModel::where('status', 'approved')
             ->whereHas('category', function($q) {
                 $q->where('category_code', 'expense');
             });
         
         if ($startDate && $endDate) {
-            $waitingSettlement->whereBetween('created_at', [$startDate, $endDate]);
+            $allExpensesRequestQuery->whereBetween('created_at', [$startDate, $endDate]);
         }
         
-        $expensesWaitingSettlement = $waitingSettlement->sum('amount') ?? 0;
+        $totalApprovedExpenses = (clone $allExpensesRequestQuery)->sum('amount') ?? 0;
         
-        // Sub-value 2: Expenses already in Expense Fund (all expenses TO expense accounts)
-        $expenseAccountIds = AccountModel::where('account_category', $expenseAccountCategory)->pluck('id');
-        $expensesInFund = (clone $allExpensesQuery)
-            ->whereIn('to_account_id', $expenseAccountIds)
+        // Sub-value 1: Expenses waiting to be settled (settlement_status = 'pending')
+        $expensesWaitingSettlement = (clone $allExpensesRequestQuery)
+            ->where('settlement_status', 'pending')
+            ->sum('amount') ?? 0;
+        
+        // Sub-value 2: Expenses already settled or not requiring settlement
+        // (settlement_status = 'settled' OR 'not_required')
+        $expensesInFund = (clone $allExpensesRequestQuery)
+            ->whereIn('settlement_status', ['settled', 'not_required'])
             ->sum('amount') ?? 0;
         
         // === KPI 4: ONLINE PAYMENTS (with approved/pending split) ===
