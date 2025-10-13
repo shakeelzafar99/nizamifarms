@@ -28,7 +28,7 @@ class ApprovalController extends Controller
         
         if ($hasLevel1Rights || $hasLevel2Rights) {
             $allPendingRequests = RequestModel::where('status', 'pending')
-                ->with(['category', 'requester'])
+                ->with(['category', 'requester', 'paymentSourceAccount'])
                 ->orderBy('submitted_at', 'asc')
                 ->get();
             
@@ -59,35 +59,69 @@ class ApprovalController extends Controller
             ->orderBy('transaction_date', 'asc')
             ->get();
         
+        // Split financial transactions by cash vs online/bank
+        $cashLedger = $pendingLedger->filter(function($ledger) {
+            return ($ledger->fromAccount && $ledger->fromAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_CASH) ||
+                   ($ledger->toAccount && $ledger->toAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_CASH);
+        });
+        
+        $onlineLedger = $pendingLedger->filter(function($ledger) {
+            return ($ledger->fromAccount && $ledger->fromAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK) ||
+                   ($ledger->toAccount && $ledger->toAccount->account_category === \App\Models\FIN\AccountModel::CATEGORY_BANK);
+        });
+        
+        // ========== LEAVE/ATTENDANCE REQUESTS ==========
+        // Filter leave requests from pending requests
+        $leaveRequests = collect();
+        $expenseRequests = collect();
+        
+        if ($hasLevel1Rights || $hasLevel2Rights) {
+            $leaveRequests = $pendingRequests->filter(function($request) {
+                return $request->category && $request->category->category_code === 'leave';
+            });
+            
+            $expenseRequests = $pendingRequests->filter(function($request) {
+                return $request->category && $request->category->category_code === 'expense';
+            });
+        }
+        
         // ========== CALCULATE SUMMARIES ==========
-        $requestSummary = [
-            'count' => $pendingRequests->count(),
-            'total_amount' => $pendingRequests->sum('amount')
+        $expenseSummary = [
+            'count' => $expenseRequests->count(),
+            'total_amount' => $expenseRequests->sum('amount')
         ];
         
-        $ledgerSummary = [
-            'count' => $pendingLedger->count(),
-            'total_amount' => $pendingLedger->sum('amount'),
-            'by_type' => $pendingLedger->groupBy('transaction_type')
-                                       ->map(function($items) {
-                                           return [
-                                               'count' => $items->count(),
-                                               'amount' => $items->sum('amount')
-                                           ];
-                                       })
+        $leaveSummary = [
+            'count' => $leaveRequests->count(),
+            'total_days' => $leaveRequests->sum(function($request) {
+                if ($request->leave_start_date && $request->leave_end_date) {
+                    return $request->leave_start_date->diffInDays($request->leave_end_date) + 1;
+                }
+                return 0;
+            })
         ];
         
-        $grandTotal = [
-            'count' => $requestSummary['count'] + $ledgerSummary['count'],
-            'amount' => $requestSummary['total_amount'] + $ledgerSummary['total_amount']
+        $cashSummary = [
+            'count' => $cashLedger->count(),
+            'total_amount' => $cashLedger->sum('amount')
+        ];
+        
+        $onlineSummary = [
+            'count' => $onlineLedger->count(),
+            'total_amount' => $onlineLedger->sum('amount')
         ];
         
         return view('approvals.index', compact(
             'pendingRequests',
             'pendingLedger',
-            'requestSummary',
-            'ledgerSummary',
-            'grandTotal',
+            'cashLedger',
+            'onlineLedger',
+            'leaveRequests',
+            'expenseRequests',
+            'expenseSummary',
+            'leaveSummary',
+            'cashSummary',
+            'onlineSummary',
             'hasLevel1Rights',
             'hasLevel2Rights'
         ));

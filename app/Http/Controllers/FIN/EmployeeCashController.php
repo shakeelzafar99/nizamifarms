@@ -14,11 +14,33 @@ use Illuminate\Support\Facades\Log;
 class EmployeeCashController extends Controller
 {
     /**
-     * Display employee cash list
+     * Display employee cash list (now includes company accounts)
      */
     public function index(Request $request)
     {
-        $query = AccountModel::employeeCash()->with('user');
+        // Determine account type filter
+        $accountTypeFilter = $request->input('account_type', 'all');
+        
+        // Build base query
+        $query = AccountModel::where('is_active', 1);
+        
+        // Apply account type filter
+        if ($accountTypeFilter === 'employees') {
+            $query->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH);
+        } elseif ($accountTypeFilter === 'company') {
+            $query->whereIn('account_category', [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK]);
+        } elseif (in_array($accountTypeFilter, ['NF_CASH', 'ONLINE', 'EXP_FUND'])) {
+            // Specific account filter
+            $query->where('account_code', $accountTypeFilter);
+        } else {
+            // 'all' - show both employees and company accounts
+            $query->where(function($q) {
+                $q->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
+                  ->orWhereIn('account_category', [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK]);
+            });
+        }
+        
+        $query->with('user');
 
         // Search
         if ($request->has('search') && $request->search) {
@@ -37,39 +59,216 @@ class EmployeeCashController extends Controller
             }
         }
 
-        $employees = $query->orderBy('account_name', 'asc')->paginate(20);
+        // Order: Company accounts first, then employee accounts (both alphabetically)
+        $accounts = $query
+            ->orderByRaw("CASE 
+                WHEN account_category IN ('cash', 'bank') THEN 1 
+                WHEN account_category = 'employee_cash' THEN 2 
+                ELSE 3 
+            END")
+            ->orderBy('account_name', 'asc')
+            ->paginate(20);
 
-        // Calculate pending expenses for each employee
-        foreach ($employees as $employee) {
-            if ($employee->user_id) {
-                $pendingExpenses = \App\Models\Request\RequestModel::where('requester_user_id', $employee->user_id)
+        // Calculate pending approvals for each account (ONLY unapproved requests)
+        foreach ($accounts as $account) {
+            $pendingApprovals = 0;
+            
+            // For employee accounts: sum ONLY pending expense requests (not yet approved)
+            if ($account->user_id) {
+                $pendingApprovals = \App\Models\Request\RequestModel::where('requester_user_id', $account->user_id)
                     ->where('status', 'pending')
                     ->whereHas('category', function($q) {
                         $q->where('category_code', 'expense');
                     })
                     ->sum('amount');
-                $employee->pending_expenses = $pendingExpenses ?? 0;
-            } else {
-                $employee->pending_expenses = 0;
+            } 
+            // For company accounts: sum all pending requests that will be paid from this account
+            else {
+                // Sum all pending expense requests where payment source is THIS company account
+                // OR where payment source is NULL and this is the Expense Fund (default)
+                $query = \App\Models\Request\RequestModel::where('status', 'pending')
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'expense');
+                    });
+                
+                // If this is the Expense Fund, include requests with NULL payment source (default to Expense Fund)
+                if ($account->account_code === 'EXP_FUND') {
+                    $query->where(function($q) use ($account) {
+                        $q->where('payment_source_account_id', $account->id)
+                          ->orWhereNull('payment_source_account_id');
+                    });
+                } else {
+                    $query->where('payment_source_account_id', $account->id);
+                }
+                
+                $pendingApprovals = $query->sum('amount');
             }
+            
+            $account->pending_approvals = $pendingApprovals ?? 0;
         }
 
-        // Calculate totals
-        $totalCash = AccountModel::employeeCash()->sum('current_balance');
+        // Get filter parameters
+        $filterType = $request->get('filter_type', 'month'); // day, month, custom
+        $filterDate = $request->get('filter_date', now()->toDateString());
+        $filterMonth = $request->get('filter_month', now()->format('Y-m'));
+        $filterStartDate = $request->get('filter_start_date');
+        $filterEndDate = $request->get('filter_end_date');
+        
+        // Determine date range for filtering
+        $startDate = null;
+        $endDate = null;
+        
+        if ($filterType === 'day') {
+            $startDate = \Carbon\Carbon::parse($filterDate)->startOfDay();
+            $endDate = \Carbon\Carbon::parse($filterDate)->endOfDay();
+        } elseif ($filterType === 'month') {
+            $startDate = \Carbon\Carbon::parse($filterMonth . '-01')->startOfMonth();
+            $endDate = \Carbon\Carbon::parse($filterMonth . '-01')->endOfMonth();
+        } elseif ($filterType === 'custom' && $filterStartDate && $filterEndDate) {
+            $startDate = \Carbon\Carbon::parse($filterStartDate)->startOfDay();
+            $endDate = \Carbon\Carbon::parse($filterEndDate)->endOfDay();
+        }
+        
+        // === KPI 1: TOTAL INVOICES DELIVERED (with online/cash split FROM ORDERS) ===
+        // This shows actual invoices created (for reconciliation against ledger)
+        $invoicesQuery = \DB::table('t_crm_order_status_history')
+            ->where('status_code', 'delivered')
+            ->where('is_current', 1);
+        
+        if ($startDate && $endDate) {
+            $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+        }
+        
+        $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+        
+        $totalInvoices = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->sum('total_price') ?? 0;
+        
+        // Split by payment method in orders (for reconciliation)
+        $invoicesCash = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD'])
+            ->sum('total_price') ?? 0;
+        
+        $invoicesOnline = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
+            ->sum('total_price') ?? 0;
+        
+        // === KPI 2: DEPOSITS TO NF CASH ===
+        $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+        
+        if ($nfCashAccount) {
+            $depositsQuery = LedgerModel::where('to_account_id', $nfCashAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED); // Only count approved deposits
+            
+            if ($startDate && $endDate) {
+                $depositsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+            }
+            
+            $totalDeposits = $depositsQuery->sum('amount') ?? 0;
+        } else {
+            $totalDeposits = 0;
+        }
+        
+        // === KPI 3: ALL APPROVED EXPENSES (with settlement status split) ===
+        // Total: All approved expense requests (regardless of payment source)
+        $expenseAccountCategory = AccountModel::CATEGORY_EXPENSE;
+        $allExpensesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED);
+        
+        if ($startDate && $endDate) {
+            $allExpensesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
+        
+        $totalApprovedExpenses = (clone $allExpensesQuery)->sum('amount') ?? 0;
+        
+        // Sub-value 1: Expenses waiting to be settled (approved requests with settlement_status = 'pending')
+        $waitingSettlement = \App\Models\Request\RequestModel::where('status', 'approved')
+            ->where('settlement_status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            });
+        
+        if ($startDate && $endDate) {
+            $waitingSettlement->whereBetween('created_at', [$startDate, $endDate]);
+        }
+        
+        $expensesWaitingSettlement = $waitingSettlement->sum('amount') ?? 0;
+        
+        // Sub-value 2: Expenses already in Expense Fund (all expenses TO expense accounts)
+        $expenseAccountIds = AccountModel::where('account_category', $expenseAccountCategory)->pluck('id');
+        $expensesInFund = (clone $allExpensesQuery)
+            ->whereIn('to_account_id', $expenseAccountIds)
+            ->sum('amount') ?? 0;
+        
+        // === KPI 4: ONLINE PAYMENTS (with approved/pending split) ===
+        $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
+        
+        if ($onlineAccount) {
+            $onlineQuery = LedgerModel::where('to_account_id', $onlineAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE);
+            
+            if ($startDate && $endDate) {
+                $onlineQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+            }
+            
+            $totalOnlineApproved = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_APPROVED)->sum('amount') ?? 0;
+            $totalOnlinePending = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_PENDING)->sum('amount') ?? 0;
+            $totalOnline = $totalOnlineApproved + $totalOnlinePending;
+        } else {
+            $totalOnlineApproved = 0;
+            $totalOnlinePending = 0;
+            $totalOnline = 0;
+        }
+        
+        // === KPI 5: RIDERS BALANCE (Real-time, no filtering) ===
+        $ridersBalance = AccountModel::employeeCash()->sum('current_balance');
+        
+        $summaryKPIs = [
+            'total_invoices' => $totalInvoices,
+            'invoices_cash' => $invoicesCash,
+            'invoices_online' => $invoicesOnline,
+            'total_deposits' => $totalDeposits,
+            'total_approved_expenses' => $totalApprovedExpenses,
+            'expenses_waiting_settlement' => $expensesWaitingSettlement,
+            'expenses_in_fund' => $expensesInFund,
+            'total_online' => $totalOnline,
+            'online_approved' => $totalOnlineApproved,
+            'online_pending' => $totalOnlinePending,
+            'riders_balance' => $ridersBalance,
+            'filter_type' => $filterType,
+            'filter_date' => $filterDate,
+            'filter_month' => $filterMonth,
+            'filter_start_date' => $filterStartDate,
+            'filter_end_date' => $filterEndDate
+        ];
 
-        return view('fin.employee.index', compact('employees', 'totalCash'));
+        return view('fin.employee.index', compact('accounts', 'accountTypeFilter', 'summaryKPIs'));
     }
 
     /**
-     * Show employee cash details
+     * Show account details (employee or company account)
      */
     public function show(Request $request, $id)
     {
         $account = AccountModel::with('user')->findOrFail($id);
 
-        if ($account->account_category !== AccountModel::CATEGORY_EMPLOYEE_CASH) {
-            abort(404, 'Not an employee cash account');
+        // Allow employee cash, cash, and bank accounts
+        $allowedCategories = [
+            AccountModel::CATEGORY_EMPLOYEE_CASH,
+            AccountModel::CATEGORY_CASH,
+            AccountModel::CATEGORY_BANK
+        ];
+        
+        if (!in_array($account->account_category, $allowedCategories)) {
+            abort(404, 'Invalid account type');
         }
+        
+        // Determine if this is an employee account
+        $isEmployeeAccount = $account->account_category === AccountModel::CATEGORY_EMPLOYEE_CASH;
 
         // Get date filter parameters
         $dateFrom = $request->input('date_from');
@@ -144,12 +343,31 @@ class EmployeeCashController extends Controller
             $depositsQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
         }
 
+        // Calculate withdrawals (money leaving this account)
+        $withdrawalsQuery = LedgerModel::where('from_account_id', $account->id)
+            ->whereNotIn('transaction_type', [LedgerModel::TYPE_EMPLOYEE_DEPOSIT]);
+        
+        // Calculate pending approvals for this account
+        $pendingQuery = LedgerModel::where(function($q) use ($account) {
+            $q->where('from_account_id', $account->id)
+              ->orWhere('to_account_id', $account->id);
+        })
+        ->where('approval_status', 'pending');
+        
+        // Apply date filters
+        if ($dateFrom && $dateTo) {
+            $withdrawalsQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            $pendingQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+        }
+        
         $summary = [
             'opening_balance' => $account->opening_balance,
             'current_balance' => $account->current_balance,
             'total_invoices' => $invoicesQuery->sum('amount'),
             'total_expenses' => $expensesQuery->sum('amount'),
-            'total_deposits' => $depositsQuery->sum('amount')
+            'total_deposits' => $depositsQuery->sum('amount'),
+            'total_withdrawals' => $withdrawalsQuery->sum('amount'),
+            'total_pending' => $pendingQuery->sum('amount')
         ];
 
         // Check user role
@@ -254,7 +472,7 @@ class EmployeeCashController extends Controller
             ->pluck('config_value')
             ->toArray();
 
-        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo'));
+        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo', 'isEmployeeAccount'));
     }
 
     /**
@@ -496,7 +714,8 @@ class EmployeeCashController extends Controller
         $validated = $request->validate([
             'expense_category' => 'required|string|max:255',
             'amount' => 'required|numeric|min:0.01',
-            'description' => 'nullable|string|max:1000'
+            'description' => 'nullable|string|max:1000',
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id'
         ]);
 
         try {
@@ -527,6 +746,7 @@ class EmployeeCashController extends Controller
                 'description' => ($validated['description'] ?? '') . $createdByNote,
                 'amount' => $validated['amount'],
                 'expense_category' => $validated['expense_category'],
+                'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
                 'priority' => 'normal',
                 'requires_level_1' => $category->requiresLevel1(),
@@ -550,6 +770,218 @@ class EmployeeCashController extends Controller
             
             return back()->withInput()
                        ->with('error', 'Error creating expense request: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Record money received into a company account
+     */
+    public function recordCompanyReceipt(Request $request, $id)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'from_account_id' => 'nullable|exists:t_fin_accounts,id',
+            'from_external' => 'nullable|string|max:255',
+            'description' => 'required|string|max:500',
+            'transaction_date' => 'required|date',
+            'requires_approval' => 'boolean'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $companyAccount = AccountModel::findOrFail($id);
+            
+            // Determine approval status
+            $approvalStatus = $request->requires_approval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
+            
+            // Determine source
+            $fromAccountId = $request->from_account_id ?? null;
+            $description = $request->description;
+            
+            if (!$fromAccountId && $request->from_external) {
+                $description = "Receipt from: {$request->from_external} - {$description}";
+            }
+
+            // Create ledger entry
+            $ledger = LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => 'company_receipt',
+                'description' => $description,
+                'from_account_id' => $fromAccountId,
+                'to_account_id' => $companyAccount->id,
+                'amount' => $request->amount,
+                'mode' => LedgerModel::MODE_CASH,
+                'approval_status' => $approvalStatus,
+                'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now()->toDateString() : null,
+                'approved_by' => $approvalStatus === LedgerModel::STATUS_APPROVED ? auth()->id() : null,
+                'created_by' => auth()->id(),
+                'comments' => $approvalStatus === LedgerModel::STATUS_PENDING ? "Awaiting approval" : "Auto-approved"
+            ]);
+
+            // If approved, update balances immediately
+            if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
+                if ($fromAccountId) {
+                    $fromAccount = AccountModel::find($fromAccountId);
+                    if ($fromAccount) {
+                        $fromAccount->decrement('current_balance', $request->amount);
+                    }
+                }
+                $companyAccount->increment('current_balance', $request->amount);
+            }
+
+            DB::commit();
+
+            return redirect()->back()->with('success', $approvalStatus === LedgerModel::STATUS_PENDING 
+                ? 'Receipt recorded and pending approval.' 
+                : 'Receipt recorded successfully.');
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error recording company receipt: ' . $e->getMessage());
+            return redirect()->back()->with('error', 'Failed to record receipt: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Record money paid out from a company account
+     */
+    public function recordCompanyPayment(Request $request, $id)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'to_account_id' => 'nullable|exists:t_fin_accounts,id',
+            'to_external' => 'nullable|string|max:255',
+            'expense_category' => 'nullable|string|max:100',
+            'description' => 'required|string|max:500',
+            'transaction_date' => 'required|date',
+            'requires_approval' => 'boolean'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $companyAccount = AccountModel::findOrFail($id);
+            
+            // Check sufficient balance if auto-approved
+            if (!$request->requires_approval && $request->amount > $companyAccount->current_balance) {
+                throw new \Exception("Insufficient balance in {$companyAccount->account_name}");
+            }
+            
+            // Determine approval status
+            $approvalStatus = $request->requires_approval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
+            
+            // Determine destination
+            $toAccountId = $request->to_account_id ?? null;
+            $description = $request->description;
+            
+            if (!$toAccountId && $request->to_external) {
+                $description = "Payment to: {$request->to_external} - {$description}";
+            }
+            
+            if ($request->expense_category) {
+                $description = "[{$request->expense_category}] {$description}";
+            }
+
+            // Create ledger entry
+            $ledger = LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => 'company_payment',
+                'description' => $description,
+                'from_account_id' => $companyAccount->id,
+                'to_account_id' => $toAccountId,
+                'amount' => $request->amount,
+                'mode' => LedgerModel::MODE_CASH,
+                'approval_status' => $approvalStatus,
+                'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now()->toDateString() : null,
+                'approved_by' => $approvalStatus === LedgerModel::STATUS_APPROVED ? auth()->id() : null,
+                'created_by' => auth()->id(),
+                'comments' => $approvalStatus === LedgerModel::STATUS_PENDING ? "Awaiting approval" : "Auto-approved"
+            ]);
+
+            // If approved, update balances immediately
+            if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
+                $companyAccount->decrement('current_balance', $request->amount);
+                
+                if ($toAccountId) {
+                    $toAccount = AccountModel::find($toAccountId);
+                    if ($toAccount) {
+                        $toAccount->increment('current_balance', $request->amount);
+                    }
+                }
+            }
+
+            DB::commit();
+
+            return redirect()->back()->with('success', $approvalStatus === LedgerModel::STATUS_PENDING 
+                ? 'Payment recorded and pending approval.' 
+                : 'Payment recorded successfully.');
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error recording company payment: ' . $e->getMessage());
+            return redirect()->back()->with('error', 'Failed to record payment: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Record transfer between company accounts
+     */
+    public function recordCompanyTransfer(Request $request, $id)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'to_account_id' => 'required|exists:t_fin_accounts,id',
+            'description' => 'nullable|string|max:500',
+            'transaction_date' => 'required|date'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $fromAccount = AccountModel::findOrFail($id);
+            $toAccount = AccountModel::findOrFail($request->to_account_id);
+            
+            // Validate it's a company-to-company transfer
+            $allowedCategories = [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK];
+            if (!in_array($fromAccount->account_category, $allowedCategories) || 
+                !in_array($toAccount->account_category, $allowedCategories)) {
+                throw new \Exception("Transfers are only allowed between company accounts");
+            }
+            
+            // Check sufficient balance
+            if ($request->amount > $fromAccount->current_balance) {
+                throw new \Exception("Insufficient balance in {$fromAccount->account_name}");
+            }
+
+            // Internal transfers don't require approval
+            $ledger = LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => 'company_transfer',
+                'description' => $request->description ?? "Transfer from {$fromAccount->account_name} to {$toAccount->account_name}",
+                'from_account_id' => $fromAccount->id,
+                'to_account_id' => $toAccount->id,
+                'amount' => $request->amount,
+                'mode' => LedgerModel::MODE_CASH,
+                'approval_status' => LedgerModel::STATUS_APPROVED,
+                'approval_date' => now()->toDateString(),
+                'approved_by' => auth()->id(),
+                'created_by' => auth()->id(),
+                'comments' => "Internal transfer - auto-approved"
+            ]);
+
+            // Update balances immediately
+            $fromAccount->decrement('current_balance', $request->amount);
+            $toAccount->increment('current_balance', $request->amount);
+
+            DB::commit();
+
+            return redirect()->back()->with('success', 'Transfer completed successfully.');
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Error recording company transfer: ' . $e->getMessage());
+            return redirect()->back()->with('error', 'Failed to record transfer: ' . $e->getMessage());
         }
     }
 }

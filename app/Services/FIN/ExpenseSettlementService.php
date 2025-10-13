@@ -217,9 +217,8 @@ class ExpenseSettlementService
             ->first();
         
         if (!$riderCashAccount) {
-            // Default to NF Main Till if employee has no cash account
-            return ConfigModel::getAccountByCode('CASH_NF_MAIN_TILL')
-                ?? ConfigModel::getAccountByCode('NF_CASH');
+            // Default to NF Cash if employee has no cash account
+            return ConfigModel::getNFCashAccount();
         }
         
         // Find most recent deposit from this rider before or on the expense date
@@ -235,9 +234,8 @@ class ExpenseSettlementService
             return AccountModel::find($recentDeposit->to_account_id);
         }
         
-        // Default: NF Main Till
-        return ConfigModel::getAccountByCode('CASH_NF_MAIN_TILL')
-            ?? ConfigModel::getAccountByCode('NF_CASH');
+        // Default: NF Cash
+        return ConfigModel::getNFCashAccount();
     }
     
     /**

@@ -13,7 +13,7 @@
         <div class="kt-card">
             <div class="kt-card-header">
                 <div class="flex items-center gap-4">
-                    <a href="{{ route('requests.index') }}" class="kt-btn kt-btn-sm kt-btn-light">
+                    <a href="#" onclick="goBackSmart(); return false;" class="kt-btn kt-btn-sm kt-btn-light">
                         <i class="ki-filled ki-left"></i>
                     </a>
                     <h3 class="kt-card-title">Request #{{ $request->request_number }}</h3>
@@ -100,6 +100,16 @@
                     <div>
                         <label class="text-sm font-semibold text-gray-700">Expense Category</label>
                         <p class="text-base mt-1">{{ $request->expense_category }}</p>
+                    </div>
+                    @endif
+                    
+                    @if($request->payment_source_account_id && $request->paymentSourceAccount)
+                    <div>
+                        <label class="text-sm font-semibold text-gray-700">💳 Payment Source</label>
+                        <p class="text-base mt-1">
+                            {{ $request->paymentSourceAccount->account_name }}
+                            <span class="text-xs text-gray-600">(Selected by requester)</span>
+                        </p>
                     </div>
                     @endif
                     
@@ -225,14 +235,20 @@
                         <select name="payment_source_account_id" class="kt-select mt-2">
                             <option value="">Expense Fund (default)</option>
                             @foreach($paymentSources as $account)
-                                <option value="{{ $account->id }}">
+                                <option value="{{ $account->id }}" 
+                                    {{ $request->payment_source_account_id == $account->id ? 'selected' : '' }}>
                                     {{ $account->account_name }} 
                                     (Balance: Rs. {{ number_format($account->current_balance, 2) }})
                                 </option>
                             @endforeach
                         </select>
                         <p class="text-xs text-blue-700 mt-2">
-                            ℹ️ Select which account to pay this expense from. Defaults to Expense Fund if not selected.
+                            ℹ️ Select which account to pay this expense from. 
+                            @if($request->payment_source_account_id)
+                                <strong>Requester selected: {{ $request->paymentSourceAccount->account_name ?? 'Unknown' }}</strong>
+                            @else
+                                Defaults to Expense Fund if not selected.
+                            @endif
                         </p>
                     </div>
                     @endif
@@ -290,7 +306,7 @@ function approveRequest() {
     .then(data => {
         if (data.success) {
             alert('Request approved successfully!');
-            location.reload();
+            goBackSmart();
         } else {
             alert('Error: ' + data.message);
         }
@@ -330,7 +346,7 @@ function rejectRequest() {
     .then(data => {
         if (data.success) {
             alert('Request rejected.');
-            location.reload();
+            goBackSmart();
         } else {
             alert('Error: ' + data.message);
         }
@@ -366,6 +382,27 @@ function cancelRequest() {
         console.error('Error:', error);
         alert('An error occurred. Please try again.');
     });
+}
+
+function goBackSmart() {
+    const referrer = document.referrer;
+    
+    // Check if coming from approvals page
+    if (referrer && referrer.includes('/approvals')) {
+        window.location.href = '{{ route("approvals.index") }}';
+    }
+    // Check if coming from employee cash page
+    else if (referrer && referrer.includes('/finance/employee/')) {
+        window.history.back();
+    }
+    // Check if coming from expense management page
+    else if (referrer && referrer.includes('/finance/expenses')) {
+        window.location.href = '{{ route("fin.expenses.index") }}';
+    }
+    // Default: go to requests index
+    else {
+        window.location.href = '{{ route("requests.index") }}';
+    }
 }
 </script>
 

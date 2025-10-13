@@ -124,6 +124,7 @@ class RequestController extends Controller
             'description' => 'nullable|string',
             'amount' => 'nullable|numeric|min:0',
             'expense_category' => 'nullable|string|max:255', // For expense requests
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
             'leave_type' => 'nullable|string',
@@ -208,6 +209,7 @@ class RequestController extends Controller
                 'description' => ($validated['description'] ?? '') . $createdByNote,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
+                'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
@@ -256,7 +258,8 @@ class RequestController extends Controller
             'requester',
             'approvals.approver',
             'createdBy',
-            'updatedBy'
+            'updatedBy',
+            'paymentSourceAccount'
         ])->findOrFail($id);
 
         $user = auth()->user();

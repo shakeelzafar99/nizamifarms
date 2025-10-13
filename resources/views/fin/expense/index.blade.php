@@ -224,7 +224,7 @@
                                     {{ $expense->created_at->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    {{ $expense->requester->name ?? 'Unknown' }}
+                                    {{ $expense->requester->fullname ?? 'Unknown' }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                                     {{ $expense->expense_category ?? $expense->category->category_name }}
@@ -316,7 +316,7 @@
                                     {{ $expense->created_at->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    {{ $expense->requester->name ?? 'Unknown' }}
+                                    {{ $expense->requester->fullname ?? 'Unknown' }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                                     {{ $expense->expense_category ?? $expense->category->category_name }}
@@ -378,7 +378,7 @@
                                     {{ $expense->created_at->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    {{ $expense->requester->name ?? 'Unknown' }}
+                                    {{ $expense->requester->fullname ?? 'Unknown' }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                                     Rs. {{ number_format($expense->amount, 2) }}

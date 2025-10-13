@@ -267,19 +267,18 @@ class ExpenseManagementController extends Controller
         }
         
         if (!$destinationAccount) {
-            $destinationAccount = ConfigModel::getAccountByCode('CASH_NF_MAIN_TILL')
-                ?? ConfigModel::getAccountByCode('NF_CASH');
+            $destinationAccount = ConfigModel::getNFCashAccount();
         }
         
         return response()->json([
             'success' => true,
             'data' => [
                 'request_number' => $expenseRequest->request_number,
-                'employee' => $expenseRequest->requester->name ?? 'Unknown',
-                'category' => $expenseRequest->expense_category ?? $expenseRequest->category->category_name,
+                'employee' => $expenseRequest->requester ? ($expenseRequest->requester->fullname ?? $expenseRequest->requester->name) : 'Unknown',
+                'category' => $expenseRequest->expense_category ?? ($expenseRequest->category ? $expenseRequest->category->category_name : 'Unknown'),
                 'amount' => $expenseRequest->amount,
-                'paid_from' => $expenseRequest->paymentSourceAccount->account_name ?? 'Unknown',
-                'destination' => $destinationAccount->account_name ?? 'NF Cash',
+                'paid_from' => $expenseRequest->paymentSourceAccount ? $expenseRequest->paymentSourceAccount->account_name : 'Unknown',
+                'destination' => $destinationAccount ? $destinationAccount->account_name : 'NF Cash',
                 'date' => $expenseRequest->created_at->format('Y-m-d')
             ]
         ]);

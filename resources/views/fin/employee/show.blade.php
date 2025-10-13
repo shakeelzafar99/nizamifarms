@@ -69,40 +69,66 @@
         <div id="activeFilterText" class="mt-2 text-xs text-blue-600 hidden"></div>
     </div>
 
-    <!-- Employee Summary Cards - Custom 3-3 Layout -->
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-        <!-- LEFT SIDE: Cash Flow -->
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase font-medium">💵 Invoices</div>
-            <div class="text-lg font-bold text-green-600 mt-1">Rs. {{ number_format($summary['total_invoices'], 2) }}</div>
-        </div>
-        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-            <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
-            <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($expenseSummary['pending'], 2) }}</div>
-        </div>
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase font-medium">🏦 Deposits</div>
-            <div class="text-lg font-bold text-blue-600 mt-1">Rs. {{ number_format($summary['total_deposits'], 2) }}</div>
-        </div>
-        
-        <!-- RIGHT SIDE: Expense Tracking & Balance -->
-        <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" title="Expenses paid from rider's own balance (affects his balance)">
-            <div class="text-xs text-orange-700 uppercase font-medium">💸 Expense from Rider Balance</div>
-            <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($expenseSummary['expense_from_rider_balance'], 2) }}</div>
-        </div>
-        <div class="border border-gray-200 rounded-lg p-3 {{ $summary['current_balance'] > 0 ? 'bg-green-50' : ($summary['current_balance'] < 0 ? 'bg-red-50' : 'bg-white') }}">
-            <div class="text-xs text-gray-500 uppercase font-medium">💰 Balance</div>
-            <div class="text-lg font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
-                Rs. {{ number_format($summary['current_balance'], 2) }}
+    <!-- Summary Cards -->
+    @if($isEmployeeAccount)
+        <!-- Employee Summary Cards - Custom 3-3 Layout -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+            <!-- LEFT SIDE: Cash Flow -->
+            <div class="bg-white border border-gray-200 rounded-lg p-3">
+                <div class="text-xs text-gray-500 uppercase font-medium">💵 Invoices</div>
+                <div class="text-lg font-bold text-green-600 mt-1">Rs. {{ number_format($summary['total_invoices'], 2) }}</div>
+            </div>
+            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+                <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($expenseSummary['pending'], 2) }}</div>
+            </div>
+            <div class="bg-white border border-gray-200 rounded-lg p-3">
+                <div class="text-xs text-gray-500 uppercase font-medium">🏦 Deposits</div>
+                <div class="text-lg font-bold text-blue-600 mt-1">Rs. {{ number_format($summary['total_deposits'], 2) }}</div>
+            </div>
+            
+            <!-- RIGHT SIDE: Expense Tracking & Balance -->
+            <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" title="Expenses paid from rider's own balance (affects his balance)">
+                <div class="text-xs text-orange-700 uppercase font-medium">💸 Expense from Rider Balance</div>
+                <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($expenseSummary['expense_from_rider_balance'], 2) }}</div>
+            </div>
+            <div class="border border-gray-200 rounded-lg p-3 {{ $summary['current_balance'] > 0 ? 'bg-green-50' : ($summary['current_balance'] < 0 ? 'bg-red-50' : 'bg-white') }}">
+                <div class="text-xs text-gray-500 uppercase font-medium">💰 Balance</div>
+                <div class="text-lg font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
+                    Rs. {{ number_format($summary['current_balance'], 2) }}
+                </div>
+            </div>
+            <div class="bg-purple-50 border border-purple-200 rounded-lg p-3" title="All approved expenses paid from other sources (NF Cash, Expense Fund, etc.) - does NOT affect rider balance">
+                <div class="text-xs text-purple-700 uppercase font-medium">💰 Expense Amount</div>
+                <div class="text-lg font-bold text-purple-900 mt-1">Rs. {{ number_format($expenseSummary['expense_amount'], 2) }}</div>
             </div>
         </div>
-        <div class="bg-purple-50 border border-purple-200 rounded-lg p-3" title="All approved expenses paid from other sources (NF Cash, Expense Fund, etc.) - does NOT affect rider balance">
-            <div class="text-xs text-purple-700 uppercase font-medium">💰 Expense Amount</div>
-            <div class="text-lg font-bold text-purple-900 mt-1">Rs. {{ number_format($expenseSummary['expense_amount'], 2) }}</div>
+    @else
+        <!-- Company Account Summary Cards - Simpler Layout -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white border border-gray-200 rounded-lg p-4">
+                <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+                <div class="text-2xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-2">
+                    Rs. {{ number_format($summary['current_balance'], 2) }}
+                </div>
+            </div>
+            <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                <div class="text-xs text-green-700 uppercase font-medium">📥 Total Received</div>
+                <div class="text-2xl font-bold text-green-900 mt-2">Rs. {{ number_format($summary['total_deposits'], 2) }}</div>
+            </div>
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div class="text-xs text-blue-700 uppercase font-medium">📤 Total Paid Out</div>
+                <div class="text-2xl font-bold text-blue-900 mt-2">Rs. {{ number_format($summary['total_withdrawals'], 2) }}</div>
+            </div>
+            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Approvals</div>
+                <div class="text-2xl font-bold text-yellow-900 mt-2">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+            </div>
         </div>
-    </div>
+    @endif
 
     <!-- Action Buttons -->
+    @if($isEmployeeAccount)
     <div class="flex gap-4 mb-6">
         <button onclick="openDepositModal()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
             💵 Record Deposit to NF Cash
@@ -116,6 +142,20 @@
             ⚖️ Make Adjustment
         </button>
     </div>
+    @else
+    <!-- Company Account Action Buttons -->
+    <div class="flex gap-4 mb-6">
+        <button onclick="openCompanyReceiveModal()" class="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md">
+            💵 Record Receipt
+        </button>
+        <button onclick="openCompanyPaymentModal()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
+            💳 Record Payment
+        </button>
+        <button onclick="openCompanyTransferModal()" class="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md">
+            🔄 Transfer Between Accounts
+        </button>
+    </div>
+    @endif
 
     <!-- Tab Navigation -->
     <div class="border-b border-gray-200 mb-6">
@@ -856,6 +896,252 @@
     </div>
 </div>
 
+@if(!$isEmployeeAccount)
+<!-- Company Receipt Modal -->
+<div id="companyReceiveModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">💵 Record Receipt into {{ $account->account_name }}</h2>
+                <button onclick="closeCompanyReceiveModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form id="companyReceiveForm" method="POST" action="{{ route('fin.employee.company-receive', $account->id) }}">
+                @csrf
+                
+                <!-- Source Type Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Receipt Source</label>
+                    <div class="flex gap-4">
+                        <label class="flex items-center">
+                            <input type="radio" name="receipt_source_type" value="external" checked onclick="toggleReceiptSource()" class="mr-2">
+                            <span class="text-sm">External (Customer/Vendor)</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="receipt_source_type" value="internal" onclick="toggleReceiptSource()" class="mr-2">
+                            <span class="text-sm">Internal Account</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- External Source Section -->
+                <div id="receipt_external_section" class="mb-4">
+                    <label for="receipt_from_external" class="block text-sm font-medium text-gray-700">From (Name/Description)</label>
+                    <input type="text" id="receipt_from_external" name="from_external" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="e.g., Customer Payment, Sale, etc.">
+                </div>
+
+                <!-- Internal Account Section -->
+                <div id="receipt_account_section" class="mb-4" style="display: none;">
+                    <label for="receipt_from_account" class="block text-sm font-medium text-gray-700">From Account</label>
+                    <select id="receipt_from_account" name="from_account_id" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <option value="">Select account...</option>
+                        @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank', 'employee_cash'])->get() as $acc)
+                            @if($acc->id != $account->id)
+                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                            @endif
+                        @endforeach
+                    </select>
+                </div>
+
+                <!-- Amount -->
+                <div class="mb-4">
+                    <label for="receipt_amount" class="block text-sm font-medium text-gray-700">Amount *</label>
+                    <input type="number" id="receipt_amount" name="amount" step="0.01" min="0.01" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+
+                <!-- Description -->
+                <div class="mb-4">
+                    <label for="receipt_description" class="block text-sm font-medium text-gray-700">Description *</label>
+                    <textarea id="receipt_description" name="description" rows="2" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="Purpose of receipt..."></textarea>
+                </div>
+
+                <!-- Date -->
+                <div class="mb-4">
+                    <label for="receipt_date" class="block text-sm font-medium text-gray-700">Date *</label>
+                    <input type="date" id="receipt_date" name="transaction_date" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+
+                <!-- Requires Approval -->
+                <div class="mb-6">
+                    <label class="flex items-center">
+                        <input type="checkbox" name="requires_approval" value="1" class="mr-2">
+                        <span class="text-sm text-gray-700">Requires manager approval before posting</span>
+                    </label>
+                </div>
+
+                <!-- Actions -->
+                <div class="flex justify-end gap-3">
+                    <button type="button" onclick="closeCompanyReceiveModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                    <button type="submit" class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md">
+                        💵 Record Receipt
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Company Payment Modal -->
+<div id="companyPaymentModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">💳 Record Payment from {{ $account->account_name }}</h2>
+                <button onclick="closeCompanyPaymentModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form id="companyPaymentForm" method="POST" action="{{ route('fin.employee.company-payment', $account->id) }}">
+                @csrf
+                
+                <!-- Destination Type Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Payment Destination</label>
+                    <div class="flex gap-4">
+                        <label class="flex items-center">
+                            <input type="radio" name="payment_dest_type" value="external" checked onclick="togglePaymentDestination()" class="mr-2">
+                            <span class="text-sm">External (Vendor/Expense)</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="payment_dest_type" value="internal" onclick="togglePaymentDestination()" class="mr-2">
+                            <span class="text-sm">Internal Account</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- External Destination Section -->
+                <div id="payment_external_section" class="mb-4">
+                    <label for="payment_to_external" class="block text-sm font-medium text-gray-700">To (Name/Description)</label>
+                    <input type="text" id="payment_to_external" name="to_external" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="e.g., Vendor Name, Bill Payment, etc.">
+                </div>
+
+                <!-- Internal Account Section -->
+                <div id="payment_account_section" class="mb-4" style="display: none;">
+                    <label for="payment_to_account" class="block text-sm font-medium text-gray-700">To Account</label>
+                    <select id="payment_to_account" name="to_account_id" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <option value="">Select account...</option>
+                        @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank', 'employee_cash'])->get() as $acc)
+                            @if($acc->id != $account->id)
+                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                            @endif
+                        @endforeach
+                    </select>
+                </div>
+
+                <!-- Expense Category (Optional) -->
+                <div class="mb-4">
+                    <label for="payment_expense_category" class="block text-sm font-medium text-gray-700">Expense Category (Optional)</label>
+                    <select id="payment_expense_category" name="expense_category" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <option value="">None</option>
+                        <option value="Utilities">Utilities</option>
+                        <option value="Rent">Rent</option>
+                        <option value="Salary">Salary</option>
+                        <option value="Supplies">Supplies</option>
+                        <option value="Maintenance">Maintenance</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+
+                <!-- Amount -->
+                <div class="mb-4">
+                    <label for="payment_amount" class="block text-sm font-medium text-gray-700">Amount *</label>
+                    <input type="number" id="payment_amount" name="amount" step="0.01" min="0.01" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+
+                <!-- Description -->
+                <div class="mb-4">
+                    <label for="payment_description" class="block text-sm font-medium text-gray-700">Description *</label>
+                    <textarea id="payment_description" name="description" rows="2" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="Purpose of payment..."></textarea>
+                </div>
+
+                <!-- Date -->
+                <div class="mb-4">
+                    <label for="payment_date" class="block text-sm font-medium text-gray-700">Date *</label>
+                    <input type="date" id="payment_date" name="transaction_date" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+
+                <!-- Requires Approval -->
+                <div class="mb-6">
+                    <label class="flex items-center">
+                        <input type="checkbox" name="requires_approval" value="1" class="mr-2">
+                        <span class="text-sm text-gray-700">Requires manager approval before posting</span>
+                    </label>
+                </div>
+
+                <!-- Actions -->
+                <div class="flex justify-end gap-3">
+                    <button type="button" onclick="closeCompanyPaymentModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                    <button type="submit" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
+                        💳 Record Payment
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Company Transfer Modal -->
+<div id="companyTransferModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">🔄 Transfer from {{ $account->account_name }}</h2>
+                <button onclick="closeCompanyTransferModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form id="companyTransferForm" method="POST" action="{{ route('fin.employee.company-transfer', $account->id) }}">
+                @csrf
+                
+                <!-- To Account -->
+                <div class="mb-4">
+                    <label for="transfer_to_account" class="block text-sm font-medium text-gray-700">Transfer To *</label>
+                    <select id="transfer_to_account" name="to_account_id" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <option value="">Select destination account...</option>
+                        @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->get() as $acc)
+                            @if($acc->id != $account->id)
+                                <option value="{{ $acc->id }}">{{ $acc->account_name }} (Rs. {{ number_format($acc->current_balance, 2) }})</option>
+                            @endif
+                        @endforeach
+                    </select>
+                </div>
+
+                <!-- Amount -->
+                <div class="mb-4">
+                    <label for="transfer_amount" class="block text-sm font-medium text-gray-700">Amount *</label>
+                    <input type="number" id="transfer_amount" name="amount" step="0.01" min="0.01" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                    <p class="mt-1 text-xs text-gray-500">Available balance: Rs. {{ number_format($account->current_balance, 2) }}</p>
+                </div>
+
+                <!-- Description -->
+                <div class="mb-4">
+                    <label for="transfer_description" class="block text-sm font-medium text-gray-700">Description (Optional)</label>
+                    <textarea id="transfer_description" name="description" rows="2" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md" placeholder="Notes about this transfer..."></textarea>
+                </div>
+
+                <!-- Date -->
+                <div class="mb-6">
+                    <label for="transfer_date" class="block text-sm font-medium text-gray-700">Date *</label>
+                    <input type="date" id="transfer_date" name="transaction_date" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md">
+                </div>
+
+                <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                    <p class="text-xs text-blue-800">
+                        <strong>Note:</strong> Internal transfers between company accounts are processed immediately without requiring approval.
+                    </p>
+                </div>
+
+                <!-- Actions -->
+                <div class="flex justify-end gap-3">
+                    <button type="button" onclick="closeCompanyTransferModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                    <button type="submit" class="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md">
+                        🔄 Complete Transfer
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endif
+
 <script>
 function openDepositModal() {
     console.log('openDepositModal called');
@@ -1555,5 +1841,48 @@ function resetExpenseFilter() {
     document.querySelectorAll('#content-expenses .filter-btn').forEach(btn => {
         btn.classList.remove('ring-2', 'ring-blue-500');
     });
+}
+
+// Company Account Modal Functions
+function openCompanyReceiveModal() {
+    document.getElementById('companyReceiveModal').classList.remove('hidden');
+    document.getElementById('receipt_date').valueAsDate = new Date();
+}
+
+function closeCompanyReceiveModal() {
+    document.getElementById('companyReceiveModal').classList.add('hidden');
+    document.getElementById('companyReceiveForm').reset();
+}
+
+function openCompanyPaymentModal() {
+    document.getElementById('companyPaymentModal').classList.remove('hidden');
+    document.getElementById('payment_date').valueAsDate = new Date();
+}
+
+function closeCompanyPaymentModal() {
+    document.getElementById('companyPaymentModal').classList.add('hidden');
+    document.getElementById('companyPaymentForm').reset();
+}
+
+function openCompanyTransferModal() {
+    document.getElementById('companyTransferModal').classList.remove('hidden');
+    document.getElementById('transfer_date').valueAsDate = new Date();
+}
+
+function closeCompanyTransferModal() {
+    document.getElementById('companyTransferModal').classList.add('hidden');
+    document.getElementById('companyTransferForm').reset();
+}
+
+function toggleReceiptSource() {
+    const sourceType = document.querySelector('input[name="receipt_source_type"]:checked').value;
+    document.getElementById('receipt_account_section').style.display = sourceType === 'internal' ? 'block' : 'none';
+    document.getElementById('receipt_external_section').style.display = sourceType === 'external' ? 'block' : 'none';
+}
+
+function togglePaymentDestination() {
+    const destType = document.querySelector('input[name="payment_dest_type"]:checked').value;
+    document.getElementById('payment_account_section').style.display = destType === 'internal' ? 'block' : 'none';
+    document.getElementById('payment_external_section').style.display = destType === 'external' ? 'block' : 'none';
 }
 </script>
