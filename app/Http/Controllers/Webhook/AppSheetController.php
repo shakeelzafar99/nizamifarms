@@ -682,39 +682,47 @@ class AppSheetController extends Controller
             $logoutTime = $payload['logout_time'] 
                 ?? $payload['Logout Time'] 
                 ?? $payload['logout time'] 
+                ?? $payload['log out time']  // AppSheet sends this format
                 ?? $payload['log_out_time'] 
                 ?? $payload['Log Out Time'] 
                 ?? null;
             
             $loginLoc = $payload['login_location'] 
                 ?? $payload['Login Location'] 
+                ?? $payload['login location']  // AppSheet sends this format
                 ?? $payload['login_lat_lng'] 
                 ?? null;
             
             $logoutLoc = $payload['logout_location'] 
                 ?? $payload['Logout Location'] 
+                ?? $payload['logout location']  // AppSheet sends this format
                 ?? $payload['logout_lat_lng'] 
                 ?? null;
             
             $device = $payload['device_id'] 
                 ?? $payload['Device ID'] 
                 ?? $payload['Device Id'] 
+                ?? $payload['device id']  // AppSheet sends this format
                 ?? null;
             
             $meterStart = $payload['meter_start'] 
                 ?? $payload['Meter Start'] 
+                ?? $payload['meter start']  // AppSheet sends this format
                 ?? null;
             
             $meterEnd = $payload['meter_end'] 
                 ?? $payload['Meter End'] 
+                ?? $payload['meter end']  // AppSheet sends this format
                 ?? null;
             
             $picStart = $payload['picture_start'] 
                 ?? $payload['Picture Start'] 
+                ?? $payload['picture start']  // AppSheet sends this format
                 ?? null;
             
             $picEnd = $payload['picture_end'] 
                 ?? $payload['Picture End'] 
+                ?? $payload['picture end']  // AppSheet sends this format
                 ?? null;
             
             $notes = $payload['notes'] 
@@ -883,12 +891,12 @@ class AppSheetController extends Controller
                 'user_id' => $user->id,
                 'fullname' => $user->fullname,
                 'attendance_date' => $attendanceDate,
-                'action' => $existing ? 'updated' : 'created'
+                'action' => $existingRecord ? 'updated' : 'created'
             ]);
 
             return response()->json([
                 'success' => true,
-                'message' => $existing ? 'Attendance record updated' : 'Attendance record created',
+                'message' => $existingRecord ? 'Attendance record updated' : 'Attendance record created',
                 'user_id' => $user->id,
                 'fullname' => $user->fullname,
                 'attendance_date' => $attendanceDate,
@@ -1277,11 +1285,40 @@ class AppSheetController extends Controller
             return $time . ':00';
         }
         
-        // Try to parse and format
+        // Handle 12-hour format with AM/PM (e.g., "4:26:35 PM")
+        // Remove extra spaces around AM/PM
+        $time = preg_replace('/\s+(AM|PM|am|pm)/', ' $1', $time);
+        
+        // Try to parse and format using strtotime
         try {
-            $parsed = date('H:i:s', strtotime($time));
+            $timestamp = strtotime($time);
+            if ($timestamp === false) {
+                // If strtotime fails, try creating DateTime object
+                $dateTime = \DateTime::createFromFormat('g:i:s A', $time);
+                if (!$dateTime) {
+                    $dateTime = \DateTime::createFromFormat('h:i:s A', $time);
+                }
+                if (!$dateTime) {
+                    $dateTime = \DateTime::createFromFormat('g:i A', $time);
+                }
+                if (!$dateTime) {
+                    $dateTime = \DateTime::createFromFormat('h:i A', $time);
+                }
+                
+                if ($dateTime) {
+                    return $dateTime->format('H:i:s');
+                }
+                
+                return null;
+            }
+            
+            $parsed = date('H:i:s', $timestamp);
             return $parsed;
         } catch (\Exception $e) {
+            \Log::error('Time normalization failed', [
+                'original_time' => $time,
+                'error' => $e->getMessage()
+            ]);
             return null;
         }
     }

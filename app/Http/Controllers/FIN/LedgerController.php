@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\AccountModel;
+use App\Models\FIN\InvoiceSettlementModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -279,7 +280,54 @@ class LedgerController extends Controller
             }
             $toAccount->save();
 
+            // ========== SETTLEMENT PROCESSING ==========
+            // If this is an employee deposit with settlement intent, process it
+            if ($ledger->transaction_type === LedgerModel::TYPE_EMPLOYEE_DEPOSIT) {
+                // Try to get settlement data from ledger metadata (NEW) or fallback to session (OLD)
+                $settlementData = $ledger->settlement_metadata;
+                
+                // Fallback to session for old deposits
+                if (!$settlementData) {
+                    $sessionKey = "settlement_pending_{$ledger->id}";
+                    $settlementData = \Session::get($sessionKey);
+                    \Log::info("Using session fallback for settlement data", [
+                        'deposit_id' => $ledger->id
+                    ]);
+                }
+                
+                \Log::info("Checking for settlement data", [
+                    'deposit_id' => $ledger->id,
+                    'has_metadata' => $ledger->settlement_metadata ? 'yes' : 'no',
+                    'has_data' => $settlementData ? 'yes' : 'no',
+                    'data' => $settlementData
+                ]);
+                
+                if ($settlementData && isset($settlementData['invoice_ids'])) {
+                    \Log::info("Processing invoice settlement", [
+                        'deposit_id' => $ledger->id,
+                        'invoice_count' => count($settlementData['invoice_ids']),
+                        'invoice_ids' => $settlementData['invoice_ids']
+                    ]);
+                    
+                    $this->processInvoiceSettlement($ledger, $settlementData);
+                    
+                    // Clean up session if it was used
+                    \Session::forget("settlement_pending_{$ledger->id}");
+                } else {
+                    \Log::warning("No settlement data found for deposit - invoices will not be auto-settled", [
+                        'deposit_id' => $ledger->id,
+                        'description' => $ledger->description
+                    ]);
+                }
+            }
+
             DB::commit();
+
+            // Redirect back to where they came from (if from outstanding invoices page, stay there)
+            if (str_contains(url()->previous(), 'outstanding-invoices')) {
+                return redirect()->route('fin.employee.all-outstanding-invoices')
+                               ->with('success', 'Settlement deposit approved successfully! Invoices have been settled.');
+            }
 
             return redirect()->route('fin.ledger.index')
                            ->with('success', 'Transaction approved successfully!');
@@ -297,8 +345,9 @@ class LedgerController extends Controller
      */
     public function reject(Request $request, $id)
     {
+        // Make rejection_reason optional for quick rejects
         $request->validate([
-            'rejection_reason' => 'required|string|max:500'
+            'rejection_reason' => 'nullable|string|max:500'
         ]);
 
         try {
@@ -312,11 +361,22 @@ class LedgerController extends Controller
             $ledger->approved_by = auth()->id();
             $ledger->approval_date = now()->toDateString();
             
-            // Add rejection reason to comments
-            $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
-                               "Rejection Reason: " . $request->rejection_reason;
+            // Add rejection reason to comments (if provided)
+            if ($request->rejection_reason) {
+                $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
+                                   "Rejection Reason: " . $request->rejection_reason;
+            }
             
             $ledger->save();
+            
+            // Clean up settlement data from session
+            \Session::forget("settlement_pending_{$ledger->id}");
+
+            // Redirect back to where they came from (if from outstanding invoices page, stay there)
+            if (str_contains(url()->previous(), 'outstanding-invoices')) {
+                return redirect()->route('fin.employee.all-outstanding-invoices')
+                               ->with('success', 'Settlement deposit rejected successfully.');
+            }
 
             return redirect()->route('fin.ledger.index')
                            ->with('success', 'Transaction rejected successfully!');
@@ -325,6 +385,74 @@ class LedgerController extends Controller
             Log::error("Error rejecting transaction: " . $e->getMessage());
             
             return back()->with('error', 'Error rejecting transaction: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Process invoice settlement when deposit is approved
+     * 
+     * @param LedgerModel $depositLedger The approved deposit transaction
+     * @param array $settlementData Contains invoice_ids, deposit_amount, total_outstanding
+     */
+    private function processInvoiceSettlement(LedgerModel $depositLedger, array $settlementData)
+    {
+        try {
+            $invoiceIds = $settlementData['invoice_ids'];
+            $depositAmount = $settlementData['deposit_amount'];
+            $totalOutstanding = $settlementData['total_outstanding'];
+            
+            // Get the invoices that need to be settled (in order)
+            $invoices = LedgerModel::whereIn('id', $invoiceIds)
+                ->where('settlement_status', 'open')
+                ->orderBy('transaction_date', 'asc')
+                ->get();
+            
+            $remainingAmount = $depositAmount;
+            
+            foreach ($invoices as $invoice) {
+                $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
+                
+                if ($remainingAmount <= 0) {
+                    break; // No more money to allocate
+                }
+                
+                // Calculate how much to settle on this invoice
+                $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
+                
+                // Update invoice
+                $invoice->settled_amount = ($invoice->settled_amount ?? 0) + $amountToSettle;
+                
+                if ($invoice->settled_amount >= $invoice->amount) {
+                    // Fully settled
+                    $invoice->settlement_status = 'settled';
+                    $invoice->settled_at = now();
+                    $invoice->settled_via_ledger_id = $depositLedger->id;
+                }
+                $invoice->save();
+                
+                // Create audit record
+                \App\Models\FIN\InvoiceSettlementModel::create([
+                    'settlement_deposit_id' => $depositLedger->id,
+                    'invoice_ledger_id' => $invoice->id,
+                    'settled_amount' => $amountToSettle
+                ]);
+                
+                $remainingAmount -= $amountToSettle;
+            }
+            
+            \Log::info("Invoice settlement processed", [
+                'deposit_id' => $depositLedger->id,
+                'invoices_count' => $invoices->count(),
+                'amount_allocated' => $depositAmount - $remainingAmount,
+                'amount_remaining' => $remainingAmount
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error("Error processing invoice settlement: " . $e->getMessage(), [
+                'deposit_id' => $depositLedger->id,
+                'settlement_data' => $settlementData
+            ]);
+            throw $e;
         }
     }
 }

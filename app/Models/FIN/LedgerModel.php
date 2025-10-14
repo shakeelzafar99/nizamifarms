@@ -26,6 +26,10 @@ class LedgerModel extends BaseModel
         'amount',
         'mode',
         'approval_status',
+        'settlement_status',
+        'settled_amount',
+        'settled_at',
+        'settled_via_ledger_id',
         'approval_date',
         'approved_by',
         'external_source',
@@ -36,6 +40,7 @@ class LedgerModel extends BaseModel
         'order_id',
         'device',
         'comments',
+        'settlement_metadata',
         'created_by',
         'updated_by'
     ];
@@ -43,7 +48,10 @@ class LedgerModel extends BaseModel
     protected $casts = [
         'transaction_date' => 'date',
         'approval_date' => 'date',
-        'amount' => 'decimal:2'
+        'settled_at' => 'datetime',
+        'amount' => 'decimal:2',
+        'settled_amount' => 'decimal:2',
+        'settlement_metadata' => 'array'
     ];
 
     // Transaction type constants
@@ -107,6 +115,21 @@ class LedgerModel extends BaseModel
         return $this->belongsTo(OrderModel::class, 'order_id', 'id');
     }
 
+    public function settledViaDeposit(): BelongsTo
+    {
+        return $this->belongsTo(LedgerModel::class, 'settled_via_ledger_id', 'id');
+    }
+
+    public function settlements()
+    {
+        return $this->hasMany(InvoiceSettlementModel::class, 'settlement_deposit_id', 'id');
+    }
+
+    public function invoiceSettlements()
+    {
+        return $this->hasMany(InvoiceSettlementModel::class, 'invoice_ledger_id', 'id');
+    }
+
     /**
      * Scopes
      */
@@ -141,6 +164,18 @@ class LedgerModel extends BaseModel
     public function scopeByMode($query, $mode)
     {
         return $query->where('mode', $mode);
+    }
+
+    public function scopeOpenInvoices($query)
+    {
+        return $query->where('transaction_type', self::TYPE_INVOICE)
+                     ->where('settlement_status', 'open');
+    }
+
+    public function scopeSettledInvoices($query)
+    {
+        return $query->where('transaction_type', self::TYPE_INVOICE)
+                     ->where('settlement_status', 'settled');
     }
 
     /**

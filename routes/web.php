@@ -332,8 +332,11 @@ Route::middleware(['auth'])->group(function () {
         Route::prefix('employee')->name('employee.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'index'])->name('index');
             Route::get('/dashboard', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'dashboard'])->name('dashboard');
+            Route::get('/outstanding-invoices', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'allOutstandingInvoices'])->name('all-outstanding-invoices');
             Route::get('/{id}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'show'])->name('show');
             Route::post('/{id}/deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordDeposit'])->name('deposit');
+            Route::post('/{id}/settlement-deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordSettlementDeposit'])->name('settlement-deposit');
+            Route::get('/{id}/outstanding-invoices', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'getOutstandingInvoices'])->name('outstanding-invoices');
             Route::post('/{id}/adjustment', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordAdjustment'])->name('adjustment');
             Route::post('/{id}/expense-request', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'createExpenseRequest'])->name('expense-request');
             

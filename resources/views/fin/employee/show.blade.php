@@ -5,7 +5,7 @@
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">{{ $account->account_name }}</h1>
         <a href="{{ route('fin.employee.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-            ← Back to Employees
+            ← Back to Employee Cash
         </a>
     </div>
 
@@ -104,25 +104,137 @@
             </div>
         </div>
     @else
-        <!-- Company Account Summary Cards - Simpler Layout -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <!-- Company Account Summary Cards - Reorganized Layout -->
+        
+        <!-- Row 1: Quick Summary Cards (5 smaller cards) -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+            <!-- Card 1: Current Balance -->
+            <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('all')" 
+                 data-filter-type="all">
                 <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
-                <div class="text-2xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-2">
+                <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
                     Rs. {{ number_format($summary['current_balance'], 2) }}
                 </div>
             </div>
+
+            <!-- Card 2: Pending Approvals -->
+            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('pending')" 
+                 data-filter-type="pending">
+                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+                <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
+            </div>
+
+            <!-- Card 3: Short Cash -->
+            <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
+                 title="Expenses paid from rider balance but not yet settled">
+                <div class="text-xs text-orange-700 uppercase font-medium">💸 Short Cash</div>
+                <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['short_cash'] ?? 0, 2) }}</div>
+                <div class="text-xs text-orange-600 mt-0.5">Unsettled</div>
+            </div>
+
+            <!-- Card 4: Cash Invoices -->
+            <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('cash_invoices')" 
+                 data-filter-type="cash_invoices"
+                 title="Total value of cash/COD invoices delivered">
+                <div class="text-xs text-purple-700 uppercase font-medium">💵 Cash Invoices</div>
+                <div class="text-xl font-bold text-purple-900 mt-1">Rs. {{ number_format($summary['cash_invoices'] ?? 0, 2) }}</div>
+                <div class="text-xs text-purple-600 mt-0.5">Delivered</div>
+            </div>
+
+            <!-- Card 5: Riders Balance (NEW) -->
+            <div class="bg-teal-50 border border-teal-200 rounded-lg p-3"
+                 title="Total cash currently held by all riders">
+                <div class="text-xs text-teal-700 uppercase font-medium">👥 Riders Balance</div>
+                <div class="text-xl font-bold text-teal-900 mt-1">Rs. {{ number_format($summary['riders_balance'] ?? 0, 2) }}</div>
+                <div class="text-xs text-teal-600 mt-0.5">With riders</div>
+            </div>
+        </div>
+
+        <!-- Row 2: Detailed Breakdown Cards (2 larger cards with dropdowns) -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <!-- Card: Total Cash IN (Expandable with sub-values) -->
             <div class="bg-green-50 border border-green-200 rounded-lg p-4">
-                <div class="text-xs text-green-700 uppercase font-medium">📥 Total Received</div>
-                <div class="text-2xl font-bold text-green-900 mt-2">Rs. {{ number_format($summary['total_deposits'], 2) }}</div>
+                <div class="flex justify-between items-center cursor-pointer" onclick="toggleCardBreakdown('cashInCard')">
+                    <div class="text-xs text-green-700 uppercase font-medium">📥 Total Cash In</div>
+                    <svg id="cashInIcon" class="w-4 h-4 text-green-700 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
             </div>
+                <div class="text-2xl font-bold text-green-900 mt-2 cursor-pointer hover:text-green-700" 
+                     onclick="filterTransactions('cash_in')">
+                    Rs. {{ number_format(($summary['cash_in']['total'] ?? 0), 2) }}
+                </div>
+                
+                <!-- Breakdown (Initially Hidden) -->
+                <div id="cashInCard" class="mt-3 pt-3 border-t border-green-300 space-y-2 hidden">
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('deposits')">
+                        <span class="text-green-700">💵 Deposits</span>
+                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['deposits'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('settlements')">
+                        <span class="text-green-700">🔄 Settlements</span>
+                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['settlements'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('transfers_in')">
+                        <span class="text-green-700">🔀 Transfers In</span>
+                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfers_in'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('others_in')">
+                        <span class="text-green-700">📦 Others</span>
+                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['others_in'] ?? 0), 2) }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Card: Total Cash OUT (Expandable with sub-values) -->
             <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div class="text-xs text-blue-700 uppercase font-medium">📤 Total Paid Out</div>
-                <div class="text-2xl font-bold text-blue-900 mt-2">Rs. {{ number_format($summary['total_withdrawals'], 2) }}</div>
+                <div class="flex justify-between items-center cursor-pointer" onclick="toggleCardBreakdown('cashOutCard')">
+                    <div class="text-xs text-blue-700 uppercase font-medium">📤 Total Cash Out</div>
+                    <svg id="cashOutIcon" class="w-4 h-4 text-blue-700 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </svg>
             </div>
-            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Approvals</div>
-                <div class="text-2xl font-bold text-yellow-900 mt-2">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                <div class="text-2xl font-bold text-blue-900 mt-2 cursor-pointer hover:text-blue-700" 
+                     onclick="filterTransactions('cash_out')">
+                    Rs. {{ number_format(($summary['cash_out']['total'] ?? 0), 2) }}
+                </div>
+                
+                <!-- Breakdown (Initially Hidden) -->
+                <div id="cashOutCard" class="mt-3 pt-3 border-t border-blue-300 space-y-2 hidden">
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('unsettled_expenses')">
+                        <span class="text-blue-700">💸 Unsettled Expenses</span>
+                        <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['unsettled_expenses'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('vendor_payments')">
+                        <span class="text-blue-700">🏪 Vendor Payments</span>
+                        <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['vendor_payments'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('transfers_out')">
+                        <span class="text-blue-700">🔀 Transfers Out</span>
+                        <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['transfers_out'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('expenses_ledger')">
+                        <span class="text-blue-700">📋 Expenses (Ledger)</span>
+                        <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['expenses_ledger'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('others_out')">
+                        <span class="text-blue-700">📦 Others</span>
+                        <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['others_out'] ?? 0), 2) }}</span>
+                    </div>
+                </div>
             </div>
         </div>
     @endif
@@ -130,6 +242,9 @@
     <!-- Action Buttons -->
     @if($isEmployeeAccount)
     <div class="flex gap-4 mb-6">
+        <button onclick="openSettlementModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md shadow-md" style="background-color: #7c3aed !important; color: white !important;">
+            <span style="color: white !important;">📋 Settle & Deposit</span>
+        </button>
         <button onclick="openDepositModal()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
             💵 Record Deposit to NF Cash
         </button>
@@ -145,14 +260,19 @@
     @else
     <!-- Company Account Action Buttons -->
     <div class="flex gap-4 mb-6">
-        <button onclick="openCompanyReceiveModal()" class="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md">
-            💵 Record Receipt
+        @if(in_array($account->account_code, ['NF_CASH', 'CASH_NF_MAIN_TILL']))
+        <a href="{{ route('fin.employee.all-outstanding-invoices') }}" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md shadow-md" style="background-color: #7c3aed !important; color: white !important;">
+            <span style="color: white !important;">📋 View All Outstanding Invoices</span>
+        </a>
+        @endif
+        <button onclick="openCompanyReceiveModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #059669 !important; color: white !important;">
+            <span style="color: white !important;">💵 Record Receipt</span>
         </button>
-        <button onclick="openCompanyPaymentModal()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
-            💳 Record Payment
+        <button onclick="openCompanyPaymentModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #2563eb !important; color: white !important;">
+            <span style="color: white !important;">💳 Record Payment</span>
         </button>
-        <button onclick="openCompanyTransferModal()" class="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md">
-            🔄 Transfer Between Accounts
+        <button onclick="openCompanyTransferModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #7c3aed !important; color: white !important;">
+            <span style="color: white !important;">🔄 Transfer Between Accounts</span>
         </button>
     </div>
     @endif
@@ -347,7 +467,15 @@
                                 </thead>
                                 <tbody class="divide-y divide-gray-100">
                                     @foreach($dateData['transactions'] as $transaction)
-                                        <tr class="hover:bg-gray-50">
+                                        @php
+                                            // Determine direction for filtering
+                                            $direction = $transaction->to_account_id === $account->id ? 'in' : 'out';
+                                        @endphp
+                                        <tr class="hover:bg-gray-50" 
+                                            data-transaction-type="{{ $transaction->transaction_type }}"
+                                            data-approval-status="{{ $transaction->approval_status ?? 'approved' }}"
+                                            data-direction="{{ $direction }}"
+                                            data-description="{{ $transaction->description }}">
                                             <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-600">
                                                 {{ $transaction->created_at ? $transaction->created_at->format('h:i A') : '-' }}
                                             </td>
@@ -741,6 +869,118 @@
                     </button>
                     <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md">
                         💾 Record Deposit
+                    </button>
+                </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Settlement & Deposit Modal -->
+<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">📋 Settle Invoices & Deposit</h2>
+                <button onclick="closeSettlementModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <!-- Loading State -->
+            <div id="settlement-loading" class="text-center py-8">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+                <p class="text-sm text-gray-600 mt-2">Loading outstanding invoices...</p>
+            </div>
+
+            <!-- No Invoices State -->
+            <div id="settlement-no-invoices" class="hidden text-center py-8">
+                <div class="text-4xl mb-2">✅</div>
+                <p class="text-lg font-medium text-gray-800">All invoices settled!</p>
+                <p class="text-sm text-gray-600 mt-2">There are no outstanding invoices to settle.</p>
+                <button onclick="closeSettlementModal()" class="mt-4 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-md">
+                    Close
+                </button>
+            </div>
+
+            <!-- Settlement Form -->
+            <form id="settlement-form" class="hidden" action="{{ route('fin.employee.settlement-deposit', $account->id) }}" method="POST" onsubmit="return handleSettlementSubmit(event)">
+                @csrf
+                <div class="space-y-4">
+                    <!-- Outstanding Invoices Table -->
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
+                            <h3 class="text-sm font-semibold text-gray-700">📦 Outstanding Invoices</h3>
+                            <p class="text-xs text-gray-600 mt-1">Select invoices to settle with this deposit</p>
+                        </div>
+                        <div class="overflow-x-auto max-h-64">
+                            <table class="min-w-full divide-y divide-gray-200">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="px-4 py-2 text-left">
+                                            <input type="checkbox" id="select-all-invoices" onchange="toggleAllInvoices(this)" 
+                                                   class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                                        </th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Order #</th>
+                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                        <th class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="invoices-tbody" class="bg-white divide-y divide-gray-200">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Summary Card -->
+                    <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm font-medium text-indigo-900">Selected Invoices:</span>
+                            <span id="selected-count" class="text-lg font-bold text-indigo-900">0</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm font-medium text-indigo-900">Total Outstanding:</span>
+                            <span id="total-outstanding" class="text-lg font-bold text-indigo-900">Rs. 0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- Deposit Details -->
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Date <span class="text-red-500">*</span></label>
+                            <input type="date" name="transaction_date" value="{{ date('Y-m-d') }}" required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Amount Depositing (Rs.) <span class="text-red-500">*</span></label>
+                            <input type="number" id="settlement-amount" name="amount" step="0.01" min="0.01" required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                   oninput="updateSettlementSummary()">
+                            <p class="text-xs text-gray-600 mt-1">💡 Tip: Amount can be less than total (partial settlement allowed)</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
+                            <textarea name="description" rows="2" placeholder="Any additional notes..."
+                                      class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Destination (hidden, always NF Cash) -->
+                    <input type="hidden" name="destination_account_id" value="">
+                    
+                    <!-- Info Alert -->
+                    <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                        <p class="text-sm text-yellow-900 font-medium">💰 Depositing to: NF Cash (Main Till)</p>
+                        <p class="text-xs text-yellow-700 mt-1">⏳ Settlement will be approved by manager before invoices are marked as paid</p>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex gap-3 mt-6">
+                        <button type="button" onclick="closeSettlementModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" id="submit-settlement-btn" disabled class="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed">
+                            💾 Submit for Approval
                     </button>
                 </div>
                 </div>
@@ -1143,6 +1383,164 @@
 @endif
 
 <script>
+// ===================================================================
+// PHASE 1: Card Filtering & Breakdown Toggle
+// ===================================================================
+
+// Global variable to track current filter
+let currentTransactionFilter = 'all';
+
+// Transaction type mappings for filtering
+const transactionTypeMap = {
+    'all': null, // Show all
+    'cash_in': ['employee_deposit', 'expense_settlement', 'transfer', 'adjustment', 'reimbursement_payment', 'salary_advance'],
+    'cash_out': ['expense', 'vendor_payment', 'transfer', 'adjustment', 'vendor_purchase'],
+    'deposits': ['employee_deposit'],
+    'settlements': ['expense_settlement'],
+    'transfers_in': ['transfer'], // Will check to_account_id
+    'transfers_out': ['transfer'], // Will check from_account_id
+    'unsettled_expenses': null, // Special: will need backend support or hide for now
+    'vendor_payments': ['vendor_payment'],
+    'expenses_ledger': ['expense'],
+    'others_in': ['adjustment', 'reimbursement_payment', 'salary_advance'],
+    'others_out': ['adjustment', 'vendor_purchase'],
+    'pending': null, // Will filter by approval_status
+    'cash_invoices': ['invoice'] // Will filter invoices with cash/COD description
+};
+
+/**
+ * Toggle card breakdown expansion
+ */
+function toggleCardBreakdown(cardId) {
+    const card = document.getElementById(cardId);
+    const icon = document.getElementById(cardId.replace('Card', 'Icon'));
+    
+    if (!card) return;
+    
+    if (card.classList.contains('hidden')) {
+        card.classList.remove('hidden');
+        if (icon) icon.style.transform = 'rotate(180deg)';
+    } else {
+        card.classList.add('hidden');
+        if (icon) icon.style.transform = 'rotate(0deg)';
+    }
+}
+
+/**
+ * Filter transactions in the table
+ */
+function filterTransactions(filterType) {
+    currentTransactionFilter = filterType;
+    console.log('Filtering transactions by:', filterType);
+    
+    // Get all transaction rows
+    const rows = document.querySelectorAll('tbody tr[data-transaction-type]');
+    let visibleCount = 0;
+    
+    rows.forEach(row => {
+        const transactionType = row.getAttribute('data-transaction-type');
+        const approvalStatus = row.getAttribute('data-approval-status');
+        const direction = row.getAttribute('data-direction'); // 'in' or 'out'
+        const description = row.getAttribute('data-description') || ''; // For cash invoice filtering
+        
+        let shouldShow = false;
+        
+        if (filterType === 'all') {
+            shouldShow = true;
+        } else if (filterType === 'pending') {
+            shouldShow = approvalStatus === 'pending';
+        } else if (filterType === 'transfers_in') {
+            shouldShow = transactionType === 'transfer' && direction === 'in';
+        } else if (filterType === 'transfers_out') {
+            shouldShow = transactionType === 'transfer' && direction === 'out';
+        } else if (filterType === 'cash_invoices') {
+            // Special filter for cash invoices: must be invoice type AND contain cash/COD in description
+            const descLower = description.toLowerCase();
+            shouldShow = transactionType === 'invoice' && 
+                        (descLower.includes('cash') || descLower.includes('cod'));
+        } else {
+            const allowedTypes = transactionTypeMap[filterType];
+            if (allowedTypes) {
+                shouldShow = allowedTypes.includes(transactionType);
+                
+                // Additional filtering for cash_in vs cash_out
+                if (filterType === 'cash_in' && direction !== 'in') shouldShow = false;
+                if (filterType === 'cash_out' && direction !== 'out') shouldShow = false;
+            }
+        }
+        
+        if (shouldShow) {
+            row.style.display = '';
+            visibleCount++;
+        } else {
+            row.style.display = 'none';
+        }
+    });
+    
+    // Update active filter indicator
+    updateActiveFilterUI(filterType);
+    
+    // Show count or no results message
+    console.log(`Showing ${visibleCount} transactions`);
+    updateFilterResultsMessage(visibleCount, filterType);
+}
+
+/**
+ * Update UI to show which filter is active
+ */
+function updateActiveFilterUI(filterType) {
+    // Remove all active states
+    document.querySelectorAll('[data-filter-type]').forEach(el => {
+        el.classList.remove('ring-2', 'ring-blue-500', 'ring-offset-2');
+    });
+    
+    // Add active state to current filter (if applicable)
+    const activeCard = document.querySelector(`[data-filter-type="${filterType}"]`);
+    if (activeCard) {
+        activeCard.classList.add('ring-2', 'ring-blue-500', 'ring-offset-2');
+    }
+}
+
+/**
+ * Show filter results message
+ */
+function updateFilterResultsMessage(count, filterType) {
+    // Check if message div exists, create if not
+    let messageDiv = document.getElementById('filterResultsMessage');
+    if (!messageDiv) {
+        messageDiv = document.createElement('div');
+        messageDiv.id = 'filterResultsMessage';
+        messageDiv.className = 'mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md flex justify-between items-center';
+        
+        // Insert before the transaction table
+        const tableContainer = document.querySelector('.bg-white.border.rounded-lg.overflow-hidden');
+        if (tableContainer && tableContainer.parentElement) {
+            tableContainer.parentElement.insertBefore(messageDiv, tableContainer);
+        }
+    }
+    
+    if (filterType === 'all') {
+        messageDiv.style.display = 'none';
+        return;
+    }
+    
+    const filterName = filterType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    
+    messageDiv.style.display = 'flex';
+    messageDiv.innerHTML = `
+        <div class="text-sm text-blue-800">
+            <strong>Filter Active:</strong> ${filterName} (${count} transaction${count !== 1 ? 's' : ''})
+        </div>
+        <button onclick="filterTransactions('all')" class="text-sm text-blue-600 hover:text-blue-800 underline">
+            Clear Filter
+        </button>
+    `;
+}
+
+// ===================================================================
+// EXISTING FUNCTIONS
+// ===================================================================
+
 function openDepositModal() {
     console.log('openDepositModal called');
     const modal = document.getElementById('depositModal');
@@ -1186,6 +1584,184 @@ function closeDepositModal() {
         document.body.style.overflow = 'auto';
     }
 }
+
+// ===================================================================
+// SETTLEMENT MODAL FUNCTIONS
+// ===================================================================
+
+let settlementInvoices = [];
+let selectedInvoiceIds = [];
+
+async function openSettlementModal() {
+    const modal = document.getElementById('settlementModal');
+    if (!modal) return;
+    
+    // Portalize to body
+    if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal with loading state
+    modal.classList.remove('hidden');
+    Object.assign(modal.style, {
+        display: 'flex',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        zIndex: '99999',
+        backgroundColor: 'rgba(0,0,0,0.5)'
+    });
+    document.body.style.overflow = 'hidden';
+    
+    // Show loading, hide others
+    document.getElementById('settlement-loading').classList.remove('hidden');
+    document.getElementById('settlement-no-invoices').classList.add('hidden');
+    document.getElementById('settlement-form').classList.add('hidden');
+    
+    // Fetch outstanding invoices
+    try {
+        const response = await fetch('{{ route("fin.employee.outstanding-invoices", $account->id) }}');
+        const data = await response.json();
+        
+        if (data.success && data.invoices && data.invoices.length > 0) {
+            settlementInvoices = data.invoices;
+            selectedInvoiceIds = data.invoices.map(inv => inv.id); // Select all by default
+            renderInvoicesTable();
+            updateSettlementSummary();
+            
+            // Show form
+            document.getElementById('settlement-loading').classList.add('hidden');
+            document.getElementById('settlement-form').classList.remove('hidden');
+            
+            // Pre-fill amount with total
+            document.getElementById('settlement-amount').value = data.total_outstanding.toFixed(2);
+        } else {
+            // No invoices
+            document.getElementById('settlement-loading').classList.add('hidden');
+            document.getElementById('settlement-no-invoices').classList.remove('hidden');
+        }
+    } catch (error) {
+        console.error('Error loading invoices:', error);
+        alert('Error loading outstanding invoices. Please try again.');
+        closeSettlementModal();
+    }
+}
+
+function closeSettlementModal() {
+    const modal = document.getElementById('settlementModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+    // Reset state
+    settlementInvoices = [];
+    selectedInvoiceIds = [];
+}
+
+function renderInvoicesTable() {
+    const tbody = document.getElementById('invoices-tbody');
+    tbody.innerHTML = '';
+    
+    settlementInvoices.forEach(invoice => {
+        const isChecked = selectedInvoiceIds.includes(invoice.id);
+        const row = document.createElement('tr');
+        row.className = isChecked ? 'bg-indigo-50' : '';
+        row.innerHTML = `
+            <td class="px-4 py-3">
+                <input type="checkbox" name="invoice_ids[]" value="${invoice.id}" 
+                       ${isChecked ? 'checked' : ''}
+                       onchange="toggleInvoice(${invoice.id}, this.checked)"
+                       class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+            </td>
+            <td class="px-4 py-3 text-sm font-medium text-gray-900">${invoice.order_number}</td>
+            <td class="px-4 py-3 text-sm text-gray-600">${invoice.transaction_date}</td>
+            <td class="px-4 py-3 text-sm text-right font-semibold text-gray-900">Rs. ${parseFloat(invoice.outstanding_amount).toFixed(2)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function toggleInvoice(invoiceId, isChecked) {
+    if (isChecked) {
+        if (!selectedInvoiceIds.includes(invoiceId)) {
+            selectedInvoiceIds.push(invoiceId);
+        }
+    } else {
+        selectedInvoiceIds = selectedInvoiceIds.filter(id => id !== invoiceId);
+    }
+    updateSettlementSummary();
+    renderInvoicesTable();
+}
+
+function toggleAllInvoices(checkbox) {
+    if (checkbox.checked) {
+        selectedInvoiceIds = settlementInvoices.map(inv => inv.id);
+    } else {
+        selectedInvoiceIds = [];
+    }
+    updateSettlementSummary();
+    renderInvoicesTable();
+}
+
+function updateSettlementSummary() {
+    const selectedInvoices = settlementInvoices.filter(inv => selectedInvoiceIds.includes(inv.id));
+    const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
+    
+    document.getElementById('selected-count').textContent = selectedInvoices.length;
+    document.getElementById('total-outstanding').textContent = `Rs. ${totalOutstanding.toFixed(2)}`;
+    
+    // Auto-update amount input to match total
+    const amountInput = document.getElementById('settlement-amount');
+    const currentAmount = parseFloat(amountInput.value) || 0;
+    
+    // If no invoices selected, clear the amount
+    if (selectedInvoices.length === 0) {
+        amountInput.value = '';
+    }
+    // If current amount is 0 or invalid, set to total
+    else if (currentAmount === 0 || isNaN(currentAmount)) {
+        amountInput.value = totalOutstanding.toFixed(2);
+    }
+    // If current amount is greater than the new total, adjust it down
+    else if (currentAmount > totalOutstanding) {
+        amountInput.value = totalOutstanding.toFixed(2);
+    }
+    // Otherwise, keep the user's manually entered amount (for partial settlements)
+    
+    // Enable/disable submit button
+    const submitBtn = document.getElementById('submit-settlement-btn');
+    const amount = parseFloat(amountInput.value) || 0;
+    
+    submitBtn.disabled = selectedInvoices.length === 0 || amount <= 0 || amount > totalOutstanding;
+    
+    // Update select-all checkbox state
+    const selectAllCheckbox = document.getElementById('select-all-invoices');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = selectedInvoices.length === settlementInvoices.length && selectedInvoices.length > 0;
+    }
+}
+
+function handleSettlementSubmit(event) {
+    const submitBtn = document.getElementById('submit-settlement-btn');
+    
+    // Prevent double submission
+    if (submitBtn.disabled || submitBtn.dataset.submitting === 'true') {
+        event.preventDefault();
+        return false;
+    }
+    
+    // Mark as submitting
+    submitBtn.dataset.submitting = 'true';
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="inline-block animate-spin mr-2">⏳</span> Submitting...';
+    
+    // Allow form to submit
+    return true;
+}
+
 function openAdjustmentModal() {
     const modal = document.getElementById('adjustmentModal');
     if (!modal) return;

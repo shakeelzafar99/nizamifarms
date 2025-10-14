@@ -97,6 +97,8 @@ class LedgerPostingService
                 'amount' => $order->total_price,
                 'mode' => $mode,
                 'approval_status' => $approvalStatus,
+                'settlement_status' => 'open', // New invoices start as open
+                'settled_amount' => 0.00,
                 'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now() : null,
                 'approved_by' => $approvalStatus === LedgerModel::STATUS_APPROVED ? auth()->id() : null,
                 'order_id' => $order->id,

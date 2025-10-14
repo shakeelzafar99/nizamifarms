@@ -221,6 +221,31 @@
    </div>
    
    @php
+       $pendingInvoiceSettlements = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+           ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING)
+           ->where('description', 'LIKE', '%Settlement%')
+           ->count();
+   @endphp
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('fin.employee.all-outstanding-invoices') }}" title="Daily Closing & Invoice Settlements">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                   <i class="ki-filled ki-calendar-tick text-lg">
+                   </i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
+                   Daily Closing
+               </span>
+               @if($pendingInvoiceSettlements > 0)
+               <span class="kt-badge kt-badge-sm kt-badge-warning font-bold">
+                   {{ $pendingInvoiceSettlements }}
+               </span>
+               @endif
+           </div>
+       </a>
+   </div>
+   
+   @php
        $pendingSettlements = \App\Models\Request\RequestModel::where('settlement_status', 'pending')->count();
    @endphp
    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">

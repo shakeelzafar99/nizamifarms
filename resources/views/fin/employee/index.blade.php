@@ -4,9 +4,9 @@
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Employee Cash</h1>
-        <a href="{{ route('admin.operations') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-            ← Back to Operations
-        </a>
+        <button onclick="window.history.back()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+            ← Back
+        </button>
     </div>
 
     <!-- Filter Bar -->
@@ -123,17 +123,25 @@
             </div>
         </div>
 
-        <!-- Card 5: Riders Balance (Real-time) -->
-        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
+        <!-- Card 5: Riders Balance & Open Invoices (Real-time) -->
+        <a href="{{ route('fin.employee.all-outstanding-invoices') }}" class="bg-white rounded-lg shadow-sm p-3 border border-gray-200 hover:shadow-md hover:border-purple-300 transition-all cursor-pointer">
             <div class="flex items-center gap-2 mb-2">
                 <span class="text-xl">👥</span>
                 <span class="text-xs font-semibold text-gray-600 uppercase">With Riders</span>
             </div>
             <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['riders_balance'], 0) }}</div>
-            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <span class="text-blue-600 font-medium">⚡ Real-time</span>
+            <div class="mt-2 pt-2 border-t border-gray-100 text-xs">
+                <div class="flex justify-between items-center">
+                    <span class="text-blue-600 font-medium">⚡ Real-time</span>
+                </div>
+                @if($summaryKPIs['open_invoices_count'] > 0)
+                <div class="flex justify-between mt-1 text-red-600">
+                    <span class="font-medium">🔴 Open:</span>
+                    <span class="font-bold">{{ $summaryKPIs['open_invoices_count'] }}</span>
+                </div>
+                @endif
             </div>
-        </div>
+        </a>
     </div>
 
     <script>
