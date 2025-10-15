@@ -953,10 +953,13 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Amount Depositing (Rs.) <span class="text-red-500">*</span></label>
-                            <input type="number" id="settlement-amount" name="amount" step="0.01" min="0.01" required
+                            <input type="text" id="settlement-amount" name="amount" required
                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                   oninput="updateSettlementSummary()">
-                            <p class="text-xs text-gray-600 mt-1">💡 Tip: Amount can be less than total (partial settlement allowed)</p>
+                                   placeholder="0.00"
+                                   oninput="validateAndFormatAmount(this)"
+                                   onblur="formatAmountOnBlur(this)">
+                            <p id="amount-error" class="text-xs text-red-600 mt-1 hidden"></p>
+                            <p class="text-xs text-gray-600 mt-1">💡 Tip: Enter any amount up to the total outstanding (partial settlement allowed)</p>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
@@ -979,10 +982,12 @@
                         <button type="button" onclick="closeSettlementModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
                             Cancel
                         </button>
-                        <button type="submit" id="submit-settlement-btn" disabled class="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed">
+                        <button type="submit" id="submit-settlement-btn" disabled 
+                                style="background-color: #4f46e5 !important; color: white !important;" 
+                                class="flex-1 px-4 py-2 hover:opacity-90 font-medium rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50">
                             💾 Submit for Approval
-                    </button>
-                </div>
+                        </button>
+                    </div>
                 </div>
             </form>
         </div>
@@ -1706,6 +1711,52 @@ function toggleAllInvoices(checkbox) {
     renderInvoicesTable();
 }
 
+function validateAndFormatAmount(input) {
+    // Remove any non-numeric characters except decimal point
+    let value = input.value.replace(/[^\d.]/g, '');
+    
+    // Ensure only one decimal point
+    const parts = value.split('.');
+    if (parts.length > 2) {
+        value = parts[0] + '.' + parts.slice(1).join('');
+    }
+    
+    // Limit to 2 decimal places
+    if (parts.length === 2 && parts[1].length > 2) {
+        value = parts[0] + '.' + parts[1].substring(0, 2);
+    }
+    
+    input.value = value;
+    
+    // Validate against total outstanding
+    const amount = parseFloat(value) || 0;
+    const selectedInvoices = settlementInvoices.filter(inv => selectedInvoiceIds.includes(inv.id));
+    const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
+    
+    const errorEl = document.getElementById('amount-error');
+    const submitBtn = document.getElementById('submit-settlement-btn');
+    
+    if (amount <= 0) {
+        errorEl.textContent = 'Amount must be greater than 0';
+        errorEl.classList.remove('hidden');
+        submitBtn.disabled = true;
+    } else if (amount > totalOutstanding + 0.01) { // Allow 1 cent tolerance for floating point precision
+        errorEl.textContent = `Amount cannot exceed total outstanding (Rs. ${totalOutstanding.toFixed(2)})`;
+        errorEl.classList.remove('hidden');
+        submitBtn.disabled = true;
+    } else {
+        errorEl.classList.add('hidden');
+        submitBtn.disabled = selectedInvoices.length === 0;
+    }
+}
+
+function formatAmountOnBlur(input) {
+    const value = parseFloat(input.value) || 0;
+    if (value > 0) {
+        input.value = value.toFixed(2);
+    }
+}
+
 function updateSettlementSummary() {
     const selectedInvoices = settlementInvoices.filter(inv => selectedInvoiceIds.includes(inv.id));
     const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
@@ -1731,11 +1782,8 @@ function updateSettlementSummary() {
     }
     // Otherwise, keep the user's manually entered amount (for partial settlements)
     
-    // Enable/disable submit button
-    const submitBtn = document.getElementById('submit-settlement-btn');
-    const amount = parseFloat(amountInput.value) || 0;
-    
-    submitBtn.disabled = selectedInvoices.length === 0 || amount <= 0 || amount > totalOutstanding;
+    // Re-validate the amount
+    validateAndFormatAmount(amountInput);
     
     // Update select-all checkbox state
     const selectAllCheckbox = document.getElementById('select-all-invoices');

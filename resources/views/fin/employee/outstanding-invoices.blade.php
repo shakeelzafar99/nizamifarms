@@ -130,21 +130,73 @@
 
             <!-- Invoices Table -->
             <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Order #</th>
-                            <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Date</th>
-                            <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Description</th>
-                            <th class="px-3 py-2 text-center text-xs font-semibold text-gray-700 uppercase">Status</th>
-                            <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Amount</th>
-                            <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Settled</th>
-                            <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Outstanding</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-100">
-                        @foreach($riderData['invoices'] as $invoice)
-                        <tr class="hover:bg-gray-50 transition-colors">
+                @if($filters['status'] == 'settled' && $riderData['invoices_by_date'])
+                    <!-- Day-Grouped View for Settled Invoices -->
+                    @foreach($riderData['invoices_by_date'] as $date => $dayData)
+                    <div class="mb-2 last:mb-0">
+                        <!-- Day Header with Total -->
+                        <div style="background: linear-gradient(to right, #dcfce7, #bbf7d0) !important;" class="px-4 py-2 border-b-2 border-green-300 flex justify-between items-center">
+                            <div>
+                                <span class="text-sm font-bold text-green-900">📅 {{ \Carbon\Carbon::parse($date)->format('l, M j, Y') }}</span>
+                                <span class="text-xs text-green-700 ml-2">({{ $dayData['count'] }} invoice{{ $dayData['count'] > 1 ? 's' : '' }})</span>
+                            </div>
+                            <div class="text-sm font-bold text-green-900">
+                                Day Total: Rs. {{ number_format($dayData['day_total'], 2) }}
+                            </div>
+                        </div>
+                        
+                        <!-- Invoices for this day -->
+                        <table class="min-w-full divide-y divide-gray-100">
+                            <thead style="background-color: #f9fafb !important;">
+                                <tr>
+                                    <th class="px-3 py-1.5 text-left text-xs font-semibold text-gray-600 uppercase">Order #</th>
+                                    <th class="px-3 py-1.5 text-left text-xs font-semibold text-gray-600 uppercase">Invoice Date</th>
+                                    <th class="px-3 py-1.5 text-left text-xs font-semibold text-gray-600 uppercase">Description</th>
+                                    <th class="px-3 py-1.5 text-right text-xs font-semibold text-gray-600 uppercase">Amount</th>
+                                    <th class="px-3 py-1.5 text-right text-xs font-semibold text-gray-600 uppercase">Settled</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-50">
+                                @foreach($dayData['invoices'] as $invoice)
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-3 py-2 whitespace-nowrap">
+                                        <span class="text-xs font-bold text-purple-700">{{ $invoice->order ? $invoice->order->order_number : 'N/A' }}</span>
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-600">
+                                        {{ $invoice->transaction_date->format('M j') }}
+                                    </td>
+                                    <td class="px-3 py-2 text-xs text-gray-600 max-w-xs truncate">
+                                        {{ $invoice->description }}
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-xs text-right font-semibold text-gray-900">
+                                        Rs. {{ number_format($invoice->amount, 2) }}
+                                    </td>
+                                    <td class="px-3 py-2 whitespace-nowrap text-xs text-right">
+                                        <span class="text-green-700 font-medium">Rs. {{ number_format($invoice->settled_amount, 2) }}</span>
+                                    </td>
+                                </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                    @endforeach
+                @else
+                    <!-- Standard View for Open/Partial Invoices -->
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Order #</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Date</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase">Description</th>
+                                <th class="px-3 py-2 text-center text-xs font-semibold text-gray-700 uppercase">Status</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Amount</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Settled</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-gray-700 uppercase">Outstanding</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-100">
+                            @foreach($riderData['invoices'] as $invoice)
+                            <tr class="hover:bg-gray-50 transition-colors">
                             <td class="px-3 py-2 whitespace-nowrap">
                                 <span class="text-xs font-bold text-purple-700">{{ $invoice['order_number'] }}</span>
                             </td>
@@ -272,6 +324,7 @@
                         </tr>
                     </tfoot>
                 </table>
+                @endif
             </div>
 
             <!-- Quick Actions -->

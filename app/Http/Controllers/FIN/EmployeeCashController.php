@@ -1091,7 +1091,7 @@ class EmployeeCashController extends Controller
             $settlementsByRider = $pendingSettlements->groupBy('from_account_id');
             
             // Group by rider for display
-            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider) {
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider, $statusFilter) {
                 $account = $riderInvoices->first()->toAccount;
                 $totalOutstanding = $riderInvoices->sum(function($invoice) {
                     return $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -1100,9 +1100,25 @@ class EmployeeCashController extends Controller
                 // Get pending settlements for this rider
                 $riderSettlements = $settlementsByRider->get($account->id, collect());
                 
+                // Group settled invoices by settlement date
+                $invoicesByDate = null;
+                if ($statusFilter === 'settled') {
+                    $invoicesByDate = $riderInvoices->groupBy(function($invoice) {
+                        return $invoice->settled_at ? $invoice->settled_at->format('Y-m-d') : 'Unknown';
+                    })->map(function($dayInvoices) {
+                        $dayTotal = $dayInvoices->sum('settled_amount');
+                        return [
+                            'invoices' => $dayInvoices,
+                            'day_total' => $dayTotal,
+                            'count' => $dayInvoices->count()
+                        ];
+                    });
+                }
+                
                 return [
                     'account' => $account,
                     'pending_settlements' => $riderSettlements,
+                    'invoices_by_date' => $invoicesByDate, // NEW: Grouped by day for settled invoices
                     'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement) {
                         $isPendingApproval = isset($invoiceToPendingSettlement[$invoice->id]);
                         $pendingSettlementId = $isPendingApproval ? $invoiceToPendingSettlement[$invoice->id] : null;
