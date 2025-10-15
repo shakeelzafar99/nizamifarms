@@ -2469,6 +2469,8 @@ function editOrderDetails(orderId) {
     .then(data => {
         if (data.success) {
             const order = data.order;
+            // Store order globally for ledger adjustment detection
+            window.currentOrder = order;
             loadEditForm(order);
         } else {
             showEditError('Error loading order: ' + (data.message || 'Unknown error'));
@@ -3416,6 +3418,47 @@ function saveOrderChanges(orderId) {
         address_country: formData.get('address_country')
     };
     
+    // ================================================================
+    // LEDGER ADJUSTMENT CONFIRMATION
+    // ================================================================
+    // Debug: Log order data
+    console.log('🔍 Ledger Adjustment Check:', {
+        hasCurrentOrder: !!window.currentOrder,
+        ledger_transaction_id: window.currentOrder?.ledger_transaction_id,
+        order_status: window.currentOrder?.order_status,
+        oldTotal: window.currentOrder?.total_price,
+        newTotal: orderData.total_price
+    });
+    
+    // Check if order is delivered and has ledger entry, and if price changed
+    if (window.currentOrder && window.currentOrder.ledger_transaction_id && window.currentOrder.order_status === 'delivered') {
+        const oldTotal = parseFloat(window.currentOrder.total_price) || 0;
+        const newTotal = orderData.total_price;
+        
+        console.log('✅ Ledger adjustment conditions met - checking price difference');
+        
+        // Check if there's a significant change (more than 1 cent to account for floating point)
+        if (Math.abs(oldTotal - newTotal) > 0.01) {
+            const difference = newTotal - oldTotal;
+            const confirmed = confirm(
+                `⚠️ LEDGER ADJUSTMENT REQUIRED\n\n` +
+                `This order has already been posted to the ledger.\n\n` +
+                `Old Amount: Rs. ${oldTotal.toFixed(2)}\n` +
+                `New Amount: Rs. ${newTotal.toFixed(2)}\n` +
+                `Difference: ${difference >= 0 ? '+' : ''}Rs. ${difference.toFixed(2)}\n\n` +
+                `The ledger adjustment will be sent for L1→L2 approval.\n` +
+                `The order will be updated immediately, but the ledger will only be updated after approval.\n\n` +
+                `Do you want to proceed?`
+            );
+            
+            if (!confirmed) {
+                submitBtn.textContent = 'Save';
+                submitBtn.disabled = false;
+                return; // Cancel the save
+            }
+        }
+    }
+    
     // Submit to existing update endpoint
     fetch(`/orders/${orderId}`, {
         method: 'PUT',
@@ -3429,7 +3472,12 @@ function saveOrderChanges(orderId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showSuccessMessage('Order updated successfully!');
+            // Show appropriate message based on whether adjustment was created
+            if (data.requires_approval) {
+                showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
+            } else {
+                showSuccessMessage('Order updated successfully!');
+            }
             submitBtn.textContent = 'Save';
             submitBtn.disabled = false;
             // Keep modal open for regular save - no page reload
@@ -3512,6 +3560,34 @@ function saveAndCloseOrder(orderId) {
         address_country: formData.get('address_country')
     };
     
+    // ================================================================
+    // LEDGER ADJUSTMENT CONFIRMATION (same as saveOrderChanges)
+    // ================================================================
+    if (window.currentOrder && window.currentOrder.ledger_transaction_id && window.currentOrder.order_status === 'delivered') {
+        const oldTotal = parseFloat(window.currentOrder.total_price) || 0;
+        const newTotal = orderData.total_price;
+        
+        if (Math.abs(oldTotal - newTotal) > 0.01) {
+            const difference = newTotal - oldTotal;
+            const confirmed = confirm(
+                `⚠️ LEDGER ADJUSTMENT REQUIRED\n\n` +
+                `This order has already been posted to the ledger.\n\n` +
+                `Old Amount: Rs. ${oldTotal.toFixed(2)}\n` +
+                `New Amount: Rs. ${newTotal.toFixed(2)}\n` +
+                `Difference: ${difference >= 0 ? '+' : ''}Rs. ${difference.toFixed(2)}\n\n` +
+                `The ledger adjustment will be sent for L1→L2 approval.\n` +
+                `The order will be updated immediately, but the ledger will only be updated after approval.\n\n` +
+                `Do you want to proceed?`
+            );
+            
+            if (!confirmed) {
+                saveAndCloseBtn.textContent = 'Save & Close';
+                saveAndCloseBtn.disabled = false;
+                return; // Cancel the save
+            }
+        }
+    }
+    
     // Submit to existing update endpoint
     fetch(`/orders/${orderId}`, {
         method: 'PUT',
@@ -3525,7 +3601,12 @@ function saveAndCloseOrder(orderId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showSuccessMessage('Order updated successfully!');
+            // Show appropriate message based on whether adjustment was created
+            if (data.requires_approval) {
+                showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
+            } else {
+                showSuccessMessage('Order updated successfully!');
+            }
             closeModal('editOrderModal');
             // If this editor is running in its own tab, close the tab; otherwise just refresh
             if (window.opener && !window.opener.closed) {

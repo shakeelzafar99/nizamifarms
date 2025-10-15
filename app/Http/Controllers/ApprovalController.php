@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Request\RequestModel;
 use App\Models\FIN\LedgerModel;
+use App\Models\FIN\LedgerAdjustmentModel;
 use App\Models\SysAdmin\RoleApprovalLevelModel;
 use Illuminate\Support\Facades\DB;
 
@@ -111,6 +112,42 @@ class ApprovalController extends Controller
             'total_amount' => $onlineLedger->sum('amount')
         ];
         
+        // ========== LEDGER ADJUSTMENTS (L1/L2 Workflow) ==========
+        $pendingAdjustments = collect();
+        
+        if ($hasLevel1Rights || $hasLevel2Rights) {
+            $allPendingAdjustments = LedgerAdjustmentModel::where('adjustment_status', LedgerAdjustmentModel::STATUS_PENDING)
+                ->with(['ledger', 'order', 'requestedBy'])
+                ->orderBy('requested_at', 'asc')
+                ->get();
+            
+            // Filter adjustments that this user can approve
+            $pendingAdjustments = $allPendingAdjustments->filter(function($adj) use ($user, $hasLevel1Rights, $hasLevel2Rights) {
+                // Check if user can approve at Level 1
+                if ($hasLevel1Rights && 
+                    $adj->requires_level_1 && 
+                    $adj->level_1_status === LedgerAdjustmentModel::APPROVAL_STATUS_PENDING) {
+                    return true;
+                }
+                
+                // Check if user can approve at Level 2
+                if ($hasLevel2Rights && 
+                    $adj->requires_level_2 && 
+                    $adj->level_1_status === LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED && 
+                    $adj->level_2_status === LedgerAdjustmentModel::APPROVAL_STATUS_PENDING) {
+                    return true;
+                }
+                
+                return false;
+            });
+        }
+        
+        $adjustmentSummary = [
+            'count' => $pendingAdjustments->count(),
+            'total_increase' => $pendingAdjustments->filter(fn($adj) => $adj->adjustment_amount > 0)->sum('adjustment_amount'),
+            'total_decrease' => abs($pendingAdjustments->filter(fn($adj) => $adj->adjustment_amount < 0)->sum('adjustment_amount'))
+        ];
+        
         return view('approvals.index', compact(
             'pendingRequests',
             'pendingLedger',
@@ -118,10 +155,12 @@ class ApprovalController extends Controller
             'onlineLedger',
             'leaveRequests',
             'expenseRequests',
+            'pendingAdjustments',
             'expenseSummary',
             'leaveSummary',
             'cashSummary',
             'onlineSummary',
+            'adjustmentSummary',
             'hasLevel1Rights',
             'hasLevel2Rights'
         ));

@@ -331,6 +331,104 @@
             <!-- Online/Bank Transactions Tab -->
             <div id="online" class="hidden" role="tabpanel" aria-labelledby="online-tab">
                 <div class="p-6">
+                    {{-- INVOICE ADJUSTMENTS SECTION --}}
+                    @if($pendingAdjustments->count() > 0)
+                        <div class="mb-6 bg-orange-50 border border-orange-200 rounded-lg p-4">
+                            <h3 class="text-lg font-semibold text-orange-900 mb-3">
+                                ⚠️ Invoice Adjustments ({{ $pendingAdjustments->count() }})
+                            </h3>
+                            <p class="text-sm text-orange-700 mb-4">
+                                These invoices have been modified after delivery and require L1→L2 approval to update the ledger.
+                            </p>
+                            
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-orange-200">
+                                    <thead class="bg-orange-100">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Adj ID</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Order</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Old Amount</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">New Amount</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Difference</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Requested</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-orange-900 uppercase">Level</th>
+                                            <th class="px-4 py-3 text-center text-xs font-medium text-orange-900 uppercase">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-orange-100">
+                                        @foreach($pendingAdjustments as $adj)
+                                        <tr class="hover:bg-orange-50">
+                                            <td class="px-4 py-3 text-sm font-mono text-gray-900">#{{ $adj->id }}</td>
+                                            <td class="px-4 py-3 text-sm">
+                                                <a href="{{ route('orders.invoice', $adj->order_id) }}" target="_blank" class="text-blue-600 hover:text-blue-800 font-medium">
+                                                    {{ $adj->order->order_number ?? 'NF-' . str_pad($adj->order_id, 4, '0', STR_PAD_LEFT) }}
+                                                </a>
+                                            </td>
+                                            <td class="px-4 py-3 text-sm text-gray-700">Rs. {{ number_format($adj->old_amount, 2) }}</td>
+                                            <td class="px-4 py-3 text-sm font-semibold text-gray-900">Rs. {{ number_format($adj->new_amount, 2) }}</td>
+                                            <td class="px-4 py-3 text-sm">
+                                                <span class="px-2 py-1 rounded text-xs font-medium {{ $adj->adjustment_amount > 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800' }}">
+                                                    {{ $adj->adjustment_amount > 0 ? '+' : '' }}Rs. {{ number_format($adj->adjustment_amount, 2) }}
+                                                </span>
+                                            </td>
+                                            <td class="px-4 py-3 text-sm text-gray-600">
+                                                {{ \Carbon\Carbon::parse($adj->requested_at)->format('M d, Y') }}
+                                                <br>
+                                                <span class="text-xs text-gray-500">by {{ $adj->requestedBy->name ?? 'System' }}</span>
+                                            </td>
+                                            <td class="px-4 py-3 text-sm">
+                                                @if($adj->level_1_status === 'pending')
+                                                    <span class="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-medium rounded">L1 Pending</span>
+                                                @elseif($adj->level_2_status === 'pending')
+                                                    <span class="px-2 py-1 bg-orange-100 text-orange-800 text-xs font-medium rounded">L2 Pending</span>
+                                                @endif
+                                            </td>
+                                            <td class="px-4 py-3 text-center">
+                                                <div class="flex items-center justify-center gap-2">
+                                                    @if($adj->level_1_status === 'pending' && $hasLevel1Rights)
+                                                        <form method="POST" action="{{ route('fin.ledger.adjustments.approve', $adj->id) }}" class="inline">
+                                                            @csrf
+                                                            <input type="hidden" name="level" value="1">
+                                                            <button type="submit" style="background-color: #2563eb !important; color: white !important; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 500;">
+                                                                ✓ Approve
+                                                            </button>
+                                                        </form>
+                                                        <form method="POST" action="{{ route('fin.ledger.adjustments.reject', $adj->id) }}" class="inline">
+                                                            @csrf
+                                                            <input type="hidden" name="level" value="1">
+                                                            <button type="submit" onclick="return confirm('Are you sure you want to reject this adjustment?')" style="background-color: #9333ea !important; color: white !important; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 500;">
+                                                                ✗ Reject
+                                                            </button>
+                                                        </form>
+                                                    @elseif($adj->level_2_status === 'pending' && $adj->level_1_status === 'approved' && $hasLevel2Rights)
+                                                        <form method="POST" action="{{ route('fin.ledger.adjustments.approve', $adj->id) }}" class="inline">
+                                                            @csrf
+                                                            <input type="hidden" name="level" value="2">
+                                                            <button type="submit" style="background-color: #2563eb !important; color: white !important; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 500;">
+                                                                ✓ Approve (L2)
+                                                            </button>
+                                                        </form>
+                                                        <form method="POST" action="{{ route('fin.ledger.adjustments.reject', $adj->id) }}" class="inline">
+                                                            @csrf
+                                                            <input type="hidden" name="level" value="2">
+                                                            <button type="submit" onclick="return confirm('Are you sure you want to reject this adjustment?')" style="background-color: #9333ea !important; color: white !important; padding: 6px 12px; border-radius: 4px; font-size: 12px; font-weight: 500;">
+                                                                ✗ Reject
+                                                            </button>
+                                                        </form>
+                                                    @else
+                                                        <span class="text-xs text-gray-500 italic">{{ $hasLevel1Rights || $hasLevel2Rights ? 'Waiting for approval' : 'No permission' }}</span>
+                                                    @endif
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    @endif
+                    
+                    {{-- REGULAR ONLINE LEDGER ENTRIES --}}
                     @if($onlineLedger->count() > 0)
                         <div class="mb-4 text-sm text-gray-600">
                             You have <strong class="text-gray-900">{{ $onlineLedger->count() }}</strong> pending online/bank transactions totaling <strong>Rs. {{ number_format($onlineSummary['total_amount'], 0) }}</strong>
@@ -373,13 +471,15 @@
                                 </tbody>
                             </table>
                         </div>
-                    @else
+                    @endif
+                    
+                    @if($onlineLedger->count() === 0 && $pendingAdjustments->count() === 0)
                         <div class="text-center py-12">
                             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
-                            <h3 class="mt-2 text-sm font-medium text-gray-900">No pending online/bank transactions</h3>
-                            <p class="mt-1 text-sm text-gray-500">All online/bank transactions have been approved!</p>
+                            <h3 class="mt-2 text-sm font-medium text-gray-900">No pending online/bank transactions or adjustments</h3>
+                            <p class="mt-1 text-sm text-gray-500">All online/bank transactions and invoice adjustments have been approved!</p>
                         </div>
                     @endif
                 </div>

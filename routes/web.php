@@ -354,6 +354,14 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'show'])->name('show');
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');
+            
+            // Ledger Adjustments (for order modifications after delivery)
+            Route::prefix('adjustments')->name('adjustments.')->group(function () {
+                Route::get('/', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'index'])->name('index');
+                Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'show'])->name('show');
+                Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'approve'])->name('approve');
+                Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'reject'])->name('reject');
+            });
         });
         
         // Expense Management & Settlement Routes

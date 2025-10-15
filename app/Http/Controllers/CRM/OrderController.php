@@ -9,7 +9,8 @@ use Illuminate\Support\Facades\Validator;
 use App\Services\ShopifyService;
 use App\Services\WooCommerceService;
 use Illuminate\Support\Facades\Log;
-use Carbon\Carbon; // ✅ Correct namespace
+use Carbon\Carbon;
+use App\Models\Request\RequestCategoryModel;
 class OrderController extends Controller
 {
 
@@ -445,6 +446,62 @@ class OrderController extends Controller
                 ]);
             }
             
+            // ================================================================
+            // LEDGER ADJUSTMENT DETECTION
+            // ================================================================
+            // Check if this order has a ledger entry (i.e., was delivered) and if the total_price changed
+            $ledgerAdjustmentCreated = false;
+            $adjustmentId = null;
+            
+            if ($order->ledger_transaction_id) {
+                $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
+                
+                if ($ledger) {
+                    $oldAmount = $ledger->amount;
+                    $newAmount = $validated['total_price'];
+                    
+                    // Check if there's a significant change (more than 1 cent to account for floating point)
+                    if (abs($oldAmount - $newAmount) > 0.01) {
+                        // Get the category configuration for invoice adjustments
+                        $category = RequestCategoryModel::where('category_code', 'invoice_adjustment')->first();
+                        $categoryConfig = $category ? $category->approvalConfig : null;
+                        
+                        $requiresL1 = $categoryConfig ? $categoryConfig->requires_level_1 : true;
+                        $requiresL2 = $categoryConfig ? $categoryConfig->requires_level_2 : false;
+                        
+                        // Create a ledger adjustment request
+                        $adjustment = \App\Models\FIN\LedgerAdjustmentModel::create([
+                            'ledger_id' => $ledger->id,
+                            'order_id' => $order->id,
+                            'old_amount' => $oldAmount,
+                            'new_amount' => $newAmount,
+                            'adjustment_amount' => $newAmount - $oldAmount,
+                            'reason' => "Order #{$order->order_number} invoice amount changed from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2),
+                            'adjustment_status' => \App\Models\FIN\LedgerAdjustmentModel::STATUS_PENDING,
+                            'requires_level_1' => $requiresL1,
+                            'requires_level_2' => $requiresL2,
+                            'level_1_status' => $requiresL1 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED,
+                            'level_2_status' => $requiresL2 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED,
+                            'requested_by' => auth()->id(),
+                            'requested_at' => now()
+                        ]);
+                        
+                        $ledgerAdjustmentCreated = true;
+                        $adjustmentId = $adjustment->id;
+                        
+                        \Log::info("Ledger adjustment created for order update", [
+                            'order_id' => $order->id,
+                            'order_number' => $order->order_number,
+                            'adjustment_id' => $adjustment->id,
+                            'old_amount' => $oldAmount,
+                            'new_amount' => $newAmount,
+                            'difference' => $newAmount - $oldAmount,
+                            'ledger_id' => $ledger->id
+                        ]);
+                    }
+                }
+            }
+            
             // Update order
             $order->update($validated);
             
@@ -509,11 +566,22 @@ class OrderController extends Controller
                 }
             }
             
-            return response()->json([
-                'success' => true,
-                'message' => 'Order updated successfully',
-                'order' => $order->load(['customer', 'lineItems', 'discounts'])
-            ]);
+            // Prepare response based on whether a ledger adjustment was created
+            if ($ledgerAdjustmentCreated) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.',
+                    'requires_approval' => true,
+                    'adjustment_id' => $adjustmentId,
+                    'order' => $order->load(['customer', 'lineItems', 'discounts'])
+                ]);
+            } else {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Order updated successfully',
+                    'order' => $order->load(['customer', 'lineItems', 'discounts'])
+                ]);
+            }
             
         } catch (\Exception $e) {
             return response()->json([
