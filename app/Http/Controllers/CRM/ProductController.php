@@ -555,9 +555,25 @@ class ProductController extends Controller
         // Add search functionality
         if ($request->has('search') && $request->search) {
             $search = $request->search;
-            $query->where(function($q) use ($search) {
-                $q->where('title', 'LIKE', "%{$search}%")
-                  ->orWhere('vendor', 'LIKE', "%{$search}%")
+            
+            // Split search query into individual words for flexible matching
+            $searchWords = array_filter(explode(' ', $search));
+            
+            $query->where(function($q) use ($search, $searchWords) {
+                // If multiple words, match each word independently in title
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    // Single word search - keep original behavior
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                
+                // Also search in vendor, product_type, and variants
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
                   ->orWhere('product_type', 'LIKE', "%{$search}%")
                   ->orWhereHas('variants', function($vq) use ($search) {
                       $vq->where('sku', 'LIKE', "%{$search}%")
@@ -595,13 +611,192 @@ class ProductController extends Controller
 
         $products = $query->orderBy('title')->paginate(20);
 
-        // Get filter options
-        $syncStatuses = ProductModel::distinct()->pluck('sync_status')->filter()->sort();
-        $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort();
-        $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort();
-        $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort();
-        $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort();
-        $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort();
+        // Get filter options based on CURRENT filters (cascading/dependent filters)
+        // For each filter dropdown, we build a query that applies all OTHER active filters
+        // This ensures each dropdown only shows values that actually exist for the filtered results
+        
+        // Base query for filter options (reusable)
+        $baseFilterQuery = ProductModel::query();
+        
+        // Sync Status options - respect other filters
+        $syncStatusQuery = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $syncStatusQuery->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $syncStatusQuery->where('status', $request->status);
+        if ($request->has('product_type') && $request->product_type) $syncStatusQuery->where('product_type', $request->product_type);
+        if ($request->has('vendor') && $request->vendor) $syncStatusQuery->where('vendor', $request->vendor);
+        if ($request->has('attribute_1') && $request->attribute_1) $syncStatusQuery->where('attribute_1', $request->attribute_1);
+        if ($request->has('attribute_2') && $request->attribute_2) $syncStatusQuery->where('attribute_2', $request->attribute_2);
+        if ($request->has('attribute_3') && $request->attribute_3) $syncStatusQuery->where('attribute_3', $request->attribute_3);
+        $syncStatuses = $syncStatusQuery->distinct()->pluck('sync_status')->filter()->sort();
+        
+        // Product Types (Category) options - respect other filters
+        $productTypeQuery = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $productTypeQuery->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $productTypeQuery->where('status', $request->status);
+        if ($request->has('vendor') && $request->vendor) $productTypeQuery->where('vendor', $request->vendor);
+        if ($request->has('sync_status') && $request->sync_status) $productTypeQuery->where('sync_status', $request->sync_status);
+        if ($request->has('attribute_1') && $request->attribute_1) $productTypeQuery->where('attribute_1', $request->attribute_1);
+        if ($request->has('attribute_2') && $request->attribute_2) $productTypeQuery->where('attribute_2', $request->attribute_2);
+        if ($request->has('attribute_3') && $request->attribute_3) $productTypeQuery->where('attribute_3', $request->attribute_3);
+        $productTypes = $productTypeQuery->distinct()->pluck('product_type')->filter()->sort();
+        
+        // Vendors options - respect other filters
+        $vendorQuery = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $vendorQuery->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $vendorQuery->where('status', $request->status);
+        if ($request->has('product_type') && $request->product_type) $vendorQuery->where('product_type', $request->product_type);
+        if ($request->has('sync_status') && $request->sync_status) $vendorQuery->where('sync_status', $request->sync_status);
+        if ($request->has('attribute_1') && $request->attribute_1) $vendorQuery->where('attribute_1', $request->attribute_1);
+        if ($request->has('attribute_2') && $request->attribute_2) $vendorQuery->where('attribute_2', $request->attribute_2);
+        if ($request->has('attribute_3') && $request->attribute_3) $vendorQuery->where('attribute_3', $request->attribute_3);
+        $vendors = $vendorQuery->distinct()->pluck('vendor')->filter()->sort();
+        
+        // Attribute 1 options - respect other filters
+        $attr1Query = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $attr1Query->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $attr1Query->where('status', $request->status);
+        if ($request->has('product_type') && $request->product_type) $attr1Query->where('product_type', $request->product_type);
+        if ($request->has('vendor') && $request->vendor) $attr1Query->where('vendor', $request->vendor);
+        if ($request->has('sync_status') && $request->sync_status) $attr1Query->where('sync_status', $request->sync_status);
+        if ($request->has('attribute_2') && $request->attribute_2) $attr1Query->where('attribute_2', $request->attribute_2);
+        if ($request->has('attribute_3') && $request->attribute_3) $attr1Query->where('attribute_3', $request->attribute_3);
+        $attribute1s = $attr1Query->distinct()->pluck('attribute_1')->filter()->sort();
+        
+        // Attribute 2 options - respect other filters
+        $attr2Query = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $attr2Query->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $attr2Query->where('status', $request->status);
+        if ($request->has('product_type') && $request->product_type) $attr2Query->where('product_type', $request->product_type);
+        if ($request->has('vendor') && $request->vendor) $attr2Query->where('vendor', $request->vendor);
+        if ($request->has('sync_status') && $request->sync_status) $attr2Query->where('sync_status', $request->sync_status);
+        if ($request->has('attribute_1') && $request->attribute_1) $attr2Query->where('attribute_1', $request->attribute_1);
+        if ($request->has('attribute_3') && $request->attribute_3) $attr2Query->where('attribute_3', $request->attribute_3);
+        $attribute2s = $attr2Query->distinct()->pluck('attribute_2')->filter()->sort();
+        
+        // Attribute 3 options - respect other filters
+        $attr3Query = clone $baseFilterQuery;
+        if ($request->has('search') && $request->search) {
+            $search = $request->search;
+            $searchWords = array_filter(explode(' ', $search));
+            $attr3Query->where(function($q) use ($search, $searchWords) {
+                if (count($searchWords) > 1) {
+                    $q->where(function($titleQuery) use ($searchWords) {
+                        foreach ($searchWords as $word) {
+                            $titleQuery->where('title', 'LIKE', "%{$word}%");
+                        }
+                    });
+                } else {
+                    $q->where('title', 'LIKE', "%{$search}%");
+                }
+                $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                  ->orWhere('product_type', 'LIKE', "%{$search}%")
+                  ->orWhereHas('variants', function($vq) use ($search) {
+                      $vq->where('sku', 'LIKE', "%{$search}%")->orWhere('title', 'LIKE', "%{$search}%");
+                  });
+            });
+        }
+        if ($request->has('status') && $request->status) $attr3Query->where('status', $request->status);
+        if ($request->has('product_type') && $request->product_type) $attr3Query->where('product_type', $request->product_type);
+        if ($request->has('vendor') && $request->vendor) $attr3Query->where('vendor', $request->vendor);
+        if ($request->has('sync_status') && $request->sync_status) $attr3Query->where('sync_status', $request->sync_status);
+        if ($request->has('attribute_1') && $request->attribute_1) $attr3Query->where('attribute_1', $request->attribute_1);
+        if ($request->has('attribute_2') && $request->attribute_2) $attr3Query->where('attribute_2', $request->attribute_2);
+        $attribute3s = $attr3Query->distinct()->pluck('attribute_3')->filter()->sort();
 
         // If this is an AJAX request, return JSON
         if ($request->wantsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
@@ -615,6 +810,14 @@ class ProductController extends Controller
                     'total' => $products->total(),
                     'per_page' => $products->perPage(),
                     'last_page' => $products->lastPage()
+                ],
+                'filter_options' => [
+                    'product_types' => $productTypes->values()->toArray(),
+                    'vendors' => $vendors->values()->toArray(),
+                    'attribute_1s' => $attribute1s->values()->toArray(),
+                    'attribute_2s' => $attribute2s->values()->toArray(),
+                    'attribute_3s' => $attribute3s->values()->toArray(),
+                    'sync_statuses' => $syncStatuses->values()->toArray()
                 ]
             ]);
         }
@@ -628,6 +831,80 @@ class ProductController extends Controller
     /**
      * Bulk adjust variant prices by filter and mode
      */
+    /**
+     * Preview bulk price adjustments without applying them
+     */
+    public function previewBulkAdjustPrices(Request $request)
+    {
+        $validated = $request->validate([
+            'mode' => 'required|in:percent,fixed',
+            'operation' => 'required|in:increase,decrease',
+            'amount' => 'required|numeric|min:0',
+            // Optional filters
+            'product_type' => 'nullable|string',
+            'vendor' => 'nullable|string',
+            'attribute_1' => 'nullable|string',
+            'attribute_2' => 'nullable|string',
+            'attribute_3' => 'nullable|string',
+        ]);
+
+        $query = ProductModel::query();
+        foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
+            if ($request->$f) $query->where($f, $request->$f);
+        }
+
+        $products = $query->with('variants')->get();
+        $changes = []; // Preview changes WITHOUT saving
+
+        foreach ($products as $product) {
+            foreach ($product->variants as $variant) {
+                $old = (float) $variant->price;
+                $new = $old;
+
+                if ($validated['mode'] === 'percent') {
+                    $delta = $old * ($validated['amount'] / 100);
+                    $new = $validated['operation'] === 'increase' ? $old + $delta : $old - $delta;
+                } else {
+                    $new = $validated['operation'] === 'increase' ? $old + $validated['amount'] : $old - $validated['amount'];
+                }
+
+                // Guardrails: never below zero
+                $new = max(0, round($new, 2));
+
+                if ($new !== $old) {
+                    // Just record the change, don't save
+                    $changes[] = [
+                        'product_title' => $product->title,
+                        'variant_title' => $variant->title,
+                        'sku' => $variant->sku,
+                        'old_price' => $old,
+                        'new_price' => $new,
+                        'difference' => $new - $old,
+                        'difference_percent' => $old > 0 ? round((($new - $old) / $old) * 100, 2) : 0
+                    ];
+                }
+            }
+        }
+
+        $affectedVariants = count($changes);
+        $affectedProducts = $products->filter(function($product) use ($changes) {
+            return collect($changes)->contains(function($change) use ($product) {
+                return $change['product_title'] === $product->title;
+            });
+        })->count();
+
+        $message = "Will update {$affectedProducts} products ({$affectedVariants} variants)";
+
+        return response()->json([
+            'success' => true,
+            'preview' => true,
+            'affected_variants' => $affectedVariants,
+            'affected_products' => $affectedProducts,
+            'message' => $message,
+            'changes' => $changes
+        ]);
+    }
+
     public function bulkAdjustPrices(Request $request)
     {
         $validated = $request->validate([
@@ -650,6 +927,7 @@ class ProductController extends Controller
         $products = $query->with('variants')->get();
         $affectedVariants = 0;
         $affectedProducts = 0;
+        $changes = []; // Track all price changes for detailed summary
 
         foreach ($products as $product) {
             $productUpdated = false;
@@ -672,6 +950,17 @@ class ProductController extends Controller
                     $variant->save();
                     $affectedVariants++;
                     $productUpdated = true;
+                    
+                    // Record this change for the summary
+                    $changes[] = [
+                        'product_title' => $product->title,
+                        'variant_title' => $variant->title,
+                        'sku' => $variant->sku,
+                        'old_price' => $old,
+                        'new_price' => $new,
+                        'difference' => $new - $old,
+                        'difference_percent' => $old > 0 ? round((($new - $old) / $old) * 100, 2) : 0
+                    ];
                 }
             }
 
@@ -696,7 +985,8 @@ class ProductController extends Controller
             'success' => true,
             'affected_variants' => $affectedVariants,
             'affected_products' => $affectedProducts,
-            'message' => $message
+            'message' => $message,
+            'changes' => $changes // Return detailed changes for frontend display
         ]);
     }
 
@@ -723,17 +1013,42 @@ class ProductController extends Controller
             $query = $request->get('q', '');
             $limit = $request->get('limit', 10);
             
+            // Split search query into individual words for flexible matching
+            $searchWords = array_filter(explode(' ', $query));
+            
             $products = \App\Models\CRM\ProductModel::with('variants')
                 ->where('is_active', true)
-                ->where(function($q) use ($query) {
+                ->where(function($q) use ($query, $searchWords) {
                     // Create hyphen-less version for flexible SKU search
                     $queryNoHyphens = str_replace(['-', ' '], '', $query);
                     
-                    $q->where('title', 'LIKE', "%{$query}%")
-                      ->orWhereHas('variants', function($vq) use ($query, $queryNoHyphens) {
-                          $vq->where('sku', 'LIKE', "%{$query}%")
-                            ->orWhere('title', 'LIKE', "%{$query}%")
-                            // Allow searching SKU without hyphens (e.g., "P12 DM" finds "P12-DM")
+                    // If multiple words, match each word independently in title (in any order)
+                    if (count($searchWords) > 1) {
+                        $q->where(function($titleQuery) use ($searchWords) {
+                            foreach ($searchWords as $word) {
+                                $titleQuery->where('title', 'LIKE', "%{$word}%");
+                            }
+                        });
+                    } else {
+                        // Single word search - keep original behavior
+                        $q->where('title', 'LIKE', "%{$query}%");
+                    }
+                    
+                    // Also search in variants
+                    $q->orWhereHas('variants', function($vq) use ($query, $queryNoHyphens, $searchWords) {
+                        if (count($searchWords) > 1) {
+                            // Multi-word search in variant title
+                            $vq->where(function($titleQuery) use ($searchWords) {
+                                foreach ($searchWords as $word) {
+                                    $titleQuery->where('title', 'LIKE', "%{$word}%");
+                                }
+                            });
+                        } else {
+                            $vq->where('title', 'LIKE', "%{$query}%");
+                        }
+                        
+                        // SKU search (always use full query)
+                        $vq->orWhere('sku', 'LIKE', "%{$query}%")
                             ->orWhereRaw('REPLACE(REPLACE(sku, "-", ""), " ", "") LIKE ?', ["%{$queryNoHyphens}%"]);
                       });
                 })

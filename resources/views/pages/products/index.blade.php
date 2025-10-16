@@ -7,10 +7,10 @@
 @endpush
 
 @section('content')
-<div class="products-index">
+<div class="products-index" style="max-width: 100%; overflow-x: hidden;">
 <!-- Enhanced Header Section -->
-<div class="container-fixed">
-    <div class="flex flex-wrap items-center lg:items-end justify-between gap-6 pb-6">
+<div class="container-fixed" style="max-width: 100%;">
+    <div class="flex flex-wrap items-center lg:items-end justify-between gap-3 pb-4">
         <div class="flex flex-col justify-center gap-3">
             <div class="flex items-center gap-3">
                 <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
@@ -27,32 +27,30 @@
         </div>
         
         <!-- Enhanced Action Buttons -->
-        <div class="products-toolbar flex items-center gap-3">
-            <div class="flex items-center gap-2 bg-white rounded-xl shadow-sm border border-gray-200 p-1">
-                <a href="{{ route('products.create') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
-                    <i class="ki-filled ki-plus text-blue-500"></i>
-                Create Product
+        <div class="products-toolbar flex flex-wrap items-center gap-2">
+            <a href="{{ route('products.create') }}" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md">
+                <i class="ki-filled ki-plus text-white text-sm"></i>
+                <span class="hidden sm:inline">Create</span>
             </a>
-                <button onclick="openColumnSettings()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
-                    <i class="ki-filled ki-setting-2 text-gray-500"></i>
-                Columns
+            <button onclick="openColumnSettings()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
+                <i class="ki-filled ki-setting-2 text-gray-500 text-sm"></i>
+                <span class="hidden md:inline">Columns</span>
             </button>
-                <a href="{{ route('products.attributes') }}" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
-                    <i class="ki-filled ki-category text-gray-500"></i>
-                Set Category
+            <a href="{{ route('products.attributes') }}" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
+                <i class="ki-filled ki-category text-gray-500 text-sm"></i>
+                <span class="hidden md:inline">Category</span>
             </a>
-                <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200">
-                    <i class="ki-filled ki-price-tag text-gray-500"></i>
-                Adjust Prices
+            <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
+                <i class="ki-filled ki-price-tag text-gray-500 text-sm"></i>
+                <span class="hidden md:inline">Prices</span>
             </button>
-            </div>
             <!-- Import Products button removed: use Administration → Operations → Import Products -->
         </div>
     </div>
 </div>
 
 <!-- Enhanced Main Content -->
-<div class="container-fixed">
+<div class="container-fixed" style="max-width: 100%;">
     <div class="grid gap-4">
         <!-- Modern Card with Enhanced Styling -->
         <div class="bg-white rounded-2xl shadow-sm overflow-hidden" style="border: none;">
@@ -83,10 +81,10 @@
                         </div>
                         
                         <!-- Filter Pills Row -->
-                        <div class="filters-bar flex flex-wrap items-center gap-3">
+                        <div class="filters-bar flex flex-wrap items-center gap-2">
                         <!-- Status Filter -->
-                            <div class="relative min-w-[120px]">
-                                <select name="status" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="statusFilter">
+                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
+                                <select name="status" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="statusFilter">
                             <option value="">All Status</option>
                             <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
                             <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
@@ -100,8 +98,8 @@
                             </div>
 
                         <!-- Category Filter -->
-                            <div class="relative min-w-[140px]">
-                                <select name="product_type" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="categoryFilter">
+                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
+                                <select name="product_type" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="categoryFilter">
                             <option value="">All Categories</option>
                             @foreach($productTypes as $type)
                                 <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
@@ -117,8 +115,8 @@
                             </div>
 
                         <!-- Vendor Filter -->
-                            <div class="relative min-w-[130px]">
-                                <select name="vendor" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="vendorFilter">
+                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
+                                <select name="vendor" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="vendorFilter">
                             <option value="">All Vendors</option>
                             @foreach($vendors as $vendor)
                                 <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
@@ -134,8 +132,8 @@
                             </div>
 
                         <!-- Category Level 1 Filter -->
-                            <div class="relative min-w-[160px]">
-                                <select name="attribute_1" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="attr1Filter">
+                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
+                                <select name="attribute_1" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="attr1Filter">
                             <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
                             @foreach($attribute1s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
@@ -150,8 +148,9 @@
                                 </div>
                             </div>
                             
-                            <!-- Hidden Attribute Filters -->
-                        <select name="attribute_2" class="select select-sm" id="attr2Filter" style="display: none;">
+                            <!-- Category Level 2 Filter -->
+                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
+                                <select name="attribute_2" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="attr2Filter">
                             <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
                             @foreach($attribute2s as $val)
                                 <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
@@ -159,6 +158,14 @@
                                 </option>
                             @endforeach
                         </select>
+                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            
+                            <!-- Hidden Attribute 3 Filter -->
                         <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
                             <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
                             @foreach($attribute3s as $val)
@@ -169,8 +176,8 @@
                         </select>
                         
                         <!-- Sync Status Filter -->
-                            <div class="relative min-w-[130px]">
-                                <select name="sync_status" class="w-full rounded-lg px-3 py-2.5 pr-10 text-sm font-medium text-gray-700 transition-all duration-200 cursor-pointer" id="syncStatusFilter">
+                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
+                                <select name="sync_status" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="syncStatusFilter">
                             <option value="">All Sources</option>
                             @foreach($syncStatuses as $syncStatus)
                                 <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
@@ -187,9 +194,9 @@
                             
                         @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
                                 <button type="button" onclick="event.preventDefault(); clearAllFilters();" 
-                                        class="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-all duration-200" id="clearFiltersBtn">
-                                    <i class="ki-filled ki-cross-circle text-red-500"></i>
-                                    Clear Filters
+                                        class="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-all duration-200" id="clearFiltersBtn" style="flex-shrink: 0;">
+                                    <i class="ki-filled ki-cross-circle text-red-500 text-sm"></i>
+                                    <span class="hidden sm:inline">Clear</span>
                                 </button>
                         @endif
                         </div>
@@ -347,7 +354,7 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                 <div>
                     <label class="form-label">Category</label>
-                    <select id="bulkCategory" class="select select-sm">
+                    <select id="bulkCategory" class="select select-sm bulk-filter-cascade">
                         <option value="">Any</option>
                         @foreach($productTypes as $type)
                             <option value="{{ $type }}">{{ $type }}</option>
@@ -356,7 +363,7 @@
                 </div>
                 <div>
                     <label class="form-label">Vendor</label>
-                    <select id="bulkVendor" class="select select-sm">
+                    <select id="bulkVendor" class="select select-sm bulk-filter-cascade">
                         <option value="">Any</option>
                         @foreach($vendors as $vendor)
                             <option value="{{ $vendor }}">{{ $vendor }}</option>
@@ -367,7 +374,7 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
                 <div>
                     <label class="form-label">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
-                    <select id="bulkAttr1" class="select select-sm">
+                    <select id="bulkAttr1" class="select select-sm bulk-filter-cascade">
                         <option value="">Any</option>
                         @foreach($attribute1s as $val)
                             <option value="{{ $val }}">{{ $val }}</option>
@@ -376,7 +383,7 @@
                 </div>
                 <div>
                     <label class="form-label">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
-                    <select id="bulkAttr2" class="select select-sm">
+                    <select id="bulkAttr2" class="select select-sm bulk-filter-cascade">
                         <option value="">Any</option>
                         @foreach($attribute2s as $val)
                             <option value="{{ $val }}">{{ $val }}</option>
@@ -385,7 +392,7 @@
                 </div>
                 <div>
                     <label class="form-label">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
-                    <select id="bulkAttr3" class="select select-sm">
+                    <select id="bulkAttr3" class="select select-sm bulk-filter-cascade">
                         <option value="">Any</option>
                         @foreach($attribute3s as $val)
                             <option value="{{ $val }}">{{ $val }}</option>
@@ -416,10 +423,53 @@
         </div>
         <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
             <button onclick="closeModal('bulkAdjustPricesModal')" class="kt-btn kt-btn-light">Cancel</button>
-            <button onclick="submitBulkAdjustPrices()" class="kt-btn kt-btn-primary">Apply</button>
+            <button onclick="previewBulkAdjustPrices()" class="kt-btn kt-btn-secondary" style="background-color: #6366f1; color: white;">Preview Changes</button>
+            <button onclick="submitBulkAdjustPrices()" class="kt-btn kt-btn-primary">Apply Now</button>
         </div>
     </div>
  </div>
+
+<!-- Price Change Summary Modal (for completed changes) -->
+<div id="priceChangeSummaryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1001;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 95vw; max-height: 90vh; overflow: hidden; width: 900px; display: flex; flex-direction: column;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">✅ Price Changes Applied</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;" id="priceChangeSummarySubtitle">Review all price changes that were applied</p>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 20px;">
+            <div id="priceChangeSummaryContent">
+                <!-- Content will be dynamically inserted here -->
+            </div>
+        </div>
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
+            <button onclick="closeModal('priceChangeSummaryModal')" class="kt-btn kt-btn-primary">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Price Change Preview Modal (before applying) -->
+<div id="priceChangePreviewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1001;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 95vw; max-height: 90vh; overflow: hidden; width: 900px; display: flex; flex-direction: column;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">👁️ Preview Price Changes</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;" id="priceChangePreviewSubtitle">Review changes before applying</p>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 20px;">
+            <div id="priceChangePreviewContent">
+                <!-- Content will be dynamically inserted here -->
+            </div>
+        </div>
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <div style="color: #dc2626; font-size: 13px; font-weight: 500;">
+                ⚠️ Changes not yet applied
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button onclick="closeModal('priceChangePreviewModal')" class="kt-btn kt-btn-light">Cancel</button>
+                <button onclick="applyFromPreview()" class="kt-btn kt-btn-primary">Apply These Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script>
 // Open unified import modal
@@ -639,22 +689,22 @@ function formatDateLocal(dateString) {
 // Product data from server (make it globally accessible)
 window.productsData = @json($products->items());
 
-// Available columns configuration
+// Available columns configuration - optimized for better space usage
 const availableColumns = {
-    'image': { label: 'Image', width: 'w-[60px]', order: 1, cssClass: 'col-image' },
-    'title': { label: 'Product', width: 'min-w-[200px]', order: 2, cssClass: 'col-name' },
-    'skus': { label: 'SKUs', width: 'w-[150px]', order: 3, cssClass: 'col-sku' },
-    'status': { label: 'Status', width: 'w-[100px]', order: 4, cssClass: 'col-status' },
-    'vendor': { label: 'Vendor', width: 'w-[120px]', order: 5, cssClass: 'col-vendor' },
-    'product_type': { label: 'Type', width: 'w-[120px]', order: 6, cssClass: 'col-type' },
-    'attribute_1': { label: '{{ $attributeLabels["1"] ?? "Category Level 1" }}', width: 'w-[140px]', order: 7, cssClass: 'col-attr1' },
-    'attribute_2': { label: '{{ $attributeLabels["2"] ?? "Category Level 2" }}', width: 'w-[140px]', order: 8, cssClass: 'col-attr2' },
-    'attribute_3': { label: '{{ $attributeLabels["3"] ?? "Category Level 3" }}', width: 'w-[140px]', order: 9, cssClass: 'col-attr3' },
-    'price_range': { label: 'Price Range', width: 'w-[120px]', order: 10, cssClass: 'col-price' },
-    'variants_count': { label: 'Variants', width: 'w-[80px]', order: 11, cssClass: 'col-variants' },
-    'total_inventory': { label: 'Inventory', width: 'w-[100px]', order: 12, cssClass: 'col-inventory' },
-    'last_synced_at': { label: 'Last sync', width: 'w-[100px]', order: 13, cssClass: 'col-sync' },
-    'actions': { label: 'Actions', width: 'w-[120px]', order: 14, fixed: true, cssClass: 'col-actions' }
+    'image': { label: 'Image', width: 'w-[50px]', order: 1, cssClass: 'col-image' },
+    'title': { label: 'Product', width: 'min-w-[180px]', order: 2, cssClass: 'col-name' },
+    'skus': { label: 'SKUs', width: 'w-[130px]', order: 3, cssClass: 'col-sku' },
+    'status': { label: 'Status', width: 'w-[90px]', order: 4, cssClass: 'col-status' },
+    'vendor': { label: 'Vendor', width: 'w-[100px]', order: 5, cssClass: 'col-vendor' },
+    'product_type': { label: 'Type', width: 'w-[100px]', order: 6, cssClass: 'col-type' },
+    'attribute_1': { label: '{{ $attributeLabels["1"] ?? "Category Level 1" }}', width: 'w-[110px]', order: 7, cssClass: 'col-attr1' },
+    'attribute_2': { label: '{{ $attributeLabels["2"] ?? "Category Level 2" }}', width: 'w-[110px]', order: 8, cssClass: 'col-attr2' },
+    'attribute_3': { label: '{{ $attributeLabels["3"] ?? "Category Level 3" }}', width: 'w-[110px]', order: 9, cssClass: 'col-attr3' },
+    'price_range': { label: 'Price Range', width: 'w-[110px]', order: 10, cssClass: 'col-price' },
+    'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
+    'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
+    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 13, cssClass: 'col-sync' },
+    'actions': { label: 'Actions', width: 'w-[105px]', order: 14, fixed: true, cssClass: 'col-actions' }
 };
 
 // Default visible columns
@@ -696,18 +746,14 @@ function initializeRealTimeSearch() {
         }, 300); // Wait 300ms after user stops typing
     });
     
-    // Also trigger search on filter changes
-    if (statusFilter) {
-        statusFilter.addEventListener('change', performSearch);
-    }
-    if (syncStatusFilter) {
-        syncStatusFilter.addEventListener('change', performSearch);
-    }
-    if (categoryFilter) categoryFilter.addEventListener('change', performSearch);
-    if (vendorFilter) vendorFilter.addEventListener('change', performSearch);
-    if (attr1Filter) attr1Filter.addEventListener('change', performSearch);
-    if (attr2Filter) attr2Filter.addEventListener('change', performSearch);
-    if (attr3Filter) attr3Filter.addEventListener('change', performSearch);
+    // Auto-submit form when filters change (for cascading filter behavior)
+    // This reloads the page so backend can recalculate available filter options
+    const filterSelects = document.querySelectorAll('.filter-select');
+    filterSelects.forEach(select => {
+        select.addEventListener('change', function() {
+            document.getElementById('productSearchForm').submit();
+        });
+    });
 }
 
 function performSearch() {
@@ -819,20 +865,9 @@ function updateClearButton() {
 }
 
 function clearAllFilters() {
-    document.getElementById('productSearchInput').value = '';
-    document.getElementById('statusFilter').value = '';
-    document.getElementById('syncStatusFilter').value = '';
-    const categoryFilter = document.getElementById('categoryFilter');
-    const vendorFilter = document.getElementById('vendorFilter');
-    const attr1Filter = document.getElementById('attr1Filter');
-    const attr2Filter = document.getElementById('attr2Filter');
-    const attr3Filter = document.getElementById('attr3Filter');
-    if (categoryFilter) categoryFilter.value = '';
-    if (vendorFilter) vendorFilter.value = '';
-    if (attr1Filter) attr1Filter.value = '';
-    if (attr2Filter) attr2Filter.value = '';
-    if (attr3Filter) attr3Filter.value = '';
-    performSearch();
+    // Simply redirect to the products page without any query parameters
+    // This will reload the page with all filters reset and all dropdown options repopulated
+    window.location.href = window.location.pathname;
 }
 
 function renderTable() {
@@ -848,7 +883,7 @@ function renderTableHeaders() {
         if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
             const column = availableColumns[columnKey];
             const th = document.createElement('th');
-            th.className = `${column.cssClass} ${column.width} px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider`;
+            th.className = `${column.cssClass} ${column.width}`;
             th.innerHTML = `<span class="hdr">${column.label}</span>`;
             headerRow.appendChild(th);
         }
@@ -879,7 +914,7 @@ function renderTableBody() {
             if (visibleColumns.includes(columnKey) && availableColumns[columnKey]) {
                 const column = availableColumns[columnKey];
                 const cell = document.createElement('td');
-                cell.className = `${column.cssClass} px-6 py-4 whitespace-nowrap`;
+                cell.className = `${column.cssClass} ${column.width}`;
                 cell.innerHTML = getCellContent(columnKey, product);
                 row.appendChild(cell);
             }
@@ -1010,21 +1045,21 @@ function getCellContent(columnKey, product) {
             </div>`;
             
         case 'actions':
-            return `<div class="actions">
+            return `<div class="actions flex items-center gap-1.5">
                 <button onclick="viewProduct(${product.id})" 
-                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
+                        class="btn flex items-center justify-center w-7 h-7 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
                         title="View Details">
-                    <i class="ki-filled ki-eye text-sm"></i>
+                    <i class="ki-filled ki-eye text-xs"></i>
                 </button>
                 <button onclick="editProduct(${product.id})" 
-                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
+                        class="btn flex items-center justify-center w-7 h-7 rounded-md bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
                         title="Edit Product">
-                    <i class="ki-filled ki-pencil text-sm"></i>
+                    <i class="ki-filled ki-pencil text-xs"></i>
                 </button>
                 ${product.shopify_product_id ? `<button onclick="syncProduct(${product.id})" 
-                        class="btn flex items-center justify-center w-8 h-8 rounded-lg bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors duration-200 border border-purple-200" 
+                        class="btn flex items-center justify-center w-7 h-7 rounded-md bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors duration-200 border border-purple-200" 
                         title="Sync with Shopify">
-                    <i class="ki-filled ki-arrows-circle text-sm"></i>
+                    <i class="ki-filled ki-arrows-circle text-xs"></i>
                 </button>` : ''}
             </div>`;
             
@@ -1094,6 +1129,67 @@ function openColumnSettings() {
 
 function openBulkAdjustPricesModal() {
     document.getElementById('bulkAdjustPricesModal').style.display = 'block';
+    
+    // Setup cascading filter behavior for bulk modal
+    setupBulkModalCascadingFilters();
+}
+
+function setupBulkModalCascadingFilters() {
+    // Add event listeners to all bulk filter dropdowns for cascading
+    document.querySelectorAll('.bulk-filter-cascade').forEach(select => {
+        select.addEventListener('change', updateBulkModalFilters);
+    });
+}
+
+function updateBulkModalFilters() {
+    const bulkCategory = document.getElementById('bulkCategory');
+    const bulkVendor = document.getElementById('bulkVendor');
+    const bulkAttr1 = document.getElementById('bulkAttr1');
+    const bulkAttr2 = document.getElementById('bulkAttr2');
+    const bulkAttr3 = document.getElementById('bulkAttr3');
+    
+    // Build query params based on current selections
+    const params = new URLSearchParams();
+    if (bulkCategory.value) params.set('product_type', bulkCategory.value);
+    if (bulkVendor.value) params.set('vendor', bulkVendor.value);
+    if (bulkAttr1.value) params.set('attribute_1', bulkAttr1.value);
+    if (bulkAttr2.value) params.set('attribute_2', bulkAttr2.value);
+    if (bulkAttr3.value) params.set('attribute_3', bulkAttr3.value);
+    
+    // Fetch updated filter options
+    fetch(`/products?${params.toString()}`, {
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.filter_options) {
+            // Update each dropdown preserving current selections
+            updateBulkFilterDropdown(bulkCategory, data.filter_options.product_types, bulkCategory.value);
+            updateBulkFilterDropdown(bulkVendor, data.filter_options.vendors, bulkVendor.value);
+            updateBulkFilterDropdown(bulkAttr1, data.filter_options.attribute_1s, bulkAttr1.value);
+            updateBulkFilterDropdown(bulkAttr2, data.filter_options.attribute_2s, bulkAttr2.value);
+            updateBulkFilterDropdown(bulkAttr3, data.filter_options.attribute_3s, bulkAttr3.value);
+        }
+    })
+    .catch(err => console.warn('Could not update bulk filters:', err));
+}
+
+function updateBulkFilterDropdown(selectElement, options, selectedValue) {
+    const currentLabel = selectElement.options[0].text; // Keep the "Any" label
+    selectElement.innerHTML = `<option value="">${currentLabel}</option>`;
+    
+    if (options && options.length > 0) {
+        options.forEach(option => {
+            const opt = document.createElement('option');
+            opt.value = option;
+            opt.text = option;
+            if (option === selectedValue) opt.selected = true;
+            selectElement.appendChild(opt);
+        });
+    }
 }
 
 function submitBulkAdjustPrices() {
@@ -1129,9 +1225,13 @@ function submitBulkAdjustPrices() {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            alert(data.message);
             closeModal('bulkAdjustPricesModal');
-            performSearch(); // refresh table
+            
+            // Show price change summary
+            showPriceChangeSummary(data);
+            
+            // Refresh table in background
+            performSearch();
         } else {
             alert('Bulk update failed: ' + (data.message || 'Unknown error'));
         }
@@ -1140,6 +1240,172 @@ function submitBulkAdjustPrices() {
         console.error('Bulk adjust error', err);
         alert('Network error.');
     });
+}
+
+function previewBulkAdjustPrices() {
+    const payload = {
+        mode: document.getElementById('bulkMode').value,
+        operation: document.getElementById('bulkOperation').value,
+        amount: parseFloat(document.getElementById('bulkAmount').value || '0'),
+        product_type: document.getElementById('bulkCategory').value || '',
+        vendor: document.getElementById('bulkVendor').value || '',
+        attribute_1: document.getElementById('bulkAttr1').value || '',
+        attribute_2: document.getElementById('bulkAttr2').value || '',
+        attribute_3: document.getElementById('bulkAttr3').value || ''
+    };
+
+    if (!payload.amount || payload.amount <= 0) {
+        alert('Please enter a valid amount.');
+        return;
+    }
+
+    // Store payload for apply from preview
+    window.bulkPricePayload = payload;
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                      document.querySelector('input[name="_token"]').value || '';
+
+    fetch('/products/bulk-adjust-prices/preview', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Show preview modal
+            showPriceChangePreview(data);
+        } else {
+            alert('Preview failed: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => {
+        console.error('Preview error', err);
+        alert('Network error.');
+    });
+}
+
+function showPriceChangePreview(data) {
+    const modal = document.getElementById('priceChangePreviewModal');
+    const subtitle = document.getElementById('priceChangePreviewSubtitle');
+    const content = document.getElementById('priceChangePreviewContent');
+    
+    // Update subtitle with preview stats
+    subtitle.textContent = `${data.affected_products} products will be updated (${data.affected_variants} variants will change)`;
+    
+    // Use same table generation function
+    content.innerHTML = generatePriceChangeTable(data.changes);
+    modal.style.display = 'block';
+}
+
+function applyFromPreview() {
+    const payload = window.bulkPricePayload;
+    if (!payload) {
+        alert('No preview data available');
+        return;
+    }
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                      document.querySelector('input[name="_token"]').value || '';
+
+    fetch('/products/bulk-adjust-prices', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            closeModal('priceChangePreviewModal');
+            closeModal('bulkAdjustPricesModal');
+            
+            // Show success summary
+            showPriceChangeSummary(data);
+            
+            // Refresh table
+            performSearch();
+            
+            // Clear stored payload
+            window.bulkPricePayload = null;
+        } else {
+            alert('Bulk update failed: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => {
+        console.error('Bulk adjust error', err);
+        alert('Network error.');
+    });
+}
+
+function showPriceChangeSummary(data) {
+    const modal = document.getElementById('priceChangeSummaryModal');
+    const subtitle = document.getElementById('priceChangeSummarySubtitle');
+    const content = document.getElementById('priceChangeSummaryContent');
+    
+    // Update subtitle with summary stats
+    subtitle.textContent = `${data.affected_products} products updated (${data.affected_variants} variants changed)`;
+    
+    // Use same table generation function
+    content.innerHTML = generatePriceChangeTable(data.changes);
+    modal.style.display = 'block';
+}
+
+function generatePriceChangeTable(changes) {
+    let html = '';
+    
+    if (changes && changes.length > 0) {
+        html += '<div style="overflow-x: auto;">';
+        html += '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
+        html += '<thead>';
+        html += '<tr style="background-color: #f9fafb; border-bottom: 2px solid #e5e7eb;">';
+        html += '<th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Product</th>';
+        html += '<th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Variant</th>';
+        html += '<th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">SKU</th>';
+        html += '<th style="padding: 12px 8px; text-align: right; font-weight: 600; color: #374151;">Old Price</th>';
+        html += '<th style="padding: 12px 8px; text-align: right; font-weight: 600; color: #374151;">New Price</th>';
+        html += '<th style="padding: 12px 8px; text-align: right; font-weight: 600; color: #374151;">Change</th>';
+        html += '</tr>';
+        html += '</thead>';
+        html += '<tbody>';
+        
+        changes.forEach((change, index) => {
+            const bgColor = index % 2 === 0 ? '#ffffff' : '#f9fafb';
+            const isIncrease = change.difference > 0;
+            const changeColor = isIncrease ? '#10b981' : '#ef4444';
+            const changeIcon = isIncrease ? '↑' : '↓';
+            
+            html += `<tr style="background-color: ${bgColor}; border-bottom: 1px solid #e5e7eb;">`;
+            html += `<td style="padding: 10px 8px; color: #111827;">${change.product_title || 'N/A'}</td>`;
+            html += `<td style="padding: 10px 8px; color: #6b7280;">${change.variant_title || 'Default'}</td>`;
+            html += `<td style="padding: 10px 8px; color: #6b7280; font-family: monospace;">${change.sku || '-'}</td>`;
+            html += `<td style="padding: 10px 8px; text-align: right; color: #6b7280;">PKR ${change.old_price.toFixed(2)}</td>`;
+            html += `<td style="padding: 10px 8px; text-align: right; color: #111827; font-weight: 600;">PKR ${change.new_price.toFixed(2)}</td>`;
+            html += `<td style="padding: 10px 8px; text-align: right; color: ${changeColor}; font-weight: 600;">`;
+            html += `${changeIcon} PKR ${Math.abs(change.difference).toFixed(2)} (${change.difference_percent > 0 ? '+' : ''}${change.difference_percent}%)`;
+            html += `</td>`;
+            html += `</tr>`;
+        });
+        
+        html += '</tbody>';
+        html += '</table>';
+        html += '</div>';
+    } else {
+        html += '<div style="text-align: center; padding: 40px; color: #6b7280;">';
+        html += '<p>No price changes were made.</p>';
+        html += '</div>';
+    }
+    
+    return html;
 }
 
 function toggleColumn(columnKey) {

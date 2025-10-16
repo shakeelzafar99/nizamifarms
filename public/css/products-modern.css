@@ -50,11 +50,11 @@
     border: 1.5px solid #C4B5FD !important;
     border-radius: 10px !important;
     box-shadow: 0 1px 3px rgba(139, 92, 246, 0.1) !important;
-    height: 42px !important;
-    padding: 0 14px !important;
-    padding-right: 36px !important;
+    height: 36px !important;
+    padding: 0 10px !important;
+    padding-right: 32px !important;
     color: #374151 !important;
-    font-size: 13px !important;
+    font-size: 12px !important;
     font-weight: 500 !important;
     transition: all 0.2s ease !important;
     cursor: pointer !important;
@@ -112,6 +112,7 @@
 /* ===== TABLE STYLING ===== */
 .products-index .table-products {
     width: 100% !important;
+    table-layout: fixed !important;
     border-collapse: separate !important;
     border-spacing: 0 !important;
 }
@@ -123,21 +124,27 @@
     background: linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%) !important;
     color: #FFFFFF !important;
     text-transform: uppercase !important;
-    font-size: 11px !important;
+    font-size: 10px !important;
     font-weight: 600 !important;
-    letter-spacing: 0.8px !important;
-    padding: 14px 16px !important;
+    letter-spacing: 0.6px !important;
+    padding: 12px 10px !important;
     border-bottom: 2px solid #7C3AED !important;
     box-shadow: 0 2px 6px rgba(139, 92, 246, 0.15) !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 
 .products-index .table-products tbody td {
-    padding: 14px 16px !important;
+    padding: 10px 10px !important;
     border-bottom: 1px solid #F3F4F6 !important;
     vertical-align: middle !important;
     transition: all 0.2s ease !important;
-    font-size: 14px !important;
+    font-size: 13px !important;
     color: #374151 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 
 .products-index .table-products tbody tr:nth-child(even) {
@@ -179,11 +186,11 @@
 .products-index .badge {
     display: inline-flex !important;
     align-items: center !important;
-    padding: 6px 14px !important;
+    padding: 4px 10px !important;
     border-radius: 999px !important;
-    font-size: 12px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.3px !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.2px !important;
     transition: all 0.2s ease !important;
 }
 
@@ -222,19 +229,42 @@
     filter: brightness(1.2) !important;
 }
 
+/* ===== COLUMN SPECIFIC STYLES ===== */
+/* Allow product name column to wrap since it needs more space */
+.products-index .table-products .col-name {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    max-width: 200px !important;
+}
+
+/* Ensure action buttons don't wrap */
+.products-index .table-products .col-actions {
+    white-space: nowrap !important;
+}
+
+/* Make image column more compact */
+.products-index .table-products .col-image img,
+.products-index .table-products .col-image .thumb {
+    width: 40px !important;
+    height: 40px !important;
+    object-fit: cover !important;
+    border-radius: 6px !important;
+}
+
 /* ===== RESPONSIVE ===== */
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
     .products-index .table-products {
-        font-size: 13px !important;
+        font-size: 12px !important;
     }
     
     .products-index .table-products thead th {
-        padding: 14px 16px !important;
-        font-size: 10px !important;
+        padding: 10px 8px !important;
+        font-size: 9px !important;
     }
     
     .products-index .table-products tbody td {
-        padding: 14px 16px !important;
+        padding: 10px 8px !important;
+        font-size: 12px !important;
     }
 }
 
