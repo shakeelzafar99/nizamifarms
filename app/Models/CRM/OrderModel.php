@@ -34,6 +34,7 @@ class OrderModel extends BaseModel
         'discount_total',
         'shipping_total',
         'total_tax',
+        'tip_amount',
         'total_price',
         'total_weight',
         'address_first_name',
@@ -62,6 +63,7 @@ class OrderModel extends BaseModel
         'discount_total' => 'decimal:2',
         'shipping_total' => 'decimal:2',
         'total_tax' => 'decimal:2',
+        'tip_amount' => 'decimal:2',
         'total_price' => 'decimal:2',
         'total_weight' => 'integer',
         'converted' => 'boolean'
@@ -528,6 +530,17 @@ class OrderModel extends BaseModel
         // Use shipping if available, otherwise billing
         $primaryAddress = !empty($shippingAddress['address1']) ? $shippingAddress : $billingAddress;
 
+        // Extract tip amount from Shopify webhook
+        // Shopify sends tip in multiple possible formats:
+        // 1. current_total_tip_set.shop_money.amount (preferred - most accurate)
+        // 2. total_tip_received (fallback - legacy field)
+        $tipAmount = 0;
+        if (isset($shopifyOrder['current_total_tip_set']['shop_money']['amount'])) {
+            $tipAmount = $shopifyOrder['current_total_tip_set']['shop_money']['amount'];
+        } elseif (isset($shopifyOrder['total_tip_received'])) {
+            $tipAmount = $shopifyOrder['total_tip_received'];
+        }
+
         $orderData = [
             'external_source' => 'shopify',
             'external_id' => (string)$shopifyOrder['id'],
@@ -545,6 +558,7 @@ class OrderModel extends BaseModel
             'discount_total' => $shopifyOrder['total_discounts'] ?? 0,
             'shipping_total' => $shopifyOrder['total_shipping_price_set']['shop_money']['amount'] ?? 0,
             'total_tax' => $shopifyOrder['total_tax'] ?? 0,
+            'tip_amount' => $tipAmount,
             'total_price' => $shopifyOrder['total_price'] ?? 0,
             'total_weight' => $shopifyOrder['total_weight'] ?? 0,
             
@@ -566,7 +580,7 @@ class OrderModel extends BaseModel
                 $shopifyOrder['gateway'] ?? $shopifyOrder['payment_gateway_names'][0] ?? 
                 (isset($shopifyOrder['transactions'][0]) ? $shopifyOrder['transactions'][0]['gateway'] : null)
             ),
-            'note' => $shopifyOrder['note'] ?? null,
+            'note' => $shopifyOrder['note'] ?? null,  // Order notes already captured here
             
             // Line items
             'line_items' => array_map([static::class, 'mapShopifyLineItem'], $shopifyOrder['line_items'] ?? [])

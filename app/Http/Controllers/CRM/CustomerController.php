@@ -111,6 +111,7 @@ class CustomerController extends Controller
                     'name' => trim($customer->first_name . ' ' . $customer->last_name),
                     'email' => $customer->email,
                     'phone' => $customer->phone_original,
+                    'notes' => $customer->notes,
                     'address' => [
                         'first_name' => $customer->first_name,
                         'last_name' => $customer->last_name,

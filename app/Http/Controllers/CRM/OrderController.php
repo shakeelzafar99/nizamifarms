@@ -1092,12 +1092,13 @@ class OrderController extends Controller
             ];
         }
         
-        // Calculate new total (preserve shipping, tax, and discount structure)
+        // Calculate new total (preserve shipping, tax, tip, and discount structure)
         $shippingTotal = (float) $shopifyOrder->shipping_total;
         $taxTotal = (float) $shopifyOrder->total_tax;
+        $tipAmount = (float) ($shopifyOrder->tip_amount ?? 0);
         $discountTotal = (float) $shopifyOrder->discount_total;
         
-        $newTotal = $newSubtotal + $shippingTotal + $taxTotal - $discountTotal;
+        $newTotal = $newSubtotal + $shippingTotal + $taxTotal + $tipAmount - $discountTotal;
         
         return [
             'success' => true,
@@ -1147,9 +1148,11 @@ class OrderController extends Controller
     private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'])
     {
         // First try to find in Shopify orders table
-        $order = \App\Models\CRM\ShopifyOrderModel::with($withRelations)->find($id);
+        // Shopify orders are temporary (before conversion) so they don't have assignedRider
+        $shopifyRelations = array_diff($withRelations, ['assignedRider']); // Remove assignedRider for Shopify
+        $order = \App\Models\CRM\ShopifyOrderModel::with($shopifyRelations)->find($id);
         
-        // If not found in Shopify table, try the main orders table
+        // If not found in Shopify table, try the main orders table (with all relations)
         if (!$order) {
             $order = \App\Models\CRM\OrderModel::with($withRelations)->findOrFail($id);
         }

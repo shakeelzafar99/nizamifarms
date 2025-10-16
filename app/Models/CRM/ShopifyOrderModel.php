@@ -32,6 +32,7 @@ class ShopifyOrderModel extends BaseModel
         'discount_total',
         'shipping_total',
         'total_tax',
+        'tip_amount',
         'total_price',
         'total_weight',
         'address_first_name',
@@ -59,6 +60,7 @@ class ShopifyOrderModel extends BaseModel
         'discount_total' => 'decimal:2',
         'shipping_total' => 'decimal:2',
         'total_tax' => 'decimal:2',
+        'tip_amount' => 'decimal:2',
         'total_price' => 'decimal:2',
         'total_weight' => 'integer',
         'converted' => 'boolean'
@@ -94,6 +96,16 @@ class ShopifyOrderModel extends BaseModel
     public function lineItems(): HasMany
     {
         return $this->hasMany(ShopifyOrderLineItemModel::class, 'order_id');
+    }
+
+    /**
+     * Discounts relationship - Shopify orders typically don't have detailed discount breakdown
+     * as they are stored at order level (discount_total field)
+     * This relationship exists for compatibility but will usually be empty
+     */
+    public function discounts(): HasMany
+    {
+        return $this->hasMany(OrderDiscountModel::class, 'order_id')->orderBy('display_order')->orderBy('id');
     }
 }
 

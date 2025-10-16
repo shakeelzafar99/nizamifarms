@@ -789,6 +789,12 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                     <td class="amount">Rs.{{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
                 @endif
+                @if(isset($order->tip_amount) && $order->tip_amount > 0)
+                <tr>
+                    <td class="label">Tip:</td>
+                    <td class="amount">Rs.{{ number_format($order->tip_amount, 0) }}</td>
+                </tr>
+                @endif
                 <tr class="total-row">
                     <td class="label">Total:</td>
                     <td class="amount">Rs.{{ number_format($order->total_price, 0) }}</td>

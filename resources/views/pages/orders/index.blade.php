@@ -1819,6 +1819,9 @@ function viewOrderDetails(orderId) {
                 if (order.shipping_total) {
                     html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Shipping</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.shipping_total, order.currency) + '</td></tr>';
                 }
+                if (order.tip_amount && order.tip_amount > 0) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Tip</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.tip_amount, order.currency) + '</td></tr>';
+                }
                 html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#111827; font-weight:700;">Total</td><td style="padding: 8px; text-align:right; font-weight:700;">' + formatCurrency(order.total_price, order.currency) + '</td></tr>';
                 html += '</tfoot>';
                 html += '</table>';
@@ -2593,6 +2596,9 @@ function loadEditForm(order) {
                 </div>
             </div>
             
+            <!-- Customer Notes Display (if available) -->
+            <div id="editCustomerNotesDisplay" style="margin-bottom: 20px; display: none;"></div>
+            
             <!-- Notes Section -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Order Notes</label>
@@ -2775,6 +2781,30 @@ function loadEditForm(order) {
                 }).catch(()=>{ rTimeline.innerHTML = '<div style="color:#ef4444;padding:8px;text-align:center;font-size:12px;">Failed to load</div>'; });
         }
     } catch(e) { console.warn('edit rider UI wiring failed', e); }
+    
+    // Fetch and display customer notes if order has a customer_id
+    if (order.customer_id) {
+        fetch('/customers/' + order.customer_id)
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.success && data.customer && data.customer.notes && data.customer.notes.trim() !== '') {
+                    const notesDisplay = document.getElementById('editCustomerNotesDisplay');
+                    if (notesDisplay) {
+                        notesDisplay.innerHTML = '<div style="padding: 14px; background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #fbbf24; border-radius: 8px;">' +
+                            '<div style="display: flex; align-items: center; margin-bottom: 8px;">' +
+                                '<span style="font-size: 20px; margin-right: 8px;">⚠️</span>' +
+                                '<strong style="color: #92400e; font-size: 15px;">Customer Instructions / Notes:</strong>' +
+                            '</div>' +
+                            '<div style="color: #78350f; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word;">' + (data.customer.notes || '') + '</div>' +
+                        '</div>';
+                        notesDisplay.style.display = 'block';
+                    }
+                }
+            })
+            .catch(error => {
+                console.warn('Failed to fetch customer notes:', error);
+            });
+    }
 }
 
 function showEditError(message) {
@@ -4874,6 +4904,7 @@ function createNewOrderWithCustomer(customerId) {
                     name: fullName,
                     phone: customer.phone_original || customer.phone || '',
                     email: customer.email || '',
+                    notes: customer.notes || '',
                     address: {
                         address1: customer.address1 || '',
                         address2: customer.address2 || '',
@@ -6749,6 +6780,7 @@ function showCustomerResults(customers) {
             name: c.name || '',
             phone: c.phone || '',
             email: c.email || '',
+            notes: c.notes || '',
             address: c.address || {}
         };
         const payload = encodeURIComponent(JSON.stringify(customerData));
@@ -6834,6 +6866,20 @@ function showSelectedCustomerDetails(customerData) {
         }
         const fullAddress = addressParts.length > 0 ? addressParts.join(', ') : 'No address provided';
 
+        // Build customer notes display if they exist
+        let notesHtml = '';
+        if (customerData.notes && customerData.notes.trim() !== '') {
+            notesHtml = `
+                <div style="margin-top: 12px; padding: 10px; background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 2px solid #fbbf24; border-radius: 6px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                        <span style="font-size: 18px; margin-right: 6px;">⚠️</span>
+                        <strong style="color: #92400e; font-size: 13px;">Customer Instructions / Notes:</strong>
+                    </div>
+                    <div style="color: #78350f; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">${customerData.notes}</div>
+                </div>
+            `;
+        }
+
         detailsDiv.innerHTML = `
             <div style="display: flex; align-items: center; margin-bottom: 8px;">
                 <span style="font-size: 16px; margin-right: 8px;">👤</span>
@@ -6848,6 +6894,7 @@ function showSelectedCustomerDetails(customerData) {
             <div style="color: #6b7280; line-height: 1.4;">
                 📍 ${fullAddress}
             </div>
+            ${notesHtml}
         `;
         detailsDiv.style.display = 'block';
     } else if (detailsDiv) {
