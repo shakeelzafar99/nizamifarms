@@ -145,47 +145,48 @@ class SalaryCalculationService
 
         $attendance = DB::selectOne($attendanceQuery, [$userId, $startDate, $endDate]);
 
-        // Calculate late minutes and overtime hours (with null-safety)
+        // Calculate late minutes and overtime hours using shift resolution service
+        // This matches the attendance report logic for consistency
+        $shiftService = new \App\Services\ShiftResolutionService();
+        $userShift = $shiftService->getUserShift($userId);
+        $shiftStart = $userShift['shift_start'] ?? '09:00:00';
+        $shiftEnd = $userShift['shift_end'] ?? '17:00:00';
+        
         $lateAndOTQuery = "
             SELECT 
                 COALESCE(SUM(CASE 
-                    WHEN login_time > shift_start AND login_time IS NOT NULL AND shift_start IS NOT NULL THEN 
+                    WHEN login_time > ? AND login_time IS NOT NULL THEN 
                         TIMESTAMPDIFF(MINUTE, 
-                            CONCAT(attendance_date, ' ', shift_start),
+                            CONCAT(attendance_date, ' ', ?),
                             CONCAT(attendance_date, ' ', login_time)
                         )
                     ELSE 0 
                 END), 0) as total_late_minutes,
                 COALESCE(SUM(CASE 
-                    WHEN logout_time > shift_end AND logout_time IS NOT NULL AND shift_end IS NOT NULL THEN 
+                    WHEN logout_time > ? AND logout_time IS NOT NULL THEN 
                         TIMESTAMPDIFF(MINUTE, 
-                            CONCAT(attendance_date, ' ', shift_end),
+                            CONCAT(attendance_date, ' ', ?),
                             CONCAT(attendance_date, ' ', logout_time)
                         )
                     ELSE 0 
                 END), 0) as total_overtime_minutes
-            FROM (
-                SELECT 
-                    a.attendance_date,
-                    a.login_time,
-                    a.logout_time,
-                    COALESCE(rp.shift_start, '09:00:00') as shift_start,
-                    COALESCE(rp.shift_end, '17:00:00') as shift_end
-                FROM t_ops_attendance a
-                LEFT JOIN t_ops_rider_profile rp ON rp.user_id = a.user_id
-                WHERE a.user_id = ?
-                AND a.attendance_date IS NOT NULL
-                AND a.attendance_date BETWEEN ? AND ?
-                AND a.login_time IS NOT NULL
-                AND a.login_time != ''
-            ) as att_with_shifts
+            FROM t_ops_attendance
+            WHERE user_id = ?
+            AND attendance_date IS NOT NULL
+            AND attendance_date BETWEEN ? AND ?
+            AND login_time IS NOT NULL
+            AND login_time != ''
         ";
 
-        $lateAndOT = DB::selectOne($lateAndOTQuery, [$userId, $startDate, $endDate]);
+        $lateAndOT = DB::selectOne($lateAndOTQuery, [
+            $shiftStart, $shiftStart, // For late calculation
+            $shiftEnd, $shiftEnd,     // For overtime calculation
+            $userId, $startDate, $endDate
+        ]);
 
         // Calculate working days using the SAME logic as attendance reports
         // This considers user's shift schedule AND public holidays
-        $shiftService = new ShiftResolutionService();
+        $shiftService = new \App\Services\ShiftResolutionService();
         $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $endDate);
 
         // Calculate leave days from approved/pending leave requests

@@ -34,43 +34,73 @@
     </div>
 
     <!-- Compact Statistics Cards -->
-    <div class="grid grid-cols-4 gap-2 mb-4">
-        <!-- Open Invoices Card -->
-        <button type="button" onclick="filterByStatus('open')" 
-                class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'open' ? 'border-red-500 bg-red-50' : 'border-gray-200 bg-white hover:border-red-300' }}">
-            <div class="text-xs font-bold text-red-700 mb-1">🔴 OPEN</div>
-            <div class="text-xl font-bold text-red-900">{{ $stats['open_count'] }}</div>
-            <div class="text-xs font-semibold text-red-600">Rs. {{ number_format($stats['open_total'], 2) }}</div>
-        </button>
+    <div class="grid grid-cols-3 gap-2 mb-4">
+        <!-- Row 1: Invoice Cards -->
+        <div class="grid grid-cols-4 gap-2 col-span-3">
+            <!-- Open Invoices Card -->
+            <button type="button" onclick="filterByStatus('open')" 
+                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'open' ? 'border-red-500 bg-red-50' : 'border-gray-200 bg-white hover:border-red-300' }}">
+                <div class="text-xs font-bold text-red-700 mb-1">🔴 OPEN</div>
+                <div class="text-xl font-bold text-red-900">{{ $stats['open_count'] }}</div>
+                <div class="text-xs font-semibold text-red-600">Rs. {{ number_format($stats['open_total'], 2) }}</div>
+            </button>
 
-        <!-- Partial Invoices Card -->
-        <button type="button" onclick="filterByStatus('partial')" 
-                class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'partial' ? 'border-yellow-500 bg-yellow-50' : 'border-gray-200 bg-white hover:border-yellow-300' }}">
-            <div class="text-xs font-bold text-yellow-700 mb-1">🟡 PARTIAL</div>
-            <div class="text-xl font-bold text-yellow-900">{{ $stats['partial_count'] }}</div>
-            <div class="text-xs font-semibold text-yellow-600">Rs. {{ number_format($stats['partial_total'], 2) }}</div>
-        </button>
+            <!-- Partial Invoices Card -->
+            <button type="button" onclick="filterByStatus('partial')" 
+                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'partial' ? 'border-yellow-500 bg-yellow-50' : 'border-gray-200 bg-white hover:border-yellow-300' }}">
+                <div class="text-xs font-bold text-yellow-700 mb-1">🟡 PARTIAL</div>
+                <div class="text-xl font-bold text-yellow-900">{{ $stats['partial_count'] }}</div>
+                <div class="text-xs font-semibold text-yellow-600">Rs. {{ number_format($stats['partial_total'], 2) }}</div>
+            </button>
 
-        <!-- Pending Settlements Card -->
-        <button type="button" onclick="togglePendingSettlements()" 
-                class="stat-card text-left p-3 rounded-md shadow border-2 transition-all border-gray-200 bg-white hover:border-blue-300">
-            <div class="flex items-center justify-between mb-1">
-                <div class="text-xs font-bold text-blue-700">⏳ PENDING</div>
-                @if($stats['pending_settlement_count'] > 0)
-                <span class="animate-pulse text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['pending_settlement_count'] }}</span>
-                @endif
+            <!-- Pending Settlements Card -->
+            <button type="button" onclick="togglePendingSettlements()" 
+                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all border-gray-200 bg-white hover:border-blue-300">
+                <div class="flex items-center justify-between mb-1">
+                    <div class="text-xs font-bold text-blue-700">⏳ PENDING</div>
+                    @if($stats['pending_settlement_count'] > 0)
+                    <span class="animate-pulse text-xs bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['pending_settlement_count'] }}</span>
+                    @endif
+                </div>
+                <div class="text-xl font-bold text-blue-900">{{ $stats['pending_settlement_count'] }}</div>
+                <div class="text-xs font-semibold text-blue-600">Rs. {{ number_format($stats['pending_settlement_total'], 2) }}</div>
+            </button>
+
+            <!-- Total Outstanding Card -->
+            <button type="button" onclick="filterByStatus('all')" 
+                    class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'all' ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-purple-300' }}">
+                <div class="text-xs font-bold text-purple-700 mb-1">📊 TOTAL</div>
+                <div class="text-xl font-bold text-purple-900">{{ $stats['open_count'] + $stats['partial_count'] }}</div>
+                <div class="text-xs font-semibold text-purple-600">Rs. {{ number_format($stats['total_outstanding'], 2) }}</div>
+            </button>
+        </div>
+        
+        <!-- Row 2: NEW Expense Management Cards -->
+        <div class="grid grid-cols-2 gap-2 col-span-3">
+            <!-- Pending Approvals Card (Awaiting Approval) -->
+            <div class="stat-card text-left p-3 rounded-md shadow border-2 border-gray-200 bg-yellow-50 transition-all">
+                <div class="flex items-center justify-between mb-1">
+                    <div class="text-xs font-bold text-yellow-700">⏳ PENDING</div>
+                    @if($stats['pending_approvals_count'] > 0)
+                    <span class="text-xs bg-yellow-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['pending_approvals_count'] }}</span>
+                    @endif
+                </div>
+                <div class="text-sm text-gray-600 mb-1">Awaiting approval</div>
+                <div class="text-xl font-bold text-yellow-900">Rs. {{ number_format($stats['pending_approvals_amount'], 2) }}</div>
             </div>
-            <div class="text-xl font-bold text-blue-900">{{ $stats['pending_settlement_count'] }}</div>
-            <div class="text-xs font-semibold text-blue-600">Rs. {{ number_format($stats['pending_settlement_total'], 2) }}</div>
-        </button>
 
-        <!-- Total Outstanding Card -->
-        <button type="button" onclick="filterByStatus('all')" 
-                class="stat-card text-left p-3 rounded-md shadow border-2 transition-all {{ $filters['status'] == 'all' ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-purple-300' }}">
-            <div class="text-xs font-bold text-purple-700 mb-1">📊 TOTAL</div>
-            <div class="text-xl font-bold text-purple-900">{{ $stats['open_count'] + $stats['partial_count'] }}</div>
-            <div class="text-xs font-semibold text-purple-600">Rs. {{ number_format($stats['total_outstanding'], 2) }}</div>
-        </button>
+            <!-- Short Cash Card (Unsettled) -->
+            <div class="stat-card text-left p-3 rounded-md shadow border-2 border-gray-200 bg-green-50 transition-all">
+                <div class="flex items-center justify-between mb-1">
+                    <div class="text-xs font-bold text-green-700">💸 SHORT CASH</div>
+                    @if($stats['short_cash_count'] > 0)
+                    <span class="text-xs bg-green-600 text-white px-1.5 py-0.5 rounded-full">{{ $stats['short_cash_count'] }}</span>
+                    @endif
+                </div>
+                <div class="text-sm text-gray-600 mb-1">Unsettled</div>
+                <div class="text-xl font-bold text-green-900">Rs. {{ number_format($stats['short_cash_amount'], 2) }}</div>
+            </div>
+        </div>
     </div>
 
     <!-- No separate pending settlements section - they'll be shown inline with invoices -->

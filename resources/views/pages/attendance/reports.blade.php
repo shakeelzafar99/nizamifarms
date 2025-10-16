@@ -241,10 +241,12 @@
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
             <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="modalStatLate">0</p>
+            <p style="font-size: 9px; color: #dc2626; margin: 4px 0 0 0;" id="modalStatLateHours">0h 0m</p>
           </div>
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
             <p style="font-size: 18px; font-weight: bold; color: #16a34a; margin: 0;" id="modalStatOT">0</p>
+            <p style="font-size: 9px; color: #16a34a; margin: 4px 0 0 0;" id="modalStatOTHours">0h 0m</p>
           </div>
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
@@ -298,6 +300,25 @@ document.addEventListener('DOMContentLoaded', function() {
   loadSavedConfiguration();
   loadMonthlyReport();
   calculateWorkingDays();
+  
+  // Auto-open detail modal if requested via URL parameter
+  const urlParams = new URLSearchParams(window.location.search);
+  const autoOpen = urlParams.get('auto_open');
+  const userId = urlParams.get('user_id');
+  const month = urlParams.get('month');
+  
+  if (autoOpen === '1' && userId) {
+    // Set the month if specified
+    if (month) {
+      document.getElementById('reportMonth').value = month;
+      currentMonth = month;
+    }
+    
+    // Wait for data to load, then open the modal
+    setTimeout(() => {
+      showDailyDetails(userId);
+    }, 1000); // Give time for the report to load
+  }
 });
 
 // Load saved working days configuration from localStorage
@@ -446,6 +467,18 @@ function showDailyDetails(userId) {
   modalLate.textContent = employee.late_days || 0;
   modalOT.textContent = employee.overtime_days || 0;
   modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';
+  
+  // Add hours/minutes for late and overtime
+  // API returns 'total_late_minutes' and 'total_overtime_minutes'
+  const lateMinutes = Math.round(employee.total_late_minutes || 0);
+  const lateHours = Math.floor(lateMinutes / 60);
+  const lateMins = lateMinutes % 60;
+  document.getElementById('modalStatLateHours').textContent = `${lateHours}h ${lateMins}m`;
+  
+  const otMinutes = Math.round(employee.total_overtime_minutes || 0);
+  const otHours = Math.floor(otMinutes / 60);
+  const otMins = otMinutes % 60;
+  document.getElementById('modalStatOTHours').textContent = `${otHours}h ${otMins}m`;
 
   if (!employee.daily || employee.daily.length === 0) {
     body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';

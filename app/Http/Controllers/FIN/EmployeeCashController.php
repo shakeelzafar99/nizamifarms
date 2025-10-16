@@ -1142,6 +1142,59 @@ class EmployeeCashController extends Controller
                 ];
             });
             
+            // === NEW: Calculate Pending Approvals for Expense Requests ===
+            // Use same logic as NF Cash: pending expenses that will affect NF Cash
+            // (either paid from NF Cash OR paid from rider balance needing settlement)
+            $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+            
+            $pendingApprovalsQuery = \App\Models\Request\RequestModel::where('status', 'pending')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                });
+            
+            // NF Cash logic: explicit NF Cash assignments OR paid from any rider balance
+            if ($nfCashAccount) {
+                $pendingApprovalsQuery->where(function($q) use ($nfCashAccount) {
+                    $q->where('payment_source_account_id', $nfCashAccount->id)
+                      ->orWhereHas('paymentSourceAccount', function($subQ) {
+                          $subQ->where('account_category', 'employee_cash');
+                      });
+                });
+            }
+            
+            // Apply date filters if provided
+            if ($dateFrom) {
+                $pendingApprovalsQuery->where('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $pendingApprovalsQuery->where('created_at', '<=', $dateTo);
+            }
+            
+            $pendingApprovalsAmount = $pendingApprovalsQuery->sum('amount') ?? 0;
+            $pendingApprovalsCount = $pendingApprovalsQuery->count();
+            
+            // === NEW: Calculate Short Cash ===
+            // Approved expenses paid from rider balance but not yet settled
+            $shortCashQuery = \App\Models\Request\RequestModel::where('status', 'approved')
+                ->where('settlement_status', 'pending')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->whereHas('paymentSourceAccount', function($q) {
+                    $q->where('account_category', 'employee_cash');
+                });
+            
+            // Apply date filters if provided
+            if ($dateFrom) {
+                $shortCashQuery->where('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $shortCashQuery->where('created_at', '<=', $dateTo);
+            }
+            
+            $shortCashAmount = $shortCashQuery->sum('amount') ?? 0;
+            $shortCashCount = $shortCashQuery->count();
+            
             // Calculate summary stats
             $stats = [
                 'open_count' => $openInvoices->count(),
@@ -1160,7 +1213,12 @@ class EmployeeCashController extends Controller
                     return $inv->amount - ($inv->settled_amount ?? 0);
                 }) + $partialInvoices->sum(function($inv) {
                     return $inv->amount - ($inv->settled_amount ?? 0);
-                })
+                }),
+                // NEW: Add pending approvals and short cash
+                'pending_approvals_count' => $pendingApprovalsCount,
+                'pending_approvals_amount' => $pendingApprovalsAmount,
+                'short_cash_count' => $shortCashCount,
+                'short_cash_amount' => $shortCashAmount
             ];
             
             // Get all riders for filter dropdown

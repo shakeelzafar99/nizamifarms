@@ -163,7 +163,7 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
                                 <span>Loan Installment</span>
-                                <button type="button" onclick="toggleOverride('loan')" class="text-xs text-purple-600 hover:text-purple-700" id="loan-override-btn">
+                                <button type="button" onclick="toggleOverride('loan')" class="text-xs text-gray-800 hover:text-gray-900 font-medium" id="loan-override-btn">
                                     <i class="ki-filled ki-pencil"></i> Override/Skip
                                 </button>
                             </label>
@@ -194,8 +194,8 @@
                     <div class="space-y-4">
                         <div class="flex items-center justify-between border-b pb-2">
                             <h4 class="font-semibold text-blue-700 text-lg">📊 Attendance Summary</h4>
-                            <button type="button" onclick="openAttendanceReport()" class="text-xs px-3 py-1.5 bg-purple-600 text-white font-medium rounded hover:bg-purple-700 transition shadow-sm">
-                                <i class="ki-filled ki-eye"></i> View Report
+                            <button type="button" onclick="openAttendanceReport()" class="text-xs px-3 py-1.5 bg-purple-100 hover:bg-purple-200 text-purple-700 hover:text-purple-900 font-bold rounded shadow-sm transition-all border border-purple-300">
+                                <i class="ki-filled ki-eye"></i> 👁️ View Report
                             </button>
                         </div>
                         
@@ -257,6 +257,84 @@
             </div>
         </div>
     </div>
+</div>
+
+<!-- Attendance Details Modal -->
+<div id="salaryAttendanceModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px;">
+  <div id="salaryAttendanceCard" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1000px; height: 85vh; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden;" onclick="event.stopPropagation();">
+      
+      <!-- Header -->
+      <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="width: 40px; height: 40px; border-radius: 50%; background: #dbeafe; display: flex; align-items: center; justify-content: center; color: #2563eb; font-size: 18px; font-weight: bold;">
+              👤
+            </div>
+            <div>
+              <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;" id="salaryModalEmployeeName">Employee Name</h3>
+              <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;" id="salaryModalMonthYear">Month Year</p>
+            </div>
+          </div>
+          <button type="button" onclick="closeSalaryAttendanceModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+      </div>
+
+      <!-- Stats Bar -->
+      <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
+            <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="salaryModalStatPresent">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
+            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="salaryModalStatLate">0</p>
+            <p style="font-size: 9px; color: #dc2626; margin: 4px 0 0 0;" id="salaryModalStatLateHours">0h 0m</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
+            <p style="font-size: 18px; font-weight: bold; color: #16a34a; margin: 0;" id="salaryModalStatOT">0</p>
+            <p style="font-size: 9px; color: #16a34a; margin: 4px 0 0 0;" id="salaryModalStatOTHours">0h 0m</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
+            <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="salaryModalStatHours">0h</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scrollable Table Container -->
+      <div style="flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; min-height: 0; background: white;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead style="position: sticky; top: 0; background: #f3f4f6; z-index: 10;">
+            <tr>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Date</th>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Login</th>
+              <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Logout</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Hours</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Late By</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Overtime</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Status</th>
+            </tr>
+          </thead>
+          <tbody id="salaryDailyDetailsBody" style="background: white;">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Footer -->
+      <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: white; flex-shrink: 0; display: flex; justify-content: flex-end;">
+        <button 
+          type="button"
+          onclick="closeSalaryAttendanceModal()" 
+          style="padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"
+        >
+          Close
+        </button>
+      </div>
+
+  </div>
 </div>
 
 @endsection
@@ -396,10 +474,9 @@ function populateForm(data) {
     }
     if (data.loan_info) {
         document.getElementById('loan-info').textContent = data.loan_info;
-        document.getElementById('loan-override-btn').classList.remove('hidden');
-    } else {
-        document.getElementById('loan-override-btn').classList.add('hidden');
     }
+    // Always show the override button for consistency
+    document.getElementById('loan-override-btn').classList.remove('hidden');
     
     updateTotals();
 }
@@ -409,8 +486,13 @@ function toggleOverride(type) {
     
     const btn = document.getElementById(`${type}-override-btn`);
     if (btn) {
-        btn.classList.toggle('text-purple-600');
-        btn.classList.toggle('text-green-600');
+        if (type === 'loan') {
+            btn.classList.toggle('text-gray-800');
+            btn.classList.toggle('text-green-600');
+        } else {
+            btn.classList.toggle('text-purple-600');
+            btn.classList.toggle('text-green-600');
+        }
         btn.textContent = overrides[type] ? '✓ Overridden' : (type === 'loan' ? '✎ Override/Skip' : '✎ Override');
     }
     
@@ -421,8 +503,23 @@ function toggleOverride(type) {
         document.getElementById('late-minutes').readOnly = !overrides[type];
         document.getElementById('late-deduction').readOnly = !overrides[type];
     } else if (type === 'absent') {
-        document.getElementById('absent-days').readOnly = !overrides[type];
-        document.getElementById('absent-deduction').readOnly = !overrides[type];
+        const absentDaysInput = document.getElementById('absent-days');
+        const absentDeductionInput = document.getElementById('absent-deduction');
+        
+        absentDaysInput.readOnly = !overrides[type];
+        absentDeductionInput.readOnly = !overrides[type];
+        
+        if (overrides[type]) {
+            // When override is enabled, setup auto-calculation on absent days change
+            absentDaysInput.addEventListener('input', autoCalculateAbsentDeduction);
+        } else {
+            // When override is disabled, remove the listener and restore original value
+            absentDaysInput.removeEventListener('input', autoCalculateAbsentDeduction);
+            if (calculatedData) {
+                absentDaysInput.value = calculatedData.absent_days || '0';
+                absentDeductionInput.value = calculatedData.absent_deduction || '0.00';
+            }
+        }
     } else if (type === 'advance') {
         document.getElementById('salary-advance').readOnly = !overrides[type];
         if (!overrides[type] && calculatedData) {
@@ -575,15 +672,212 @@ function saveSalarySlip(status) {
     });
 }
 
-function openAttendanceReport() {
+async function openAttendanceReport() {
     if (!currentUserId || !currentMonth) {
         alert('Please calculate salary first to view attendance report');
         return;
     }
     
-    // Open attendance report in new tab with filters for this user and month
-    const reportUrl = `/attendance/reports?user_id=${currentUserId}&month=${currentMonth}`;
-    window.open(reportUrl, '_blank');
+    try {
+        // Fetch the attendance data for this specific user
+        const response = await fetch(`/attendance/monthly-report?month=${currentMonth}`);
+        const result = await response.json();
+        
+        if (!result.success) {
+            alert('Error loading attendance data');
+            return;
+        }
+        
+        // Find this employee's data
+        const employeeData = result.data.find(emp => emp.user_id == currentUserId);
+        
+        if (!employeeData) {
+            alert('No attendance data found for this employee');
+            return;
+        }
+        
+        // Show the modal with this employee's data
+        showSalaryAttendanceModal(employeeData);
+        
+    } catch (error) {
+        console.error('Error loading attendance:', error);
+        alert('Error loading attendance data');
+    }
+}
+
+function showSalaryAttendanceModal(employee) {
+    const modal = document.getElementById('salaryAttendanceModal');
+    const modalName = document.getElementById('salaryModalEmployeeName');
+    const modalMonth = document.getElementById('salaryModalMonthYear');
+    const modalPresent = document.getElementById('salaryModalStatPresent');
+    const modalLate = document.getElementById('salaryModalStatLate');
+    const modalOT = document.getElementById('salaryModalStatOT');
+    const modalHours = document.getElementById('salaryModalStatHours');
+    const body = document.getElementById('salaryDailyDetailsBody');
+    
+    // Populate header
+    modalName.textContent = employee.fullname || 'Unknown';
+    modalMonth.textContent = new Date(currentMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    
+    // Populate stats
+    modalPresent.textContent = employee.present_days || 0;
+    modalLate.textContent = employee.late_days || 0;
+    modalOT.textContent = employee.overtime_days || 0;
+    modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';
+    
+    // Add hours/minutes for late and overtime
+    // API returns 'total_late_minutes' and 'total_overtime_minutes'
+    const lateMinutes = Math.round(employee.total_late_minutes || 0);
+    const lateHours = Math.floor(lateMinutes / 60);
+    const lateMins = lateMinutes % 60;
+    document.getElementById('salaryModalStatLateHours').textContent = `${lateHours}h ${lateMins}m`;
+    
+    const otMinutes = Math.round(employee.total_overtime_minutes || 0);
+    const otHours = Math.floor(otMinutes / 60);
+    const otMins = otMinutes % 60;
+    document.getElementById('salaryModalStatOTHours').textContent = `${otHours}h ${otMins}m`;
+    
+    // Populate daily details
+    if (!employee.daily || employee.daily.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" style="padding: 32px; text-align: center; color: #6b7280;">No daily records found for this month</td></tr>';
+    } else {
+        // Deduplicate records
+        const uniqueDaily = [];
+        const seenDates = new Set();
+        
+        for (const day of employee.daily) {
+            if (!seenDates.has(day.attendance_date)) {
+                seenDates.add(day.attendance_date);
+                uniqueDaily.push(day);
+            }
+        }
+        
+        body.innerHTML = uniqueDaily.map(day => {
+            const isAbsent = day.status === 'absent' || (!day.login_time && !day.logout_time);
+            const loginTime = day.login_time || '-';
+            const logoutTime = day.logout_time || '-';
+            const hours = isAbsent ? '-' : salaryCalculateHours(day.login_time, day.logout_time);
+            const lateBy = isAbsent ? { duration: '-', isLate: false } : salaryCalculateLateBy(day.login_time, day.shift_start);
+            const overtime = isAbsent ? { duration: '-', hasOvertime: false } : salaryCalculateOvertime(day.logout_time, day.shift_end);
+            const status = isAbsent ? 'Absent' : salaryGetStatus(day.login_time, day.shift_start);
+            
+            const date = new Date(day.attendance_date + 'T00:00:00');
+            const dateStr = `${date.toLocaleDateString('en-US', { month: 'short' })} ${date.getDate()}`;
+            const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+            
+            return `
+                <tr style="border-bottom: 1px solid #f3f4f6;">
+                    <td style="padding: 12px 16px;">
+                        <div style="font-weight: 600; color: #111827;">${dateStr}</div>
+                        <div style="font-size: 11px; color: #6b7280;">${dayName}</div>
+                    </td>
+                    <td style="padding: 12px 16px; color: #374151;">${loginTime}</td>
+                    <td style="padding: 12px 16px; color: #374151;">${logoutTime}</td>
+                    <td style="padding: 12px 16px; text-align: center; color: #374151; font-weight: 500;">${hours}</td>
+                    <td style="padding: 12px 16px; text-align: center;">
+                        <span style="color: ${lateBy.isLate ? '#dc2626' : '#6b7280'}; font-weight: ${lateBy.isLate ? '600' : '400'};">
+                            ${lateBy.duration}
+                        </span>
+                    </td>
+                    <td style="padding: 12px 16px; text-align: center;">
+                        <span style="color: ${overtime.hasOvertime ? '#16a34a' : '#6b7280'}; font-weight: ${overtime.hasOvertime ? '600' : '400'};">
+                            ${overtime.duration}
+                        </span>
+                    </td>
+                    <td style="padding: 12px 16px; text-align: center;">
+                        <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; ${
+                            status === 'On Time' ? 'background: #dcfce7; color: #166534;' :
+                            status === 'Late' ? 'background: #fee2e2; color: #991b1b;' :
+                            'background: #f3f4f6; color: #6b7280;'
+                        }">
+                            ${status}
+                        </span>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+    
+    // Show modal
+    modal.style.display = 'flex';
+    modal.classList.remove('hidden');
+}
+
+function closeSalaryAttendanceModal() {
+    const modal = document.getElementById('salaryAttendanceModal');
+    modal.style.display = 'none';
+    modal.classList.add('hidden');
+}
+
+// Helper functions for attendance calculations
+function salaryCalculateHours(login, logout) {
+    if (!login || !logout) return '-';
+    const start = new Date('2000-01-01 ' + login);
+    const end = new Date('2000-01-01 ' + logout);
+    if (end < start) end.setDate(end.getDate() + 1);
+    const diff = (end - start) / 1000 / 60 / 60;
+    return diff.toFixed(1) + 'h';
+}
+
+function salaryCalculateLateBy(login, shiftStart) {
+    if (!login || !shiftStart) return { duration: '-', isLate: false };
+    const loginTime = new Date('2000-01-01 ' + login);
+    const shiftTime = new Date('2000-01-01 ' + shiftStart);
+    const diff = (loginTime - shiftTime) / 1000 / 60;
+    
+    if (diff <= 0) return { duration: '-', isLate: false };
+    
+    const hours = Math.floor(diff / 60);
+    const mins = Math.floor(diff % 60);
+    const display = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+    
+    return { duration: display, isLate: true };
+}
+
+function salaryCalculateOvertime(logout, shiftEnd) {
+    if (!logout || !shiftEnd) return { duration: '-', hasOvertime: false };
+    let logoutTime = new Date('2000-01-01 ' + logout);
+    const shiftTime = new Date('2000-01-01 ' + shiftEnd);
+    
+    if (logoutTime < shiftTime) logoutTime.setDate(logoutTime.getDate() + 1);
+    
+    const diff = (logoutTime - shiftTime) / 1000 / 60;
+    
+    if (diff <= 0) return { duration: '-', hasOvertime: false };
+    
+    const hours = Math.floor(diff / 60);
+    const mins = Math.floor(diff % 60);
+    const display = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+    
+    return { duration: display, hasOvertime: true };
+}
+
+function salaryGetStatus(login, shiftStart) {
+    if (!login || !shiftStart) return 'Absent';
+    const loginTime = new Date('2000-01-01 ' + login);
+    const shiftTime = new Date('2000-01-01 ' + shiftStart);
+    return loginTime <= shiftTime ? 'On Time' : 'Late';
+}
+
+// Auto-calculate absent deduction when absent days change
+function autoCalculateAbsentDeduction() {
+    if (!calculatedData || !calculatedData.working_days) return;
+    
+    const absentDays = parseInt(document.getElementById('absent-days').value) || 0;
+    const baseSalary = parseFloat(document.getElementById('base-salary').value) || 0;
+    const workingDays = calculatedData.working_days || 1; // Prevent division by zero
+    
+    // Calculate per-day salary rate
+    const perDaySalary = baseSalary / workingDays;
+    
+    // Calculate absent deduction
+    const absentDeduction = absentDays * perDaySalary;
+    
+    // Update the deduction field
+    document.getElementById('absent-deduction').value = absentDeduction.toFixed(2);
+    
+    // Update totals
+    updateTotals();
 }
 
 function resetForm() {
