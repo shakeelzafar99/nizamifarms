@@ -819,9 +819,10 @@ class AppSheetController extends Controller
                 $updateData['login_lat'] = $loginLat;
                 $updateData['login_lng'] = $loginLng;
             }
-            if ($picStart !== null) {
-                $updateData['picture_start'] = $picStart;
-            }
+            // DISABLED: Picture uploads from AppSheet (will use Android app instead)
+            // if ($picStart !== null) {
+            //     $updateData['picture_start'] = $picStart;
+            // }
             if (is_numeric($meterStart)) {
                 $updateData['meter_start'] = (int)$meterStart;
             }
@@ -834,9 +835,10 @@ class AppSheetController extends Controller
                 $updateData['logout_lat'] = $logoutLat;
                 $updateData['logout_lng'] = $logoutLng;
             }
-            if ($picEnd !== null) {
-                $updateData['picture_end'] = $picEnd;
-            }
+            // DISABLED: Picture uploads from AppSheet (will use Android app instead)
+            // if ($picEnd !== null) {
+            //     $updateData['picture_end'] = $picEnd;
+            // }
             if (is_numeric($meterEnd)) {
                 $updateData['meter_end'] = (int)$meterEnd;
             }

@@ -333,15 +333,66 @@
                              @endif
                          </div>
                      </a>
-                 </div>
-                 @endif
-                  
-                 <!-- Administration Section -->
-                 <div class="kt-menu-item pt-2.25 pb-px">
-                     <span class="kt-menu-heading uppercase text-xs font-medium text-gray-400 ps-[10px] pe-[10px]">
-                         Administration
-                     </span>
-                 </div>
+                </div>
+                @endif
+                
+                <!-- HR & Salary Section -->
+                @if($userRole !== 'rider')
+                <div class="kt-menu-item pt-2.25 pb-px">
+                    <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                        HR & Salary
+                    </span>
+                </div>
+                @if(auth()->user()->hasPermission('view_employee_salaries'))
+                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/hr/employees">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-badge text-lg"></i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                Employee Salaries
+                            </span>
+                        </div>
+                    </a>
+                </div>
+                @endif
+                @if(auth()->user()->hasPermission('generate_salary_slips'))
+                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/hr/salary-slips">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-file-sheet text-lg"></i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                Salary Slips
+                            </span>
+                        </div>
+                    </a>
+                </div>
+                @endif
+                @if(auth()->user()->hasPermission('view_employee_loans'))
+                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/hr/loans">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-dollar text-lg"></i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                Employee Loans
+                            </span>
+                        </div>
+                    </a>
+                </div>
+                @endif
+                @endif
+                 
+                <!-- Administration Section -->
+                <div class="kt-menu-item pt-2.25 pb-px">
+                    <span class="kt-menu-heading uppercase text-xs font-medium text-gray-400 ps-[10px] pe-[10px]">
+                        Administration
+                    </span>
+                </div>
                  
                  @if($userRole !== 'rider')
                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">

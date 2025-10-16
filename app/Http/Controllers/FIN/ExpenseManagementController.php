@@ -33,9 +33,9 @@ class ExpenseManagementController extends Controller
         $paymentSource = $request->input('payment_source');
         $settlementStatus = $request->input('settlement_status');
         
-        // Build base query for all expenses
+        // Build base query for all expenses AND salary advances (both have settlement tracking)
         $expensesQuery = RequestModel::whereHas('category', function($q) {
-                $q->where('category_code', 'expense');
+                $q->whereIn('category_code', ['expense', 'salary_advance']);
             })
             ->whereNotNull('ledger_transaction_id')
             ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
@@ -102,8 +102,9 @@ class ExpenseManagementController extends Controller
             ->get();
         
         // Get pending approvals (real-time, not filtered by date)
+        // Include both expenses and salary advances
         $pendingApprovals = RequestModel::whereHas('category', function($q) {
-                $q->where('category_code', 'expense');
+                $q->whereIn('category_code', ['expense', 'salary_advance']);
             })
             ->where('status', RequestModel::STATUS_PENDING)
             ->with(['requester', 'paymentSourceAccount', 'category'])

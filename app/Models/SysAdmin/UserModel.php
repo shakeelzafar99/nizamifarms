@@ -70,6 +70,22 @@ class UserModel extends BaseModel
         return $this->belongsToMany(RoleModel::class, 't_sys_user_role', 'user_id', 'role_id');
     }
 
+    // HR Relationships
+    public function hrProfile()
+    {
+        return $this->hasOne(\App\Models\HR\EmployeeProfileModel::class, 'user_id', 'id');
+    }
+
+    public function salarySlips()
+    {
+        return $this->hasMany(\App\Models\HR\SalarySlipModel::class, 'user_id', 'id');
+    }
+
+    public function loans()
+    {
+        return $this->hasMany(\App\Models\HR\EmployeeLoanModel::class, 'user_id', 'id');
+    }
+
     function List($data) //All record
     {
         $this->listRequest($data);

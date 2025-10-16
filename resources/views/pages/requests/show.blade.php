@@ -211,8 +211,8 @@
                     <input type="hidden" name="level" value="{{ $canApproveLevel1 ? 1 : 2 }}">
                     
                     @php
-                        // Check if this is an expense request and if user is final approver
-                        $isExpenseRequest = $request->category->category_code === 'expense' && $request->amount > 0;
+                        // Check if this is an expense or salary advance request and if user is final approver
+                        $isExpenseRequest = in_array($request->category->category_code, ['expense', 'salary_advance']) && $request->amount > 0;
                         $isFinalApproval = ($canApproveLevel2 && $request->requires_level_2) || 
                                           ($canApproveLevel1 && !$request->requires_level_2);
                         

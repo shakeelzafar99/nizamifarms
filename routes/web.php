@@ -372,6 +372,48 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}/settlement-details', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'getSettlementDetails'])->name('settlement-details');
         });
     });
+    
+    // HR & Salary Management Routes
+    Route::prefix('hr')->name('hr.')->group(function () {
+        
+        // Employee Profiles & Salary Configuration
+        Route::prefix('employees')->name('employees.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'index'])->name('index');
+            Route::get('/data', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getData'])->name('data');
+            Route::get('/without-profiles', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getWithoutProfiles'])->name('without-profiles');
+            Route::post('/bulk-create', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'bulkCreate'])->name('bulk-create');
+            Route::get('/{userId}', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'show'])->name('show');
+            Route::get('/{userId}/get-or-create', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getOrCreate'])->name('get-or-create');
+            Route::post('/{userId}/salary', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'updateSalary'])->name('salary.update');
+            Route::post('/{userId}/deactivate', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'deactivate'])->name('deactivate');
+            Route::post('/{userId}/activate', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'activate'])->name('activate');
+        });
+        
+        // Salary Slips
+        Route::prefix('salary-slips')->name('salary-slips.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\HR\SalarySlipController::class, 'index'])->name('index');
+            Route::get('/data', [\App\Http\Controllers\HR\SalarySlipController::class, 'getData'])->name('data');
+            Route::get('/create', [\App\Http\Controllers\HR\SalarySlipController::class, 'create'])->name('create');
+            Route::post('/calculate', [\App\Http\Controllers\HR\SalarySlipController::class, 'calculate'])->name('calculate');
+            Route::post('/', [\App\Http\Controllers\HR\SalarySlipController::class, 'store'])->name('store');
+            Route::get('/{id}', [\App\Http\Controllers\HR\SalarySlipController::class, 'show'])->name('show');
+            Route::post('/{id}/approve', [\App\Http\Controllers\HR\SalarySlipController::class, 'approve'])->name('approve');
+            Route::post('/{id}/cancel', [\App\Http\Controllers\HR\SalarySlipController::class, 'cancel'])->name('cancel');
+            Route::get('/{id}/pdf', [\App\Http\Controllers\HR\SalarySlipController::class, 'downloadPdf'])->name('pdf');
+        });
+        
+        // Employee Loans
+        Route::prefix('loans')->name('loans.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'index'])->name('index');
+            Route::get('/data', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'getData'])->name('data');
+            Route::get('/create', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'create'])->name('create');
+            Route::post('/', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'store'])->name('store');
+            Route::get('/{id}', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'show'])->name('show');
+            Route::get('/{id}/payments', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'getPaymentHistory'])->name('payments');
+            Route::put('/{id}', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'update'])->name('update');
+            Route::post('/{id}/cancel', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'cancel'])->name('cancel');
+        });
+    });
 });
 
 // User attendance - accessible by anyone with view_attendance permission

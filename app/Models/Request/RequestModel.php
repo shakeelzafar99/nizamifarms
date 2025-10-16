@@ -285,6 +285,19 @@ class RequestModel extends BaseModel
                         // Don't fail the approval if ledger posting fails
                     }
                 }
+                
+                // If it's a salary advance request, post to ledger
+                if ($this->category->category_code === 'salary_advance' && $this->amount > 0) {
+                    try {
+                        $this->postSalaryAdvanceToLedger();
+                    } catch (\Exception $e) {
+                        \Log::error("Exception posting salary advance to ledger", [
+                            'request_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't fail the approval if ledger posting fails
+                    }
+                }
             }
 
             $this->updated_by = $approverId;
@@ -391,6 +404,27 @@ class RequestModel extends BaseModel
             ->where('approval_level', 2)
             ->with('approver')
             ->first();
+    }
+
+    /**
+     * Post salary advance to ledger when approved
+     */
+    protected function postSalaryAdvanceToLedger(): bool
+    {
+        try {
+            // Use LedgerPostingService for consistent handling
+            $ledgerService = new \App\Services\FIN\LedgerPostingService();
+            $result = $ledgerService->postSalaryAdvanceFromRequest($this);
+            
+            return $result['success'] ?? false;
+
+        } catch (\Exception $e) {
+            \Log::error("Failed to post salary advance to ledger", [
+                'request_id' => $this->id,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
     }
 }
 

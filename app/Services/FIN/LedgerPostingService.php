@@ -268,6 +268,145 @@ class LedgerPostingService
     }
 
     /**
+     * Post salary advance from approved request
+     * Follows same pattern as expense requests
+     */
+    public function postSalaryAdvanceFromRequest(RequestModel $request)
+    {
+        try {
+            // Check if already posted
+            if ($request->ledger_transaction_id) {
+                Log::info("Request already has ledger entry", ['request_id' => $request->id]);
+                return ['success' => true, 'message' => 'Already posted'];
+            }
+
+            // Check if request is actually approved
+            if ($request->status !== 'approved') {
+                return ['success' => false, 'message' => 'Request must be approved to post to ledger'];
+            }
+
+            DB::beginTransaction();
+
+            // Get funding account (payment source)
+            // Priority: 1) payment_source_account_id, 2) Config default, 3) EXP_FUND
+            $fundingAccount = null;
+            
+            if ($request->payment_source_account_id) {
+                $fundingAccount = AccountModel::find($request->payment_source_account_id);
+            }
+            
+            if (!$fundingAccount) {
+                $fundingAccount = ConfigModel::getExpenseFundingAccount();
+            }
+            
+            if (!$fundingAccount) {
+                $fundingAccount = AccountModel::getByCode('EXP_FUND');
+            }
+
+            if (!$fundingAccount) {
+                throw new \Exception("Payment source account not found");
+            }
+            
+            // IMPORTANT: Save the funding account back to request if it was defaulted
+            if (!$request->payment_source_account_id) {
+                $request->payment_source_account_id = $fundingAccount->id;
+            }
+
+            // Get or create employee cash account
+            $employeeCashAccount = AccountModel::where('user_id', $request->requester_user_id)
+                ->where('account_category', 'employee_cash')
+                ->first();
+
+            if (!$employeeCashAccount) {
+                // Auto-create employee cash account
+                $user = $request->requester;
+                if (!$user) {
+                    throw new \Exception('User not found');
+                }
+
+                $employeeCashAccount = AccountModel::createEmployeeCashAccount(
+                    $request->requester_user_id,
+                    $user->fullname
+                );
+            }
+
+            if (!$employeeCashAccount) {
+                throw new \Exception("Employee cash account not found or could not be created");
+            }
+
+            // Build description
+            $description = "Salary Advance - {$request->requester->fullname}";
+            if ($request->description) {
+                $description .= " - {$request->description}";
+            }
+            
+            // Create ledger entry
+            $ledger = LedgerModel::create([
+                'transaction_date' => $request->completed_at ?? now(),
+                'transaction_type' => 'salary_advance',
+                'description' => $description,
+                'from_account_id' => $fundingAccount->id,
+                'to_account_id' => $employeeCashAccount->id,
+                'amount' => $request->amount,
+                'mode' => 'cash',
+                'approval_status' => LedgerModel::STATUS_APPROVED,
+                'approval_date' => $request->completed_at,
+                'approved_by' => $request->updated_by,
+                'request_id' => $request->id,
+                'external_source' => 'hr_salary_advance',
+                'external_ref_id' => $request->request_number,
+                'created_by' => $request->requester_user_id,
+                'comments' => "Paid from: {$fundingAccount->account_name}"
+            ]);
+
+            // Update account balances
+            $fundingAccount->current_balance -= $request->amount; // Funding decreases
+            $fundingAccount->save();
+            
+            // IMPORTANT: DO NOT update employee cash balance for salary advances
+            // Salary advances are personal payments TO the employee, not company cash they're holding
+            // Employee balance should only track: invoices, expenses, deposits (company money)
+            // $employeeCashAccount->current_balance += $request->amount; // REMOVED - see explanation above
+
+            // Link ledger to request
+            $request->ledger_transaction_id = $ledger->id;
+            
+            // Mark settlement status (same as expenses)
+            $this->markSettlementStatus($request, $fundingAccount);
+            
+            $request->save();
+
+            DB::commit();
+
+            Log::info("Salary advance posted to ledger", [
+                'request_id' => $request->id,
+                'ledger_id' => $ledger->id,
+                'amount' => $request->amount,
+                'from_account' => $fundingAccount->account_code,
+                'settlement_status' => $request->settlement_status
+            ]);
+
+            return [
+                'success' => true,
+                'message' => 'Salary advance posted to ledger successfully',
+                'ledger_id' => $ledger->id
+            ];
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Failed to post salary advance to ledger", [
+                'request_id' => $request->id,
+                'error' => $e->getMessage()
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Failed to post to ledger: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
      * Get or create expense account for category
      */
     private function getOrCreateExpenseAccount($categoryName)

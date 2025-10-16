@@ -248,13 +248,19 @@ function handleCategoryChange() {
         descriptionLabel.classList.add('required');
         // Set title to "expense" (will be updated when expense category is selected)
         hiddenTitle.value = 'expense';
-    } else if (categoryCode === 'advance') {
-        // ADVANCE: Show only amount field, NO expense category
+    } else if (categoryCode === 'advance' || categoryCode === 'salary_advance') {
+        // ADVANCE/SALARY ADVANCE: Show only amount field, NO expense category
         leaveFields.style.display = 'none';
         expenseCategoryField.style.display = 'none';
         amountField.style.display = 'block';
         // Make amount required
-        document.querySelector('[name="amount"]').required = true;
+        const amountInput = document.querySelector('[name="amount"]');
+        amountInput.required = true;
+        // Set default value to 5000 for salary advance (approvers can change it)
+        if (!amountInput.value || amountInput.value == '0') {
+            amountInput.value = '5000.00';
+            amountInput.placeholder = 'Default: 5000.00 (can be changed by approver)';
+        }
         document.querySelector('[name="leave_start_date"]').required = false;
         document.querySelector('[name="leave_end_date"]').required = false;
         expenseCategorySelect.required = false;

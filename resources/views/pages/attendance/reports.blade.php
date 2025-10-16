@@ -195,14 +195,15 @@
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Absent</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">On Leave</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Late Days</th>
-            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Avg Late</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Total Late Mins</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">OT Days</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Total OT Mins</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="reportBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="9" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
+            <td colspan="10" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
           </tr>
         </tbody>
       </table>
@@ -350,7 +351,7 @@ function renderReportTable(data) {
   const body = document.getElementById('reportBody');
 
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-500 text-sm">No data for selected month</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="px-4 py-8 text-center text-gray-500 text-sm">No data for selected month</td></tr>';
     return;
   }
 
@@ -358,7 +359,8 @@ function renderReportTable(data) {
     // Use each employee's individual working days from their shift schedule
     const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
     const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
-    const avgLate = emp.late_days > 0 ? (emp.total_late_minutes / emp.late_days).toFixed(0) : 0;
+    const totalLateMins = emp.total_late_minutes ? Math.round(emp.total_late_minutes) : 0;
+    const totalOTMins = emp.total_overtime_minutes ? Math.round(emp.total_overtime_minutes) : 0;
     
     return `
       <tr class="hover:bg-gray-50">
@@ -375,8 +377,9 @@ function renderReportTable(data) {
         <td class="px-4 py-3 text-sm text-center ${emp.absent_days > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}">${emp.absent_days || 0}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.leave_days > 0 ? 'text-blue-600 font-semibold' : 'text-gray-400'}">${emp.leave_days || 0}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${emp.late_days}</td>
-        <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600' : 'text-gray-400'}">${avgLate > 0 ? avgLate + 'm' : '-'}</td>
+        <td class="px-4 py-3 text-sm text-center ${totalLateMins > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${totalLateMins > 0 ? totalLateMins + 'm' : '-'}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.overtime_days > 0 ? 'text-green-600 font-semibold' : 'text-gray-400'}">${emp.overtime_days}</td>
+        <td class="px-4 py-3 text-sm text-center ${totalOTMins > 0 ? 'text-green-600 font-semibold' : 'text-gray-400'}">${totalOTMins > 0 ? totalOTMins + 'm' : '-'}</td>
         <td class="px-4 py-3 text-sm text-center">
           <button 
             onclick="showDailyDetails(${emp.user_id})"
@@ -448,14 +451,32 @@ function showDailyDetails(userId) {
     body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
     console.warn('No daily data for employee');
   } else {
-    console.log('Rendering', employee.daily.length, 'daily records');
-    body.innerHTML = employee.daily.map((day, index) => {
+    // DEDUPLICATE: Remove duplicate dates (keep first occurrence)
+    const uniqueDaily = [];
+    const seenDates = new Set();
+    
+    for (const day of employee.daily) {
+      if (!seenDates.has(day.attendance_date)) {
+        seenDates.add(day.attendance_date);
+        uniqueDaily.push(day);
+      } else {
+        console.warn('Duplicate removed:', day.attendance_date);
+      }
+    }
+    
+    console.log('Original records:', employee.daily.length, '| After deduplication:', uniqueDaily.length);
+    console.log('Rendering', uniqueDaily.length, 'unique daily records');
+    
+    body.innerHTML = uniqueDaily.map((day, index) => {
+      // Check if this is an absent day (marked by backend)
+      const isAbsent = day.status === 'absent' || (!day.login_time && !day.logout_time);
+      
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
-      const hours = calculateHours(day.login_time, day.logout_time);
-      const lateBy = calculateLateBy(day.login_time, day.shift_start);
-      const overtime = calculateOvertime(day.logout_time, day.shift_end);
-      const status = getStatus(day.login_time, day.shift_start);
+      const hours = isAbsent ? '-' : calculateHours(day.login_time, day.logout_time);
+      const lateBy = isAbsent ? { duration: '-', isLate: false } : calculateLateBy(day.login_time, day.shift_start);
+      const overtime = isAbsent ? { duration: '-', hasOvertime: false } : calculateOvertime(day.logout_time, day.shift_end);
+      const status = isAbsent ? 'Absent' : getStatus(day.login_time, day.shift_start);
       
       // Format date nicely
       const date = new Date(day.attendance_date + 'T00:00:00');
@@ -463,18 +484,18 @@ function showDailyDetails(userId) {
       const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
       const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
-      const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : '#f3f4f6';
-      const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : '#6b7280';
+      const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : status === 'Absent' ? '#fef2f2' : '#f3f4f6';
+      const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : status === 'Absent' ? '#991b1b' : '#6b7280';
       
       return `
         <tr style="background: ${rowBg}; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
           <td style="padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #f3f4f6;">
-            <div style="font-weight: 500; color: #111827;">${formattedDate}</div>
+            <div style="font-weight: 500; color: ${isAbsent ? '#dc2626' : '#111827'};">${formattedDate}</div>
             <div style="font-size: 12px; color: #6b7280;">${dayName}</div>
           </td>
-          <td style="padding: 12px 16px; font-size: 14px; color: ${lateBy.isLate ? '#dc2626' : '#374151'}; font-weight: ${lateBy.isLate ? '600' : '400'}; border-bottom: 1px solid #f3f4f6;">${loginTime}</td>
-          <td style="padding: 12px 16px; font-size: 14px; color: #374151; border-bottom: 1px solid #f3f4f6;">${logoutTime}</td>
-          <td style="padding: 12px 16px; font-size: 14px; font-weight: 600; text-align: center; color: #111827; border-bottom: 1px solid #f3f4f6;">${hours}</td>
+          <td style="padding: 12px 16px; font-size: 14px; color: ${isAbsent ? '#9ca3af' : lateBy.isLate ? '#dc2626' : '#374151'}; font-weight: ${lateBy.isLate ? '600' : '400'}; border-bottom: 1px solid #f3f4f6;">${loginTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; color: ${isAbsent ? '#9ca3af' : '#374151'}; border-bottom: 1px solid #f3f4f6;">${logoutTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; font-weight: 600; text-align: center; color: ${isAbsent ? '#9ca3af' : '#111827'}; border-bottom: 1px solid #f3f4f6;">${hours}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${lateBy.isLate ? '#dc2626' : '#9ca3af'}; font-weight: ${lateBy.isLate ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${lateBy.duration}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${overtime.hasOvertime ? '#16a34a' : '#9ca3af'}; font-weight: ${overtime.hasOvertime ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${overtime.duration}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">

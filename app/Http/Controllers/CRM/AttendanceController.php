@@ -236,6 +236,11 @@ class AttendanceController extends Controller
         $startDate = $month . '-01';
         $endDate = date('Y-m-t', strtotime($startDate));
         
+        // For current month, only count working days up to today (not the full month)
+        $today = date('Y-m-d');
+        $isCurrentMonth = (date('Y-m', strtotime($today)) === $month);
+        $effectiveEndDate = $isCurrentMonth ? min($today, $endDate) : $endDate;
+        
             Log::info('Monthly report requested', [
                 'month' => $month,
                 'startDate' => $startDate,
@@ -311,7 +316,8 @@ class AttendanceController extends Controller
                     ]);
                     
                     // Calculate working days for this user in this month
-                    $workingDays = $shiftService->calculateWorkingDays($record->user_id, $startDate, $endDate);
+                    // For current month, only count up to today
+                    $workingDays = $shiftService->calculateWorkingDays($record->user_id, $startDate, $effectiveEndDate);
                     
                     Log::info('Working days calculated', [
                         'user_id' => $record->user_id,
@@ -348,7 +354,8 @@ class AttendanceController extends Controller
                     'total_late_minutes' => 0,
                     'total_overtime_minutes' => 0,
                     'leave_dates' => [],
-                    'daily' => []
+                    'daily' => [],
+                    'processed_attendance_ids' => [] // Track processed attendance records to prevent duplicates
                 ];
             }
             
@@ -371,46 +378,103 @@ class AttendanceController extends Controller
                 }
             }
             
-            $byUser[$record->user_id]['total_days']++;
-            if ($record->login_time && $record->attendance_id) {
-                $byUser[$record->user_id]['present_days']++;
-                
-                // Calculate late using user's actual shift
-                if ($record->login_time > $userShiftStart) {
-                    $byUser[$record->user_id]['late_days']++;
-                    $late_mins = (strtotime($record->login_time) - strtotime($userShiftStart)) / 60;
-                    $byUser[$record->user_id]['total_late_minutes'] += $late_mins;
-                }
-                
-                // Calculate overtime using user's actual shift
-                if ($record->logout_time && $record->logout_time > $userShiftEnd) {
-                    $byUser[$record->user_id]['overtime_days']++;
-                    $ot_mins = (strtotime($record->logout_time) - strtotime($userShiftEnd)) / 60;
-                    $byUser[$record->user_id]['total_overtime_minutes'] += $ot_mins;
-                }
-                
-                // Calculate hours worked
-                if ($record->logout_time) {
-                    $hours = (strtotime($record->logout_time) - strtotime($record->login_time)) / 3600;
-                    $byUser[$record->user_id]['total_hours'] += $hours;
+            // IMPORTANT: Only process each attendance record once to prevent duplicates from JOINs
+            // The LEFT JOIN with t_req_master can create duplicate rows for the same attendance record
+            $isNewAttendanceRecord = false;
+            if ($record->attendance_id && !in_array($record->attendance_id, $byUser[$record->user_id]['processed_attendance_ids'])) {
+                $byUser[$record->user_id]['processed_attendance_ids'][] = $record->attendance_id;
+                $isNewAttendanceRecord = true;
+            }
+            
+            if ($isNewAttendanceRecord) {
+                $byUser[$record->user_id]['total_days']++;
+                if ($record->login_time) {
+                    $byUser[$record->user_id]['present_days']++;
+                    
+                    // Calculate late using user's actual shift
+                    if ($record->login_time > $userShiftStart) {
+                        $byUser[$record->user_id]['late_days']++;
+                        $late_mins = (strtotime($record->login_time) - strtotime($userShiftStart)) / 60;
+                        $byUser[$record->user_id]['total_late_minutes'] += $late_mins;
+                    }
+                    
+                    // Calculate overtime using user's actual shift
+                    if ($record->logout_time && $record->logout_time > $userShiftEnd) {
+                        $byUser[$record->user_id]['overtime_days']++;
+                        $ot_mins = (strtotime($record->logout_time) - strtotime($userShiftEnd)) / 60;
+                        $byUser[$record->user_id]['total_overtime_minutes'] += $ot_mins;
+                    }
+                    
+                    // Calculate hours worked
+                    if ($record->logout_time) {
+                        $hours = (strtotime($record->logout_time) - strtotime($record->login_time)) / 3600;
+                        $byUser[$record->user_id]['total_hours'] += $hours;
+                    }
                 }
             }
             
             // Add as array for JSON serialization
-            $byUser[$record->user_id]['daily'][] = [
-                'attendance_date' => $record->attendance_date,
-                'login_time' => $record->login_time,
-                'logout_time' => $record->logout_time,
-                'shift_start' => $userShiftStart,
-                'shift_end' => $userShiftEnd
-            ];
+            // IMPORTANT: Only add records that have actual attendance data
+            // Skip NULL attendance_date records (these come from leave request JOINs)
+            if ($record->attendance_date !== null) {
+                $byUser[$record->user_id]['daily'][] = [
+                    'attendance_date' => $record->attendance_date,
+                    'login_time' => $record->login_time,
+                    'logout_time' => $record->logout_time,
+                    'shift_start' => $userShiftStart,
+                    'shift_end' => $userShiftEnd
+                ];
+            }
         }
         
         // Calculate leave_days and absent_days for each user
+        // Also add absent day records to the daily array for easier tracking
         foreach ($byUser as $userId => &$userData) {
             $userData['leave_days'] = count($userData['leave_dates']);
             $userData['absent_days'] = max(0, $userData['working_days'] - $userData['present_days'] - $userData['leave_days']);
+            
+            // Create a set of dates that have attendance records
+            $attendanceDates = [];
+            foreach ($userData['daily'] as $day) {
+                $attendanceDates[$day['attendance_date']] = true;
+            }
+            
+            // Add absent day records for dates within the reporting period that have no attendance and no leave
+            // IMPORTANT: Only add for WORKING DAYS (respects shift off days and public holidays)
+            $currentDate = new \DateTime($startDate);
+            $endDateObj = new \DateTime($effectiveEndDate);
+            
+            while ($currentDate <= $endDateObj) {
+                $dateStr = $currentDate->format('Y-m-d');
+                
+                // Skip if attendance record exists or if on leave
+                if (!isset($attendanceDates[$dateStr]) && !isset($userData['leave_dates'][$dateStr])) {
+                    // CRITICAL: Only mark as absent if this is a WORKING DAY for this user
+                    // This respects shift schedule (e.g., Tuesday off) AND public holidays
+                    if ($shiftService->isWorkingDay($userId, $dateStr)) {
+                        // This is a working day with no attendance = ABSENT
+                        $userData['daily'][] = [
+                            'attendance_date' => $dateStr,
+                            'login_time' => null,
+                            'logout_time' => null,
+                            'shift_start' => $userData['shift_start'],
+                            'shift_end' => $userData['shift_end'],
+                            'status' => 'absent' // Mark as absent for frontend rendering
+                        ];
+                    }
+                    // else: it's a day off or holiday, don't show in the report
+                }
+                
+                $currentDate->modify('+1 day');
+            }
+            
+            // Sort daily records by date for proper chronological display
+            usort($userData['daily'], function($a, $b) {
+                return strcmp($a['attendance_date'], $b['attendance_date']);
+            });
+            
             unset($userData['leave_dates']); // Remove temporary data
+            unset($userData['processed_attendance_ids']); // Remove temporary tracking array
         }
         
         Log::info('Monthly report processed', [

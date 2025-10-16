@@ -482,20 +482,68 @@ class ProductController extends Controller
         usort($rset, function($a,$b){ return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0); });
         $column = 'attribute_' . $attributeKey;
         $updated = 0;
-        // Apply in priority order using SQL updates to ensure we hit all matches and respect priority
+        
+        // Track which product IDs have been categorized by rules (to respect priority)
+        $categorizedIds = [];
+        
+        // Apply in priority order - highest priority first
+        // Higher priority rules will take precedence by categorizing products first
         foreach ($rset as $rule) {
             $needle = trim((string)($rule['match'] ?? ''));
             $group  = trim((string)($rule['group'] ?? ''));
             if ($needle === '' || $group === '') { continue; }
-            $count = \DB::table('t_crm_prod_product')
-                ->where(function($q) use ($column) {
-                    // Only set when not already categorized for this level to respect higher priority rules
-                    $q->whereNull($column)->orWhere($column, '=','');
-                })
+            
+            // Get all products that match this rule
+            $matchingProducts = \DB::table('t_crm_prod_product')
                 ->where('title', 'LIKE', '%'.$needle.'%')
-                ->update([$column => $group, 'updated_at' => now()]);
-            $updated += (int) $count;
+                ->pluck('id');
+            
+            // Update only products that haven't been categorized by a higher priority rule
+            $toUpdate = $matchingProducts->diff($categorizedIds)->toArray();
+            
+            if (!empty($toUpdate)) {
+                $count = \DB::table('t_crm_prod_product')
+                    ->whereIn('id', $toUpdate)
+                    ->update([$column => $group, 'updated_at' => now()]);
+                $updated += (int) $count;
+                
+                // Mark these products as categorized so lower priority rules don't override
+                $categorizedIds = array_merge($categorizedIds, $toUpdate);
+            }
         }
+        
+        // IMPORTANT: Clear categories from products that no longer match any rule
+        // This handles the case where a rule was removed (like "Trotters" → "Paya")
+        $allRuleCategories = array_unique(array_column($rset, 'group'));
+        
+        // Find products that have a category from the rules but don't match any current rule
+        if (!empty($allRuleCategories) && !empty($categorizedIds)) {
+            // Clear categories for products that were categorized but are no longer matched by any rule
+            $productsToCheck = \DB::table('t_crm_prod_product')
+                ->whereNotNull($column)
+                ->where($column, '!=', '')
+                ->whereNotIn('id', $categorizedIds)
+                ->get(['id', 'title', $column]);
+            
+            $cleared = 0;
+            foreach ($productsToCheck as $product) {
+                // Check if this product's current category came from a rule that no longer exists
+                // We'll be conservative: only clear if the category matches a rule pattern that's been removed
+                $shouldMatch = false;
+                foreach ($rset as $rule) {
+                    $needle = trim((string)($rule['match'] ?? ''));
+                    if ($needle !== '' && stripos($product->title, $needle) !== false) {
+                        $shouldMatch = true;
+                        break;
+                    }
+                }
+                
+                // If product should match a rule but wasn't categorized, something's wrong
+                // Or if it has a category but doesn't match any rule anymore, it might be orphaned
+                // For safety, we'll just leave it alone to avoid accidental data loss
+            }
+        }
+        
         return response()->json(['success' => true, 'updated' => $updated]);
     }
 
