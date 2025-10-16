@@ -215,9 +215,9 @@
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
-                            @forelse($allExpenses as $expense)
-                            <tr class="hover:bg-gray-50">
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
+                            @forelse($allExpensesForDisplay as $expense)
+                            <tr class="hover:bg-gray-50 {{ isset($expense->type) && $expense->type === 'salary' ? 'bg-purple-50' : '' }}">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium {{ isset($expense->type) && $expense->type === 'salary' ? 'text-purple-600' : 'text-blue-600' }}">
                                     {{ $expense->request_number }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
@@ -227,16 +227,18 @@
                                     {{ $expense->requester->fullname ?? 'Unknown' }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->expense_category ?? $expense->category->category_name }}
+                                    {{ $expense->expense_category ?? ($expense->category ? $expense->category->category_name : 'N/A') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                                     Rs. {{ number_format($expense->amount, 2) }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->paymentSourceAccount->account_name ?? 'N/A' }}
+                                    {{ $expense->paymentSourceAccount ? $expense->paymentSourceAccount->account_name : 'N/A' }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    @if($expense->settlement_status === 'not_required')
+                                    @if(isset($expense->type) && $expense->type === 'salary')
+                                        <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ No Action</span>
+                                    @elseif($expense->settlement_status === 'not_required' || $expense->settlement_status === 'not_applicable')
                                         <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ No Action</span>
                                     @elseif($expense->settlement_status === 'pending')
                                         <span class="px-2 py-1 text-xs font-medium bg-orange-100 text-orange-800 rounded">⚠️ Pending</span>
@@ -245,14 +247,16 @@
                                     @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    @if($expense->settlement_status === 'pending')
-                                        <button onclick="openSettlementModal({{ $expense->id }})" 
+                                    @if(isset($expense->type) && $expense->type === 'salary')
+                                        <span class="text-gray-400 text-xs">{{ ucfirst($expense->status) }}</span>
+                                    @elseif($expense->settlement_status === 'pending')
+                                        <button onclick="openSettlementModal({{ is_string($expense->id) ? 0 : $expense->id }})" 
                                                 class="text-blue-600 hover:text-blue-800 font-medium">
                                             ⚙️ Settle
                                         </button>
                                     @elseif($expense->settlement_status === 'settled')
                                         <span class="text-gray-400 text-xs">
-                                            {{ $expense->settled_at->format('M d') }} by {{ $expense->settledBy->name ?? 'System' }}
+                                            {{ isset($expense->settled_at) ? $expense->settled_at->format('M d') : 'N/A' }} by {{ isset($expense->settledBy) ? ($expense->settledBy->name ?? 'System') : 'System' }}
                                         </span>
                                     @endif
                                 </td>

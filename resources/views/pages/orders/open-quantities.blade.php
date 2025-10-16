@@ -106,6 +106,19 @@
     transition: all 0.2s;
     border: 2px solid transparent;
     position: relative;
+    cursor: move;
+    user-select: none;
+}
+
+.hierarchy-pill.dragging {
+    opacity: 0.5;
+    transform: scale(0.95);
+}
+
+.hierarchy-pill.drag-over {
+    border-color: #3b82f6;
+    background: #eff6ff;
+    transform: scale(1.05);
 }
 
 .hierarchy-pill:hover {
@@ -151,21 +164,22 @@
 
 .hierarchy-reorder-btn {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-    cursor: pointer;
-    opacity: 0.4;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    opacity: 0.5;
     transition: opacity 0.15s;
+    font-size: 16px;
+    color: #6b7280;
+    padding: 0 4px;
 }
 
 .hierarchy-reorder-btn:hover {
     opacity: 1;
 }
 
-.hierarchy-reorder-btn span {
-    font-size: 10px;
-    line-height: 1;
-    color: #6b7280;
+.hierarchy-reorder-btn:active {
+    cursor: grabbing;
 }
 
 .hierarchy-arrow {
@@ -897,6 +911,7 @@ function renderTable(data, summary) {
     if (isOrdersLevel) {
         thead.innerHTML = `
             <th>Order Number</th>
+            <th>Customer Name</th>
             <th>Status</th>
             <th class="text-right">Quantity</th>
             <th class="text-right">Date</th>
@@ -914,13 +929,20 @@ function renderTable(data, summary) {
 
     tbody.innerHTML = data.map(item => {
         if (isOrdersLevel) {
-            // Orders level: show order details
+            // Orders level: show order details with customer name
+            const customerName = item.customer_full_name && item.customer_full_name.trim() 
+                ? escapeHtml(item.customer_full_name.trim()) 
+                : '<span class="text-gray-400 italic">No customer</span>';
+            
             return `
                 <tr>
                     <td>
                         <a href="/orders/${item.order_id}" class="text-blue-600 hover:text-blue-800 font-semibold">
                             ${escapeHtml(item.group_name)}
                         </a>
+                    </td>
+                    <td>
+                        ${customerName}
                     </td>
                     <td>
                         ${getStatusChip(item.order_status)}
@@ -1120,29 +1142,28 @@ function updateHierarchyDisplay() {
         const isActive = idx === window.openQtyState.currentLevel;
         const isLast = idx === hierarchy.length - 1;
         const canRemove = hierarchy.length > 2 && field !== 'orders'; // Must keep at least 2 levels
-        const canMoveUp = idx > 0;
-        const canMoveDown = idx < hierarchy.length - 1 && field !== 'orders';
+        const canDrag = field !== 'orders'; // Can't drag the "orders" level
         
-        // Reorder buttons
-        const reorderHtml = `
-            <div class="hierarchy-reorder-btn" title="Reorder">
-                ${canMoveUp ? `<span onclick="moveHierarchyUp(${idx})">▲</span>` : '<span style="opacity:0">▲</span>'}
-                ${canMoveDown ? `<span onclick="moveHierarchyDown(${idx})">▼</span>` : '<span style="opacity:0">▼</span>'}
+        // Drag handle (only if draggable)
+        const dragHandleHtml = canDrag ? `
+            <div class="hierarchy-reorder-btn" title="Drag to reorder">
+                ⋮⋮
             </div>
-        `;
+        ` : '<div style="width: 20px;"></div>';
         
-        // Pill with remove button
+        // Pill with remove button (draggable if not "orders" level)
         const pillHtml = `
-            <span class="hierarchy-pill ${isActive ? 'active' : ''}">
+            <span class="hierarchy-pill ${isActive ? 'active' : ''}" 
+                  ${canDrag ? `draggable="true" data-index="${idx}" ondragstart="handleDragStart(event)" ondragend="handleDragEnd(event)" ondragover="handleDragOver(event)" ondrop="handleDrop(event)"` : ''}>
                 ${labels[field] || field}
-                ${canRemove ? `<span class="pill-remove" onclick="removeHierarchyLevel(${idx})" title="Remove level">×</span>` : ''}
+                ${canRemove ? `<span class="pill-remove" onclick="event.stopPropagation(); removeHierarchyLevel(${idx})" title="Remove level">×</span>` : ''}
             </span>
         `;
         
         // Arrow
         const arrowHtml = isLast ? '' : '<span class="hierarchy-arrow">→</span>';
         
-        html += `<div class="hierarchy-pill-wrapper">${reorderHtml}${pillHtml}</div>${arrowHtml}`;
+        html += `<div class="hierarchy-pill-wrapper">${dragHandleHtml}${pillHtml}</div>${arrowHtml}`;
     });
     
     // Add level button with dropdown
@@ -1231,7 +1252,93 @@ function removeHierarchyLevel(index) {
     }
 }
 
-// Move hierarchy level up
+// ==================== DRAG AND DROP FUNCTIONS ====================
+
+let draggedIndex = null;
+
+// Handle drag start
+function handleDragStart(event) {
+    draggedIndex = parseInt(event.target.dataset.index);
+    event.target.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/html', event.target.innerHTML);
+}
+
+// Handle drag end
+function handleDragEnd(event) {
+    event.target.classList.remove('dragging');
+    
+    // Remove drag-over class from all pills
+    document.querySelectorAll('.hierarchy-pill').forEach(pill => {
+        pill.classList.remove('drag-over');
+    });
+}
+
+// Handle drag over
+function handleDragOver(event) {
+    if (event.preventDefault) {
+        event.preventDefault(); // Necessary to allow drop
+    }
+    
+    event.dataTransfer.dropEffect = 'move';
+    
+    const target = event.target.closest('.hierarchy-pill');
+    if (target && target.hasAttribute('draggable')) {
+        // Add visual feedback
+        document.querySelectorAll('.hierarchy-pill').forEach(pill => {
+            pill.classList.remove('drag-over');
+        });
+        target.classList.add('drag-over');
+    }
+    
+    return false;
+}
+
+// Handle drop
+function handleDrop(event) {
+    if (event.stopPropagation) {
+        event.stopPropagation(); // Stops browser from redirecting
+    }
+    
+    const target = event.target.closest('.hierarchy-pill');
+    if (!target || !target.hasAttribute('draggable')) {
+        return false;
+    }
+    
+    const targetIndex = parseInt(target.dataset.index);
+    
+    // Don't do anything if dropping on itself
+    if (draggedIndex === targetIndex) {
+        return false;
+    }
+    
+    // Reorder the hierarchy
+    const hierarchy = [...window.openQtyState.hierarchy];
+    const draggedItem = hierarchy[draggedIndex];
+    
+    // Remove from old position
+    hierarchy.splice(draggedIndex, 1);
+    
+    // Insert at new position (adjust if moving down)
+    const insertIndex = draggedIndex < targetIndex ? targetIndex : targetIndex;
+    hierarchy.splice(insertIndex, 0, draggedItem);
+    
+    // Update state
+    window.openQtyState.hierarchy = hierarchy;
+    
+    // Reset to top level
+    window.openQtyState.currentLevel = 0;
+    window.openQtyState.breadcrumbs = [];
+    window.openQtyState.filters = {};
+    
+    saveHierarchy();
+    updateHierarchyDisplay();
+    loadData();
+    
+    return false;
+}
+
+// Move hierarchy level up (kept for backward compatibility, can be removed)
 function moveHierarchyUp(index) {
     if (index > 0) {
         const temp = window.openQtyState.hierarchy[index];
@@ -1249,7 +1356,7 @@ function moveHierarchyUp(index) {
     }
 }
 
-// Move hierarchy level down
+// Move hierarchy level down (kept for backward compatibility, can be removed)
 function moveHierarchyDown(index) {
     if (index < window.openQtyState.hierarchy.length - 1 && window.openQtyState.hierarchy[index] !== 'orders') {
         const temp = window.openQtyState.hierarchy[index];

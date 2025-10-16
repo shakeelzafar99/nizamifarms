@@ -8,6 +8,7 @@ use App\Models\Request\RequestModel;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\ConfigModel;
+use App\Models\HR\SalarySlipModel;
 use App\Services\FIN\ExpenseSettlementService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -59,12 +60,50 @@ class ExpenseManagementController extends Controller
         
         $allExpenses = $expensesQuery->orderBy('created_at', 'desc')->get();
         
-        // Calculate KPIs
-        $totalExpenses = $allExpenses->sum('amount');
+        // Get salary slips (approved/paid) for total expenses calculation AND display
+        $salarySlipsQuery = SalarySlipModel::with(['employee'])
+            ->whereIn('slip_status', ['approved', 'paid'])
+            ->whereNotNull('ledger_transaction_id');
         
+        // Apply date filter to salary slips if provided
+        if ($dateFrom && $dateTo) {
+            $salarySlipsQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
+        }
+        
+        $salarySlips = $salarySlipsQuery->orderBy('created_at', 'desc')->get();
+        $totalSalaryExpenses = $salarySlips->sum('net_salary');
+        
+        // Transform salary slips to match expense format for unified display
+        $salarySlipsForDisplay = $salarySlips->map(function($slip) {
+            return (object) [
+                'id' => 'SALARY-' . $slip->id, // Prefix to distinguish from regular expenses
+                'slip_id' => $slip->id,
+                'type' => 'salary',
+                'request_number' => $slip->slip_number ?? ('SLIP-' . $slip->id),
+                'created_at' => $slip->created_at,
+                'requester' => $slip->employee,
+                'requester_user_id' => $slip->user_id,
+                'category' => (object) ['category_name' => 'Salary Payment', 'category_code' => 'salary'],
+                'expense_category' => 'Salary',
+                'amount' => $slip->net_salary,
+                'paymentSourceAccount' => (object) ['account_name' => 'Expense Fund'],
+                'payment_source_account_id' => null, // Could be enhanced to get actual account
+                'settlement_status' => 'not_applicable', // Salaries don't need settlement
+                'status' => $slip->slip_status,
+                'ledger_transaction_id' => $slip->ledger_transaction_id
+            ];
+        });
+        
+        // Merge expenses and salary slips for unified display
+        $allExpensesForDisplay = $allExpenses->concat($salarySlipsForDisplay)->sortByDesc('created_at');
+        
+        // Calculate KPIs
+        $totalExpenses = $allExpenses->sum('amount') + $totalSalaryExpenses;
+        
+        // Calculate "from expense fund" - expenses with no settlement needed + all salary payments
         $fromExpenseFund = $allExpenses->filter(function($exp) {
             return $exp->settlement_status === 'not_required';
-        })->sum('amount');
+        })->sum('amount') + $totalSalaryExpenses; // Salaries always from EXP_FUND
         
         $needsSettlement = $allExpenses->filter(function($exp) {
             return $exp->settlement_status === 'pending';
@@ -119,11 +158,14 @@ class ExpenseManagementController extends Controller
             'pending_count' => $pendingSettlement->count(),
             'settled_count' => $settlementHistory->count(),
             'pending_approvals' => $pendingApprovals->sum('amount'),
-            'pending_approvals_count' => $pendingApprovals->count()
+            'pending_approvals_count' => $pendingApprovals->count(),
+            'total_salary_expenses' => $totalSalaryExpenses, // For debugging/display
+            'salary_slips_count' => $salarySlips->count()
         ];
         
         return view('fin.expense.index', compact(
-            'allExpenses',
+            'allExpensesForDisplay', // Changed from 'allExpenses' to include salary slips
+            'allExpenses', // Keep original for backward compatibility if needed
             'pendingSettlement',
             'settlementHistory',
             'kpis',

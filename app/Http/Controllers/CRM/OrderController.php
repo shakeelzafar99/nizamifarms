@@ -1608,17 +1608,30 @@ class OrderController extends Controller
             
             // Build select and group by based on current field
             if ($currentField === 'orders') {
-                // Final level: show individual orders
-                $query->select([
-                    'o.order_number as group_name',
-                    'o.id as order_id',
-                    'o.order_status',
-                    'o.order_date',
-                    \DB::raw('SUM(li.quantity) as total_quantity'),
-                    \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
-                ])
-                ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date')
-                ->orderBy('o.order_date', 'desc');
+                // Final level: show individual orders with customer information
+                // Customer name priority: order.name -> customer.full_name -> address fields
+                $query->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
+                    ->select([
+                        'o.order_number as group_name',
+                        'o.id as order_id',
+                        'o.order_status',
+                        'o.order_date',
+                        'o.name as order_name',
+                        'o.address_first_name',
+                        'o.address_last_name',
+                        'c.first_name as customer_first_name',
+                        'c.last_name as customer_last_name',
+                        // Priority: order.name -> customer full_name -> address fields
+                        \DB::raw('COALESCE(
+                            NULLIF(TRIM(o.name), ""),
+                            NULLIF(TRIM(CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, ""))), ""),
+                            TRIM(CONCAT(COALESCE(o.address_first_name, ""), " ", COALESCE(o.address_last_name, "")))
+                        ) as customer_full_name'),
+                        \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
+                    ])
+                    ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
+                    ->orderBy('o.order_date', 'desc');
             } elseif ($currentField === 'product_name') {
                 $query->select([
                     'li.name as group_name',
