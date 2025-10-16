@@ -1,0 +1,183 @@
+<?php
+
+namespace App\Http\Controllers\FIN;
+
+use App\Http\Controllers\Controller;
+use App\Models\FIN\VendorModel;
+use App\Models\FIN\VendorProductModel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class VendorProductController extends Controller
+{
+    /**
+     * Show vendor products management page
+     */
+    public function index($vendorId)
+    {
+        $vendor = VendorModel::findOrFail($vendorId);
+        $products = VendorProductModel::forVendor($vendorId)
+                                      ->orderBy('product_name')
+                                      ->get();
+
+        return view('fin.vendor.products', compact('vendor', 'products'));
+    }
+
+    /**
+     * Get products list as JSON (for AJAX)
+     */
+    public function list($vendorId)
+    {
+        $products = VendorProductModel::forVendor($vendorId)
+                                      ->active()
+                                      ->orderBy('product_name')
+                                      ->get();
+
+        return response()->json([
+            'success' => true,
+            'products' => $products
+        ]);
+    }
+
+    /**
+     * Store a new vendor product
+     */
+    public function store(Request $request, $vendorId)
+    {
+        $request->validate([
+            'product_name' => 'required|string|max:255',
+            'unit' => 'required|string|max:50',
+            'rate_per_unit' => 'required|numeric|min:0.01'
+        ]);
+
+        try {
+            $product = VendorProductModel::create([
+                'vendor_id' => $vendorId,
+                'product_name' => $request->product_name,
+                'unit' => $request->unit,
+                'rate_per_unit' => $request->rate_per_unit,
+                'is_active' => 1
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Product added successfully!',
+                'product' => $product
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error adding vendor product: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error adding product: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Update a vendor product
+     */
+    public function update(Request $request, $vendorId, $productId)
+    {
+        $request->validate([
+            'product_name' => 'required|string|max:255',
+            'unit' => 'required|string|max:50',
+            'rate_per_unit' => 'required|numeric|min:0.01'
+        ]);
+
+        try {
+            $product = VendorProductModel::where('vendor_id', $vendorId)
+                                         ->findOrFail($productId);
+
+            $product->update([
+                'product_name' => $request->product_name,
+                'unit' => $request->unit,
+                'rate_per_unit' => $request->rate_per_unit
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Product updated successfully!',
+                'product' => $product
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error updating vendor product: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error updating product: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Toggle product active status
+     */
+    public function toggleStatus($vendorId, $productId)
+    {
+        try {
+            $product = VendorProductModel::where('vendor_id', $vendorId)
+                                         ->findOrFail($productId);
+
+            $product->is_active = !$product->is_active;
+            $product->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Product status updated!',
+                'is_active' => $product->is_active
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error toggling vendor product status: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error updating status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete a vendor product
+     */
+    public function destroy($vendorId, $productId)
+    {
+        try {
+            $product = VendorProductModel::where('vendor_id', $vendorId)
+                                         ->findOrFail($productId);
+
+            // Check if product has been used in any purchases
+            if ($product->purchaseItems()->count() > 0) {
+                // Soft delete by deactivating instead
+                $product->is_active = 0;
+                $product->save();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Product deactivated (has purchase history)',
+                    'deactivated' => true
+                ]);
+            }
+
+            // Safe to delete if no purchase history
+            $product->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Product deleted successfully!'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error deleting vendor product: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error deleting product: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+}
+

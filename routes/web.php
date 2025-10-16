@@ -327,6 +327,15 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/toggle-status', [\App\Http\Controllers\FIN\VendorController::class, 'toggleStatus'])->name('toggle-status');
             Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase'])->name('purchase');
             Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment'])->name('payment');
+            Route::post('/{id}/weighted-purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordWeightedPurchase'])->name('weighted-purchase');
+            
+            // Vendor Products Management
+            Route::get('/{id}/products', [\App\Http\Controllers\FIN\VendorProductController::class, 'index'])->name('products');
+            Route::get('/{id}/products/list', [\App\Http\Controllers\FIN\VendorProductController::class, 'list'])->name('products.list');
+            Route::post('/{id}/products', [\App\Http\Controllers\FIN\VendorProductController::class, 'store'])->name('products.store');
+            Route::put('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'update'])->name('products.update');
+            Route::post('/{vendorId}/products/{productId}/toggle', [\App\Http\Controllers\FIN\VendorProductController::class, 'toggleStatus'])->name('products.toggle');
+            Route::delete('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'destroy'])->name('products.delete');
         });
 
         // Employee Cash Routes

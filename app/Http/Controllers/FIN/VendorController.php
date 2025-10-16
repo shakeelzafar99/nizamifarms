@@ -324,12 +324,13 @@ class VendorController extends Controller
             $mode = ($paymentAccount->account_code === 'ONLINE') ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH;
 
             // Create ledger entry
+            // Dr Vendor Account (liability decreases) → Cr Payment Account (cash/bank decreases)
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PAYMENT,
                 'description' => $request->description ?? "Payment to {$vendor->vendor_name}",
-                'from_account_id' => $vendor->account->id,
-                'to_account_id' => $paymentAccount->id,
+                'from_account_id' => $paymentAccount->id,  // Money leaving from payment source
+                'to_account_id' => $vendor->account->id,   // Money going to settle vendor liability
                 'amount' => $request->amount,
                 'mode' => $mode,
                 'approval_status' => $approvalStatus,
@@ -363,6 +364,95 @@ class VendorController extends Controller
             
             return back()->withInput()
                        ->with('error', 'Error recording payment: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Record weighted purchase (with line items)
+     */
+    public function recordWeightedPurchase(Request $request, $id)
+    {
+        $request->validate([
+            'transaction_date' => 'required|date',
+            'description' => 'nullable|string|max:500',
+            'items' => 'required|array|min:1',
+            'items.*.product_id' => 'required|exists:t_fin_vendor_products,id',
+            'items.*.quantity' => 'required|numeric|min:0.001',
+            'items.*.rate' => 'required|numeric|min:0.01',
+            'items.*.unit' => 'required|string|max:50',
+            'items.*.product_name' => 'required|string|max:255'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $vendor = VendorModel::with('account')->findOrFail($id);
+            $purchaseAccount = AccountModel::getByCode('EXP_PURCHASES');
+
+            if (!$purchaseAccount) {
+                throw new \Exception("Purchase expense account not found");
+            }
+
+            // Calculate grand total from line items
+            $grandTotal = 0;
+            $itemsSummary = [];
+            
+            foreach ($request->items as $item) {
+                $lineTotal = $item['quantity'] * $item['rate'];
+                $grandTotal += $lineTotal;
+                
+                $itemsSummary[] = "{$item['product_name']} ({$item['quantity']} {$item['unit']} @ Rs.{$item['rate']})";
+            }
+
+            // Create description
+            $description = $request->description ?? "Weighted purchase with " . count($request->items) . " items";
+            $comments = implode(', ', $itemsSummary);
+
+            // Create ledger entry
+            $ledger = LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => LedgerModel::TYPE_VENDOR_PURCHASE,
+                'description' => $description,
+                'from_account_id' => $purchaseAccount->id,
+                'to_account_id' => $vendor->account->id,
+                'amount' => $grandTotal,
+                'mode' => LedgerModel::MODE_CASH,
+                'approval_status' => LedgerModel::STATUS_APPROVED,
+                'created_by' => auth()->id(),
+                'comments' => $comments
+            ]);
+
+            // Create line items
+            foreach ($request->items as $item) {
+                \App\Models\FIN\VendorPurchaseItemModel::create([
+                    'ledger_id' => $ledger->id,
+                    'vendor_product_id' => $item['product_id'],
+                    'product_name' => $item['product_name'],
+                    'quantity' => $item['quantity'],
+                    'unit' => $item['unit'],
+                    'rate_per_unit' => $item['rate'],
+                    'line_total' => $item['quantity'] * $item['rate']
+                ]);
+            }
+
+            // Update balances
+            $purchaseAccount->current_balance += $grandTotal;
+            $purchaseAccount->save();
+            
+            $vendor->account->current_balance += $grandTotal;
+            $vendor->account->save();
+
+            DB::commit();
+
+            return redirect()->route('fin.vendors.show', $vendor->id)
+                           ->with('success', 'Weighted purchase recorded successfully! Total: Rs. ' . number_format($grandTotal, 2));
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error recording weighted purchase: " . $e->getMessage());
+            
+            return back()->withInput()
+                       ->with('error', 'Error recording weighted purchase: ' . $e->getMessage());
         }
     }
 }
