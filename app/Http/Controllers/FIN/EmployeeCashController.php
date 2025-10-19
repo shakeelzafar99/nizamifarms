@@ -174,14 +174,14 @@ class EmployeeCashController extends Controller
             
             // Get ALL approved expense requests from rider accounts (regardless of settlement)
             $shortCashTotal = \App\Models\Request\RequestModel::where('status', 'approved')
-                ->whereHas('category', function($q) {
-                    $q->where('category_code', 'expense');
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
                 })
                 ->whereHas('paymentSourceAccount', function($q) {
                     $q->where('account_category', 'employee_cash');
-                });
-            
-            if ($startDate && $endDate) {
+            });
+        
+        if ($startDate && $endDate) {
                 $shortCashTotal->whereBetween('created_at', [$startDate, $endDate]);
             }
             
@@ -507,6 +507,39 @@ class EmployeeCashController extends Controller
                                         $cashInBreakdown['transfers_in'] + 
                                         $cashInBreakdown['invoices'] + 
                                         $cashInBreakdown['others_in'];
+            
+            // === EXP_FUND SPECIFIC: Transfer Sources Breakdown ===
+            if ($account->account_code === 'EXP_FUND') {
+                $transfersInDetailed = LedgerModel::with('fromAccount')
+                    ->where('to_account_id', $account->id)
+                    ->where('transaction_type', LedgerModel::TYPE_TRANSFER);
+                if ($dateFrom && $dateTo) {
+                    $transfersInDetailed->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+                }
+                $transfersInData = $transfersInDetailed->get();
+                
+                $transferSources = [
+                    'from_online' => 0,
+                    'from_nf_cash' => 0,
+                    'from_personal' => 0,
+                    'from_others' => 0
+                ];
+                
+                foreach ($transfersInData as $transfer) {
+                    $sourceCode = $transfer->fromAccount->account_code ?? 'unknown';
+                    if ($sourceCode === 'ONLINE') {
+                        $transferSources['from_online'] += $transfer->amount;
+                    } elseif ($sourceCode === 'NF_CASH') {
+                        $transferSources['from_nf_cash'] += $transfer->amount;
+                    } elseif (str_contains($sourceCode, 'PERSONAL')) {
+                        $transferSources['from_personal'] += $transfer->amount;
+                    } else {
+                        $transferSources['from_others'] += $transfer->amount;
+                    }
+                }
+                
+                $cashInBreakdown['transfer_sources'] = $transferSources;
+            }
         }
 
         // === CASH OUT BREAKDOWN (for company accounts) ===
@@ -576,6 +609,97 @@ class EmployeeCashController extends Controller
                                          $cashOutBreakdown['transfers_out'] + 
                                          $cashOutBreakdown['expenses_ledger'] + 
                                          $cashOutBreakdown['others_out'];
+            
+            // === EXP_FUND SPECIFIC: Top 5 Expense Categories ===
+            if ($account->account_code === 'EXP_FUND') {
+                // Get ALL cash out transactions from ledger (expenses, salaries, salary advances, vendor payments, etc.)
+                $allExpensesQuery = LedgerModel::where('from_account_id', $account->id)
+                    ->whereIn('transaction_type', [
+                        LedgerModel::TYPE_EXPENSE,
+                        'salary_payment',
+                        LedgerModel::TYPE_SALARY_ADVANCE,
+                        LedgerModel::TYPE_VENDOR_PAYMENT,
+                        LedgerModel::TYPE_VENDOR_PURCHASE,
+                        LedgerModel::TYPE_SETTLEMENT
+                    ]);
+                
+                if ($dateFrom && $dateTo) {
+                    $allExpensesQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+                }
+                
+                $allExpenses = $allExpensesQuery->get();
+                
+                // Categorize expenses
+                $expensesByCategory = [];
+                
+                foreach ($allExpenses as $expense) {
+                    $category = 'Uncategorized';
+                    
+                    // Determine category based on transaction type and description
+                    if ($expense->transaction_type === 'salary_payment') {
+                        $category = 'Salary';
+                    } elseif ($expense->transaction_type === LedgerModel::TYPE_SALARY_ADVANCE) {
+                        $category = 'Salary Advance';
+                    } elseif ($expense->transaction_type === LedgerModel::TYPE_VENDOR_PAYMENT) {
+                        $category = 'Vendor Payments';
+                    } elseif ($expense->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE) {
+                        $category = 'Vendor Purchases';
+                    } elseif ($expense->transaction_type === LedgerModel::TYPE_SETTLEMENT) {
+                        // For settlements, try to get category from linked request
+                        if ($expense->request_id) {
+                            $request = \App\Models\Request\RequestModel::find($expense->request_id);
+                            if ($request && $request->expense_category) {
+                                $category = $request->expense_category;
+                            } else {
+                                $category = 'Settlements';
+                            }
+                        } else {
+                            $category = 'Settlements';
+                        }
+                    } elseif ($expense->transaction_type === LedgerModel::TYPE_EXPENSE) {
+                        // For regular expenses, try to get category from linked request
+                        if ($expense->request_id) {
+                            $request = \App\Models\Request\RequestModel::find($expense->request_id);
+                            if ($request && $request->expense_category) {
+                                $category = $request->expense_category;
+                            }
+                        } else {
+                            // Try to extract category from description
+                            $category = 'Other Expenses';
+                        }
+                    }
+                    
+                    if (!isset($expensesByCategory[$category])) {
+                        $expensesByCategory[$category] = 0;
+                    }
+                    $expensesByCategory[$category] += $expense->amount;
+                }
+                
+                // Sort by amount descending
+                arsort($expensesByCategory);
+                
+                // Get top 5 and group rest as "Others"
+                $topCategories = [];
+                $othersTotal = 0;
+                $count = 0;
+                
+                foreach ($expensesByCategory as $category => $amount) {
+                    if ($count < 5) {
+                        $topCategories[$category] = $amount;
+                        $count++;
+                    } else {
+                        $othersTotal += $amount;
+                    }
+                }
+                
+                $cashOutBreakdown['expense_categories'] = [
+                    'top_5' => $topCategories,
+                    'others' => $othersTotal
+                ];
+                
+                // Update the total to match the breakdown for EXP_FUND
+                $cashOutBreakdown['total'] = array_sum($topCategories) + $othersTotal;
+            }
         }
 
         // Calculate withdrawals (money leaving this account)

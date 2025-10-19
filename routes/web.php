@@ -250,6 +250,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [\App\Http\Controllers\Request\RequestController::class, 'index'])->name('requests.index');
         Route::get('/data', [\App\Http\Controllers\Request\RequestController::class, 'data'])->name('requests.data');
         Route::get('/create', [\App\Http\Controllers\Request\RequestController::class, 'create'])->name('requests.create');
+        Route::get('/by-number/{requestNumber}', [\App\Http\Controllers\Request\RequestController::class, 'findByNumber'])->name('requests.by-number');
         Route::get('/approval/statistics', [\App\Http\Controllers\Request\RequestApprovalController::class, 'statistics'])->name('requests.approval.statistics');
         
         // Settings routes (specific routes before {id})
@@ -361,6 +362,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\LedgerController::class, 'index'])->name('index');
             Route::get('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'createTransfer'])->name('transfer');
             Route::post('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'storeTransfer'])->name('transfer.store');
+            Route::get('/approval-details/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getApprovalDetails'])->name('approval-details');
             Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'show'])->name('show');
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');

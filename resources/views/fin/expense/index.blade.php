@@ -12,53 +12,73 @@
         </div>
     </div>
 
-    <!-- KPI Cards - Simplified & Compact -->
+    <!-- KPI Cards - Redesigned Layout: 4 cards (2x2) on left, 1 large card on right -->
     @php
         $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
             ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
     @endphp
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <!-- Total Expenses (Filtered) -->
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase font-medium">📊 Total Expenses</div>
-            <div class="text-lg font-bold text-gray-900 mt-1">Rs. {{ number_format($kpis['total_expenses'], 2) }}</div>
-            <div class="text-xs text-gray-500 mt-1">
-                @if($dateFrom && $dateTo)
-                    {{ date('M d', strtotime($dateFrom)) }} - {{ date('M d', strtotime($dateTo)) }}
-                @elseif($category)
-                    {{ $category }}
-                @else
-                    All time
-                @endif
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+        <!-- Left Side: 4 Small Cards in 2x2 Grid -->
+        <div class="lg:col-span-2 grid grid-cols-2 gap-3">
+            <!-- Total Expenses (Filtered) -->
+            <div class="bg-white border border-gray-200 rounded-lg p-3">
+                <div class="text-xs text-gray-500 uppercase font-medium">📊 Total Expenses</div>
+                <div class="text-lg font-bold text-gray-900 mt-1">Rs. {{ number_format($kpis['total_expenses'], 2) }}</div>
+                <div class="text-xs text-gray-500 mt-1">
+                    @if($dateFrom && $dateTo)
+                        {{ date('M d', strtotime($dateFrom)) }} - {{ date('M d', strtotime($dateTo)) }}
+                    @elseif($category)
+                        {{ $category }}
+                    @else
+                        All time
+                    @endif
+                </div>
+            </div>
+
+            <!-- Pending Approvals (Real-time) - Clickable -->
+            <div class="bg-yellow-50 border border-yellow-300 rounded-lg p-3 cursor-pointer hover:bg-yellow-100 transition-colors" 
+                 onclick="openPendingApprovalsModal()"
+                 title="Click to view and approve pending requests">
+                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Approvals</div>
+                <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($kpis['pending_approvals'], 2) }}</div>
+                <div class="text-xs text-yellow-600 mt-1">
+                    {{ $kpis['pending_approvals_count'] }} request(s)
+                    <span class="ml-1">👆 Click</span>
+                </div>
+            </div>
+
+            <!-- Needs Settlement (Real-time) -->
+            <div class="bg-orange-50 border border-orange-300 rounded-lg p-3">
+                <div class="text-xs text-orange-700 uppercase font-medium">⚠️ Needs Settlement</div>
+                <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($kpis['needs_settlement'], 2) }}</div>
+                <div class="text-xs text-orange-600 mt-1">{{ $kpis['pending_count'] }} expense(s)</div>
+            </div>
+
+            <!-- Expense Fund Balance (Real-time) -->
+            <div class="bg-blue-50 border border-blue-300 rounded-lg p-3">
+                <div class="text-xs text-blue-700 uppercase font-medium">💰 Fund Balance</div>
+                <div class="text-lg font-bold text-blue-900 mt-1">
+                    Rs. {{ $expenseFund ? number_format($expenseFund->current_balance, 2) : '0.00' }}
+                </div>
+                <div class="text-xs text-blue-600 mt-1">Available</div>
             </div>
         </div>
 
-        <!-- Pending Approvals (Real-time) - Clickable -->
-        <div class="bg-yellow-50 border border-yellow-300 rounded-lg p-3 cursor-pointer hover:bg-yellow-100 transition-colors" 
-             onclick="openPendingApprovalsModal()"
-             title="Click to view and approve pending requests">
-            <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending Approvals</div>
-            <div class="text-lg font-bold text-yellow-900 mt-1">Rs. {{ number_format($kpis['pending_approvals'], 2) }}</div>
-            <div class="text-xs text-yellow-600 mt-1">
-                {{ $kpis['pending_approvals_count'] }} request(s)
-                <span class="ml-1">👆 Click to review</span>
+        <!-- Right Side: Large Card with Top 10 Categories -->
+        <div class="bg-gradient-to-br from-purple-50 to-indigo-50 border border-purple-200 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-3">
+                <div class="text-sm text-purple-700 uppercase font-semibold">📊 Top Expense Categories</div>
+                <span class="text-xs text-purple-600">Click to filter</span>
             </div>
-        </div>
-
-        <!-- Needs Settlement (Real-time) -->
-        <div class="bg-orange-50 border border-orange-300 rounded-lg p-3">
-            <div class="text-xs text-orange-700 uppercase font-medium">⚠️ Needs Settlement</div>
-            <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($kpis['needs_settlement'], 2) }}</div>
-            <div class="text-xs text-orange-600 mt-1">{{ $kpis['pending_count'] }} expense(s)</div>
-        </div>
-
-        <!-- Expense Fund Balance (Real-time) -->
-        <div class="bg-blue-50 border border-blue-300 rounded-lg p-3">
-            <div class="text-xs text-blue-700 uppercase font-medium">💰 Fund Balance</div>
-            <div class="text-lg font-bold text-blue-900 mt-1">
-                Rs. {{ $expenseFund ? number_format($expenseFund->current_balance, 2) : '0.00' }}
+            <div class="space-y-1.5 max-h-[180px] overflow-y-auto">
+                @foreach($kpis['top_categories'] ?? [] as $cat => $amount)
+                    <div class="flex items-center justify-between p-2 bg-white rounded hover:bg-purple-100 cursor-pointer transition-colors border border-transparent hover:border-purple-300"
+                         onclick="filterByCategory('{{ $cat }}')">
+                        <span class="text-xs font-medium text-gray-700 truncate mr-2">{{ $cat }}</span>
+                        <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($amount, 0) }}</span>
+                    </div>
+                @endforeach
             </div>
-            <div class="text-xs text-blue-600 mt-1">Available</div>
         </div>
     </div>
 
@@ -97,10 +117,10 @@
                 <!-- Category -->
                 <div>
                     <label class="text-xs font-medium text-gray-700 block mb-1">Category</label>
-                    <select name="category" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
-                        <option value="">All Categories</option>
+                    <select name="category" id="category" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="" {{ empty($category) ? 'selected' : '' }}>All Categories</option>
                         @foreach($categories as $cat)
-                            <option value="{{ $cat }}" {{ $category == $cat ? 'selected' : '' }}>{{ $cat }}</option>
+                            <option value="{{ $cat }}" {{ !empty($category) && $category == $cat ? 'selected' : '' }}>{{ $cat }}</option>
                         @endforeach
                     </select>
                 </div>
@@ -134,9 +154,9 @@
                     <button type="submit" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors">
                         🔍 Apply Filters
                     </button>
-                    <a href="{{ route('fin.expenses.index') }}" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+                    <button type="button" onclick="clearFilters()" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors">
                         ✕ Clear
-                    </a>
+                    </button>
                 </div>
             </div>
         </form>
@@ -177,6 +197,46 @@
             document.getElementById('filterForm').submit();
         }
     }
+    
+    // Filter by category (from top 10 categories card)
+    function filterByCategory(category) {
+        const form = document.getElementById('filterForm');
+        const categoryInput = document.getElementById('category');
+        
+        if (categoryInput) {
+            categoryInput.value = category;
+            form.submit();
+        } else {
+            // If category input doesn't exist in form, add it
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'category';
+            input.value = category;
+            form.appendChild(input);
+            form.submit();
+        }
+    }
+    
+    // Clear all filters
+    function clearFilters() {
+        window.location.href = '{{ route('fin.expenses.index') }}';
+    }
+    
+    // On page load, ensure dropdown reflects the actual filter value
+    document.addEventListener('DOMContentLoaded', function() {
+        const categoryDropdown = document.getElementById('category');
+        const urlParams = new URLSearchParams(window.location.search);
+        const categoryParam = urlParams.get('category');
+        
+        if (categoryDropdown) {
+            // If no category in URL or it's empty, set to "All Categories"
+            if (!categoryParam || categoryParam === '') {
+                categoryDropdown.value = '';
+            } else {
+                categoryDropdown.value = categoryParam;
+            }
+        }
+    });
     </script>
 
     <!-- Tabs -->
@@ -218,7 +278,13 @@
                             @forelse($allExpensesForDisplay as $expense)
                             <tr class="hover:bg-gray-50 {{ isset($expense->type) && $expense->type === 'salary' ? 'bg-purple-50' : '' }}">
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium {{ isset($expense->type) && $expense->type === 'salary' ? 'text-purple-600' : 'text-blue-600' }}">
-                                    {{ $expense->request_number }}
+                                    @if(isset($expense->type) && $expense->type === 'salary')
+                                        {{ $expense->request_number }}
+                                    @else
+                                        <a href="javascript:void(0)" onclick="openRequestDetailModal({{ $expense->id }})" class="hover:underline cursor-pointer">
+                                            {{ $expense->request_number }}
+                                        </a>
+                                    @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                                     {{ $expense->created_at->format('M d, Y') }}
@@ -314,7 +380,9 @@
                                     <input type="checkbox" class="expense-checkbox rounded" value="{{ $expense->id }}" onchange="updateBulkButton()">
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
-                                    {{ $expense->request_number }}
+                                    <a href="javascript:void(0)" onclick="openRequestDetailModal({{ $expense->id }})" class="hover:underline cursor-pointer">
+                                        {{ $expense->request_number }}
+                                    </a>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                                     {{ $expense->created_at->format('M d, Y') }}

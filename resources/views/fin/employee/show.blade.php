@@ -132,54 +132,86 @@
                 </div>
             </div>
         @else
-            <!-- OTHER COMPANY ACCOUNTS: Original 5 Cards -->
-            <!-- Row 1: Quick Summary Cards (5 smaller cards) -->
-            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
-                <!-- Card 1: Current Balance -->
-                <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                     onclick="filterTransactions('all')" 
-                     data-filter-type="all">
-                    <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
-                    <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
-                        Rs. {{ number_format($summary['current_balance'], 2) }}
+            @if($account->account_code === 'EXP_FUND')
+                <!-- EXP_FUND SPECIFIC: Redesigned 3 Cards -->
+                <div class="grid grid-cols-3 gap-3 mb-4">
+                    <!-- Card 1: Current Balance -->
+                    <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                         onclick="filterTransactions('all')" 
+                         data-filter-type="all">
+                        <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+                        <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
+                            Rs. {{ number_format($summary['current_balance'], 2) }}
+                        </div>
+                    </div>
+
+                    <!-- Card 2: Pending Approvals -->
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                         onclick="filterTransactions('pending')" 
+                         data-filter-type="pending">
+                        <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+                        <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                        <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
+                    </div>
+
+                    <!-- Card 3: Unsettled Amount -->
+                    <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
+                         title="Expenses paid from rider balance but not yet settled">
+                        <div class="text-xs text-orange-700 uppercase font-medium">💸 Unsettled Amount</div>
+                        <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['cash_out']['unsettled_expenses'] ?? 0, 2) }}</div>
+                        <div class="text-xs text-orange-600 mt-0.5">Needs settlement</div>
                     </div>
                 </div>
-
-                <!-- Card 2: Pending Approvals -->
-                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                     onclick="filterTransactions('pending')" 
-                     data-filter-type="pending">
-                    <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
-                    <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
-                    <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
-                </div>
-
-                <!-- Card 3: Short Cash -->
-                <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
-                     title="Expenses paid from rider balance but not yet settled">
-                    <div class="text-xs text-orange-700 uppercase font-medium">💸 Short Cash</div>
-                    <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['short_cash'] ?? 0, 2) }}</div>
-                    <div class="text-xs text-orange-600 mt-0.5">Unsettled</div>
-                </div>
-
-                <!-- Card 4: Cash Invoices -->
-                <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                     onclick="filterTransactions('cash_invoices')" 
-                     data-filter-type="cash_invoices"
-                     title="Total value of cash/COD invoices delivered">
-                    <div class="text-xs text-purple-700 uppercase font-medium">💵 Cash Invoices</div>
-                    <div class="text-xl font-bold text-purple-900 mt-1">Rs. {{ number_format($summary['cash_invoices'] ?? 0, 2) }}</div>
-                    <div class="text-xs text-purple-600 mt-0.5">Delivered</div>
-                </div>
-
-                <!-- Card 5: Riders Balance (NEW) -->
-                <div class="bg-teal-50 border border-teal-200 rounded-lg p-3"
-                     title="Total cash currently held by all riders">
-                    <div class="text-xs text-teal-700 uppercase font-medium">👥 Riders Balance</div>
-                    <div class="text-xl font-bold text-teal-900 mt-1">Rs. {{ number_format($summary['riders_balance'] ?? 0, 2) }}</div>
-                    <div class="text-xs text-teal-600 mt-0.5">With riders</div>
+            @else
+                <!-- OTHER COMPANY ACCOUNTS: Original 5 Cards -->
+        <!-- Row 1: Quick Summary Cards (5 smaller cards) -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+            <!-- Card 1: Current Balance -->
+            <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('all')" 
+                 data-filter-type="all">
+                <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+                <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
+                    Rs. {{ number_format($summary['current_balance'], 2) }}
                 </div>
             </div>
+
+            <!-- Card 2: Pending Approvals -->
+            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('pending')" 
+                 data-filter-type="pending">
+                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+                <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
+            </div>
+
+            <!-- Card 3: Short Cash -->
+            <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
+                 title="Expenses paid from rider balance but not yet settled">
+                <div class="text-xs text-orange-700 uppercase font-medium">💸 Short Cash</div>
+                <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['short_cash'] ?? 0, 2) }}</div>
+                <div class="text-xs text-orange-600 mt-0.5">Unsettled</div>
+            </div>
+
+            <!-- Card 4: Cash Invoices -->
+            <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                 onclick="filterTransactions('cash_invoices')" 
+                 data-filter-type="cash_invoices"
+                 title="Total value of cash/COD invoices delivered">
+                <div class="text-xs text-purple-700 uppercase font-medium">💵 Cash Invoices</div>
+                <div class="text-xl font-bold text-purple-900 mt-1">Rs. {{ number_format($summary['cash_invoices'] ?? 0, 2) }}</div>
+                <div class="text-xs text-purple-600 mt-0.5">Delivered</div>
+            </div>
+
+            <!-- Card 5: Riders Balance (NEW) -->
+            <div class="bg-teal-50 border border-teal-200 rounded-lg p-3"
+                 title="Total cash currently held by all riders">
+                <div class="text-xs text-teal-700 uppercase font-medium">👥 Riders Balance</div>
+                <div class="text-xl font-bold text-teal-900 mt-1">Rs. {{ number_format($summary['riders_balance'] ?? 0, 2) }}</div>
+                <div class="text-xs text-teal-600 mt-0.5">With riders</div>
+            </div>
+        </div>
+            @endif
         @endif
 
         <!-- Row 2: Detailed Breakdown Cards (2 larger cards with dropdowns) -->
@@ -199,6 +231,31 @@
                 
                 <!-- Breakdown (Initially Hidden) -->
                 <div id="cashInCard" class="mt-3 pt-3 border-t border-green-300 space-y-2 hidden">
+                    @if($account->account_code === 'EXP_FUND' && isset($summary['cash_in']['transfer_sources']))
+                        {{-- EXP_FUND SPECIFIC: Transfer Sources --}}
+                        <div class="mb-2 text-xs text-green-600 font-semibold uppercase">Transfer Sources</div>
+                        <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                             onclick="event.stopPropagation(); filterTransactions('transfers_in')">
+                            <span class="text-green-700">🏦 From Online Bank</span>
+                            <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfer_sources']['from_online'] ?? 0), 2) }}</span>
+                        </div>
+                        <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                             onclick="event.stopPropagation(); filterTransactions('transfers_in')">
+                            <span class="text-green-700">💵 From NF Cash</span>
+                            <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfer_sources']['from_nf_cash'] ?? 0), 2) }}</span>
+                        </div>
+                        <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                             onclick="event.stopPropagation(); filterTransactions('transfers_in')">
+                            <span class="text-green-700">👤 From Personal Accounts</span>
+                            <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfer_sources']['from_personal'] ?? 0), 2) }}</span>
+                        </div>
+                        <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                             onclick="event.stopPropagation(); filterTransactions('others_in')">
+                            <span class="text-green-700">📦 Others</span>
+                            <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfer_sources']['from_others'] ?? 0), 2) }}</span>
+                        </div>
+                    @else
+                        {{-- DEFAULT: Standard Breakdown --}}
                     <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
                          onclick="event.stopPropagation(); filterTransactions('deposits')">
                         <span class="text-green-700">💵 Deposits</span>
@@ -214,16 +271,17 @@
                         <span class="text-green-700">🔀 Transfers In</span>
                         <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfers_in'] ?? 0), 2) }}</span>
                     </div>
-                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
-                         onclick="event.stopPropagation(); filterTransactions('invoices')">
-                        <span class="text-green-700">📄 Invoices</span>
-                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['invoices'] ?? 0), 2) }}</span>
-                    </div>
+                        <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                             onclick="event.stopPropagation(); filterTransactions('invoices')">
+                            <span class="text-green-700">📄 Invoices</span>
+                            <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['invoices'] ?? 0), 2) }}</span>
+                        </div>
                     <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
                          onclick="event.stopPropagation(); filterTransactions('others_in')">
                         <span class="text-green-700">📦 Others</span>
                         <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['others_in'] ?? 0), 2) }}</span>
                     </div>
+                    @endif
                 </div>
             </div>
 
@@ -242,6 +300,25 @@
                 
                 <!-- Breakdown (Initially Hidden) -->
                 <div id="cashOutCard" class="mt-3 pt-3 border-t border-blue-300 space-y-2 hidden">
+                    @if($account->account_code === 'EXP_FUND' && isset($summary['cash_out']['expense_categories']))
+                        {{-- EXP_FUND SPECIFIC: Top 5 Expense Categories --}}
+                        <div class="mb-2 text-xs text-blue-600 font-semibold uppercase">Top Expense Categories</div>
+                        @foreach(($summary['cash_out']['expense_categories']['top_5'] ?? []) as $category => $amount)
+                            <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                                 onclick="event.stopPropagation(); filterTransactions('expenses_ledger')">
+                                <span class="text-blue-700">📋 {{ $category }}</span>
+                                <span class="font-medium text-blue-900">Rs. {{ number_format($amount, 2) }}</span>
+                            </div>
+                        @endforeach
+                        @if(($summary['cash_out']['expense_categories']['others'] ?? 0) > 0)
+                            <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
+                                 onclick="event.stopPropagation(); filterTransactions('others_out')">
+                                <span class="text-blue-700">📦 Others</span>
+                                <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['expense_categories']['others'] ?? 0), 2) }}</span>
+                            </div>
+                        @endif
+                    @else
+                        {{-- DEFAULT: Standard Breakdown --}}
                     <div class="flex justify-between text-sm cursor-pointer hover:bg-blue-100 p-1 rounded" 
                          onclick="event.stopPropagation(); filterTransactions('unsettled_expenses')">
                         <span class="text-blue-700">💸 Unsettled Expenses</span>
@@ -267,6 +344,7 @@
                         <span class="text-blue-700">📦 Others</span>
                         <span class="font-medium text-blue-900">Rs. {{ number_format(($summary['cash_out']['others_out'] ?? 0), 2) }}</span>
                     </div>
+                    @endif
                 </div>
             </div>
         </div>
@@ -417,6 +495,24 @@
                     </button>
                 </div>
                 
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-medium text-gray-600">Filter by Type:</span>
+                    <select id="filter-transaction-type" onchange="filterByTransactionType()" 
+                            class="px-3 py-1 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">All Types</option>
+                        <option value="invoice">Invoice</option>
+                        <option value="expense">Expense</option>
+                        <option value="salary_payment">Salary Payment</option>
+                        <option value="salary_advance">Salary Advance</option>
+                        <option value="vendor_payment">Vendor Payment</option>
+                        <option value="vendor_purchase">Vendor Purchase</option>
+                        <option value="expense_settlement">Settlement</option>
+                        <option value="transfer">Transfer</option>
+                        <option value="employee_deposit">Deposit</option>
+                        <option value="adjustment">Adjustment</option>
+                    </select>
+                </div>
+                
                 <label class="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" id="chk-nonzero-only" onchange="toggleNonZeroFilter()" 
                            class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
@@ -551,10 +647,62 @@
                                                 </span>
                                             </td>
                                             <td class="px-6 py-3 text-sm text-gray-900">
-                                                {{ $transaction->description }}
+                                                @php
+                                                    // Extract request number from description
+                                                    preg_match('/#(REQ-\d+-\d+)/', $transaction->description, $matches);
+                                                    $requestNumber = $matches[1] ?? null;
+                                                    
+                                                    // Check if transaction is from a request
+                                                    $hasRequest = $transaction->request_id || $requestNumber;
+                                                    
+                                                    // Enhanced description with transfer details
+                                                    $enhancedDescription = $transaction->description;
+                                                    if ($transaction->transaction_type === 'transfer') {
+                                                        $fromAccount = $transaction->fromAccount ? $transaction->fromAccount->account_name : 'Unknown';
+                                                        $toAccount = $transaction->toAccount ? $transaction->toAccount->account_name : 'Unknown';
+                                                        
+                                                        if ($transaction->from_account_id === $account->id) {
+                                                            $enhancedDescription .= " → To: {$toAccount}";
+                                                        } else {
+                                                            $enhancedDescription .= " ← From: {$fromAccount}";
+                                                        }
+                                                    }
+                                                @endphp
+                                                
+                                                <div class="flex items-start gap-2">
+                                                    <div class="flex-1">
+                                                        @if($hasRequest && $requestNumber)
+                                                            {{-- Make request number clickable --}}
+                                                            @php
+                                                                $descriptionParts = explode($requestNumber, $enhancedDescription, 2);
+                                                            @endphp
+                                                            {{ $descriptionParts[0] ?? '' }}
+                                                            <a href="#" 
+                                                               onclick="openRequestModal('{{ $requestNumber }}'); return false;"
+                                                               class="text-blue-600 hover:text-blue-800 font-semibold underline">
+                                                                {{ $requestNumber }}
+                                                            </a>
+                                                            {{ $descriptionParts[1] ?? '' }}
+                                                        @else
+                                                            {{ $enhancedDescription }}
+                                                        @endif
+                                                        
                                                 @if($transaction->comments)
                                                     <div class="text-xs text-gray-500 mt-1">💬 {{ $transaction->comments }}</div>
                                                 @endif
+                                                    </div>
+                                                    
+                                                    {{-- Approval audit trail indicator --}}
+                                                    @if($transaction->approval_status === 'approved' && $transaction->approved_by)
+                                                        <button onclick="showApprovalDetails({{ $transaction->id }})" 
+                                                                class="text-gray-400 hover:text-blue-600 transition"
+                                                                title="View approval details">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                                            </svg>
+                                                        </button>
+                                                    @endif
+                                                </div>
                                             </td>
                                             <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-medium text-green-600">
                                                 @if($transaction->to_account_id === $account->id)
@@ -2523,6 +2671,33 @@ function toggleMonthDays(month) {
 }
 
 // Toggle non-zero filter
+function filterByTransactionType() {
+    const select = document.getElementById('filter-transaction-type');
+    const filterValue = select.value.toLowerCase();
+    
+    // Filter all transaction rows
+    document.querySelectorAll('tr[data-transaction-type]').forEach(row => {
+        const rowType = row.getAttribute('data-transaction-type').toLowerCase();
+        
+        if (filterValue === '' || rowType === filterValue) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+    
+    // Update group visibility and counts
+    document.querySelectorAll('.date-group').forEach(group => {
+        const visibleRows = group.querySelectorAll('tr[data-transaction-type]:not([style*="display: none"])').length;
+        
+        if (visibleRows === 0) {
+            group.style.display = 'none';
+        } else {
+            group.style.display = '';
+        }
+    });
+}
+
 function toggleNonZeroFilter() {
     applyNonZeroFilter();
 }
@@ -2745,4 +2920,108 @@ function rejectOnlineInvoice(ledgerId) {
         alert('An error occurred while rejecting the invoice');
     });
 }
+
+// ===== REQUEST MODAL =====
+function openRequestModal(requestNumber) {
+    // Extract request ID from number (e.g., REQ-202510-0009 -> find by request_number)
+    fetch(`/requests/by-number/${requestNumber}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Open request detail page in new tab or modal
+                window.open(`/requests/${data.request_id}`, '_blank');
+            } else {
+                alert('Request not found');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            // Fallback: try to extract ID and open directly
+            alert('Could not load request details');
+        });
+}
+
+// ===== APPROVAL DETAILS MODAL =====
+function showApprovalDetails(transactionId) {
+    fetch(`/finance/ledger/approval-details/${transactionId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showApprovalModal(data.transaction);
+            } else {
+                alert('Could not load approval details');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading approval details');
+        });
+}
+
+function showApprovalModal(transaction) {
+    const modal = document.getElementById('approvalDetailsModal');
+    const content = document.getElementById('approvalDetailsContent');
+    
+    // Format approval details (no header, it's in the modal structure now)
+    let html = `
+        <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-sm font-semibold text-gray-600">Transaction Type</label>
+                    <p class="text-base text-gray-900">${transaction.transaction_type}</p>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-600">Amount</label>
+                    <p class="text-base text-gray-900 font-semibold">Rs. ${parseFloat(transaction.amount).toLocaleString()}</p>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-600">Status</label>
+                    <p class="text-base">
+                        <span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                            ✅ Approved
+                        </span>
+                    </p>
+                </div>
+                <div>
+                    <label class="text-sm font-semibold text-gray-600">Approved Date</label>
+                    <p class="text-base text-gray-900">${transaction.approval_date || 'N/A'}</p>
+                </div>
+                <div class="col-span-2">
+                    <label class="text-sm font-semibold text-gray-600">Approved By</label>
+                    <p class="text-base text-gray-900">${transaction.approver_name || 'System'}</p>
+                </div>
+                <div class="col-span-2">
+                    <label class="text-sm font-semibold text-gray-600">Description</label>
+                    <p class="text-base text-gray-900">${transaction.description}</p>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    content.innerHTML = html;
+    modal.classList.remove('hidden');
+}
+
+function closeApprovalModal() {
+    document.getElementById('approvalDetailsModal').classList.add('hidden');
+}
 </script>
+
+{{-- Request Modal (for clickable request numbers) --}}
+{{-- This will open in new tab, but we keep modal structure for future enhancement --}}
+
+{{-- Approval Details Modal --}}
+<div id="approvalDetailsModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full" style="z-index: 10000;">
+    <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-3xl shadow-lg rounded-md bg-white" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-4 pb-3 border-b border-gray-200">
+            <h3 class="text-lg font-medium text-gray-900">ℹ️ Approval Details</h3>
+            <button onclick="closeApprovalModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+        </div>
+        
+        <!-- Content (Scrollable) -->
+        <div class="max-h-[70vh] overflow-y-auto" id="approvalDetailsContent">
+            <!-- Content will be populated by JavaScript -->
+        </div>
+    </div>
+</div>

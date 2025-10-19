@@ -39,6 +39,7 @@ class ExpenseManagementController extends Controller
                 $q->whereIn('category_code', ['expense', 'salary_advance']);
             })
             ->whereNotNull('ledger_transaction_id')
+            ->where('status', RequestModel::STATUS_APPROVED) // Only approved expenses
             ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
         
         // Apply filters
@@ -47,7 +48,27 @@ class ExpenseManagementController extends Controller
         }
         
         if ($category) {
-            $expensesQuery->where('expense_category', $category);
+            // Case-insensitive category filter
+            // Handle special cases: Salary (from slips) and Salary Advance (might not have expense_category)
+            if (strtolower($category) === 'salary') {
+                // For "Salary" filter, we'll handle this by including salary slips later
+                // For now, exclude all regular expenses (since Salary only comes from slips)
+                $expensesQuery->whereRaw('1 = 0'); // This will return no results from expenses
+            } else {
+                $expensesQuery->where(function($q) use ($category) {
+                    $q->whereRaw('LOWER(expense_category) = ?', [strtolower($category)])
+                      ->orWhere(function($q2) use ($category) {
+                          // For salary advances without expense_category
+                          if (strtolower($category) === 'salary advance') {
+                              $q2->whereNull('expense_category')
+                                 ->orWhere('expense_category', '')
+                                 ->whereHas('category', function($q3) {
+                                     $q3->where('category_code', 'salary_advance');
+                                 });
+                          }
+                      });
+                });
+            }
         }
         
         if ($paymentSource) {
@@ -70,7 +91,10 @@ class ExpenseManagementController extends Controller
             $salarySlipsQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
         }
         
-        $salarySlips = $salarySlipsQuery->orderBy('created_at', 'desc')->get();
+        // If category filter is "Salary", include salary slips; otherwise exclude them
+        $includeSalarySlips = !$category || strtolower($category) === 'salary';
+        
+        $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
         $totalSalaryExpenses = $salarySlips->sum('net_salary');
         
         // Transform salary slips to match expense format for unified display
@@ -123,11 +147,31 @@ class ExpenseManagementController extends Controller
             return $exp->settlement_status === 'settled';
         })->sortByDesc('settled_at')->take(20);
         
-        // Get expense categories for filter
-        $categories = ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
-            ->pluck('config_value')
+        // Get expense categories for filter - dynamically from actual expenses
+        // This ensures the dropdown always reflects real categories in use
+        $categoriesFromExpenses = RequestModel::whereHas('category', function($q) {
+                $q->whereIn('category_code', ['expense', 'salary_advance']);
+            })
+            ->whereNotNull('ledger_transaction_id')
+            ->where('status', RequestModel::STATUS_APPROVED)
+            ->whereNotNull('expense_category')
+            ->where('expense_category', '!=', '')
+            ->distinct()
+            ->pluck('expense_category');
+        
+        // Add "Salary" from salary slips
+        $categoriesFromSalary = collect(['Salary']);
+        
+        // Add "Salary Advance" for salary advances that might not have expense_category set
+        $categoriesFromSalaryAdvance = collect(['Salary Advance']);
+        
+        // Merge all categories and sort
+        $categories = $categoriesFromExpenses
+            ->merge($categoriesFromSalary)
+            ->merge($categoriesFromSalaryAdvance)
             ->unique()
-            ->sort();
+            ->sort()
+            ->values();
         
         // Get payment sources for filter
         $paymentSources = AccountModel::whereIn('account_type', ['asset'])
@@ -150,6 +194,55 @@ class ExpenseManagementController extends Controller
             ->orderBy('created_at', 'asc')
             ->get();
         
+        // Calculate top 10 expense categories
+        $expensesByCategory = [];
+        
+        // Group regular expenses by category
+        foreach ($allExpenses as $expense) {
+            // Determine category - use category name or expense_category, prioritize expense_category
+            $category = $expense->expense_category;
+            
+            // If expense_category is empty, check if it's a salary advance
+            if (empty($category) && $expense->category && $expense->category->category_code === 'salary_advance') {
+                $category = 'Salary Advance';
+            } elseif (empty($category)) {
+                $category = 'Uncategorized';
+            }
+            
+            if (!isset($expensesByCategory[$category])) {
+                $expensesByCategory[$category] = 0;
+            }
+            $expensesByCategory[$category] += $expense->amount;
+        }
+        
+        // Add salary payments to the mix
+        if ($totalSalaryExpenses > 0) {
+            if (!isset($expensesByCategory['Salary'])) {
+                $expensesByCategory['Salary'] = 0;
+            }
+            $expensesByCategory['Salary'] += $totalSalaryExpenses;
+        }
+        
+        // Sort by amount descending
+        arsort($expensesByCategory);
+        
+        $topCategories = [];
+        $othersTotal = 0;
+        $count = 0;
+        
+        foreach ($expensesByCategory as $cat => $amount) {
+            if ($count < 10 && $cat !== 'Uncategorized') { // Don't show Uncategorized in top 10
+                $topCategories[$cat] = $amount;
+                $count++;
+            } else {
+                $othersTotal += $amount;
+            }
+        }
+        
+        if ($othersTotal > 0) {
+            $topCategories['Other Expenses'] = $othersTotal;
+        }
+        
         $kpis = [
             'total_expenses' => $totalExpenses,
             'from_expense_fund' => $fromExpenseFund,
@@ -160,7 +253,8 @@ class ExpenseManagementController extends Controller
             'pending_approvals' => $pendingApprovals->sum('amount'),
             'pending_approvals_count' => $pendingApprovals->count(),
             'total_salary_expenses' => $totalSalaryExpenses, // For debugging/display
-            'salary_slips_count' => $salarySlips->count()
+            'salary_slips_count' => $salarySlips->count(),
+            'top_categories' => $topCategories // Top 10 categories + others
         ];
         
         return view('fin.expense.index', compact(

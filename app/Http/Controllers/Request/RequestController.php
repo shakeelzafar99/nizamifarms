@@ -384,5 +384,35 @@ class RequestController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Find request by request number (for clickable links in ledger)
+     */
+    public function findByNumber($requestNumber)
+    {
+        try {
+            $request = RequestModel::where('request_number', $requestNumber)->first();
+            
+            if (!$request) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Request not found'
+                ], 404);
+            }
+            
+            return response()->json([
+                'success' => true,
+                'request_id' => $request->id,
+                'request_number' => $request->request_number
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error("Error finding request by number: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error finding request'
+            ], 500);
+        }
+    }
 }
 

@@ -622,5 +622,38 @@ class LedgerController extends Controller
             throw $e;
         }
     }
+
+    /**
+     * Get approval details for a transaction (for audit trail modal)
+     */
+    public function getApprovalDetails($id)
+    {
+        try {
+            $transaction = LedgerModel::with(['approvedBy', 'fromAccount', 'toAccount'])
+                ->findOrFail($id);
+            
+            return response()->json([
+                'success' => true,
+                'transaction' => [
+                    'id' => $transaction->id,
+                    'transaction_type' => ucfirst(str_replace('_', ' ', $transaction->transaction_type)),
+                    'description' => $transaction->description,
+                    'amount' => $transaction->amount,
+                    'approval_status' => $transaction->approval_status,
+                    'approval_date' => $transaction->approval_date,
+                    'approver_name' => $transaction->approvedBy ? $transaction->approvedBy->fullname : 'System',
+                    'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : null,
+                    'to_account' => $transaction->toAccount ? $transaction->toAccount->account_name : null,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error("Error getting approval details: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error loading approval details'
+            ], 500);
+        }
+    }
 }
 
