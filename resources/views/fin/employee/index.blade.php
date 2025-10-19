@@ -52,7 +52,7 @@
         </form>
     </div>
 
-    <!-- Summary KPI Cards (Compact & Practical) -->
+    <!-- Summary KPI Cards (Enhanced - 5 Cards) -->
     <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         <!-- Card 1: Invoices Delivered -->
         <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
@@ -62,86 +62,115 @@
             </div>
             <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_invoices'], 0) }}</div>
             <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <div class="flex justify-between">
-                    <span>💵 Cash:</span>
-                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['invoices_cash'], 0) }}</span>
+                <div class="font-medium text-gray-700 mb-1">💵 Cash:</div>
+                <div class="flex justify-between pl-2">
+                    <span>Deposits:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['cash_deposits'], 0) }}</span>
                 </div>
-                <div class="flex justify-between mt-1">
-                    <span>💳 Online:</span>
-                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['invoices_online'], 0) }}</span>
+                <div class="flex justify-between pl-2 mt-1">
+                    <span>Short Cash:</span>
+                    <span class="font-medium text-orange-600">Rs. {{ number_format($summaryKPIs['short_cash_total'], 0) }}</span>
                 </div>
-            </div>
-        </div>
-
-        <!-- Card 2: Deposits to NF Cash -->
-        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
-            <div class="flex items-center gap-2 mb-2">
-                <span class="text-xl">💰</span>
-                <span class="text-xs font-semibold text-gray-600 uppercase">Deposits</span>
-            </div>
-            <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_deposits'], 0) }}</div>
-            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                To NF Cash (Main Till)
-            </div>
-        </div>
-
-        <!-- Card 3: All Approved Expenses -->
-        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
-            <div class="flex items-center gap-2 mb-2">
-                <span class="text-xl">🧾</span>
-                <span class="text-xs font-semibold text-gray-600 uppercase">All Expenses</span>
-            </div>
-            <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_approved_expenses'], 0) }}</div>
-            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <div class="flex justify-between">
-                    <span>⏳ Settlement:</span>
-                    <span class="font-medium text-yellow-600">Rs. {{ number_format($summaryKPIs['expenses_waiting_settlement'], 0) }}</span>
-                </div>
-                <div class="flex justify-between mt-1">
-                    <span>✓ In Fund:</span>
-                    <span class="font-medium text-green-600">Rs. {{ number_format($summaryKPIs['expenses_in_fund'], 0) }}</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Card 4: Online Payments -->
-        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
-            <div class="flex items-center gap-2 mb-2">
-                <span class="text-xl">🌐</span>
-                <span class="text-xs font-semibold text-gray-600 uppercase">Online</span>
-            </div>
-            <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_online'], 0) }}</div>
-            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <div class="flex justify-between">
+                <div class="font-medium text-gray-700 mb-1 mt-2">💳 Online:</div>
+                <div class="flex justify-between pl-2">
                     <span>✓ Approved:</span>
                     <span class="font-medium">Rs. {{ number_format($summaryKPIs['online_approved'], 0) }}</span>
                 </div>
-                <div class="flex justify-between mt-1">
+                <div class="flex justify-between pl-2 mt-1">
                     <span>⏳ Pending:</span>
                     <span class="font-medium text-yellow-600">Rs. {{ number_format($summaryKPIs['online_pending'], 0) }}</span>
                 </div>
             </div>
         </div>
 
-        <!-- Card 5: Riders Balance & Open Invoices (Real-time) -->
+        <!-- Card 2: All Expenses -->
+        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="text-xl">🧾</span>
+                <span class="text-xs font-semibold text-gray-600 uppercase">Expenses</span>
+            </div>
+            <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_expenses'], 0) }}</div>
+            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
+                <div class="flex justify-between">
+                    <span>🧾 Regular:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['regular_expenses'], 0) }}</span>
+                </div>
+                <div class="flex justify-between mt-1">
+                    <span>👤 Salaries:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['salary_expenses'], 0) }}</span>
+                </div>
+                <div class="flex justify-between mt-1 pt-1 border-t border-gray-100">
+                    <span>⏳ Need Settlement:</span>
+                    <span class="font-medium text-yellow-600">Rs. {{ number_format($summaryKPIs['expenses_needing_settlement'], 0) }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 3: Vendor Balance -->
+        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="text-xl">🏪</span>
+                <span class="text-xs font-semibold text-gray-600 uppercase">Vendor</span>
+            </div>
+            <div class="text-xl font-bold {{ $summaryKPIs['vendor_balance'] > 0 ? 'text-red-600' : 'text-green-600' }}">
+                Rs. {{ number_format($summaryKPIs['vendor_balance'], 0) }}
+            </div>
+            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
+                <div class="flex justify-between">
+                    <span>📦 Purchases:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['vendor_purchases'], 0) }}</span>
+                </div>
+                <div class="flex justify-between mt-1">
+                    <span>💸 Payments:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['vendor_payments'], 0) }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card 4: Approvals & Riders Balance -->
         <a href="{{ route('fin.employee.all-outstanding-invoices') }}" class="bg-white rounded-lg shadow-sm p-3 border border-gray-200 hover:shadow-md hover:border-purple-300 transition-all cursor-pointer">
             <div class="flex items-center gap-2 mb-2">
                 <span class="text-xl">👥</span>
-                <span class="text-xs font-semibold text-gray-600 uppercase">With Riders</span>
+                <span class="text-xs font-semibold text-gray-600 uppercase">Riders</span>
             </div>
             <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['riders_balance'], 0) }}</div>
             <div class="mt-2 pt-2 border-t border-gray-100 text-xs">
-                <div class="flex justify-between items-center">
+                <div class="flex justify-between items-center mb-1">
                     <span class="text-blue-600 font-medium">⚡ Real-time</span>
                 </div>
-                @if($summaryKPIs['open_invoices_count'] > 0)
-                <div class="flex justify-between mt-1 text-red-600">
-                    <span class="font-medium">🔴 Open:</span>
-                    <span class="font-bold">{{ $summaryKPIs['open_invoices_count'] }}</span>
+                <div class="flex justify-between text-gray-500">
+                    <span>⬇️ Pending In:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['pending_deposits'], 0) }}</span>
                 </div>
-                @endif
+                <div class="flex justify-between mt-1 text-gray-500">
+                    <span>⬆️ Pending Out:</span>
+                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['pending_expenses'], 0) }}</span>
+                </div>
             </div>
         </a>
+
+        <!-- Card 5: NF Balance (Profit) -->
+        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200 {{ $summaryKPIs['profit'] >= 0 ? 'border-green-300' : 'border-red-300' }}">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="text-xl">💰</span>
+                <span class="text-xs font-semibold text-gray-600 uppercase">NF Balance</span>
+            </div>
+            <div class="text-xl font-bold {{ $summaryKPIs['profit'] >= 0 ? 'text-green-600' : 'text-red-600' }}">Rs. {{ number_format($summaryKPIs['profit'], 0) }}</div>
+            <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
+                <div class="flex justify-between">
+                    <span>📊 Revenue:</span>
+                    <span class="font-medium text-green-600">Rs. {{ number_format($summaryKPIs['profit_invoices'], 0) }}</span>
+                </div>
+                <div class="flex justify-between mt-1">
+                    <span>🧾 Expenses:</span>
+                    <span class="font-medium text-red-600">Rs. {{ number_format($summaryKPIs['profit_expenses'], 0) }}</span>
+                </div>
+                <div class="flex justify-between mt-1">
+                    <span>🏪 Vendor:</span>
+                    <span class="font-medium text-red-600">Rs. {{ number_format($summaryKPIs['profit_vendor_purchases'], 0) }}</span>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>

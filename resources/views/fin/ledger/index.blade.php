@@ -23,112 +23,27 @@
         </div>
     @endif
 
-    <!-- Pending Approvals Summary -->
-    @if($pendingSummary['total_count'] > 0)
-    <div class="bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-orange-500 rounded-lg p-6 mb-6 shadow-sm">
-        <div class="flex items-start justify-between mb-4">
-            <div>
-                <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
-                    <span class="text-2xl">⚠️</span>
-                    Pending Approvals
-                </h3>
-                <p class="text-sm text-gray-600 mt-1">Transactions waiting for your approval</p>
-            </div>
-            <a href="{{ route('fin.ledger.index', ['status' => 'pending']) }}" 
-               class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded-md transition">
-                View All Pending
-            </a>
-        </div>
-        
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <!-- Total Card -->
-            <div class="bg-white rounded-lg p-4 border-2 border-orange-200">
-                <div class="text-sm font-medium text-gray-600 mb-1">Total Pending</div>
-                <div class="text-3xl font-bold text-orange-600">{{ $pendingSummary['total_count'] }}</div>
-                <div class="text-lg font-semibold text-gray-700 mt-1">
-                    Rs. {{ number_format($pendingSummary['total_amount'], 2) }}
-                </div>
-            </div>
-            
-            <!-- Breakdown Cards -->
-            @if(isset($pendingSummary['by_type']['invoice']))
-            <div class="bg-white rounded-lg p-4 border border-gray-200">
-                <div class="text-sm font-medium text-gray-600 mb-1">Online Invoices</div>
-                <div class="text-2xl font-bold text-blue-600">{{ $pendingSummary['by_type']['invoice']->count }}</div>
-                <div class="text-sm font-semibold text-gray-600 mt-1">
-                    Rs. {{ number_format($pendingSummary['by_type']['invoice']->amount, 2) }}
-                </div>
-            </div>
-            @endif
-            
-            @if(isset($pendingSummary['by_type']['employee_deposit']))
-            <div class="bg-white rounded-lg p-4 border border-gray-200">
-                <div class="text-sm font-medium text-gray-600 mb-1">Employee Deposits</div>
-                <div class="text-2xl font-bold text-green-600">{{ $pendingSummary['by_type']['employee_deposit']->count }}</div>
-                <div class="text-sm font-semibold text-gray-600 mt-1">
-                    Rs. {{ number_format($pendingSummary['by_type']['employee_deposit']->amount, 2) }}
-                </div>
-            </div>
-            @endif
-            
-            @if(isset($pendingSummary['by_type']['vendor_payment']))
-            <div class="bg-white rounded-lg p-4 border border-gray-200">
-                <div class="text-sm font-medium text-gray-600 mb-1">Vendor Payments</div>
-                <div class="text-2xl font-bold text-purple-600">{{ $pendingSummary['by_type']['vendor_payment']->count }}</div>
-                <div class="text-sm font-semibold text-gray-600 mt-1">
-                    Rs. {{ number_format($pendingSummary['by_type']['vendor_payment']->amount, 2) }}
-                </div>
-            </div>
-            @endif
-            
-            @if(isset($pendingSummary['by_type']['transfer']))
-            <div class="bg-white rounded-lg p-4 border border-gray-200">
-                <div class="text-sm font-medium text-gray-600 mb-1">Transfers</div>
-                <div class="text-2xl font-bold text-indigo-600">{{ $pendingSummary['by_type']['transfer']->count }}</div>
-                <div class="text-sm font-semibold text-gray-600 mt-1">
-                    Rs. {{ number_format($pendingSummary['by_type']['transfer']->amount, 2) }}
-                </div>
-            </div>
-            @endif
-        </div>
-        
-        <!-- All Types Breakdown -->
-        @if($pendingSummary['by_type']->count() > 4)
-        <details class="mt-4">
-            <summary class="text-sm font-medium text-gray-700 cursor-pointer hover:text-gray-900">
-                Show all transaction types ({{ $pendingSummary['by_type']->count() }} types)
-            </summary>
-            <div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
-                @foreach($pendingSummary['by_type'] as $type => $data)
-                    <div class="text-xs bg-white px-3 py-2 rounded border border-gray-200">
-                        <span class="font-semibold text-gray-700">{{ ucfirst(str_replace('_', ' ', $type)) }}:</span>
-                        <span class="text-gray-600">{{ $data->count }} (Rs. {{ number_format($data->amount, 0) }})</span>
-                    </div>
-                @endforeach
-            </div>
-        </details>
-        @endif
-    </div>
-    @endif
+    <!-- KPI Summary Cards (Clickable for filtering) -->
+    <x-fin.kpi-cards :kpis="$summaryKPIs" :clickable="true" />
 
-    <!-- Filters -->
-    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-        <form method="GET" action="{{ route('fin.ledger.index') }}" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
-                <input type="date" name="start_date" value="{{ request('start_date') }}" 
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+    <!-- Filters (Optimized to single row) -->
+    <div class="bg-white border border-gray-200 rounded-lg p-3 mb-6">
+        <form method="GET" action="{{ route('fin.ledger.index') }}" id="filterForm" class="flex flex-wrap items-end gap-2">
+            <div class="flex-1 min-w-[120px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
+                <input type="date" name="start_date" value="{{ $startDate }}" 
+                       class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
             </div>
             
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
-                <input type="date" name="end_date" value="{{ request('end_date') }}" 
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            <div class="flex-1 min-w-[120px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">End Date</label>
+                <input type="date" name="end_date" value="{{ $endDate }}" 
+                       class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
             </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Transaction Type</label>
-                <select name="type" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            <div class="flex-1 min-w-[140px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+                <select name="type" class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
                     <option value="">All Types</option>
                     @foreach($transactionTypes as $key => $label)
                         <option value="{{ $key }}" {{ request('type') == $key ? 'selected' : '' }}>
@@ -138,28 +53,28 @@
                 </select>
             </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
-                <select name="mode" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
-                    <option value="">All Modes</option>
+            <div class="flex-1 min-w-[100px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Mode</label>
+                <select name="mode" class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
+                    <option value="">All</option>
                     <option value="cash" {{ request('mode') == 'cash' ? 'selected' : '' }}>Cash</option>
                     <option value="online" {{ request('mode') == 'online' ? 'selected' : '' }}>Online</option>
                 </select>
             </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                <select name="status" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
-                    <option value="">All Statuses</option>
+            <div class="flex-1 min-w-[110px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Status</label>
+                <select name="status" class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
+                    <option value="">All</option>
                     <option value="pending" {{ request('status') == 'pending' ? 'selected' : '' }}>Pending</option>
                     <option value="approved" {{ request('status') == 'approved' ? 'selected' : '' }}>Approved</option>
                     <option value="rejected" {{ request('status') == 'rejected' ? 'selected' : '' }}>Rejected</option>
                 </select>
             </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Account</label>
-                <select name="account_id" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+            <div class="flex-1 min-w-[150px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Account</label>
+                <select name="account_id" class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
                     <option value="">All Accounts</option>
                     @foreach($accounts as $account)
                         <option value="{{ $account->id }}" {{ request('account_id') == $account->id ? 'selected' : '' }}>
@@ -169,17 +84,17 @@
                 </select>
             </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Search</label>
+            <div class="flex-1 min-w-[140px]">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Search</label>
                 <input type="text" name="search" value="{{ request('search') }}" placeholder="Description..."
-                       class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                       class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
             </div>
 
-            <div class="flex items-end gap-2">
-                <button type="submit" class="flex-1 px-4 py-2 bg-gray-900 hover:bg-gray-800 text-white text-sm font-medium rounded-md">
+            <div class="flex gap-1">
+                <button type="submit" class="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 text-white text-xs font-medium rounded">
                     🔍 Filter
                 </button>
-                <a href="{{ route('fin.ledger.index') }}" class="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50">
+                <a href="{{ route('fin.ledger.index') }}" class="px-3 py-1.5 border border-gray-300 text-gray-700 text-xs font-medium rounded hover:bg-gray-50">
                     Clear
                 </a>
             </div>
@@ -424,6 +339,57 @@ function closeRejectModal() {
     document.getElementById('rejectModal').classList.add('hidden');
     // Reset form
     document.getElementById('rejectForm').reset();
+}
+
+// Card filtering functionality
+function filterByCard(cardType) {
+    const form = document.getElementById('filterForm');
+    
+    // For vendor filter, we need to add a hidden input and redirect
+    if (cardType === 'vendor') {
+        const currentUrl = new URL(window.location.href);
+        // Preserve date filters
+        const startDate = form.querySelector('input[name="start_date"]').value;
+        const endDate = form.querySelector('input[name="end_date"]').value;
+        
+        currentUrl.searchParams.set('vendor_filter', '1');
+        if (startDate) currentUrl.searchParams.set('start_date', startDate);
+        if (endDate) currentUrl.searchParams.set('end_date', endDate);
+        
+        // Clear other filters
+        currentUrl.searchParams.delete('type');
+        currentUrl.searchParams.delete('mode');
+        currentUrl.searchParams.delete('status');
+        currentUrl.searchParams.delete('account_id');
+        currentUrl.searchParams.delete('search');
+        
+        window.location.href = currentUrl.toString();
+        return;
+    }
+    
+    const typeSelect = form.querySelector('select[name="type"]');
+    const statusSelect = form.querySelector('select[name="status"]');
+    
+    // Clear existing filters except dates
+    typeSelect.value = '';
+    statusSelect.value = '';
+    
+    // Apply filter based on card type
+    switch(cardType) {
+        case 'invoices':
+            typeSelect.value = 'invoice';
+            break;
+        case 'expenses':
+            typeSelect.value = 'expense';
+            break;
+        case 'profit':
+            // Show all approved transactions
+            statusSelect.value = 'approved';
+            break;
+    }
+    
+    // Submit the form
+    form.submit();
 }
 </script>
 

@@ -129,8 +129,8 @@ class EmployeeCashController extends Controller
             $endDate = \Carbon\Carbon::parse($filterEndDate)->endOfDay();
         }
         
-        // === KPI 1: TOTAL INVOICES DELIVERED (with online/cash split FROM ORDERS) ===
-        // This shows actual invoices created (for reconciliation against ledger)
+        // === KPI 1: INVOICES DELIVERED (Enhanced with deposits breakdown) ===
+        // Main value: Total invoices delivered (by delivery date)
         $invoicesQuery = \DB::table('t_crm_order_status_history')
             ->where('status_code', 'delivered')
             ->where('is_current', 1);
@@ -145,61 +145,59 @@ class EmployeeCashController extends Controller
             ->whereIn('id', $deliveredOrderIds)
             ->sum('total_price') ?? 0;
         
-        // Split by payment method in orders (for reconciliation)
+        // Cash invoices total (from orders)
         $invoicesCash = \DB::table('t_crm_prod_order')
             ->whereIn('id', $deliveredOrderIds)
             ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD'])
             ->sum('total_price') ?? 0;
         
-        $invoicesOnline = \DB::table('t_crm_prod_order')
-            ->whereIn('id', $deliveredOrderIds)
-            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
-            ->sum('total_price') ?? 0;
-        
-        // === KPI 2: DEPOSITS TO NF CASH ===
+        // Cash sub-values: Deposits (pure deposits only) + Short Cash (ALL short cash)
         $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+        $cashDeposits = 0;
+        $shortCashTotal = 0;
         
         if ($nfCashAccount) {
+            // PURE deposits from riders (TYPE_EMPLOYEE_DEPOSIT only - no settlements)
             $depositsQuery = LedgerModel::where('to_account_id', $nfCashAccount->id)
                 ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
-                ->where('approval_status', LedgerModel::STATUS_APPROVED); // Only count approved deposits
+                ->where('approval_status', LedgerModel::STATUS_APPROVED);
             
             if ($startDate && $endDate) {
                 $depositsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
             }
             
-            $totalDeposits = $depositsQuery->sum('amount') ?? 0;
-        } else {
-            $totalDeposits = 0;
+            $cashDeposits = $depositsQuery->sum('amount') ?? 0;
+            
+            // Short Cash: ALL short cash from rider balance (settled + unsettled)
+            // Purpose: Show how much of invoice amount was SHORT (used for expenses)
+            // Settlement status doesn't matter - we track that in account balance
+            
+            // Get ALL approved expense requests from rider accounts (regardless of settlement)
+            $shortCashTotal = \App\Models\Request\RequestModel::where('status', 'approved')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->whereHas('paymentSourceAccount', function($q) {
+                    $q->where('account_category', 'employee_cash');
+                });
+            
+            if ($startDate && $endDate) {
+                $shortCashTotal->whereBetween('created_at', [$startDate, $endDate]);
+            }
+            
+            $shortCashTotal = $shortCashTotal->sum('amount') ?? 0;
         }
         
-        // === KPI 3: ALL APPROVED EXPENSES (with settlement status split) ===
-        // Total: All approved expense requests from the request table
-        $allExpensesRequestQuery = \App\Models\Request\RequestModel::where('status', 'approved')
-            ->whereHas('category', function($q) {
-                $q->where('category_code', 'expense');
-            });
+        // Online invoices total (from orders)
+        $invoicesOnline = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
+            ->sum('total_price') ?? 0;
         
-        if ($startDate && $endDate) {
-            $allExpensesRequestQuery->whereBetween('created_at', [$startDate, $endDate]);
-        }
-        
-        $totalApprovedExpenses = (clone $allExpensesRequestQuery)->sum('amount') ?? 0;
-        
-        // Sub-value 1: Expenses waiting to be settled (settlement_status = 'pending')
-        $expensesWaitingSettlement = (clone $allExpensesRequestQuery)
-            ->where('settlement_status', 'pending')
-            ->sum('amount') ?? 0;
-        
-        // Sub-value 2: Expenses already settled or not requiring settlement
-        // (settlement_status = 'settled' OR 'not_required')
-        $expensesInFund = (clone $allExpensesRequestQuery)
-            ->whereIn('settlement_status', ['settled', 'not_required'])
-            ->sum('amount') ?? 0;
-        
-        // === KPI 4: ONLINE PAYMENTS (with approved/pending split) ===
+        // Online sub-values: Approved and Pending (from ledger)
         $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
-        
+        $onlineApproved = 0;
+        $onlinePending = 0;
         if ($onlineAccount) {
             $onlineQuery = LedgerModel::where('to_account_id', $onlineAccount->id)
                 ->where('transaction_type', LedgerModel::TYPE_INVOICE);
@@ -208,47 +206,143 @@ class EmployeeCashController extends Controller
                 $onlineQuery->whereBetween('transaction_date', [$startDate, $endDate]);
             }
             
-            $totalOnlineApproved = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_APPROVED)->sum('amount') ?? 0;
-            $totalOnlinePending = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_PENDING)->sum('amount') ?? 0;
-            $totalOnline = $totalOnlineApproved + $totalOnlinePending;
-        } else {
-            $totalOnlineApproved = 0;
-            $totalOnlinePending = 0;
-            $totalOnline = 0;
+            $onlineApproved = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_APPROVED)->sum('amount') ?? 0;
+            $onlinePending = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_PENDING)->sum('amount') ?? 0;
         }
         
-        // === KPI 5: RIDERS BALANCE (Real-time, no filtering) ===
-        $ridersBalance = AccountModel::employeeCash()->sum('current_balance');
+        // === KPI 2: ALL EXPENSES (from ledger, excluding vendor payments, including salaries) ===
+        // Main value: ALL expenses from any account (ledger-based)
+        $expensesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED);
         
-        // === KPI 6: OPEN INVOICES (Real-time, no filtering) ===
-        $openInvoicesCount = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
-            ->where('settlement_status', 'open')
-            ->whereHas('toAccount', function($q) {
-                $q->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH);
-            })
-            ->count();
+        if ($startDate && $endDate) {
+            $expensesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
         
-        $openInvoicesTotal = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
-            ->where('settlement_status', 'open')
-            ->whereHas('toAccount', function($q) {
-                $q->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH);
-            })
-            ->sum(\DB::raw('amount - COALESCE(settled_amount, 0)'));
+        $ledgerExpenses = (clone $expensesQuery)->sum('amount') ?? 0;
+        
+        // Add salary payments (these are also expenses but tracked separately)
+        $salaryExpensesQuery = \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
+            ->whereNotNull('ledger_transaction_id');
+        
+        if ($startDate && $endDate) {
+            $salaryExpensesQuery->whereBetween('created_at', [$startDate, $endDate]);
+        }
+        
+        $salaryExpenses = $salaryExpensesQuery->sum('net_salary') ?? 0;
+        
+        // Total expenses = Ledger expenses + Salary expenses
+        $totalExpenses = $ledgerExpenses + $salaryExpenses;
+        
+        // Sub-value 1: Regular Expenses (ledger expenses only, excluding salaries)
+        $regularExpenses = $ledgerExpenses;
+        
+        // Sub-value 2: Salary Expenses (from salary slips)
+        $salaryExpensesForDisplay = $salaryExpenses;
+        
+        // Sub-value 3: Expenses Needing Settlement (pending settlement)
+        $expensesNeedingSettlement = \App\Models\Request\RequestModel::where('status', 'approved')
+            ->where('settlement_status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            });
+        
+        if ($startDate && $endDate) {
+            $expensesNeedingSettlement->whereBetween('created_at', [$startDate, $endDate]);
+        }
+        
+        $expensesNeedingSettlement = $expensesNeedingSettlement->sum('amount') ?? 0;
+        
+        // === KPI 3: VENDOR PAYMENTS (purchases + payments) ===
+        // Sub-value 1: Vendor Purchases
+        $vendorPurchasesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED);
+        
+        if ($startDate && $endDate) {
+            $vendorPurchasesQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
+        
+        $vendorPurchases = $vendorPurchasesQuery->sum('amount') ?? 0;
+        
+        // Sub-value 2: Vendor Payments
+        $vendorPaymentsQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED);
+        
+        if ($startDate && $endDate) {
+            $vendorPaymentsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
+        
+        $vendorPayments = $vendorPaymentsQuery->sum('amount') ?? 0;
+        
+        // Main value: Vendor Balance (what we owe vendors)
+        // Balance = Purchases - Payments
+        $vendorBalance = $vendorPurchases - $vendorPayments;
+        
+        // === KPI 4: APPROVALS & RIDERS BALANCE ===
+        // Main value: Riders Balance (Real-time, NO FILTER)
+        $ridersBalance = AccountModel::where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
+            ->where('is_active', 1)
+            ->sum('current_balance') ?? 0;
+        
+        // Sub-value 1: Pending Deposits (Cash IN)
+        $pendingDepositsQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+            ->where('approval_status', LedgerModel::STATUS_PENDING);
+        
+        if ($startDate && $endDate) {
+            $pendingDepositsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
+        
+        $pendingDeposits = $pendingDepositsQuery->sum('amount') ?? 0;
+        
+        // Sub-value 2: Pending Expenses (Cash OUT)
+        $pendingExpensesQuery = \App\Models\Request\RequestModel::where('status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            });
+        
+        if ($startDate && $endDate) {
+            $pendingExpensesQuery->whereBetween('created_at', [$startDate, $endDate]);
+        }
+        
+        $pendingExpenses = $pendingExpensesQuery->sum('amount') ?? 0;
+        
+        // === KPI 5: NF BALANCE (PROFIT) ===
+        // Profit = Invoices Delivered - Expenses - Vendor Purchases
+        $profit = $totalInvoices - $totalExpenses - $vendorPurchases;
         
         $summaryKPIs = [
+            // Card 1: Invoices
             'total_invoices' => $totalInvoices,
             'invoices_cash' => $invoicesCash,
+            'cash_deposits' => $cashDeposits,
+            'short_cash_total' => $shortCashTotal,
             'invoices_online' => $invoicesOnline,
-            'total_deposits' => $totalDeposits,
-            'total_approved_expenses' => $totalApprovedExpenses,
-            'expenses_waiting_settlement' => $expensesWaitingSettlement,
-            'expenses_in_fund' => $expensesInFund,
-            'total_online' => $totalOnline,
-            'online_approved' => $totalOnlineApproved,
-            'online_pending' => $totalOnlinePending,
+            'online_approved' => $onlineApproved,
+            'online_pending' => $onlinePending,
+            
+            // Card 2: Expenses
+            'total_expenses' => $totalExpenses,
+            'regular_expenses' => $regularExpenses,
+            'salary_expenses' => $salaryExpensesForDisplay,
+            'expenses_needing_settlement' => $expensesNeedingSettlement,
+            
+            // Card 3: Vendor Balance
+            'vendor_balance' => $vendorBalance,
+            'vendor_purchases' => $vendorPurchases,
+            'vendor_payments' => $vendorPayments,
+            
+            // Card 4: Approvals & Riders
             'riders_balance' => $ridersBalance,
-            'open_invoices_count' => $openInvoicesCount,
-            'open_invoices_total' => $openInvoicesTotal,
+            'pending_deposits' => $pendingDeposits,
+            'pending_expenses' => $pendingExpenses,
+            
+            // Card 5: NF Balance (Profit)
+            'profit' => $profit,
+            'profit_invoices' => $totalInvoices,
+            'profit_expenses' => $totalExpenses,
+            'profit_vendor_purchases' => $vendorPurchases,
+            
+            // Filter info
             'filter_type' => $filterType,
             'filter_date' => $filterDate,
             'filter_month' => $filterMonth,
@@ -387,6 +481,15 @@ class EmployeeCashController extends Controller
             }
             $cashInBreakdown['transfers_in'] = $transfersInQuery->sum('amount') ?? 0;
             
+            // Invoices IN (for Online Bank account specifically) - ONLY APPROVED
+            $invoicesInQuery = LedgerModel::where('to_account_id', $account->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED);
+            if ($dateFrom && $dateTo) {
+                $invoicesInQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            }
+            $cashInBreakdown['invoices'] = $invoicesInQuery->sum('amount') ?? 0;
+            
             // Others IN (adjustments, reimbursements, etc.)
             $othersInQuery = LedgerModel::where('to_account_id', $account->id)
                 ->whereIn('transaction_type', [
@@ -402,6 +505,7 @@ class EmployeeCashController extends Controller
             $cashInBreakdown['total'] = $cashInBreakdown['deposits'] + 
                                         $cashInBreakdown['settlements'] + 
                                         $cashInBreakdown['transfers_in'] + 
+                                        $cashInBreakdown['invoices'] + 
                                         $cashInBreakdown['others_in'];
         }
 
@@ -569,6 +673,21 @@ class EmployeeCashController extends Controller
                 ->sum('current_balance') ?? 0;
         }
         
+        // Get pending approvals details for Online Bank account (NO DATE FILTER - show all pending)
+        $pendingApprovals = [];
+        $pendingApprovalsTotal = 0;
+        if ($account->account_code === 'ONLINE') {
+            $pendingApprovals = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy'])
+                ->where('to_account_id', $account->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', LedgerModel::STATUS_PENDING)
+                ->orderBy('transaction_date', 'desc')
+                ->get();
+            
+            // Calculate total pending amount for Online Bank
+            $pendingApprovalsTotal = $pendingApprovals->sum('amount');
+        }
+        
         $summary = [
             'opening_balance' => $account->opening_balance,
             'current_balance' => $account->current_balance,
@@ -576,12 +695,13 @@ class EmployeeCashController extends Controller
             'total_expenses' => $expensesQuery->sum('amount'),
             'total_deposits' => $depositsQuery->sum('amount'),
             'total_withdrawals' => $withdrawalsQuery->sum('amount'),
-            'total_pending' => $pendingQuery ? $pendingQuery->sum('amount') : ($pendingAmount->sum('amount') ?? 0),
+            'total_pending' => $account->account_code === 'ONLINE' ? $pendingApprovalsTotal : ($pendingQuery ? $pendingQuery->sum('amount') : ($pendingAmount->sum('amount') ?? 0)),
             'cash_in' => $cashInBreakdown,
             'cash_out' => $cashOutBreakdown,
             'short_cash' => $shortCash,
             'cash_invoices' => $cashInvoices,
-            'riders_balance' => $ridersBalance
+            'riders_balance' => $ridersBalance,
+            'pending_approvals' => $pendingApprovals
         ];
 
         // Check user role

@@ -17,19 +17,31 @@ class LedgerController extends Controller
      */
     public function index(Request $request)
     {
+        // Get date range for filters (default to current month)
+        $startDate = $request->start_date ?? now()->startOfMonth()->format('Y-m-d');
+        $endDate = $request->end_date ?? now()->endOfMonth()->format('Y-m-d');
+        
         $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy']);
 
         // Filter by date range
-        if ($request->has('start_date') && $request->start_date) {
-            $query->where('transaction_date', '>=', $request->start_date);
+        if ($startDate) {
+            $query->where('transaction_date', '>=', $startDate);
         }
-        if ($request->has('end_date') && $request->end_date) {
-            $query->where('transaction_date', '<=', $request->end_date);
+        if ($endDate) {
+            $query->where('transaction_date', '<=', $endDate);
         }
 
         // Filter by transaction type
         if ($request->has('type') && $request->type) {
             $query->where('transaction_type', $request->type);
+        }
+        
+        // Special filter for vendor transactions (purchases + payments)
+        if ($request->has('vendor_filter') && $request->vendor_filter) {
+            $query->whereIn('transaction_type', [
+                LedgerModel::TYPE_VENDOR_PURCHASE,
+                LedgerModel::TYPE_VENDOR_PAYMENT
+            ]);
         }
 
         // Filter by mode
@@ -91,7 +103,162 @@ class LedgerController extends Controller
                                     ->keyBy('transaction_type')
         ];
 
-        return view('fin.ledger.index', compact('ledger', 'accounts', 'transactionTypes', 'pendingSummary'));
+        // Calculate KPI summary (respecting date filters)
+        $summaryKPIs = $this->calculateKPIs($startDate, $endDate);
+
+        return view('fin.ledger.index', compact('ledger', 'accounts', 'transactionTypes', 'pendingSummary', 'summaryKPIs', 'startDate', 'endDate'));
+    }
+    
+    /**
+     * Calculate KPI summary data (reuses logic from EmployeeCashController for consistency)
+     */
+    private function calculateKPIs($startDate, $endDate)
+    {
+        // Get delivered order IDs for the period (using status history table)
+        $invoicesQuery = \DB::table('t_crm_order_status_history')
+            ->where('status_code', 'delivered')
+            ->where('is_current', 1);
+        
+        if ($startDate && $endDate) {
+            $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+        }
+        
+        $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+        
+        // === KPI 1: INVOICES ===
+        $totalInvoices = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->sum('total_price') ?? 0;
+        
+        $invoicesCash = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD'])
+            ->sum('total_price') ?? 0;
+        
+        $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+        $cashDeposits = 0;
+        $shortCashTotal = 0;
+        
+        if ($nfCashAccount) {
+            $cashDeposits = LedgerModel::where('to_account_id', $nfCashAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+            
+            $shortCashTotal = \App\Models\Request\RequestModel::where('status', 'approved')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->whereHas('paymentSourceAccount', function($q) {
+                    $q->where('account_category', 'employee_cash');
+                })
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+        }
+        
+        $invoicesOnline = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
+            ->sum('total_price') ?? 0;
+        
+        $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
+        $onlineApproved = 0;
+        $onlinePending = 0;
+        
+        if ($onlineAccount) {
+            $onlineApproved = LedgerModel::where('to_account_id', $onlineAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+            
+            $onlinePending = LedgerModel::where('to_account_id', $onlineAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', LedgerModel::STATUS_PENDING)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+        }
+        
+        // === KPI 2: EXPENSES ===
+        $ledgerExpenses = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $salaryExpenses = \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
+            ->whereNotNull('ledger_transaction_id')
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->sum('net_salary') ?? 0;
+        
+        $totalExpenses = $ledgerExpenses + $salaryExpenses;
+        $regularExpenses = $ledgerExpenses;
+        $salaryExpensesForDisplay = $salaryExpenses;
+        
+        $expensesNeedingSettlement = \App\Models\Request\RequestModel::where('status', 'approved')
+            ->where('settlement_status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            })
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        // === KPI 3: VENDOR BALANCE ===
+        $vendorPurchases = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $vendorPayments = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $vendorBalance = $vendorPurchases - $vendorPayments;
+        
+        // === KPI 4: RIDERS BALANCE ===
+        $ridersBalance = AccountModel::where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
+            ->where('is_active', 1)
+            ->sum('current_balance') ?? 0;
+        
+        $pendingDeposits = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+            ->where('approval_status', LedgerModel::STATUS_PENDING)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $pendingExpenses = \App\Models\Request\RequestModel::where('status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            })
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        // === KPI 5: NF BALANCE (PROFIT) ===
+        $profit = $totalInvoices - $totalExpenses - $vendorPurchases;
+        
+        return [
+            'total_invoices' => $totalInvoices,
+            'invoices_cash' => $invoicesCash,
+            'cash_deposits' => $cashDeposits,
+            'short_cash_total' => $shortCashTotal,
+            'invoices_online' => $invoicesOnline,
+            'online_approved' => $onlineApproved,
+            'online_pending' => $onlinePending,
+            'total_expenses' => $totalExpenses,
+            'regular_expenses' => $regularExpenses,
+            'salary_expenses' => $salaryExpensesForDisplay,
+            'expenses_needing_settlement' => $expensesNeedingSettlement,
+            'vendor_balance' => $vendorBalance,
+            'vendor_purchases' => $vendorPurchases,
+            'vendor_payments' => $vendorPayments,
+            'riders_balance' => $ridersBalance,
+            'pending_deposits' => $pendingDeposits,
+            'pending_expenses' => $pendingExpenses,
+            'profit' => $profit,
+            'profit_invoices' => $totalInvoices,
+            'profit_expenses' => $totalExpenses,
+            'profit_vendor_purchases' => $vendorPurchases,
+        ];
     }
 
     /**

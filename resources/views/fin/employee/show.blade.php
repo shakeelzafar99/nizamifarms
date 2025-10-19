@@ -106,53 +106,81 @@
     @else
         <!-- Company Account Summary Cards - Reorganized Layout -->
         
-        <!-- Row 1: Quick Summary Cards (5 smaller cards) -->
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
-            <!-- Card 1: Current Balance -->
-            <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                 onclick="filterTransactions('all')" 
-                 data-filter-type="all">
-                <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
-                <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
-                    Rs. {{ number_format($summary['current_balance'], 2) }}
+        @if($account->account_code === 'ONLINE')
+            <!-- ONLINE BANK: Simplified Cards (Only 2 cards) -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <!-- Card 1: Current Balance -->
+                <div class="bg-white border border-gray-200 rounded-lg p-4 cursor-pointer hover:shadow-md transition-shadow" 
+                     onclick="filterTransactions('all')" 
+                     data-filter-type="all">
+                    <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+                    <div class="text-2xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-2">
+                        Rs. {{ number_format($summary['current_balance'], 2) }}
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1">Online Bank Balance</div>
+                </div>
+
+                <!-- Card 2: Pending Online Approvals (Clickable to open modal) -->
+                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 cursor-pointer hover:shadow-md transition-shadow" 
+                     onclick="openOnlineApprovalsModal()" 
+                     data-filter-type="pending">
+                    <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Online Approvals Pending</div>
+                    <div class="text-2xl font-bold text-yellow-900 mt-2">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                    <div class="text-xs text-yellow-600 mt-1">
+                        {{ count($summary['pending_approvals'] ?? []) }} invoice(s) awaiting approval
+                    </div>
                 </div>
             </div>
+        @else
+            <!-- OTHER COMPANY ACCOUNTS: Original 5 Cards -->
+            <!-- Row 1: Quick Summary Cards (5 smaller cards) -->
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+                <!-- Card 1: Current Balance -->
+                <div class="bg-white border border-gray-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                     onclick="filterTransactions('all')" 
+                     data-filter-type="all">
+                    <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
+                    <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-1">
+                        Rs. {{ number_format($summary['current_balance'], 2) }}
+                    </div>
+                </div>
 
-            <!-- Card 2: Pending Approvals -->
-            <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                 onclick="filterTransactions('pending')" 
-                 data-filter-type="pending">
-                <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
-                <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
-                <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
-            </div>
+                <!-- Card 2: Pending Approvals -->
+                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                     onclick="filterTransactions('pending')" 
+                     data-filter-type="pending">
+                    <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Pending</div>
+                    <div class="text-xl font-bold text-yellow-900 mt-1">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                    <div class="text-xs text-yellow-600 mt-0.5">Awaiting approval</div>
+                </div>
 
-            <!-- Card 3: Short Cash -->
-            <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
-                 title="Expenses paid from rider balance but not yet settled">
-                <div class="text-xs text-orange-700 uppercase font-medium">💸 Short Cash</div>
-                <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['short_cash'] ?? 0, 2) }}</div>
-                <div class="text-xs text-orange-600 mt-0.5">Unsettled</div>
-            </div>
+                <!-- Card 3: Short Cash -->
+                <div class="bg-orange-50 border border-orange-200 rounded-lg p-3" 
+                     title="Expenses paid from rider balance but not yet settled">
+                    <div class="text-xs text-orange-700 uppercase font-medium">💸 Short Cash</div>
+                    <div class="text-xl font-bold text-orange-900 mt-1">Rs. {{ number_format($summary['short_cash'] ?? 0, 2) }}</div>
+                    <div class="text-xs text-orange-600 mt-0.5">Unsettled</div>
+                </div>
 
-            <!-- Card 4: Cash Invoices -->
-            <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
-                 onclick="filterTransactions('cash_invoices')" 
-                 data-filter-type="cash_invoices"
-                 title="Total value of cash/COD invoices delivered">
-                <div class="text-xs text-purple-700 uppercase font-medium">💵 Cash Invoices</div>
-                <div class="text-xl font-bold text-purple-900 mt-1">Rs. {{ number_format($summary['cash_invoices'] ?? 0, 2) }}</div>
-                <div class="text-xs text-purple-600 mt-0.5">Delivered</div>
-            </div>
+                <!-- Card 4: Cash Invoices -->
+                <div class="bg-purple-50 border border-purple-200 rounded-lg p-3 cursor-pointer hover:shadow-md transition-shadow" 
+                     onclick="filterTransactions('cash_invoices')" 
+                     data-filter-type="cash_invoices"
+                     title="Total value of cash/COD invoices delivered">
+                    <div class="text-xs text-purple-700 uppercase font-medium">💵 Cash Invoices</div>
+                    <div class="text-xl font-bold text-purple-900 mt-1">Rs. {{ number_format($summary['cash_invoices'] ?? 0, 2) }}</div>
+                    <div class="text-xs text-purple-600 mt-0.5">Delivered</div>
+                </div>
 
-            <!-- Card 5: Riders Balance (NEW) -->
-            <div class="bg-teal-50 border border-teal-200 rounded-lg p-3"
-                 title="Total cash currently held by all riders">
-                <div class="text-xs text-teal-700 uppercase font-medium">👥 Riders Balance</div>
-                <div class="text-xl font-bold text-teal-900 mt-1">Rs. {{ number_format($summary['riders_balance'] ?? 0, 2) }}</div>
-                <div class="text-xs text-teal-600 mt-0.5">With riders</div>
+                <!-- Card 5: Riders Balance (NEW) -->
+                <div class="bg-teal-50 border border-teal-200 rounded-lg p-3"
+                     title="Total cash currently held by all riders">
+                    <div class="text-xs text-teal-700 uppercase font-medium">👥 Riders Balance</div>
+                    <div class="text-xl font-bold text-teal-900 mt-1">Rs. {{ number_format($summary['riders_balance'] ?? 0, 2) }}</div>
+                    <div class="text-xs text-teal-600 mt-0.5">With riders</div>
+                </div>
             </div>
-        </div>
+        @endif
 
         <!-- Row 2: Detailed Breakdown Cards (2 larger cards with dropdowns) -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -185,6 +213,11 @@
                          onclick="event.stopPropagation(); filterTransactions('transfers_in')">
                         <span class="text-green-700">🔀 Transfers In</span>
                         <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['transfers_in'] ?? 0), 2) }}</span>
+                    </div>
+                    <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
+                         onclick="event.stopPropagation(); filterTransactions('invoices')">
+                        <span class="text-green-700">📄 Invoices</span>
+                        <span class="font-medium text-green-900">Rs. {{ number_format(($summary['cash_in']['invoices'] ?? 0), 2) }}</span>
                     </div>
                     <div class="flex justify-between text-sm cursor-pointer hover:bg-green-100 p-1 rounded" 
                          onclick="event.stopPropagation(); filterTransactions('others_in')">
@@ -459,6 +492,7 @@
                                     <tr>
                                         <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
                                         <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                        <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                         <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
                                         <th class="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cash In</th>
                                         <th class="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cash Out</th>
@@ -492,6 +526,28 @@
                                                 @endphp
                                                 <span class="px-2 py-1 text-xs font-semibold rounded-full {{ $color }}">
                                                     {{ ucfirst(str_replace('_', ' ', $transaction->transaction_type)) }}
+                                                </span>
+                                            </td>
+                                            <td class="px-6 py-3 whitespace-nowrap">
+                                                @php
+                                                    $status = $transaction->approval_status ?? 'approved';
+                                                    $statusColors = [
+                                                        'pending' => 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                                                        'approved' => 'bg-green-100 text-green-800 border-green-300',
+                                                        'rejected' => 'bg-red-100 text-red-800 border-red-300',
+                                                    ];
+                                                    $statusColor = $statusColors[$status] ?? 'bg-gray-100 text-gray-800 border-gray-300';
+                                                @endphp
+                                                <span class="px-2 py-1 text-xs font-semibold rounded-full border {{ $statusColor }}">
+                                                    @if($status === 'pending')
+                                                        ⏳ Pending
+                                                    @elseif($status === 'approved')
+                                                        ✅ Approved
+                                                    @elseif($status === 'rejected')
+                                                        ❌ Rejected
+                                                    @else
+                                                        {{ ucfirst($status) }}
+                                                    @endif
                                                 </span>
                                             </td>
                                             <td class="px-6 py-3 text-sm text-gray-900">
@@ -783,6 +839,107 @@
         </div>
     </div>
 </div>
+
+<!-- Online Approvals Modal (for ONLINE Bank account) -->
+@if($account->account_code === 'ONLINE')
+<div id="onlineApprovalsModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #fef3c7 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #fde68a; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    ⏳
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 700; color: #78350f; margin: 0;">Online Approvals Pending</h3>
+                    <p style="font-size: 14px; color: #92400e; margin: 4px 0 0 0;">
+                        <span id="approvalCount">{{ count($summary['pending_approvals'] ?? []) }}</span> invoice(s) awaiting approval
+                    </p>
+                </div>
+            </div>
+            <button onclick="closeOnlineApprovalsModal()" style="width: 32px; height: 32px; border-radius: 50%; background: #fef3c7; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #78350f; transition: all 0.2s;" onmouseover="this.style.background='#fde68a'" onmouseout="this.style.background='#fef3c7'">
+                ✕
+            </button>
+        </div>
+
+        <!-- Scrollable Content -->
+        <div style="flex: 1; overflow-y: auto; padding: 24px;">
+            @if(count($summary['pending_approvals'] ?? []) > 0)
+                <div style="display: flex; flex-direction: column; gap: 16px;">
+                    @foreach($summary['pending_approvals'] as $approval)
+                    <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 16px;">
+                        <div style="display: flex; justify-between; align-items: start; margin-bottom: 12px;">
+                            <div style="flex: 1;">
+                                <div style="font-size: 14px; font-weight: 600; color: #78350f; margin-bottom: 4px;">
+                                    Invoice #{{ $approval->id }}
+                                </div>
+                                <div style="font-size: 12px; color: #92400e;">
+                                    Date: {{ $approval->transaction_date->format('Y-m-d') }}
+                                </div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 20px; font-weight: 700; color: #78350f;">
+                                    Rs. {{ number_format($approval->amount, 2) }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px; padding: 12px; background: white; border-radius: 6px;">
+                            <div>
+                                <div style="font-size: 11px; color: #92400e; text-transform: uppercase; margin-bottom: 4px;">From</div>
+                                <div style="font-size: 13px; color: #78350f; font-weight: 500;">{{ $approval->fromAccount->account_name ?? 'N/A' }}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 11px; color: #92400e; text-transform: uppercase; margin-bottom: 4px;">To</div>
+                                <div style="font-size: 13px; color: #78350f; font-weight: 500;">{{ $approval->toAccount->account_name ?? 'N/A' }}</div>
+                            </div>
+                        </div>
+
+                        @if($approval->description)
+                        <div style="padding: 12px; background: white; border-radius: 6px; margin-bottom: 12px;">
+                            <div style="font-size: 11px; color: #92400e; text-transform: uppercase; margin-bottom: 4px;">Description</div>
+                            <div style="font-size: 13px; color: #78350f;">{{ $approval->description }}</div>
+                        </div>
+                        @endif
+
+                        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                            <button onclick="approveOnlineInvoice({{ $approval->id }})" 
+                                    style="padding: 8px 16px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s;"
+                                    onmouseover="this.style.background='#059669'" 
+                                    onmouseout="this.style.background='#10b981'">
+                                ✅ Approve
+                            </button>
+                            <button onclick="rejectOnlineInvoice({{ $approval->id }})" 
+                                    style="padding: 8px 16px; background: #ef4444; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s;"
+                                    onmouseover="this.style.background='#dc2626'" 
+                                    onmouseout="this.style.background='#ef4444'">
+                                ❌ Reject
+                            </button>
+                        </div>
+                    </div>
+                    @endforeach
+                </div>
+            @else
+                <div style="text-align: center; padding: 40px; color: #92400e;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">✅</div>
+                    <div style="font-size: 16px; font-weight: 500;">No pending approvals</div>
+                    <div style="font-size: 14px; margin-top: 8px;">All online invoices have been processed</div>
+                </div>
+            @endif
+        </div>
+
+        <!-- Fixed Footer -->
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #fafafa; flex-shrink: 0; display: flex; justify-content: flex-end;">
+            <button onclick="closeOnlineApprovalsModal()" 
+                    style="padding: 10px 20px; background: #6b7280; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s;"
+                    onmouseover="this.style.background='#4b5563'" 
+                    onmouseout="this.style.background='#6b7280'">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+@endif
 
 @endsection
 
@@ -2508,5 +2665,84 @@ function togglePaymentDestination() {
     const destType = document.querySelector('input[name="payment_dest_type"]:checked').value;
     document.getElementById('payment_account_section').style.display = destType === 'internal' ? 'block' : 'none';
     document.getElementById('payment_external_section').style.display = destType === 'external' ? 'block' : 'none';
+}
+
+// Online Approvals Modal Functions
+function openOnlineApprovalsModal() {
+    const modal = document.getElementById('onlineApprovalsModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+    }
+}
+
+function closeOnlineApprovalsModal() {
+    const modal = document.getElementById('onlineApprovalsModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+    }
+}
+
+function approveOnlineInvoice(ledgerId) {
+    if (!confirm('Are you sure you want to approve this online invoice?')) {
+        return;
+    }
+    
+    // Submit approval
+    fetch(`/finance/ledger/${ledgerId}/approve`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Invoice approved successfully!');
+            location.reload(); // Reload to update the list
+        } else {
+            alert('Error: ' + (data.message || 'Failed to approve invoice'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('An error occurred while approving the invoice');
+    });
+}
+
+function rejectOnlineInvoice(ledgerId) {
+    const reason = prompt('Please enter rejection reason:');
+    if (!reason || reason.trim() === '') {
+        alert('Rejection reason is required');
+        return;
+    }
+    
+    // Submit rejection
+    fetch(`/finance/ledger/${ledgerId}/reject`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({
+            rejection_reason: reason
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Invoice rejected successfully!');
+            location.reload(); // Reload to update the list
+        } else {
+            alert('Error: ' + (data.message || 'Failed to reject invoice'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('An error occurred while rejecting the invoice');
+    });
 }
 </script>
