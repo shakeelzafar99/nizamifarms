@@ -38,6 +38,27 @@ class VendorController extends Controller
 
         $vendors = $query->orderBy('vendor_name', 'asc')->paginate(20);
 
+        // Get last payment info for each vendor
+        foreach ($vendors as $vendor) {
+            if ($vendor->account) {
+                // Get the last payment transaction for this vendor
+                $lastPayment = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                    ->where(function($q) use ($vendor) {
+                        $q->where('from_account_id', $vendor->account->id)
+                          ->orWhere('to_account_id', $vendor->account->id);
+                    })
+                    ->orderBy('transaction_date', 'desc')
+                    ->orderBy('created_at', 'desc')
+                    ->first();
+                
+                $vendor->last_payment_date = $lastPayment ? $lastPayment->transaction_date : null;
+                $vendor->last_payment_amount = $lastPayment ? $lastPayment->amount : null;
+            } else {
+                $vendor->last_payment_date = null;
+                $vendor->last_payment_amount = null;
+            }
+        }
+
         return view('fin.vendor.index', compact('vendors'));
     }
 

@@ -55,7 +55,7 @@
             <thead class="bg-gray-50">
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Contact</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Payment</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Balance Payable</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -69,9 +69,11 @@
                             <div class="text-xs text-gray-500">{{ $vendor->account ? $vendor->account->account_code : 'N/A' }}</div>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            <div class="text-sm text-gray-900">{{ $vendor->vendor_contact }}</div>
-                            @if($vendor->vendor_phone)
-                                <div class="text-xs text-gray-500">{{ $vendor->vendor_phone }}</div>
+                            @if($vendor->last_payment_date && $vendor->last_payment_amount)
+                                <div class="text-sm font-medium text-gray-900">Rs. {{ number_format($vendor->last_payment_amount, 2) }}</div>
+                                <div class="text-xs text-gray-500">{{ \Carbon\Carbon::parse($vendor->last_payment_date)->format('M d, Y') }}</div>
+                            @else
+                                <div class="text-sm text-gray-400">No payments yet</div>
                             @endif
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right">

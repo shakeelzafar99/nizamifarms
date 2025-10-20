@@ -278,7 +278,7 @@ class ApprovalController extends Controller
             'description' => $request->description,
             'amount' => $request->amount ?? 0,
             'leave_days' => $request->leave_days ?? 0,
-            'date' => $request->submitted_at ? $request->submitted_at->format('Y-m-d') : null,
+            'date' => $request->submitted_at ? $request->submitted_at->format('Y-m-d H:i:s') : null,
             'level' => $level,
             'area' => $area,
             'status' => $overrideStatus ?? 'pending',
@@ -346,7 +346,7 @@ class ApprovalController extends Controller
             'description' => $description,
             'amount' => $ledger->amount ?? 0,
             'leave_days' => 0,
-            'date' => $ledger->transaction_date,
+            'date' => $ledger->created_at ? $ledger->created_at->format('Y-m-d H:i:s') : $ledger->transaction_date,
             'level' => null, // Ledger transactions don't have L1/L2
             'area' => $area,
             'status' => $overrideStatus ?? $ledger->approval_status,
@@ -370,7 +370,7 @@ class ApprovalController extends Controller
             'description' => $adjustment->adjustment_reason,
             'amount' => abs($adjustment->adjustment_amount ?? 0),
             'leave_days' => 0,
-            'date' => $adjustment->requested_at ? $adjustment->requested_at->format('Y-m-d') : null,
+            'date' => $adjustment->requested_at ? $adjustment->requested_at->format('Y-m-d H:i:s') : null,
             'level' => $level,
             'area' => self::AREA_OTHERS,
             'status' => 'pending',
@@ -412,9 +412,10 @@ class ApprovalController extends Controller
                 return self::AREA_EXP_FUND;
             }
             
-            // Salary advances typically go to NF_CASH
+            // Salary advances: Use payment source if available, otherwise default to EXP_FUND
+            // (Salary advances should be paid from EXP_FUND by default)
             if ($categoryCode === 'salary_advance') {
-                return self::AREA_NF_CASH;
+                return self::AREA_EXP_FUND;
             }
             
             // Leave requests are OTHERS
