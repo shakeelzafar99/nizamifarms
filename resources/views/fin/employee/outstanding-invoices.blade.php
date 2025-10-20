@@ -203,6 +203,12 @@
                                     </td>
                                     <td class="px-3 py-2 whitespace-nowrap text-xs text-right">
                                         <span class="text-green-700 font-medium">Rs. {{ number_format($invoice->settled_amount, 2) }}</span>
+                                        @if(isset($invoice->settlement_breakdown) && $invoice->settlement_breakdown)
+                                            <div class="text-xs text-blue-600 mt-1" style="white-space: nowrap;">
+                                                💸 Rs. {{ number_format($invoice->settlement_breakdown['deposit_amount'], 0) }} + 
+                                                Rs. {{ number_format($invoice->settlement_breakdown['expense_amount'], 0) }} ({{ $invoice->settlement_breakdown['expense_category'] }})
+                                            </div>
+                                        @endif
                                     </td>
                                 </tr>
                                 @endforeach
@@ -263,6 +269,12 @@
                                     <span class="text-green-700 font-medium">Rs. {{ number_format($invoice['settled_amount'], 2) }}</span>
                                     @if($invoice['settled_at'])
                                         <div class="text-xs text-gray-500">{{ \Carbon\Carbon::parse($invoice['settled_at'])->format('M j') }}</div>
+                                    @endif
+                                    @if(isset($invoice['settlement_breakdown']) && $invoice['settlement_breakdown'])
+                                        <div class="text-xs text-blue-600 mt-1" style="white-space: nowrap;">
+                                            💸 Rs. {{ number_format($invoice['settlement_breakdown']['deposit_amount'], 0) }} + 
+                                            Rs. {{ number_format($invoice['settlement_breakdown']['expense_amount'], 0) }} ({{ $invoice['settlement_breakdown']['expense_category'] }})
+                                        </div>
                                     @endif
                                 @else
                                     <span class="text-gray-400">-</span>

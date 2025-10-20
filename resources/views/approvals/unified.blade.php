@@ -345,6 +345,30 @@
     // Summaries from backend
     const summaries = @json($summaries);
 
+    // Format datetime to readable format (Pakistan Time)
+    function formatDateTime(dateString) {
+        if (!dateString || dateString === '-') return '-';
+        
+        try {
+            const date = new Date(dateString);
+            if (isNaN(date.getTime())) return dateString; // Invalid date
+            
+            // Format as: Oct 20, 2025 3:45 PM
+            const options = {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true
+            };
+            
+            return date.toLocaleString('en-US', options);
+        } catch (e) {
+            return dateString;
+        }
+    }
+
     // Filter by level
     function filterByLevel(level) {
         // Toggle if clicking same card
@@ -555,7 +579,7 @@
                           item.leave_days > 0 ? item.leave_days + ' days' : '-'}
                     </td>
                     <td class="text-center">${levelBadge}</td>
-                    <td class="text-sm text-gray-600">${item.date || '-'}</td>
+                    <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
                     <td class="text-center">
                         <a href="${item.view_url}" 
                            class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">

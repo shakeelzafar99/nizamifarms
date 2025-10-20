@@ -353,8 +353,8 @@
     <!-- Action Buttons -->
     @if($isEmployeeAccount)
     <div class="flex gap-4 mb-6">
-        <button onclick="openSettlementModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md shadow-md" style="background-color: #7c3aed !important; color: white !important;">
-            <span style="color: white !important;">📋 Settle & Deposit</span>
+        <button onclick="openShortCashModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md shadow-md" style="background-color: #7c3aed !important; color: white !important;">
+            <span style="color: white !important;">💎 Settle</span>
         </button>
         <button onclick="openDepositModal()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
             💵 Record Deposit to NF Cash
@@ -1299,6 +1299,159 @@
     </div>
 </div>
 
+<!-- Short Cash Settlement Modal -->
+<div id="shortCashModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;" onclick="closeShortCashModal()">
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full" style="max-height: 85vh; display: flex; flex-direction: column;" onclick="event.stopPropagation()">
+        <!-- Fixed Header -->
+        <div class="px-6 py-4 border-b border-gray-200 flex-shrink-0">
+            <div class="flex justify-between items-center">
+                <h2 class="text-lg font-semibold text-gray-800">💎 Settle Invoices</h2>
+                <button onclick="closeShortCashModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="flex: 1; overflow-y: auto; min-height: 0;">
+            <!-- Loading State -->
+            <div id="shortcash-loading" class="text-center py-12">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
+                <p class="text-sm text-gray-600 mt-2">Loading outstanding invoices...</p>
+            </div>
+
+            <!-- No Invoices State -->
+            <div id="shortcash-no-invoices" class="hidden text-center py-12">
+                <div class="text-4xl mb-2">✅</div>
+                <p class="text-lg font-medium text-gray-800">All invoices settled!</p>
+                <p class="text-sm text-gray-600 mt-2">There are no outstanding invoices to settle.</p>
+                <button onclick="closeShortCashModal()" class="mt-4 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-medium rounded-md">
+                    Close
+                </button>
+            </div>
+
+            <!-- Short Cash Form -->
+            <form id="shortcash-form" class="hidden" action="{{ route('fin.employee.short-cash-settlement', $account->id) }}" method="POST" onsubmit="return handleShortCashSubmit(event)">
+                @csrf
+                <div class="px-6 py-4 space-y-4">
+                    <!-- Outstanding Invoices Table -->
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-gray-50 px-3 py-2 border-b border-gray-200">
+                            <h3 class="text-sm font-semibold text-gray-700">📦 Outstanding Invoices</h3>
+                        </div>
+                        <div class="overflow-x-auto" style="max-height: 180px;">
+                            <table class="min-w-full divide-y divide-gray-200">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="px-3 py-2 text-left">
+                                            <input type="checkbox" id="shortcash-select-all-invoices" onchange="toggleAllShortCashInvoices(this)" 
+                                                   class="rounded border-gray-300 text-orange-600 focus:ring-orange-500">
+                                        </th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Order #</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                        <th class="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="shortcash-invoices-tbody" class="bg-white divide-y divide-gray-200">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Summary Card -->
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm font-medium text-blue-900">Selected: <span id="shortcash-selected-count" class="font-bold">0</span> invoice(s)</span>
+                            <span class="text-lg font-bold text-blue-900">Total: <span id="shortcash-total-outstanding">Rs. 0.00</span></span>
+                        </div>
+                    </div>
+
+                    <!-- Deposit Details -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Date <span class="text-red-500">*</span></label>
+                            <input type="date" name="transaction_date" value="{{ date('Y-m-d') }}" required
+                                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Amount Depositing (Rs.) <span class="text-red-500">*</span></label>
+                            <input type="text" id="shortcash-amount" name="amount" required
+                                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+                                   placeholder="0.00"
+                                   oninput="validateAndFormatShortCashAmount(this); calculateShortage()"
+                                   onblur="formatShortCashAmountOnBlur(this)">
+                            <p id="shortcash-amount-error" class="text-xs text-red-600 mt-1 hidden"></p>
+                        </div>
+                    </div>
+
+                    <!-- Shortage Display & Expense Category (shown when shortage > 0) -->
+                    <div id="shortage-section" class="hidden p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-sm font-medium text-yellow-900">⚠️ Shortage:</span>
+                            <span id="shortage-amount" class="text-lg font-bold text-yellow-900">Rs. 0.00</span>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">What was the shortage used for? <span class="text-red-500">*</span></label>
+                            <select name="expense_category" id="shortcash-expense-category" required
+                                    onchange="calculateShortage()"
+                                    class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500">
+                                <option value="">Select Category</option>
+                                @if(count($expenseCategories) > 0)
+                                    @foreach($expenseCategories as $cat)
+                                    <option value="{{ $cat }}">{{ $cat }}</option>
+                                    @endforeach
+                                @else
+                                    {{-- Fallback options if no categories in database --}}
+                                    <option value="Petrol">Petrol</option>
+                                    <option value="Rent">Rent</option>
+                                    <option value="Office Supplies">Office Supplies</option>
+                                @endif
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Destination (hidden, always NF Cash) -->
+                    <input type="hidden" name="destination_account_id" value="">
+                    <input type="hidden" name="description" value="">
+                    
+                    <!-- Summary Info -->
+                    <div id="shortcash-summary" class="hidden p-3 bg-green-50 border border-green-200 rounded-md">
+                        <div class="text-xs font-semibold text-green-900 mb-2">📊 Settlement Summary</div>
+                        <div class="grid grid-cols-3 gap-2 text-xs text-green-800">
+                            <div>
+                                <div class="text-gray-600">Depositing</div>
+                                <div id="summary-deposit" class="font-bold text-sm">Rs. 0.00</div>
+                            </div>
+                            <div>
+                                <div class="text-gray-600">Expense (<span id="summary-category">-</span>)</div>
+                                <div id="summary-expense" class="font-bold text-sm">Rs. 0.00</div>
+                            </div>
+                            <div>
+                                <div class="text-gray-600">Total Settled</div>
+                                <div id="summary-total" class="font-bold text-sm text-green-900">Rs. 0.00</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
+        <!-- Fixed Footer -->
+        <div class="px-6 py-3 border-t border-gray-200 bg-gray-50 flex-shrink-0">
+            <div class="flex gap-3">
+                <button type="button" onclick="closeShortCashModal()" class="flex-1 px-4 py-2 text-sm border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-100">
+                    Cancel
+                </button>
+                <button type="submit" form="shortcash-form" id="submit-shortcash-btn" disabled 
+                        style="background-color: #f59e0b !important; color: white !important;" 
+                        class="flex-1 px-4 py-2 text-sm hover:opacity-90 font-medium rounded-md disabled:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50">
+                    💾 Submit for Approval
+                </button>
+            </div>
+            <p class="text-xs text-gray-600 mt-2 text-center">💰 Depositing to NF Cash • ⏳ Pending manager approval</p>
+        </div>
+    </div>
+</div>
+
 <!-- Manual Adjustment Modal -->
 <div id="adjustmentModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
     <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
@@ -2107,6 +2260,318 @@ function handleSettlementSubmit(event) {
     }
     
     // Mark as submitting
+    submitBtn.dataset.submitting = 'true';
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="inline-block animate-spin mr-2">⏳</span> Submitting...';
+    
+    // Allow form to submit
+    return true;
+}
+
+// ===================================================================
+// SHORT CASH SETTLEMENT MODAL FUNCTIONS
+// ===================================================================
+
+let shortCashInvoices = [];
+let selectedShortCashInvoiceIds = [];
+
+async function openShortCashModal() {
+    const modal = document.getElementById('shortCashModal');
+    if (!modal) return;
+    
+    // Portalize to body
+    if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+    }
+    
+    // Show modal with loading state
+    modal.classList.remove('hidden');
+    Object.assign(modal.style, {
+        display: 'flex',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        zIndex: '99999',
+        backgroundColor: 'rgba(0,0,0,0.5)'
+    });
+    document.body.style.overflow = 'hidden';
+    
+    // Show loading, hide others
+    document.getElementById('shortcash-loading').classList.remove('hidden');
+    document.getElementById('shortcash-no-invoices').classList.add('hidden');
+    document.getElementById('shortcash-form').classList.add('hidden');
+    
+    // Fetch outstanding invoices
+    try {
+        const response = await fetch('{{ route("fin.employee.outstanding-invoices", $account->id) }}');
+        const data = await response.json();
+        
+        if (data.success && data.invoices && data.invoices.length > 0) {
+            shortCashInvoices = data.invoices;
+            selectedShortCashInvoiceIds = data.invoices.map(inv => inv.id); // Select all by default
+            renderShortCashInvoicesTable();
+            updateShortCashSummary();
+            
+            // Show form
+            document.getElementById('shortcash-loading').classList.add('hidden');
+            document.getElementById('shortcash-form').classList.remove('hidden');
+            
+            // Pre-fill amount with total (user will reduce it)
+            document.getElementById('shortcash-amount').value = data.total_outstanding.toFixed(2);
+            calculateShortage(); // This will hide shortage section initially
+        } else {
+            // No invoices
+            document.getElementById('shortcash-loading').classList.add('hidden');
+            document.getElementById('shortcash-no-invoices').classList.remove('hidden');
+        }
+    } catch (error) {
+        console.error('Error loading invoices:', error);
+        alert('Error loading outstanding invoices. Please try again.');
+        closeShortCashModal();
+    }
+}
+
+function closeShortCashModal() {
+    const modal = document.getElementById('shortCashModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+    // Reset state
+    shortCashInvoices = [];
+    selectedShortCashInvoiceIds = [];
+    
+    // Reset form
+    document.getElementById('shortcash-amount').value = '';
+    document.getElementById('shortage-section').classList.add('hidden');
+    document.getElementById('shortcash-summary').classList.add('hidden');
+}
+
+function renderShortCashInvoicesTable() {
+    const tbody = document.getElementById('shortcash-invoices-tbody');
+    tbody.innerHTML = '';
+    
+    shortCashInvoices.forEach(invoice => {
+        const row = document.createElement('tr');
+        row.className = 'hover:bg-gray-50';
+        row.innerHTML = `
+            <td class="px-3 py-2">
+                <input type="checkbox" 
+                       name="invoice_ids[]" 
+                       value="${invoice.id}" 
+                       ${selectedShortCashInvoiceIds.includes(invoice.id) ? 'checked' : ''}
+                       onchange="toggleShortCashInvoice(${invoice.id})"
+                       class="rounded border-gray-300 text-orange-600 focus:ring-orange-500">
+            </td>
+            <td class="px-3 py-2 text-sm text-gray-900">${invoice.order_number || 'Invoice #' + invoice.id}</td>
+            <td class="px-3 py-2 text-sm text-gray-600">${invoice.date}</td>
+            <td class="px-3 py-2 text-sm text-gray-900 text-right font-medium">Rs. ${parseFloat(invoice.outstanding_amount).toFixed(2)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function toggleShortCashInvoice(invoiceId) {
+    const index = selectedShortCashInvoiceIds.indexOf(invoiceId);
+    if (index > -1) {
+        selectedShortCashInvoiceIds.splice(index, 1);
+    } else {
+        selectedShortCashInvoiceIds.push(invoiceId);
+    }
+    updateShortCashSummary();
+}
+
+function toggleAllShortCashInvoices(checkbox) {
+    const checkboxes = document.querySelectorAll('#shortcash-invoices-tbody input[type="checkbox"]');
+    checkboxes.forEach(cb => {
+        cb.checked = checkbox.checked;
+    });
+    
+    if (checkbox.checked) {
+        selectedShortCashInvoiceIds = shortCashInvoices.map(inv => inv.id);
+    } else {
+        selectedShortCashInvoiceIds = [];
+    }
+    
+    updateShortCashSummary();
+}
+
+function updateShortCashSummary() {
+    const selectedInvoices = shortCashInvoices.filter(inv => selectedShortCashInvoiceIds.includes(inv.id));
+    const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
+    
+    document.getElementById('shortcash-selected-count').textContent = selectedInvoices.length;
+    document.getElementById('shortcash-total-outstanding').textContent = 'Rs. ' + totalOutstanding.toFixed(2);
+    
+    // Enable/disable submit button
+    const submitBtn = document.getElementById('submit-shortcash-btn');
+    const amountInput = document.getElementById('shortcash-amount');
+    const currentAmount = parseFloat(amountInput.value) || 0;
+    
+    submitBtn.disabled = selectedInvoices.length === 0 || currentAmount === 0;
+    
+    // Update select-all checkbox state
+    const selectAllCheckbox = document.getElementById('shortcash-select-all-invoices');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = selectedInvoices.length === shortCashInvoices.length && selectedInvoices.length > 0;
+    }
+    
+    // Recalculate shortage
+    calculateShortage();
+}
+
+function calculateShortage() {
+    const selectedInvoices = shortCashInvoices.filter(inv => selectedShortCashInvoiceIds.includes(inv.id));
+    const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
+    const depositAmount = parseFloat(document.getElementById('shortcash-amount').value) || 0;
+    const shortage = totalOutstanding - depositAmount;
+    
+    const shortageSection = document.getElementById('shortage-section');
+    const summarySection = document.getElementById('shortcash-summary');
+    const submitBtn = document.getElementById('submit-shortcash-btn');
+    
+    if (shortage > 0 && depositAmount > 0) {
+        // Show shortage section
+        shortageSection.classList.remove('hidden');
+        document.getElementById('shortage-amount').textContent = 'Rs. ' + shortage.toFixed(2);
+        
+        // Show summary
+        summarySection.classList.remove('hidden');
+        document.getElementById('summary-deposit').textContent = 'Rs. ' + depositAmount.toFixed(2);
+        document.getElementById('summary-expense').textContent = 'Rs. ' + shortage.toFixed(2);
+        document.getElementById('summary-total').textContent = 'Rs. ' + totalOutstanding.toFixed(2);
+        
+        // Update category in summary
+        const categorySelect = document.getElementById('shortcash-expense-category');
+        const selectedCategory = categorySelect.options[categorySelect.selectedIndex]?.text || '-';
+        document.getElementById('summary-category').textContent = selectedCategory;
+        
+        // Enable submit only if category is selected
+        const shouldEnable = categorySelect.value && selectedInvoices.length > 0;
+        submitBtn.disabled = !shouldEnable;
+        console.log('Short Cash - Enable button:', shouldEnable, 'Category:', categorySelect.value, 'Invoices:', selectedInvoices.length);
+        
+        // Make expense category required
+        categorySelect.setAttribute('required', 'required');
+    } else if (shortage === 0 && depositAmount > 0) {
+        // No shortage - full payment! Hide shortage section but allow submission
+        shortageSection.classList.add('hidden');
+        summarySection.classList.add('hidden');
+        
+        // Clear any previous errors
+        const amountError = document.getElementById('shortcash-amount-error');
+        amountError.classList.add('hidden');
+        
+        // Enable submit button for full payment
+        submitBtn.disabled = false;
+        
+        // Remove required from category (not needed for full payment)
+        const categorySelect = document.getElementById('shortcash-expense-category');
+        categorySelect.removeAttribute('required');
+    } else if (shortage < 0) {
+        // Deposit exceeds total - show error
+        shortageSection.classList.add('hidden');
+        summarySection.classList.add('hidden');
+        
+        const amountError = document.getElementById('shortcash-amount-error');
+        amountError.textContent = '❌ Deposit amount cannot exceed total outstanding.';
+        amountError.classList.remove('hidden');
+        
+        submitBtn.disabled = true;
+    } else {
+        // No amount entered yet
+        shortageSection.classList.add('hidden');
+        summarySection.classList.add('hidden');
+        submitBtn.disabled = true;
+    }
+}
+
+function validateAndFormatShortCashAmount(input) {
+    // Remove any non-numeric characters except decimal point
+    let value = input.value.replace(/[^\d.]/g, '');
+    
+    // Ensure only one decimal point
+    const parts = value.split('.');
+    if (parts.length > 2) {
+        value = parts[0] + '.' + parts.slice(1).join('');
+    }
+    
+    // Limit to 2 decimal places
+    if (parts.length === 2 && parts[1].length > 2) {
+        value = parts[0] + '.' + parts[1].substring(0, 2);
+    }
+    
+    input.value = value;
+    
+    // Hide error message when user types
+    const errorMsg = document.getElementById('shortcash-amount-error');
+    if (errorMsg) {
+        errorMsg.classList.add('hidden');
+    }
+    
+    // Recalculate shortage
+    calculateShortage();
+}
+
+function formatShortCashAmountOnBlur(input) {
+    if (input.value) {
+        const num = parseFloat(input.value);
+        if (!isNaN(num)) {
+            input.value = num.toFixed(2);
+        }
+    }
+    calculateShortage();
+}
+
+function handleShortCashSubmit(event) {
+    console.log('Short Cash Submit - Handler called');
+    const submitBtn = document.getElementById('submit-shortcash-btn');
+    
+    // Prevent double submission
+    if (submitBtn.disabled || submitBtn.dataset.submitting === 'true') {
+        console.log('Short Cash Submit - Button disabled or already submitting');
+        event.preventDefault();
+        return false;
+    }
+    
+    // Validate shortage and category
+    const selectedInvoices = shortCashInvoices.filter(inv => selectedShortCashInvoiceIds.includes(inv.id));
+    const totalOutstanding = selectedInvoices.reduce((sum, inv) => sum + parseFloat(inv.outstanding_amount), 0);
+    const depositAmount = parseFloat(document.getElementById('shortcash-amount').value) || 0;
+    const shortage = totalOutstanding - depositAmount;
+    
+    console.log('Settlement Submit - Validation:', {
+        selectedInvoices: selectedInvoices.length,
+        totalOutstanding,
+        depositAmount,
+        shortage
+    });
+    
+    // If there's a shortage, category is required
+    if (shortage > 0) {
+        const categorySelect = document.getElementById('shortcash-expense-category');
+        console.log('Settlement Submit - Shortage detected, Category:', categorySelect.value);
+        
+        if (!categorySelect.value) {
+            alert('Please select an expense category for the shortage.');
+            event.preventDefault();
+            return false;
+        }
+    } else if (shortage === 0) {
+        // Full payment - no category needed
+        console.log('Settlement Submit - Full payment, no shortage');
+    } else {
+        // Deposit exceeds total
+        alert('Deposit amount cannot exceed total outstanding.');
+        event.preventDefault();
+        return false;
+    }
+    
+    // Mark as submitting
+    console.log('Short Cash Submit - Proceeding with submission');
     submitBtn.dataset.submitting = 'true';
     submitBtn.disabled = true;
     submitBtn.innerHTML = '<span class="inline-block animate-spin mr-2">⏳</span> Submitting...';

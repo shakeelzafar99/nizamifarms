@@ -97,7 +97,7 @@ class ApprovalController extends Controller
         // Get all pending requests
         $pendingRequests = RequestModel::where('status', 'pending')
             ->with(['category', 'requester', 'paymentSourceAccount', 'createdBy'])
-            ->orderBy('submitted_at', 'asc')
+            ->orderBy('submitted_at', 'desc') // Newest first
             ->get();
             
         // Filter for L1 pending
@@ -109,8 +109,8 @@ class ApprovalController extends Controller
         
         // Get pending ledger transactions (no L1/L2 - just pending)
         $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order'])
-            ->orderBy('transaction_date', 'asc')
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
+            ->orderBy('transaction_date', 'desc') // Newest first
             ->get();
         
         foreach ($pendingLedger as $ledger) {
@@ -120,7 +120,7 @@ class ApprovalController extends Controller
         // Get pending ledger adjustments (L1)
         $pendingAdjustments = LedgerAdjustmentModel::where('adjustment_status', LedgerAdjustmentModel::STATUS_PENDING)
             ->with(['ledger', 'order', 'requestedBy'])
-            ->orderBy('requested_at', 'asc')
+            ->orderBy('requested_at', 'desc') // Newest first
             ->get();
         
         foreach ($pendingAdjustments as $adj) {
@@ -145,7 +145,7 @@ class ApprovalController extends Controller
             ->where('level_1_status', 'approved')
             ->where('level_2_status', 'pending')
             ->with(['category', 'requester', 'paymentSourceAccount', 'createdBy'])
-            ->orderBy('submitted_at', 'asc')
+            ->orderBy('submitted_at', 'desc') // Newest first
             ->get();
         
         foreach ($pendingRequests as $req) {
@@ -158,7 +158,7 @@ class ApprovalController extends Controller
             ->where('level_1_status', LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED)
             ->where('level_2_status', LedgerAdjustmentModel::APPROVAL_STATUS_PENDING)
             ->with(['ledger', 'order', 'requestedBy'])
-            ->orderBy('requested_at', 'asc')
+            ->orderBy('requested_at', 'desc') // Newest first
             ->get();
         
         foreach ($pendingAdjustments as $adj) {
@@ -177,17 +177,29 @@ class ApprovalController extends Controller
         
         // Default to last 30 days if no date provided
         if (!$dateFrom) {
-            $dateFrom = Carbon::now()->subDays(30)->format('Y-m-d');
+            $dateFrom = Carbon::now()->subDays(30)->startOfDay();
+        } else {
+            $dateFrom = Carbon::parse($dateFrom)->startOfDay();
         }
         if (!$dateTo) {
-            $dateTo = Carbon::now()->format('Y-m-d');
+            $dateTo = Carbon::now()->endOfDay();
+        } else {
+            $dateTo = Carbon::parse($dateTo)->endOfDay();
         }
         
         // Approved requests
+        // Use COALESCE to handle cases where completed_at might be NULL
         $approvedRequests = RequestModel::where('status', 'approved')
-            ->whereBetween('completed_at', [$dateFrom, $dateTo])
+            ->where(function($query) use ($dateFrom, $dateTo) {
+                $query->whereBetween('completed_at', [$dateFrom, $dateTo])
+                      ->orWhere(function($q) use ($dateFrom, $dateTo) {
+                          $q->whereNull('completed_at')
+                            ->whereBetween('updated_at', [$dateFrom, $dateTo]);
+                      });
+            })
             ->with(['category', 'requester', 'paymentSourceAccount', 'createdBy'])
             ->orderBy('completed_at', 'desc')
+            ->orderBy('updated_at', 'desc')
             ->get();
         
         foreach ($approvedRequests as $req) {
@@ -197,7 +209,7 @@ class ApprovalController extends Controller
         // Approved ledger transactions
         $approvedLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_APPROVED)
             ->whereBetween('approval_date', [$dateFrom, $dateTo])
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order'])
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('approval_date', 'desc')
             ->get();
         
@@ -237,7 +249,7 @@ class ApprovalController extends Controller
         // Rejected ledger transactions
         $rejectedLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_REJECTED)
             ->whereBetween('updated_at', [$dateFrom, $dateTo])
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order'])
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('updated_at', 'desc')
             ->get();
         
@@ -282,8 +294,45 @@ class ApprovalController extends Controller
         $area = $this->determineLedgerArea($ledger, $expFundAccount, $nfCashAccount, $onlineAccount);
         
         $title = $ledger->description;
+        $description = $ledger->description;
+        
+        // For invoices, create a detailed title and description
         if ($ledger->order) {
             $title = "Invoice #{$ledger->order->order_number}";
+            
+            // Add customer name and order date to description for better context
+            $customerName = 'Unknown Customer';
+            if ($ledger->order->customer) {
+                // Use the full_name accessor (getFullNameAttribute)
+                $fullName = trim($ledger->order->customer->full_name ?? '');
+                $customerName = $fullName ?: 
+                               $ledger->order->customer->company ?: 
+                               $ledger->order->customer->phone ?: 
+                               'Unknown Customer';
+            }
+            $orderDate = $ledger->order->order_date ? $ledger->order->order_date->format('M d, Y') : 'Unknown Date';
+            $description = "Invoice #{$ledger->order->order_number} - {$customerName} ({$orderDate}) - " . $ledger->description;
+        }
+        
+        // Determine requester name based on transaction type
+        $requester = 'System';
+        if ($ledger->transaction_type === \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT) {
+            // For employee deposits, show the employee name (from_account)
+            $requester = $ledger->fromAccount ? $ledger->fromAccount->account_name : 'Unknown';
+        } elseif ($ledger->transaction_type === \App\Models\FIN\LedgerModel::TYPE_INVOICE && $ledger->order) {
+            // For invoices, show the customer name (use full_name accessor, company, or phone as fallback)
+            if ($ledger->order->customer) {
+                $fullName = trim($ledger->order->customer->full_name ?? '');
+                $requester = $fullName ?: 
+                            $ledger->order->customer->company ?: 
+                            $ledger->order->customer->phone ?: 
+                            'Unknown';
+            } else {
+                $requester = 'Unknown';
+            }
+        } else {
+            // For other types, show the person who created it
+            $requester = $ledger->createdBy ? $ledger->createdBy->fullname : 'System';
         }
         
         return [
@@ -292,9 +341,9 @@ class ApprovalController extends Controller
             'number' => "TXN-{$ledger->id}",
             'category' => ucfirst(str_replace('_', ' ', $ledger->transaction_type)),
             'category_code' => $ledger->transaction_type,
-            'requester' => $ledger->createdBy ? $ledger->createdBy->fullname : 'System',
+            'requester' => $requester,
             'title' => $title,
-            'description' => $ledger->description,
+            'description' => $description,
             'amount' => $ledger->amount ?? 0,
             'leave_days' => 0,
             'date' => $ledger->transaction_date,
@@ -344,6 +393,13 @@ class ApprovalController extends Controller
             }
             if ($onlineAccount && $request->payment_source_account_id == $onlineAccount->id) {
                 return self::AREA_ONLINE;
+            }
+            
+            // Check if payment source is an employee cash account (e.g., Waseem's account)
+            // These should be categorized as NF_CASH area
+            if ($request->paymentSourceAccount && 
+                $request->paymentSourceAccount->account_category === 'employee_cash') {
+                return self::AREA_NF_CASH;
             }
         }
         

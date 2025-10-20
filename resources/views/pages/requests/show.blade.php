@@ -62,10 +62,12 @@
                         @endif
                     </div>
                     
+                    @if($request->submitted_at)
                     <div>
                         <label class="text-sm font-semibold text-gray-700">Submitted</label>
                         <p class="text-base mt-1">{{ $request->submitted_at->format('Y-m-d H:i') }}</p>
                     </div>
+                    @endif
                     
                     @if($request->completed_at)
                     <div>

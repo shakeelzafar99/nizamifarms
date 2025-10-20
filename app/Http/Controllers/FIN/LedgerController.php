@@ -478,6 +478,32 @@ class LedgerController extends Controller
                     
                     $this->processInvoiceSettlement($ledger, $settlementData);
                     
+                    // Check if this is a short cash settlement with linked expense request
+                    if (isset($settlementData['is_short_cash_settlement']) && 
+                        $settlementData['is_short_cash_settlement'] && 
+                        isset($settlementData['expense_request_id'])) {
+                        
+                        $expenseRequestId = $settlementData['expense_request_id'];
+                        
+                        \Log::info("Auto-approving linked short cash expense", [
+                            'deposit_id' => $ledger->id,
+                            'expense_request_id' => $expenseRequestId
+                        ]);
+                        
+                        // Auto-approve the linked expense request
+                        $expenseRequest = \App\Models\Request\RequestModel::find($expenseRequestId);
+                        
+                        if ($expenseRequest && $expenseRequest->status === 'pending') {
+                            // Process the approval (level, approverId, action, comments)
+                            $expenseRequest->processApproval(1, auth()->id(), 'approved', 'Auto-approved with deposit settlement');
+                            
+                            \Log::info("Short cash expense auto-approved", [
+                                'expense_request_id' => $expenseRequestId,
+                                'amount' => $expenseRequest->amount
+                            ]);
+                        }
+                    }
+                    
                     // Clean up session if it was used
                     \Session::forget("settlement_pending_{$ledger->id}");
                 } else {
@@ -568,13 +594,28 @@ class LedgerController extends Controller
             $depositAmount = $settlementData['deposit_amount'];
             $totalOutstanding = $settlementData['total_outstanding'];
             
+            // Check if this is a short cash settlement
+            $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
+            $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
+            
+            // For short cash, the total amount settling invoices = deposit + expense
+            $totalSettlementAmount = $isShortCash ? ($depositAmount + $shortCashAmount) : $depositAmount;
+            
+            \Log::info("Processing invoice settlement", [
+                'deposit_id' => $depositLedger->id,
+                'is_short_cash' => $isShortCash,
+                'deposit_amount' => $depositAmount,
+                'short_cash_amount' => $shortCashAmount,
+                'total_settlement_amount' => $totalSettlementAmount
+            ]);
+            
             // Get the invoices that need to be settled (in order)
             $invoices = LedgerModel::whereIn('id', $invoiceIds)
                 ->where('settlement_status', 'open')
                 ->orderBy('transaction_date', 'asc')
                 ->get();
             
-            $remainingAmount = $depositAmount;
+            $remainingAmount = $totalSettlementAmount;
             
             foreach ($invoices as $invoice) {
                 $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
@@ -607,11 +648,13 @@ class LedgerController extends Controller
                 $remainingAmount -= $amountToSettle;
             }
             
-            \Log::info("Invoice settlement processed", [
+            \Log::info("Invoice settlement completed", [
                 'deposit_id' => $depositLedger->id,
                 'invoices_count' => $invoices->count(),
-                'amount_allocated' => $depositAmount - $remainingAmount,
-                'amount_remaining' => $remainingAmount
+                'total_settlement_amount' => $totalSettlementAmount,
+                'amount_allocated' => $totalSettlementAmount - $remainingAmount,
+                'amount_remaining' => $remainingAmount,
+                'is_short_cash' => $isShortCash
             ]);
             
         } catch (\Exception $e) {

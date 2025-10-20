@@ -1214,6 +1214,178 @@ class EmployeeCashController extends Controller
     }
 
     /**
+     * Record short cash settlement (deposit + expense for shortage)
+     */
+    public function recordShortCashSettlement(Request $request, $id)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'destination_account_id' => 'nullable|exists:t_fin_accounts,id',
+            'description' => 'nullable|string|max:500',
+            'transaction_date' => 'required|date',
+            'invoice_ids' => 'required|array|min:1',
+            'invoice_ids.*' => 'exists:t_fin_ledger,id',
+            'expense_category' => 'nullable|string|max:100' // Optional - only required if there's shortage
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $employeeAccount = AccountModel::findOrFail($id);
+            
+            // Get destination account
+            if ($request->destination_account_id) {
+                $destinationAccount = AccountModel::findOrFail($request->destination_account_id);
+            } else {
+                $destinationAccount = ConfigModel::getNFCashAccount();
+            }
+
+            if (!$destinationAccount) {
+                throw new \Exception("Destination account not found");
+            }
+
+            // Verify selected invoices belong to this rider and are open
+            $selectedInvoices = LedgerModel::whereIn('id', $request->invoice_ids)
+                ->where('to_account_id', $employeeAccount->id)
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('settlement_status', 'open')
+                ->orderBy('transaction_date', 'asc')
+                ->get();
+
+            if ($selectedInvoices->count() !== count($request->invoice_ids)) {
+                throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Calculate expected amount and shortage
+            $totalOutstanding = $selectedInvoices->sum(function($invoice) {
+                return $invoice->amount - ($invoice->settled_amount ?? 0);
+            });
+
+            $depositAmount = $request->amount;
+            $shortCashAmount = $totalOutstanding - $depositAmount;
+
+            if ($shortCashAmount < 0) {
+                throw new \Exception("Deposit amount cannot exceed total outstanding");
+            }
+
+            // Handle both full payment (no shortage) and short cash (with shortage)
+            $expenseRequest = null;
+            if ($shortCashAmount > 0) {
+                // Only create expense request if there's actual shortage
+                $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
+                
+                if (!$category) {
+                    throw new \Exception("Expense category not found in system. Please contact administrator.");
+                }
+                
+                // Validate expense category is provided when there's shortage
+                if (!$request->expense_category) {
+                    throw new \Exception("Expense category is required when there is a shortage.");
+                }
+                
+                $expenseRequest = \App\Models\Request\RequestModel::create([
+                    'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
+                    'category_id' => $category->id,
+                    'requester_user_id' => $employeeAccount->user_id,
+                    'title' => "Short Cash - {$request->expense_category}",
+                    'amount' => $shortCashAmount,
+                    'expense_category' => $request->expense_category,
+                    'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
+                    'payment_source_account_id' => $employeeAccount->id, // From rider's balance
+                    'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
+                    'settlement_status' => 'pending', // Needs settlement - deduct from rider balance
+                    'requires_level_1' => $category->requiresLevel1(),
+                    'requires_level_2' => $category->requiresLevel2(),
+                    'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                    'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                    'submitted_at' => now(),
+                    'created_by' => auth()->id(),
+                ]);
+            }
+
+            // Build description with invoice numbers
+            $invoiceNumbers = $selectedInvoices->map(function($invoice) {
+                return $invoice->order ? $invoice->order->order_number : "Invoice #" . $invoice->id;
+            })->take(3)->join(', ');
+            
+            if ($selectedInvoices->count() > 3) {
+                $invoiceNumbers .= " + " . ($selectedInvoices->count() - 3) . " more";
+            }
+
+            // Build description based on whether there's shortage or not
+            if ($shortCashAmount > 0) {
+                // Short cash settlement
+                $description = "Short Cash Settlement: {$invoiceNumbers} - Deposit Rs. " . number_format($depositAmount, 2) . ", Expense Rs. " . number_format($shortCashAmount, 2) . " ({$request->expense_category})";
+                $comments = "Short cash settlement for {$selectedInvoices->count()} invoice(s). Total outstanding: Rs. " . number_format($totalOutstanding, 2) . ". Deposit: Rs. " . number_format($depositAmount, 2) . ". Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2);
+            } else {
+                // Full payment settlement
+                $description = "Settlement for invoices: {$invoiceNumbers}";
+                $comments = "Full payment settlement for {$selectedInvoices->count()} invoice(s). Total: Rs. " . number_format($totalOutstanding, 2);
+            }
+            
+            if ($request->description) {
+                $description .= " - {$request->description}";
+            }
+
+            // Create DEPOSIT TRANSACTION (pending approval)
+            // Store settlement metadata
+            $settlementMetadata = [
+                'invoice_ids' => $request->invoice_ids,
+                'deposit_amount' => $depositAmount,
+                'total_outstanding' => $totalOutstanding,
+            ];
+            
+            // Add short cash details if applicable
+            if ($shortCashAmount > 0 && $expenseRequest) {
+                $settlementMetadata['short_cash_amount'] = $shortCashAmount;
+                $settlementMetadata['expense_category'] = $request->expense_category;
+                $settlementMetadata['expense_request_id'] = $expenseRequest->id;
+                $settlementMetadata['is_short_cash_settlement'] = true;
+            }
+            
+            $depositLedger = LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => LedgerModel::TYPE_EMPLOYEE_DEPOSIT,
+                'description' => $description,
+                'from_account_id' => $employeeAccount->id,
+                'to_account_id' => $destinationAccount->id,
+                'amount' => $depositAmount,
+                'mode' => LedgerModel::MODE_CASH,
+                'approval_status' => LedgerModel::STATUS_PENDING,
+                'approval_date' => null,
+                'approved_by' => null,
+                'created_by' => auth()->id(),
+                'comments' => $comments,
+                'settlement_metadata' => $settlementMetadata
+            ]);
+
+            DB::commit();
+
+            // Build success message based on settlement type
+            if ($shortCashAmount > 0) {
+                $message = "Short cash settlement recorded and pending approval! ";
+                $message .= "Deposit: Rs. " . number_format($depositAmount, 2) . ", ";
+                $message .= "Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2) . ". ";
+                $message .= "Both transactions will be processed together upon manager approval.";
+            } else {
+                $message = "Settlement recorded and pending approval! ";
+                $message .= "Amount: Rs. " . number_format($depositAmount, 2) . " for {$selectedInvoices->count()} invoice(s). ";
+                $message .= "Balances will update after manager approval.";
+            }
+
+            return redirect()->route('fin.employee.show', $employeeAccount->id)
+                           ->with('success', $message);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error recording short cash settlement: " . $e->getMessage());
+            
+            return back()->withInput()
+                       ->with('error', 'Error recording short cash settlement: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Manager view: All outstanding invoices across all riders
      */
     public function allOutstandingInvoices(Request $request)
@@ -1351,8 +1523,31 @@ class EmployeeCashController extends Controller
                         return $invoice->settled_at ? $invoice->settled_at->format('Y-m-d') : 'Unknown';
                     })->map(function($dayInvoices) {
                         $dayTotal = $dayInvoices->sum('settled_amount');
+                        
+                        // Add settlement breakdown for each invoice
+                        $invoicesWithBreakdown = $dayInvoices->map(function($invoice) {
+                            // Get settlement breakdown (if settled via short cash)
+                            $settlementBreakdown = null;
+                            $settlementDeposit = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                                ->where('approval_status', LedgerModel::STATUS_APPROVED)
+                                ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id)
+                                ->first();
+                            
+                            if ($settlementDeposit && isset($settlementDeposit->settlement_metadata['is_short_cash_settlement'])) {
+                                $metadata = $settlementDeposit->settlement_metadata;
+                                $settlementBreakdown = [
+                                    'deposit_amount' => $metadata['deposit_amount'] ?? 0,
+                                    'expense_amount' => $metadata['short_cash_amount'] ?? 0,
+                                    'expense_category' => $metadata['expense_category'] ?? 'Unknown'
+                                ];
+                            }
+                            
+                            $invoice->settlement_breakdown = $settlementBreakdown;
+                            return $invoice;
+                        });
+                        
                         return [
-                            'invoices' => $dayInvoices,
+                            'invoices' => $invoicesWithBreakdown,
                             'day_total' => $dayTotal,
                             'count' => $dayInvoices->count()
                         ];
@@ -1367,6 +1562,25 @@ class EmployeeCashController extends Controller
                         $isPendingApproval = isset($invoiceToPendingSettlement[$invoice->id]);
                         $pendingSettlementId = $isPendingApproval ? $invoiceToPendingSettlement[$invoice->id] : null;
                         
+                        // Get settlement breakdown (if settled via short cash)
+                        $settlementBreakdown = null;
+                        if ($invoice->settlement_status === 'settled' && $invoice->settled_at) {
+                            // Find the deposit transaction that settled this invoice
+                            $settlementDeposit = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                                ->where('approval_status', LedgerModel::STATUS_APPROVED)
+                                ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id)
+                                ->first();
+                            
+                            if ($settlementDeposit && isset($settlementDeposit->settlement_metadata['is_short_cash_settlement'])) {
+                                $metadata = $settlementDeposit->settlement_metadata;
+                                $settlementBreakdown = [
+                                    'deposit_amount' => $metadata['deposit_amount'] ?? 0,
+                                    'expense_amount' => $metadata['short_cash_amount'] ?? 0,
+                                    'expense_category' => $metadata['expense_category'] ?? 'Unknown'
+                                ];
+                            }
+                        }
+                        
                         return [
                             'id' => $invoice->id,
                             'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
@@ -1378,7 +1592,8 @@ class EmployeeCashController extends Controller
                             'settled_amount' => $invoice->settled_amount ?? 0,
                             'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0),
                             'settlement_status' => $invoice->settlement_status,
-                            'settled_at' => $invoice->settled_at
+                            'settled_at' => $invoice->settled_at,
+                            'settlement_breakdown' => $settlementBreakdown
                         ];
                     }),
                     'total_outstanding' => $totalOutstanding,
