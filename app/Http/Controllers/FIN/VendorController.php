@@ -76,11 +76,14 @@ class VendorController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'vendor_name' => 'required|string|max:255',
+            'vendor_name' => ['required', 'string', 'max:255', 'regex:/^[a-zA-Z0-9\s\-\_\.\(\)]+$/'],
             'contact_person' => 'nullable|string|max:255',
             'contact_email' => 'nullable|email|max:255',
             'contact_phone' => 'nullable|string|max:50',
+            'default_purchase_method' => 'required|in:by_weight,by_total',
             'opening_balance' => 'nullable|numeric|min:0'
+        ], [
+            'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
         ]);
 
         try {
@@ -123,6 +126,7 @@ class VendorController extends Controller
                 'contact_person' => $request->contact_person,
                 'contact_phone' => $request->contact_phone,
                 'contact_email' => $request->contact_email,
+                'default_purchase_method' => $request->default_purchase_method,
                 'account_id' => $account->id,
                 'is_active' => 1,
                 'created_by' => auth()->id()
@@ -196,10 +200,13 @@ class VendorController extends Controller
     public function update(Request $request, $id)
     {
         $request->validate([
-            'vendor_name' => 'required|string|max:255',
-            'vendor_contact' => 'nullable|string|max:255',
-            'vendor_email' => 'nullable|email|max:255',
-            'vendor_phone' => 'nullable|string|max:50'
+            'vendor_name' => ['required', 'string', 'max:255', 'regex:/^[a-zA-Z0-9\s\-\_\.\(\)]+$/'],
+            'contact_person' => 'nullable|string|max:255',
+            'contact_email' => 'nullable|email|max:255',
+            'contact_phone' => 'nullable|string|max:50',
+            'default_purchase_method' => 'required|in:by_weight,by_total'
+        ], [
+            'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
         ]);
 
         try {
@@ -207,13 +214,14 @@ class VendorController extends Controller
 
             $vendor->update([
                 'vendor_name' => $request->vendor_name,
-                'vendor_contact' => $request->vendor_contact,
-                'vendor_email' => $request->vendor_email,
-                'vendor_phone' => $request->vendor_phone,
+                'contact_person' => $request->contact_person,
+                'contact_phone' => $request->contact_phone,
+                'contact_email' => $request->contact_email,
+                'default_purchase_method' => $request->default_purchase_method,
                 'updated_by' => auth()->id()
             ]);
 
-            return redirect()->route('fin.vendors.show', $vendor->id)
+            return redirect()->route('fin.vendors.index')
                            ->with('success', 'Vendor updated successfully!');
 
         } catch (\Exception $e) {
@@ -225,7 +233,7 @@ class VendorController extends Controller
     }
 
     /**
-     * Toggle vendor active status
+     * Toggle vendor active/inactive status
      */
     public function toggleStatus($id)
     {
@@ -236,15 +244,76 @@ class VendorController extends Controller
             $vendor->updated_by = auth()->id();
             $vendor->save();
 
-            $status = $vendor->is_active ? 'activated' : 'deactivated';
-
-            return redirect()->route('fin.vendors.index')
-                           ->with('success', "Vendor {$status} successfully!");
+            return response()->json([
+                'success' => true,
+                'message' => 'Vendor status updated successfully',
+                'is_active' => $vendor->is_active
+            ]);
 
         } catch (\Exception $e) {
-            Log::error("Error toggling vendor status: " . $e->getMessage());
+            Log::error('Vendor toggle status error: ' . $e->getMessage());
             
-            return back()->with('error', 'Error updating vendor status: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update vendor status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete vendor (only if balance is zero)
+     */
+    public function destroy($id)
+    {
+        try {
+            $vendor = VendorModel::with('account')->findOrFail($id);
+
+            // Safety check: Only allow deletion if balance is zero
+            if ($vendor->account && $vendor->account->current_balance != 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete vendor with non-zero balance. Current balance: Rs. ' . number_format($vendor->account->current_balance, 2)
+                ], 400);
+            }
+
+            // Check if there are any ledger transactions
+            $hasTransactions = LedgerModel::where(function($q) use ($vendor) {
+                $q->where('from_account_id', $vendor->account_id)
+                  ->orWhere('to_account_id', $vendor->account_id);
+            })->exists();
+
+            if ($hasTransactions) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete vendor with transaction history. Consider marking as inactive instead.'
+                ], 400);
+            }
+
+            DB::beginTransaction();
+
+            // Delete the vendor account
+            if ($vendor->account) {
+                $vendor->account->delete();
+            }
+
+            // Delete the vendor
+            $vendor->delete();
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Vendor deleted successfully'
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Vendor deletion error: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete vendor: ' . $e->getMessage()
+            ], 500);
         }
     }
 
@@ -256,7 +325,8 @@ class VendorController extends Controller
         $request->validate([
             'amount' => 'required|numeric|min:0.01',
             'description' => 'required|string|max:500',
-            'transaction_date' => 'required|date'
+            'transaction_date' => 'required|date',
+            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Max 5MB
         ]);
 
         try {
@@ -269,6 +339,14 @@ class VendorController extends Controller
                 throw new \Exception("Purchase expense account not found");
             }
 
+            // Handle bill image upload
+            $billImagePath = null;
+            if ($request->hasFile('bill_image')) {
+                $file = $request->file('bill_image');
+                $filename = 'vendor_' . $vendor->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
+            }
+
             // Create ledger entry
             LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
@@ -279,6 +357,7 @@ class VendorController extends Controller
                 'amount' => $request->amount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
+                'bill_image' => $billImagePath,
                 'created_by' => auth()->id()
             ]);
 
@@ -396,6 +475,7 @@ class VendorController extends Controller
         $request->validate([
             'transaction_date' => 'required|date',
             'description' => 'nullable|string|max:500',
+            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // Max 5MB
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:t_fin_vendor_products,id',
             'items.*.quantity' => 'required|numeric|min:0.001',
@@ -412,6 +492,18 @@ class VendorController extends Controller
 
             if (!$purchaseAccount) {
                 throw new \Exception("Purchase expense account not found");
+            }
+
+            // Handle bill image upload
+            $billImagePath = null;
+            if ($request->hasFile('bill_image')) {
+                Log::info('Bill image file detected in weighted purchase');
+                $file = $request->file('bill_image');
+                $filename = 'vendor_' . $vendor->id . '_weighted_' . time() . '.' . $file->getClientOriginalExtension();
+                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
+                Log::info('Bill image saved to: ' . $billImagePath);
+            } else {
+                Log::info('No bill image file in weighted purchase request');
             }
 
             // Calculate grand total from line items
@@ -439,6 +531,7 @@ class VendorController extends Controller
                 'amount' => $grandTotal,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
+                'bill_image' => $billImagePath,
                 'created_by' => auth()->id(),
                 'comments' => $comments
             ]);

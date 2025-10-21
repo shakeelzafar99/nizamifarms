@@ -25,6 +25,7 @@ class VendorModel extends BaseModel
         'address',
         'payment_terms',
         'account_id',
+        'default_purchase_method',
         'is_active',
         'notes',
         'created_by',

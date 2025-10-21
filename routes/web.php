@@ -325,6 +325,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show'])->name('show');
             Route::get('/{id}/edit', [\App\Http\Controllers\FIN\VendorController::class, 'edit'])->name('edit');
             Route::put('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'update'])->name('update');
+            Route::delete('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'destroy'])->name('destroy');
             Route::post('/{id}/toggle-status', [\App\Http\Controllers\FIN\VendorController::class, 'toggleStatus'])->name('toggle-status');
             Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase'])->name('purchase');
             Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment'])->name('payment');
@@ -364,6 +365,8 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'createTransfer'])->name('transfer');
             Route::post('/transfer', [\App\Http\Controllers\FIN\LedgerController::class, 'storeTransfer'])->name('transfer.store');
             Route::get('/approval-details/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getApprovalDetails'])->name('approval-details');
+            Route::get('/transaction/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getTransactionDetails'])->name('transaction');
+            Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\LedgerController::class, 'updateTransaction'])->name('transaction.update');
             Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'show'])->name('show');
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');

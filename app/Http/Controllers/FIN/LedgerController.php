@@ -698,5 +698,136 @@ class LedgerController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Get transaction details for viewing
+     */
+    public function getTransactionDetails($id)
+    {
+        try {
+            $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy'])
+                ->findOrFail($id);
+
+            // Fetch line items if this is a weighted purchase
+            $lineItems = [];
+            if ($transaction->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE) {
+                $lineItems = \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'product_name' => $item->product_name,
+                            'quantity' => $item->quantity,
+                            'unit' => $item->unit,
+                            'rate_per_unit' => $item->rate_per_unit,
+                            'line_total' => $item->line_total
+                        ];
+                    })
+                    ->toArray();
+            }
+
+            return response()->json([
+                'success' => true,
+                'transaction' => [
+                    'id' => $transaction->id,
+                    'transaction_date' => $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-',
+                    'transaction_type' => ucfirst(str_replace('_', ' ', $transaction->transaction_type)),
+                    'description' => $transaction->description,
+                    'amount' => $transaction->amount,
+                    'bill_image' => $transaction->bill_image,
+                    'line_items' => $lineItems,
+                    'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : '-',
+                    'to_account' => $transaction->toAccount ? $transaction->toAccount->account_name : '-',
+                    'created_by' => $transaction->createdBy ? $transaction->createdBy->name : '-',
+                    'created_at' => $transaction->created_at ? $transaction->created_at->format('M j, Y g:i A') : '-',
+                ]
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Error getting transaction details: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error loading transaction details'
+            ], 500);
+        }
+    }
+
+    /**
+     * Update transaction details
+     */
+    public function updateTransaction(Request $request, $id)
+    {
+        $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'description' => 'nullable|string|max:500',
+            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Max 5MB
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $transaction = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+            
+            // Only allow editing of vendor purchases and payments
+            if (!in_array($transaction->transaction_type, [
+                LedgerModel::TYPE_VENDOR_PURCHASE,
+                LedgerModel::TYPE_VENDOR_PAYMENT
+            ])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only vendor transactions can be edited'
+                ], 400);
+            }
+
+            $oldAmount = $transaction->amount;
+            $newAmount = $request->amount;
+            $amountDifference = $newAmount - $oldAmount;
+
+            // Handle bill image upload
+            if ($request->hasFile('bill_image')) {
+                // Delete old image if exists
+                if ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
+                    \Storage::disk('public')->delete($transaction->bill_image);
+                }
+                
+                $file = $request->file('bill_image');
+                $filename = 'vendor_' . time() . '_edit.' . $file->getClientOriginalExtension();
+                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
+                $transaction->bill_image = $billImagePath;
+            }
+
+            // Update transaction
+            $transaction->amount = $newAmount;
+            $transaction->description = $request->description ?? $transaction->description;
+            $transaction->updated_by = auth()->id();
+            $transaction->save();
+
+            // Update account balances if amount changed
+            if ($amountDifference != 0) {
+                if ($transaction->fromAccount) {
+                    $transaction->fromAccount->current_balance += $amountDifference;
+                    $transaction->fromAccount->save();
+                }
+                
+                if ($transaction->toAccount) {
+                    $transaction->toAccount->current_balance += $amountDifference;
+                    $transaction->toAccount->save();
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Transaction updated successfully'
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error updating transaction: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error updating transaction: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 }
 

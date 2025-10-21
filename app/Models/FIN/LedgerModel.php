@@ -41,6 +41,7 @@ class LedgerModel extends BaseModel
         'device',
         'comments',
         'settlement_metadata',
+        'bill_image',
         'created_by',
         'updated_by'
     ];
