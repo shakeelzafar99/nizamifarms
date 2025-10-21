@@ -582,8 +582,22 @@ class OrderModel extends BaseModel
             ),
             'note' => $shopifyOrder['note'] ?? null,  // Order notes already captured here
             
-            // Line items
-            'line_items' => array_map([static::class, 'mapShopifyLineItem'], $shopifyOrder['line_items'] ?? [])
+            // Line items - Filter out tip line items and items without SKU
+            // Shopify sends tips as BOTH an order-level field (tip_amount) AND a line item
+            // We only need the order-level field, so exclude tip line items here
+            'line_items' => array_values(array_filter(array_map(
+                [static::class, 'mapShopifyLineItem'], 
+                array_filter($shopifyOrder['line_items'] ?? [], function($item) {
+                    // Exclude tip line items - they're captured at order level in tip_amount field
+                    $name = strtolower(trim($item['name'] ?? ''));
+                    $isTip = in_array($name, ['tip', 'tips', 'gratuity']);
+                    
+                    // Also exclude items without SKU (invalid products)
+                    $hasSku = !empty($item['sku']);
+                    
+                    return !$isTip && $hasSku;
+                })
+            )))
         ];
 
         return $orderData;
@@ -645,6 +659,22 @@ class OrderModel extends BaseModel
 
     private static function mapShopifyLineItem(array $item): array
     {
+        // Safety check: Skip tip line items (should already be filtered, but just in case)
+        // This prevents tip line items from breaking the conversion process
+        $name = strtolower(trim($item['name'] ?? ''));
+        if (in_array($name, ['tip', 'tips', 'gratuity'])) {
+            return null;  // Will be filtered out by array_filter
+        }
+        
+        // Safety check: Skip items without SKU
+        if (empty($item['sku'])) {
+            \Log::warning('Shopify line item without SKU skipped', [
+                'item_name' => $item['name'] ?? 'Unknown',
+                'item_id' => $item['id'] ?? null
+            ]);
+            return null;  // Will be filtered out by array_filter
+        }
+        
         return [
             'external_line_item_id' => (string)$item['id'],
             'product_id' => $item['product_id'] ?? null,

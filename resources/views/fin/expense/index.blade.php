@@ -486,20 +486,29 @@
 @endsection
 
 <!-- Settlement Modal (Portalized outside content to avoid clipping) -->
-<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
-        <div class="p-6">
-            <div class="flex justify-between items-center mb-4">
+<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto" style="z-index: 9999;" onclick="closeSettlementModal()">
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full my-8" onclick="event.stopPropagation()">
+        <!-- Fixed Header -->
+        <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 rounded-t-lg z-10">
+            <div class="flex justify-between items-center">
                 <h2 class="text-lg font-semibold text-gray-800">⚙️ Settle Expense</h2>
                 <button onclick="closeSettlementModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
             </div>
-            
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div class="px-6 py-4 max-h-[calc(90vh-180px)] overflow-y-auto">
             <div id="settlementModalContent">
                 <div class="text-center py-8">
                     <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
                     <p class="mt-4 text-gray-600">Loading settlement details...</p>
                 </div>
             </div>
+        </div>
+        
+        <!-- Fixed Footer for Action Buttons (will be populated by JavaScript) -->
+        <div id="settlementModalFooter" class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 rounded-b-lg">
+            <!-- Buttons will be injected here by JavaScript -->
         </div>
     </div>
 </div>
@@ -566,6 +575,10 @@ async function openSettlementModal(expenseId) {
     // Force remove hidden class and make visible
     modal.classList.remove('hidden');
     modal.style.display = 'flex'; // Force display
+    
+    // Prevent body scroll when modal is open
+    document.body.style.overflow = 'hidden';
+    
     console.log('Modal classes after opening:', modal.className);
     console.log('Modal display style:', modal.style.display);
     console.log('Modal computed display:', window.getComputedStyle(modal).display);
@@ -674,20 +687,23 @@ async function openSettlementModal(expenseId) {
                             <li>• Create audit trail with your username & timestamp</li>
                         </ul>
                     </div>
-
-                    <!-- Action Buttons -->
-                    <div class="flex gap-3 mt-6">
-                        <button onclick="closeSettlementModal()" 
-                                class="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
-                            Cancel
-                        </button>
-                        <button onclick="confirmSettlement(${expenseId})" 
-                                class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium">
-                            ✅ Confirm Settlement
-                        </button>
-                    </div>
                 </div>
             `;
+            
+            // Set footer buttons
+            document.getElementById('settlementModalFooter').innerHTML = `
+                <div class="flex gap-3">
+                    <button onclick="closeSettlementModal()" 
+                            class="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 font-medium">
+                        Cancel
+                    </button>
+                    <button onclick="confirmSettlement(${expenseId})" 
+                            class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium">
+                        ✅ Confirm Settlement
+                    </button>
+                </div>
+            `;
+            
             console.log('Modal content set successfully. Modal should be visible now.');
         } else {
             console.error('Result success was false:', result);
@@ -699,14 +715,39 @@ async function openSettlementModal(expenseId) {
             <div class="text-center py-8 text-red-600">
                 <p>❌ Error loading expense details.</p>
                 <p class="text-sm mt-2">${error.message}</p>
-                <button onclick="closeSettlementModal()" class="mt-4 px-4 py-2 bg-gray-200 rounded">Close</button>
+            </div>
+        `;
+        
+        // Set footer with close button for error state
+        document.getElementById('settlementModalFooter').innerHTML = `
+            <div class="flex justify-center">
+                <button onclick="closeSettlementModal()" 
+                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-md font-medium">
+                    Close
+                </button>
             </div>
         `;
     }
 }
 
 function closeSettlementModal() {
-    document.getElementById('settlementModal').classList.add('hidden');
+    const modal = document.getElementById('settlementModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none'; // Ensure display is set to none
+    
+    // Reset modal content to loading state
+    document.getElementById('settlementModalContent').innerHTML = `
+        <div class="text-center py-8">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p class="mt-4 text-gray-600">Loading settlement details...</p>
+        </div>
+    `;
+    
+    // Clear footer
+    document.getElementById('settlementModalFooter').innerHTML = '';
+    
+    // Re-enable body scroll
+    document.body.style.overflow = 'auto';
 }
 
 // Confirm settlement

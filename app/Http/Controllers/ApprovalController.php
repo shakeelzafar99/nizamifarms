@@ -108,7 +108,9 @@ class ApprovalController extends Controller
         }
         
         // Get pending ledger transactions (no L1/L2 - just pending)
+        // IMPORTANT: Exclude ledger entries that are linked to requests (to avoid duplicates)
         $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)
+            ->whereNull('request_id')  // Only show ledger entries NOT linked to requests
             ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('transaction_date', 'desc') // Newest first
             ->get();
@@ -207,8 +209,11 @@ class ApprovalController extends Controller
         }
         
         // Approved ledger transactions
+        // IMPORTANT: Exclude ledger entries that are linked to requests (to avoid duplicates)
+        // Those will already show up via the request itself
         $approvedLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_APPROVED)
             ->whereBetween('approval_date', [$dateFrom, $dateTo])
+            ->whereNull('request_id')  // Only show ledger entries NOT linked to requests
             ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('approval_date', 'desc')
             ->get();
@@ -216,6 +221,14 @@ class ApprovalController extends Controller
         foreach ($approvedLedger as $ledger) {
             $items[] = $this->formatLedgerItem($ledger, null, null, null, 'approved');
         }
+        
+        // Sort all items together by date (newest first)
+        // This ensures requests and ledger transactions are mixed and sorted by actual date
+        usort($items, function($a, $b) {
+            $dateA = strtotime($a['date'] ?? '1970-01-01 00:00:00');
+            $dateB = strtotime($b['date'] ?? '1970-01-01 00:00:00');
+            return $dateB - $dateA;  // Descending order (newest first)
+        });
         
         return $items;
     }
@@ -247,8 +260,10 @@ class ApprovalController extends Controller
         }
         
         // Rejected ledger transactions
+        // IMPORTANT: Exclude ledger entries that are linked to requests (to avoid duplicates)
         $rejectedLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_REJECTED)
             ->whereBetween('updated_at', [$dateFrom, $dateTo])
+            ->whereNull('request_id')  // Only show ledger entries NOT linked to requests
             ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('updated_at', 'desc')
             ->get();
@@ -256,6 +271,13 @@ class ApprovalController extends Controller
         foreach ($rejectedLedger as $ledger) {
             $items[] = $this->formatLedgerItem($ledger, null, null, null, 'rejected');
         }
+        
+        // Sort all items together by date (newest first)
+        usort($items, function($a, $b) {
+            $dateA = strtotime($a['date'] ?? '1970-01-01 00:00:00');
+            $dateB = strtotime($b['date'] ?? '1970-01-01 00:00:00');
+            return $dateB - $dateA;  // Descending order (newest first)
+        });
         
         return $items;
     }
