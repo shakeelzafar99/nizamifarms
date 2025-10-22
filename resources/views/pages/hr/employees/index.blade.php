@@ -18,6 +18,12 @@
 
                     <!-- Right: Buttons -->
                     <div class="flex gap-2">
+                        <a href="{{ route('hr.salary-slips.index') }}" class="kt-btn kt-btn-primary">
+                            <i class="ki-filled ki-file-sheet"></i> Salary Slips
+                        </a>
+                        <a href="{{ route('hr.loans.index') }}" class="kt-btn kt-btn-primary">
+                            <i class="ki-filled ki-bank"></i> Employee Loans
+                        </a>
                         <button onclick="checkMissingProfiles()" class="kt-btn kt-btn-light">
                             <i class="ki-filled ki-information-2"></i> Check Missing Profiles
                         </button>
@@ -45,30 +51,50 @@
                     </button>
                 </div>
 
-                <!-- Statistics Cards -->
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <!-- Statistics Cards - Horizontal Layout -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
                     <div class="kt-card bg-blue-50">
-                        <div class="kt-card-body p-4">
-                            <div class="text-2xl font-bold text-blue-600" id="stat-total">0</div>
-                            <div class="text-sm text-gray-600">Total Employees</div>
+                        <div class="kt-card-body p-3">
+                            <div class="flex items-center gap-3">
+                                <div class="text-3xl">👥</div>
+                                <div class="flex-1">
+                                    <div class="text-xs text-gray-600 uppercase mb-1">Total Employees</div>
+                                    <div class="text-xl font-bold text-blue-600" id="stat-total">0</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="kt-card bg-green-50">
-                        <div class="kt-card-body p-4">
-                            <div class="text-2xl font-bold text-green-600" id="stat-active">0</div>
-                            <div class="text-sm text-gray-600">Active</div>
+                        <div class="kt-card-body p-3">
+                            <div class="flex items-center gap-3">
+                                <div class="text-3xl">✅</div>
+                                <div class="flex-1">
+                                    <div class="text-xs text-gray-600 uppercase mb-1">Active</div>
+                                    <div class="text-xl font-bold text-green-600" id="stat-active">0</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="kt-card bg-orange-50">
-                        <div class="kt-card-body p-4">
-                            <div class="text-2xl font-bold text-orange-600" id="stat-missing">0</div>
-                            <div class="text-sm text-gray-600">Missing Profiles</div>
+                        <div class="kt-card-body p-3">
+                            <div class="flex items-center gap-3">
+                                <div class="text-3xl">⚠️</div>
+                                <div class="flex-1">
+                                    <div class="text-xs text-gray-600 uppercase mb-1">Missing Profiles</div>
+                                    <div class="text-xl font-bold text-orange-600" id="stat-missing">0</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="kt-card bg-purple-50">
-                        <div class="kt-card-body p-4">
-                            <div class="text-2xl font-bold text-purple-600" id="stat-total-salary">PKR 0</div>
-                            <div class="text-sm text-gray-600">Total Monthly Salary</div>
+                        <div class="kt-card-body p-3">
+                            <div class="flex items-center gap-3">
+                                <div class="text-3xl">💰</div>
+                                <div class="flex-1">
+                                    <div class="text-xs text-gray-600 uppercase mb-1">Total Monthly Salary</div>
+                                    <div class="text-xl font-bold text-purple-600" id="stat-total-salary">PKR 0</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -78,7 +104,7 @@
                     <table class="kt-table text-sm kt-table-border">
                         <thead class="bg-gray-100 font-bold">
                             <tr>
-                                <th class="w-[80px]">Code</th>
+                                <th class="text-center min-w-[100px]">Salary Slips</th>
                                 <th class="min-w-[180px]">Employee Name</th>
                                 <th class="text-right min-w-[120px]">Loan Outstanding</th>
                                 <th class="text-right min-w-[120px]">Salary Adv. Pending</th>
@@ -275,10 +301,25 @@ function renderEmployees(employees) {
     employees.forEach(emp => {
         const profile = emp.hr_profile;
         const hasProfile = profile && profile.id;
+        const slipCount = emp.salary_slip_count || 0;
+        const lastSlipMonth = emp.last_slip_month || null;
         
         html += `
             <tr class="${!hasProfile ? 'bg-yellow-50' : ''}">
-                <td class="font-medium">${profile?.employee_code || '-'}</td>
+                <td class="text-center">
+                    ${slipCount > 0 ? `
+                        <button onclick="viewSalaryHistory(${emp.id}, '${emp.fullname}')" 
+                                class="text-blue-600 hover:text-blue-800 font-semibold hover:underline cursor-pointer"
+                                title="View salary slip history">
+                            ${slipCount} Slip${slipCount > 1 ? 's' : ''}
+                        </button>
+                        <div class="text-xs text-gray-500 mt-0.5">
+                            ${lastSlipMonth ? 'Last: ' + formatMonth(lastSlipMonth) : ''}
+                        </div>
+                    ` : `
+                        <span class="text-gray-400 text-sm">No slips</span>
+                    `}
+                </td>
                 <td>
                     <div class="font-medium text-gray-900">${emp.fullname}</div>
                     <div class="text-xs text-gray-500">${emp.email || 'No email'}</div>
@@ -306,8 +347,8 @@ function renderEmployees(employees) {
                         <button onclick="editEmployee(${emp.id})" class="kt-btn kt-btn-sm kt-btn-light" title="Edit Salary">
                             <i class="ki-filled ki-notepad-edit"></i>
                         </button>
-                        <a href="/hr/salary-slips/create?user_id=${emp.id}" class="kt-btn kt-btn-sm kt-btn-primary" title="Generate Salary Slip">
-                            <i class="ki-filled ki-file-sheet"></i>
+                        <a href="/hr/salary-slips/create?user_id=${emp.id}" class="kt-btn kt-btn-sm kt-btn-primary" title="Create Salary Slip">
+                            Create Salary
                         </a>
                     </div>
                 </td>
@@ -316,6 +357,19 @@ function renderEmployees(employees) {
     });
     
     tbody.innerHTML = html;
+}
+
+function formatMonth(dateString) {
+    if (!dateString) return '';
+    
+    // Parse as local date to avoid timezone issues
+    // When date is '2025-10-01', we want October 2025, not September due to UTC conversion
+    const parts = dateString.split('-');
+    const year = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1; // JavaScript months are 0-indexed
+    
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[month]} ${year}`;
 }
 
 function updateStatistics(stats) {
@@ -481,6 +535,122 @@ function formatCurrency(amount) {
 function formatNumber(amount) {
     return parseFloat(amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
+
+// View salary history modal
+function viewSalaryHistory(userId, employeeName) {
+    const modal = document.getElementById('salary-history-modal');
+    const modalTitle = document.getElementById('salary-history-title');
+    const modalContent = document.getElementById('salary-history-content');
+    
+    modalTitle.textContent = `Salary History - ${employeeName}`;
+    modalContent.innerHTML = `
+        <div class="text-center py-8">
+            <i class="ki-filled ki-loading animate-spin text-2xl text-gray-400"></i>
+            <p class="text-gray-500 mt-2">Loading salary slips...</p>
+        </div>
+    `;
+    
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+    
+    // Fetch salary slips for this employee
+    fetch(`{{ url('/hr/employees') }}/${userId}/salary-slips`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.slips.length > 0) {
+                let html = '<div class="space-y-3">';
+                
+                data.slips.forEach(slip => {
+                    const statusColors = {
+                        'draft': 'gray',
+                        'approved': 'blue',
+                        'paid': 'green',
+                        'cancelled': 'red'
+                    };
+                    const statusColor = statusColors[slip.slip_status] || 'gray';
+                    
+                    html += `
+                        <div class="border border-gray-200 rounded-lg p-4 hover:bg-gray-50">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <div class="font-semibold text-gray-900">${formatMonth(slip.salary_month)}</div>
+                                    <div class="text-xs text-gray-500">Slip #${slip.slip_number}</div>
+                                </div>
+                                <span class="kt-badge kt-badge-sm kt-badge-${statusColor}">
+                                    ${slip.slip_status.charAt(0).toUpperCase() + slip.slip_status.slice(1)}
+                                </span>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2 text-sm">
+                                <div>
+                                    <div class="text-xs text-gray-500">Gross</div>
+                                    <div class="font-medium">${formatCurrency(slip.gross_salary)}</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs text-gray-500">Deductions</div>
+                                    <div class="font-medium text-red-600">-${formatCurrency(slip.total_deductions)}</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs text-gray-500">Net</div>
+                                    <div class="font-medium text-green-600">${formatCurrency(slip.net_salary)}</div>
+                                </div>
+                            </div>
+                            <div class="mt-3 flex gap-2">
+                                <a href="/hr/salary-slips/${slip.id}" class="kt-btn kt-btn-xs kt-btn-light">
+                                    <i class="ki-filled ki-eye"></i> View
+                                </a>
+                                ${slip.slip_status === 'approved' || slip.slip_status === 'paid' ? `
+                                    <a href="/hr/salary-slips/${slip.id}/pdf" target="_blank" class="kt-btn kt-btn-xs kt-btn-primary">
+                                        <i class="ki-filled ki-file-down"></i> PDF
+                                    </a>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                modalContent.innerHTML = html;
+            } else {
+                modalContent.innerHTML = `
+                    <div class="text-center py-8">
+                        <i class="ki-filled ki-information-2 text-4xl text-gray-300"></i>
+                        <p class="text-gray-500 mt-2">No salary slips found</p>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            console.error('Error loading salary slips:', error);
+            modalContent.innerHTML = `
+                <div class="text-center py-8">
+                    <i class="ki-filled ki-cross-circle text-4xl text-red-300"></i>
+                    <p class="text-red-500 mt-2">Error loading salary slips</p>
+                </div>
+            `;
+        });
+}
+
+function closeSalaryHistoryModal() {
+    const modal = document.getElementById('salary-history-modal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+}
 </script>
 @endpush
+
+<!-- Salary History Modal -->
+<div id="salary-history-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;" onclick="closeSalaryHistoryModal()">
+    <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white">
+            <h3 class="text-lg font-semibold" id="salary-history-title">Salary History</h3>
+            <button onclick="closeSalaryHistoryModal()" class="kt-btn kt-btn-sm kt-btn-icon kt-btn-light">
+                <i class="ki-filled ki-cross"></i>
+            </button>
+        </div>
+        
+        <div class="px-6 py-4" id="salary-history-content">
+            <!-- Content loaded dynamically -->
+        </div>
+    </div>
+</div>
 

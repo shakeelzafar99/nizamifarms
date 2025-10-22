@@ -10,9 +10,16 @@
             <h1 class="text-3xl font-bold text-gray-900">Salary Slip Details</h1>
             <p class="text-gray-600 mt-1">{{ $slip->slip_number ?? 'SLIP-' . $slip->id }}</p>
         </div>
-        <a href="{{ route('hr.salary-slips.index') }}" class="kt-btn kt-btn-light">
-            <i class="ki-filled ki-arrow-left"></i> Back to List
-        </a>
+        <div class="flex items-center gap-2">
+            @if($slip->slip_status !== 'cancelled')
+                <button onclick="confirmDeleteSlip()" class="kt-btn kt-btn-danger" style="background-color: #dc2626 !important; color: white !important;">
+                    <i class="ki-filled ki-trash"></i> Delete & Rollback
+                </button>
+            @endif
+            <a href="{{ route('hr.salary-slips.index') }}" class="kt-btn kt-btn-light">
+                <i class="ki-filled ki-arrow-left"></i> Back to List
+            </a>
+        </div>
     </div>
 
     <!-- Salary Slip Card -->
@@ -298,5 +305,35 @@ function approveSalarySlip() {
 }
 </script>
 @endif
+
+<script>
+// Delete function available for all users
+function confirmDeleteSlip() {
+    if (!confirm(`⚠️ WARNING: Delete Salary Slip?\n\nEmployee: {{ $slip->employee->fullname ?? 'Unknown' }}\nMonth: {{ \Carbon\Carbon::parse($slip->salary_month)->format('F Y') }}\n\nThis will:\n✓ Delete the salary slip\n✓ Reverse ledger entries\n✓ Restore account balances\n✓ Rollback loan installments\n✓ Unsettle salary advances\n\nThis action cannot be undone. Continue?`)) {
+        return;
+    }
+    
+    fetch('{{ url("/hr/salary-slips/" . $slip->id) }}', {
+        method: 'DELETE',
+        headers: {
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ ' + data.message);
+            window.location.href = '{{ route("hr.salary-slips.index") }}';
+        } else {
+            alert('❌ Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('❌ Error deleting salary slip');
+    });
+}
+</script>
+
 @endsection
 

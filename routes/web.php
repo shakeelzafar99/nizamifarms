@@ -401,6 +401,7 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/bulk-create', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'bulkCreate'])->name('bulk-create');
             Route::get('/{userId}', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'show'])->name('show');
             Route::get('/{userId}/get-or-create', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getOrCreate'])->name('get-or-create');
+            Route::get('/{userId}/salary-slips', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getSalarySlips'])->name('salary-slips');
             Route::post('/{userId}/salary', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'updateSalary'])->name('salary.update');
             Route::post('/{userId}/deactivate', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'deactivate'])->name('deactivate');
             Route::post('/{userId}/activate', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'activate'])->name('activate');
@@ -416,6 +417,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}', [\App\Http\Controllers\HR\SalarySlipController::class, 'show'])->name('show');
             Route::post('/{id}/approve', [\App\Http\Controllers\HR\SalarySlipController::class, 'approve'])->name('approve');
             Route::post('/{id}/cancel', [\App\Http\Controllers\HR\SalarySlipController::class, 'cancel'])->name('cancel');
+            Route::delete('/{id}', [\App\Http\Controllers\HR\SalarySlipController::class, 'destroy'])->name('destroy');
             Route::get('/{id}/pdf', [\App\Http\Controllers\HR\SalarySlipController::class, 'downloadPdf'])->name('pdf');
         });
         

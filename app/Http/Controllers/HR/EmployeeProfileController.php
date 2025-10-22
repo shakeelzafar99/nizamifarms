@@ -96,6 +96,30 @@ class EmployeeProfileController extends Controller
                 ]);
             }
 
+            // Get salary slip count and last slip month
+            $salarySlipCount = 0;
+            $lastSlipMonth = null;
+            try {
+                $slips = \App\Models\HR\SalarySlipModel::where('user_id', $user->id)
+                    ->whereIn('slip_status', ['approved', 'paid'])
+                    ->orderBy('salary_month', 'desc')
+                    ->get();
+                
+                $salarySlipCount = $slips->count();
+                if ($salarySlipCount > 0) {
+                    $lastSlipMonth = $slips->first()->salary_month;
+                    // Ensure it's in YYYY-MM-DD format
+                    if ($lastSlipMonth instanceof \Carbon\Carbon) {
+                        $lastSlipMonth = $lastSlipMonth->format('Y-m-d');
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::error('Error getting salary slip count', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage()
+                ]);
+            }
+
             return [
                 'id' => $user->id,
                 'fullname' => $user->fullname,
@@ -103,6 +127,8 @@ class EmployeeProfileController extends Controller
                 'user_type' => $user->user_type,
                 'total_loan_outstanding' => (float) $totalLoanOutstanding,
                 'unadjusted_salary_advances' => (float) ($unadjustedAdvances ?? 0),
+                'salary_slip_count' => $salarySlipCount,
+                'last_slip_month' => $lastSlipMonth,
                 'hr_profile' => $user->hrProfile ? [
                     'id' => $user->hrProfile->id,
                     'base_salary' => $user->hrProfile->base_salary,
@@ -431,6 +457,56 @@ class EmployeeProfileController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to activate profile: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get salary slips for a specific employee
+     */
+    public function getSalarySlips($userId)
+    {
+        try {
+            $slips = \App\Models\HR\SalarySlipModel::where('user_id', $userId)
+                ->orderBy('salary_month', 'desc')
+                ->orderBy('created_at', 'desc')
+                ->get()
+                ->map(function($slip) {
+                    // Ensure salary_month is in YYYY-MM-DD format for frontend matching
+                    $salaryMonth = $slip->salary_month;
+                    if ($salaryMonth instanceof \Carbon\Carbon) {
+                        $salaryMonth = $salaryMonth->format('Y-m-d');
+                    } elseif (is_string($salaryMonth) && strlen($salaryMonth) > 10) {
+                        // If it's a datetime string, extract just the date part
+                        $salaryMonth = substr($salaryMonth, 0, 10);
+                    }
+                    
+                    return [
+                        'id' => $slip->id,
+                        'slip_number' => $slip->slip_number,
+                        'salary_month' => $salaryMonth,
+                        'slip_status' => $slip->slip_status,
+                        'gross_salary' => (float) $slip->gross_salary,
+                        'total_deductions' => (float) $slip->total_deductions,
+                        'net_salary' => (float) $slip->net_salary,
+                        'created_at' => $slip->created_at ? $slip->created_at->format('Y-m-d H:i:s') : null
+                    ];
+                });
+
+            return response()->json([
+                'success' => true,
+                'slips' => $slips
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Error getting employee salary slips', [
+                'user_id' => $userId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get salary slips: ' . $e->getMessage()
             ], 500);
         }
     }

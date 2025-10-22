@@ -161,6 +161,19 @@ class SalarySlipController extends Controller
                 'overrides' => 'nullable|array'
             ]);
 
+            // Check if salary slip already exists for this user and month
+            $existingSlip = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
+                ->where('salary_month', $validated['month'])
+                ->whereIn('slip_status', ['draft', 'approved', 'paid'])
+                ->first();
+            
+            if ($existingSlip) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'A salary slip already exists for this employee for the selected month (Slip #' . $existingSlip->slip_number . '). Please edit the existing slip or delete it before creating a new one.'
+                ], 400);
+            }
+
             $result = $this->salaryService->calculateSalary(
                 $validated['user_id'],
                 $validated['month'],
@@ -245,6 +258,19 @@ class SalarySlipController extends Controller
 
         try {
             DB::beginTransaction();
+            
+            // Check if salary slip already exists for this user and month
+            $existingSlip = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
+                ->where('salary_month', $validated['salary_month'])
+                ->whereIn('slip_status', ['draft', 'approved', 'paid'])
+                ->first();
+            
+            if ($existingSlip) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'A salary slip already exists for this employee for the selected month (Slip #' . $existingSlip->slip_number . '). Please edit the existing slip or cancel it before creating a new one.'
+                ], 400);
+            }
             
             // Create salary slip with status 'draft' first
             $slip = \App\Models\HR\SalarySlipModel::create([
@@ -418,6 +444,180 @@ class SalarySlipController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to approve salary slip: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete salary slip and rollback all related changes
+     */
+    public function destroy($id)
+    {
+        try {
+            $slip = SalarySlipModel::with(['employee'])->findOrFail($id);
+            
+            // Only allow deletion of draft, approved, or paid slips
+            // Cancelled slips can't be deleted (already cancelled)
+            if ($slip->slip_status === 'cancelled') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete a cancelled salary slip'
+                ], 400);
+            }
+            
+            DB::beginTransaction();
+            
+            Log::info('Starting salary slip deletion', [
+                'slip_id' => $slip->id,
+                'slip_number' => $slip->slip_number,
+                'user_id' => $slip->user_id,
+                'status' => $slip->slip_status,
+                'net_salary' => $slip->net_salary
+            ]);
+            
+            // Step 1: Rollback ledger entry if exists
+            if ($slip->ledger_transaction_id) {
+                $ledger = \App\Models\FIN\LedgerModel::find($slip->ledger_transaction_id);
+                
+                if ($ledger) {
+                    Log::info('Rolling back ledger entry', [
+                        'ledger_id' => $ledger->id,
+                        'transaction_id' => $ledger->transaction_id,
+                        'amount' => $ledger->amount
+                    ]);
+                    
+                    // Reverse account balances
+                    if ($ledger->from_account_id) {
+                        $fromAccount = \App\Models\FIN\AccountModel::find($ledger->from_account_id);
+                        if ($fromAccount) {
+                            $fromAccount->current_balance += $ledger->amount; // Add back the amount
+                            $fromAccount->save();
+                            Log::info('Reversed from_account balance', [
+                                'account_id' => $fromAccount->id,
+                                'account_name' => $fromAccount->account_name,
+                                'new_balance' => $fromAccount->current_balance
+                            ]);
+                        }
+                    }
+                    
+                    // Note: We don't update to_account (employee cash) as it was never updated during salary payment
+                    
+                    // Delete the ledger entry
+                    $ledger->delete();
+                    Log::info('Ledger entry deleted');
+                }
+            }
+            
+            // Step 2: Rollback loan installment payments
+            if ($slip->loan_installment > 0 && !empty($slip->loan_ids)) {
+                $loanIds = [];
+                
+                // Parse loan IDs (could be JSON or comma-separated)
+                if (is_string($slip->loan_ids)) {
+                    $decoded = json_decode($slip->loan_ids, true);
+                    if (is_array($decoded)) {
+                        $loanIds = $decoded;
+                    } else {
+                        $loanIds = explode(',', $slip->loan_ids);
+                    }
+                } elseif (is_array($slip->loan_ids)) {
+                    $loanIds = $slip->loan_ids;
+                }
+                
+                foreach ($loanIds as $loanId) {
+                    $loanId = trim($loanId);
+                    if (empty($loanId)) continue;
+                    
+                    $loan = \App\Models\HR\EmployeeLoanModel::find($loanId);
+                    if ($loan) {
+                        // Add back the installment amount to outstanding balance
+                        $loan->outstanding_balance += $slip->loan_installment;
+                        
+                        // If loan was marked as completed, revert to active
+                        if ($loan->loan_status === 'completed' && $loan->outstanding_balance > 0) {
+                            $loan->loan_status = 'active';
+                        }
+                        
+                        $loan->save();
+                        
+                        Log::info('Rolled back loan installment', [
+                            'loan_id' => $loan->id,
+                            'loan_number' => $loan->loan_number,
+                            'installment_amount' => $slip->loan_installment,
+                            'new_outstanding_balance' => $loan->outstanding_balance,
+                            'new_status' => $loan->loan_status
+                        ]);
+                    }
+                }
+            }
+            
+            // Step 3: Rollback salary advance settlements
+            if ($slip->salary_advance > 0 && !empty($slip->advance_request_ids)) {
+                $advanceIds = [];
+                
+                // Parse advance IDs (could be JSON or comma-separated)
+                if (is_string($slip->advance_request_ids)) {
+                    $decoded = json_decode($slip->advance_request_ids, true);
+                    if (is_array($decoded)) {
+                        $advanceIds = $decoded;
+                    } else {
+                        $advanceIds = explode(',', $slip->advance_request_ids);
+                    }
+                } elseif (is_array($slip->advance_request_ids)) {
+                    $advanceIds = $slip->advance_request_ids;
+                }
+                
+                foreach ($advanceIds as $advanceId) {
+                    $advanceId = trim($advanceId);
+                    if (empty($advanceId)) continue;
+                    
+                    $advance = \App\Models\Request\RequestModel::find($advanceId);
+                    if ($advance && $advance->settlement_status === 'settled') {
+                        // Mark as pending settlement again
+                        $advance->settlement_status = 'pending';
+                        $advance->settled_at = null;
+                        $advance->settlement_notes = null;
+                        $advance->save();
+                        
+                        Log::info('Rolled back salary advance settlement', [
+                            'advance_id' => $advance->id,
+                            'request_number' => $advance->request_number,
+                            'amount' => $advance->amount,
+                            'new_settlement_status' => 'pending'
+                        ]);
+                    }
+                }
+            }
+            
+            // Step 4: Delete the salary slip itself
+            $slipNumber = $slip->slip_number;
+            $employeeName = $slip->employee->fullname ?? 'Unknown';
+            $slip->delete();
+            
+            Log::info('Salary slip deleted successfully', [
+                'slip_number' => $slipNumber,
+                'employee' => $employeeName
+            ]);
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Salary slip deleted successfully. All related transactions have been rolled back.'
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            Log::error('Error deleting salary slip', [
+                'slip_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete salary slip: ' . $e->getMessage()
             ], 500);
         }
     }

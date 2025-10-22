@@ -126,8 +126,14 @@ class SalaryCalculationService
     {
         $startDate = date('Y-m-01', strtotime($month));
         $endDate = date('Y-m-t', strtotime($month));
+        
+        // CRITICAL: Use today's date as the effective end date if we're in the current month
+        // This prevents penalizing employees for future days that haven't occurred yet
+        $today = date('Y-m-d');
+        $effectiveEndDate = ($endDate > $today) ? $today : $endDate;
 
         // Query attendance records (with null-safety)
+        // IMPORTANT: Only count days up to today (or end of month if past month)
         $attendanceQuery = "
             SELECT 
                 COUNT(DISTINCT CASE WHEN attendance_date IS NOT NULL THEN attendance_date END) as present_days,
@@ -143,7 +149,7 @@ class SalaryCalculationService
             AND attendance_date BETWEEN ? AND ?
         ";
 
-        $attendance = DB::selectOne($attendanceQuery, [$userId, $startDate, $endDate]);
+        $attendance = DB::selectOne($attendanceQuery, [$userId, $startDate, $effectiveEndDate]);
 
         // Calculate late minutes and overtime hours using shift resolution service
         // This matches the attendance report logic for consistency
@@ -181,28 +187,30 @@ class SalaryCalculationService
         $lateAndOT = DB::selectOne($lateAndOTQuery, [
             $shiftStart, $shiftStart, // For late calculation
             $shiftEnd, $shiftEnd,     // For overtime calculation
-            $userId, $startDate, $endDate
+            $userId, $startDate, $effectiveEndDate
         ]);
 
         // Calculate working days using the SAME logic as attendance reports
         // This considers user's shift schedule AND public holidays
+        // IMPORTANT: Only count working days up to today (or end of month if past month)
         $shiftService = new \App\Services\ShiftResolutionService();
-        $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $endDate);
+        $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $effectiveEndDate);
 
         // Calculate leave days from approved/pending leave requests
         // IMPORTANT: Same logic as attendance reports for consistency
+        // CRITICAL: Only count leaves up to today (or end of month if past month)
         $leaveDays = 0;
         $leaveRequests = RequestModel::where('requester_user_id', $userId)
             ->whereIn('status', ['approved', 'pending'])
             ->whereHas('category', function($q) {
                 $q->where('category_code', 'leave');
             })
-            ->where(function($q) use ($startDate, $endDate) {
-                $q->whereBetween('leave_start_date', [$startDate, $endDate])
-                  ->orWhereBetween('leave_end_date', [$startDate, $endDate])
-                  ->orWhere(function($q2) use ($startDate, $endDate) {
+            ->where(function($q) use ($startDate, $effectiveEndDate) {
+                $q->whereBetween('leave_start_date', [$startDate, $effectiveEndDate])
+                  ->orWhereBetween('leave_end_date', [$startDate, $effectiveEndDate])
+                  ->orWhere(function($q2) use ($startDate, $effectiveEndDate) {
                       $q2->where('leave_start_date', '<=', $startDate)
-                         ->where('leave_end_date', '>=', $endDate);
+                         ->where('leave_end_date', '>=', $effectiveEndDate);
                   });
             })
             ->get();
@@ -215,8 +223,8 @@ class SalaryCalculationService
                 
                 while ($current <= $leaveEnd) {
                     $dateStr = $current->format('Y-m-d');
-                    // Only count if within the month range
-                    if ($dateStr >= $startDate && $dateStr <= $endDate) {
+                    // Only count if within the effective date range (up to today or end of month)
+                    if ($dateStr >= $startDate && $dateStr <= $effectiveEndDate) {
                         $leaveDays++;
                     }
                     $current->modify('+1 day');

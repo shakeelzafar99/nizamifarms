@@ -357,34 +357,6 @@
                     </a>
                 </div>
                 @endif
-                @if(auth()->user()->hasPermission('generate_salary_slips'))
-                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                    <a href="/hr/salary-slips">
-                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                <i class="ki-filled ki-file-sheet text-lg"></i>
-                            </span>
-                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                Salary Slips
-                            </span>
-                        </div>
-                    </a>
-                </div>
-                @endif
-                @if(auth()->user()->hasPermission('view_employee_loans'))
-                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                    <a href="/hr/loans">
-                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                <i class="ki-filled ki-dollar text-lg"></i>
-                            </span>
-                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                Employee Loans
-                            </span>
-                        </div>
-                    </a>
-                </div>
-                @endif
                 @endif
                  
                 <!-- Administration Section -->

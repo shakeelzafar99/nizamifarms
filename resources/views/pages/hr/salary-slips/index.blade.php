@@ -214,8 +214,11 @@ function renderSlips(slips) {
                                 <i class="ki-filled ki-file-down"></i>
                             </a>
                         ` : ''}
-                        ${slip.slip_status === 'draft' ? `
-                            <button onclick="cancelSlip(${slip.id})" class="kt-btn kt-btn-sm kt-btn-danger" title="Cancel">
+                        ${slip.slip_status !== 'cancelled' ? `
+                            <button onclick="confirmDeleteSlip(${slip.id}, '${formatMonth(slip.salary_month)}', '${slip.employee?.fullname || 'Employee'}')" 
+                                    class="kt-btn kt-btn-sm kt-btn-danger" 
+                                    style="background-color: #dc2626 !important; color: white !important;"
+                                    title="Delete & Rollback">
                                 <i class="ki-filled ki-trash"></i>
                             </button>
                         ` : ''}
@@ -293,6 +296,32 @@ function cancelSlip(slipId) {
     });
 }
 
+function confirmDeleteSlip(slipId, monthName, employeeName) {
+    if (!confirm(`⚠️ WARNING: Delete Salary Slip?\n\nEmployee: ${employeeName}\nMonth: ${monthName}\n\nThis will:\n✓ Delete the salary slip\n✓ Reverse ledger entries\n✓ Restore account balances\n✓ Rollback loan installments\n✓ Unsettle salary advances\n\nThis action cannot be undone. Continue?`)) {
+        return;
+    }
+    
+    fetch(`{{ url('/hr/salary-slips') }}/${slipId}`, {
+        method: 'DELETE',
+        headers: {
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ ' + data.message);
+            loadSlips();
+        } else {
+            alert('❌ Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('❌ Error deleting salary slip');
+    });
+}
+
 function getStatusClass(status) {
     const classes = {
         'draft': 'secondary',
@@ -312,9 +341,14 @@ function formatNumber(amount) {
 }
 
 function formatMonth(date) {
-    const d = new Date(date);
+    // Parse as local date to avoid timezone issues
+    // When date is '2025-10-01', we want October 2025, not September due to UTC conversion
+    const parts = date.split('-');
+    const year = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1; // JavaScript months are 0-indexed
+    
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return `${months[d.getMonth()]} ${d.getFullYear()}`;
+    return `${months[month]} ${year}`;
 }
 
 function formatDate(datetime) {

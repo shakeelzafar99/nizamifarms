@@ -7,43 +7,51 @@
 <!-- Container -->
 <div class="kt-container-fixed">
     <div class="grid gap-5 lg:gap-7.5">
-        <!-- Step 1: Select Employee & Month -->
+        <!-- Step 1: Select Employee & View Monthly Calendar -->
         <div class="kt-card" id="step-1">
             <div class="kt-card-header">
-                <h3 class="kt-card-title">Step 1: Select Employee & Month</h3>
+                <h3 class="kt-card-title">Step 1: Select Employee</h3>
             </div>
             <div class="kt-card-body">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Employee *</label>
-                        <select id="employee-select" class="kt-select w-full">
-                            <option value="">Select Employee...</option>
-                            @php
-                                $employees = \DB::table('t_sys_user as u')
-                                    ->leftJoin('t_hr_employee_profile as p', 'u.id', '=', 'p.user_id')
-                                    ->where('u.is_active', 1)
-                                    ->whereNotNull('p.id')
-                                    ->where('p.is_active', 1)
-                                    ->select('u.id', 'u.fullname', 'p.employee_code')
-                                    ->orderBy('u.fullname')
-                                    ->get();
-                            @endphp
-                            @foreach($employees as $emp)
-                                <option value="{{ $emp->id }}">{{ $emp->fullname }} @if($emp->employee_code)({{ $emp->employee_code }})@endif</option>
-                            @endforeach
-                        </select>
-                    </div>
-                    
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Salary Month *</label>
-                        <input type="month" id="salary-month" class="kt-input w-full">
-                    </div>
+                <div class="max-w-md mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Employee *</label>
+                    <select id="employee-select" class="kt-select w-full" onchange="loadEmployeeSalaryCalendar()">
+                        <option value="">Select Employee...</option>
+                        @php
+                            $employees = \DB::table('t_sys_user as u')
+                                ->leftJoin('t_hr_employee_profile as p', 'u.id', '=', 'p.user_id')
+                                ->where('u.is_active', 1)
+                                ->whereNotNull('p.id')
+                                ->where('p.is_active', 1)
+                                ->select('u.id', 'u.fullname', 'p.employee_code')
+                                ->orderBy('u.fullname')
+                                ->get();
+                        @endphp
+                        @foreach($employees as $emp)
+                            <option value="{{ $emp->id }}">{{ $emp->fullname }} @if($emp->employee_code)({{ $emp->employee_code }})@endif</option>
+                        @endforeach
+                    </select>
                 </div>
 
-                <div class="mt-6">
-                    <button onclick="calculateSalary()" class="kt-btn kt-btn-primary">
-                        <i class="ki-filled ki-calculator"></i> Calculate Salary
-                    </button>
+                <!-- Monthly Salary Calendar (Hidden initially) -->
+                <div id="salary-calendar" class="hidden">
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="text-lg font-semibold">Salary Calendar</h4>
+                        <div class="text-sm text-gray-600">
+                            <span id="calendar-year">Current + Last 12 Months</span>
+                        </div>
+                    </div>
+
+                    <!-- Loading State -->
+                    <div id="calendar-loading" class="text-center py-8">
+                        <i class="ki-filled ki-loading animate-spin text-2xl text-gray-400"></i>
+                        <p class="text-gray-500 mt-2">Loading salary records...</p>
+                    </div>
+
+                    <!-- Calendar Grid -->
+                    <div id="calendar-grid" class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <!-- Months will be populated by JavaScript -->
+                    </div>
                 </div>
             </div>
         </div>
@@ -344,6 +352,8 @@
 let calculatedData = null;
 let currentUserId = null;  // For attendance report link
 let currentMonth = null;   // For attendance report link (format: YYYY-MM)
+let currentYear = new Date().getFullYear();
+let employeeSalarySlips = [];
 let overrides = {
     overtime: false,
     late: false,
@@ -352,19 +362,190 @@ let overrides = {
     loan: false
 };
 
-// Pre-fill month to current month if user_id is in URL
+// Load employee salary calendar
+function loadEmployeeSalaryCalendar() {
+    const userId = document.getElementById('employee-select').value;
+    
+    if (!userId) {
+        document.getElementById('salary-calendar').classList.add('hidden');
+        return;
+    }
+    
+    // Show calendar and loading state
+    document.getElementById('salary-calendar').classList.remove('hidden');
+    document.getElementById('calendar-loading').classList.remove('hidden');
+    document.getElementById('calendar-grid').classList.add('hidden');
+    
+    currentUserId = userId;
+    
+    // Fetch employee salary slips
+    fetch(`{{ url('/hr/employees') }}/${userId}/salary-slips`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                employeeSalarySlips = data.slips;
+                console.log('Loaded salary slips:', employeeSalarySlips);
+                renderSalaryCalendar();
+            } else {
+                alert('Error loading salary records');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading salary records');
+        });
+}
+
+// Render salary calendar for current month + 12 months past
+function renderSalaryCalendar() {
+    document.getElementById('calendar-loading').classList.add('hidden');
+    document.getElementById('calendar-grid').classList.remove('hidden');
+    
+    const months = [
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    
+    // Get current month and calculate 12 months range
+    const now = new Date();
+    const currentMonth = now.getMonth(); // 0-11
+    const currentYearNow = now.getFullYear();
+    
+    // Build array of months to display (current month + 12 months back)
+    let monthsToDisplay = [];
+    for (let i = 0; i <= 12; i++) {
+        const date = new Date(currentYearNow, currentMonth - i, 1);
+        monthsToDisplay.push({
+            year: date.getFullYear(),
+            month: date.getMonth(),
+            monthName: months[date.getMonth()],
+            monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`
+        });
+    }
+    
+    // Update year display to show range
+    const oldestMonth = monthsToDisplay[monthsToDisplay.length - 1];
+    const rangeText = oldestMonth.year === currentYearNow 
+        ? `${months[oldestMonth.month]} - ${months[currentMonth]} ${currentYearNow}`
+        : `${months[oldestMonth.month]} ${oldestMonth.year} - ${months[currentMonth]} ${currentYearNow}`;
+    document.getElementById('calendar-year').textContent = rangeText;
+    
+    let html = '';
+    
+    monthsToDisplay.forEach(monthData => {
+        const { year, monthName, monthKey } = monthData;
+        
+        // Find existing slip for this month
+        const existingSlip = employeeSalarySlips.find(slip => slip.salary_month === monthKey);
+        
+        // Debug logging
+        if (monthName === 'October' && year === 2025) {
+            console.log('October 2025 check:', {
+                monthKey: monthKey,
+                existingSlip: existingSlip,
+                allSlips: employeeSalarySlips.map(s => ({ month: s.salary_month, id: s.id }))
+            });
+        }
+        
+        const statusColors = {
+            'draft': 'border-gray-300 bg-gray-50',
+            'approved': 'border-blue-300 bg-blue-50',
+            'paid': 'border-green-300 bg-green-50',
+            'cancelled': 'border-red-300 bg-red-50'
+        };
+        
+        const statusBadges = {
+            'draft': '<span class="kt-badge kt-badge-sm kt-badge-secondary">Draft</span>',
+            'approved': '<span class="kt-badge kt-badge-sm kt-badge-primary">Approved</span>',
+            'paid': '<span class="kt-badge kt-badge-sm kt-badge-success">Paid</span>',
+            'cancelled': '<span class="kt-badge kt-badge-sm kt-badge-danger">Cancelled</span>'
+        };
+        
+        const borderClass = existingSlip ? statusColors[existingSlip.slip_status] : 'border-gray-200 bg-white';
+        
+        html += `
+            <div class="border ${borderClass} rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="font-semibold text-gray-900">${monthName} ${year}</div>
+                    ${existingSlip ? statusBadges[existingSlip.slip_status] : ''}
+                </div>
+                
+                ${existingSlip ? `
+                    <div class="text-sm text-gray-600 mb-3">
+                        <div>Slip #${existingSlip.slip_number || 'N/A'}</div>
+                        <div class="font-semibold text-green-600">Net: ${formatCurrency(existingSlip.net_salary)}</div>
+                    </div>
+                    <div class="flex gap-2">
+                        <a href="/hr/salary-slips/${existingSlip.id}" class="kt-btn kt-btn-sm kt-btn-light flex-1">
+                            <i class="ki-filled ki-eye"></i> View
+                        </a>
+                        ${existingSlip.slip_status !== 'cancelled' ? `
+                            <button onclick="confirmDeleteSlip(${existingSlip.id}, '${monthName} ${year}')" 
+                                    class="kt-btn kt-btn-sm kt-btn-danger flex-1"
+                                    style="background-color: #dc2626 !important; color: white !important;">
+                                <i class="ki-filled ki-trash"></i> Delete
+                            </button>
+                        ` : ''}
+                    </div>
+                ` : `
+                    <div class="text-sm text-gray-500 mb-3">
+                        No salary slip generated
+                    </div>
+                    <button onclick="generateForMonth('${monthKey}')" class="kt-btn kt-btn-sm kt-btn-primary w-full">
+                        <i class="ki-filled ki-plus"></i> Generate Salary
+                    </button>
+                `}
+            </div>
+        `;
+    });
+    
+    document.getElementById('calendar-grid').innerHTML = html;
+}
+
+// Generate salary for specific month
+function generateForMonth(monthKey) {
+    currentMonth = monthKey.substring(0, 7); // YYYY-MM format
+    calculateSalary(monthKey);
+}
+
+// Confirm delete salary slip
+function confirmDeleteSlip(slipId, monthName) {
+    if (!confirm(`⚠️ WARNING: Delete Salary Slip for ${monthName}?\n\nThis will:\n✓ Delete the salary slip\n✓ Reverse ledger entries\n✓ Restore account balances\n✓ Rollback loan installments\n✓ Unsettle salary advances\n\nThis action cannot be undone. Continue?`)) {
+        return;
+    }
+    
+    fetch(`/hr/salary-slips/${slipId}`, {
+        method: 'DELETE',
+        headers: {
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ ' + data.message);
+            // Reload calendar
+            loadEmployeeSalaryCalendar();
+        } else {
+            alert('❌ Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('❌ Error deleting salary slip');
+    });
+}
+
+// Pre-fill employee and load calendar if user_id is in URL
 document.addEventListener('DOMContentLoaded', function() {
     const urlParams = new URLSearchParams(window.location.search);
     const userId = urlParams.get('user_id');
     
     if (userId) {
         document.getElementById('employee-select').value = userId;
+        // Trigger calendar load
+        loadEmployeeSalaryCalendar();
     }
-    
-    // Set default month to current month
-    const now = new Date();
-    const monthStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-    document.getElementById('salary-month').value = monthStr;
     
     // Add event listeners for live calculation
     const inputs = ['base-salary', 'overtime-hours', 'overtime-amount', 'bonuses', 'allowances', 'other-earnings',
@@ -379,19 +560,21 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-function calculateSalary() {
-    const userId = document.getElementById('employee-select').value;
-    const month = document.getElementById('salary-month').value;
+function calculateSalary(monthKey = null) {
+    const userId = currentUserId || document.getElementById('employee-select').value;
+    const month = monthKey || (document.getElementById('salary-month') ? document.getElementById('salary-month').value : null);
     
     if (!userId || !month) {
         alert('Please select both employee and month');
         return;
     }
     
-    // Show loading
-    const btn = event.target;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ki-filled ki-loading animate-spin"></i> Calculating...';
+    // Show loading (only if button exists)
+    const btn = event && event.target ? event.target : null;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="ki-filled ki-loading animate-spin"></i> Calculating...';
+    }
     
     fetch('{{ route("hr.salary-slips.calculate") }}', {
         method: 'POST',
@@ -401,7 +584,7 @@ function calculateSalary() {
         },
         body: JSON.stringify({
             user_id: userId,
-            month: month + '-01'  // Fixed: Changed from salary_month to month
+            month: monthKey || (month + '-01')  // monthKey is already in YYYY-MM-DD format
         })
     })
     .then(response => {
@@ -413,28 +596,40 @@ function calculateSalary() {
         return response.json();
     })
     .then(data => {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="ki-filled ki-calculator"></i> Calculate Salary';
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ki-filled ki-calculator"></i> Calculate Salary';
+        }
         
         if (data.success) {
             calculatedData = data;
             
             // Store for attendance report link
             currentUserId = userId;
-            currentMonth = month; // Already in YYYY-MM format
+            currentMonth = monthKey ? monthKey.substring(0, 7) : month; // YYYY-MM format
             
             populateForm(data);
             document.getElementById('step-1').classList.add('hidden');
             document.getElementById('step-2').classList.remove('hidden');
         } else {
-            alert('Error: ' + (data.error || data.message || 'Failed to calculate salary'));
+            // Improved error message
+            const errorMsg = data.error || data.message || 'Failed to calculate salary';
+            if (errorMsg.includes('already exists')) {
+                alert('⚠️ Salary Already Generated\n\n' + errorMsg + '\n\nRefreshing calendar to show existing slip...');
+                // Reload calendar to show the existing slip
+                loadEmployeeSalaryCalendar();
+            } else {
+                alert('❌ Error: ' + errorMsg);
+            }
         }
     })
     .catch(error => {
         console.error('Error calculating salary:', error);
-        btn.disabled = false;
-        btn.innerHTML = '<i class="ki-filled ki-calculator"></i> Calculate Salary';
-        alert('Error calculating salary: ' + error.message);
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ki-filled ki-calculator"></i> Calculate Salary';
+        }
+        alert('❌ Error calculating salary: ' + error.message);
     });
 }
 
@@ -894,10 +1089,15 @@ function formatCurrency(amount) {
 }
 
 function formatMonth(date) {
-    const d = new Date(date);
+    // Parse as local date to avoid timezone issues
+    // When date is '2025-10-01', we want October 2025, not September due to UTC conversion
+    const parts = date.split('-');
+    const year = parseInt(parts[0]);
+    const month = parseInt(parts[1]) - 1; // JavaScript months are 0-indexed
+    
     const months = ['January', 'February', 'March', 'April', 'May', 'June', 
                     'July', 'August', 'September', 'October', 'November', 'December'];
-    return `${months[d.getMonth()]} ${d.getFullYear()}`;
+    return `${months[month]} ${year}`;
 }
 </script>
 @endpush
