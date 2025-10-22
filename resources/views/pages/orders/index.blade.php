@@ -2618,9 +2618,9 @@ function loadEditForm(order) {
                         order.line_items.map((item, index) => `
                         <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked (delete to change)</span></label>
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
-                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed; color: #6b7280;" readonly>
                                 <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
                             </div>
                             <div>
@@ -2638,8 +2638,8 @@ function loadEditForm(order) {
                                 <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">${formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</span>
                             </div>
                             <div>
-                                <button type="button" onclick="removeLineItem(${index})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                                    Ã—
+                                <button type="button" onclick="removeLineItem(${index})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
+                                    ×
                                 </button>
                             </div>
                         </div>
@@ -2884,7 +2884,8 @@ function addLineItem() {
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
             <input type="number" step="0.01" name="items[${lineItemIndex}][quantity]" value="1" min="0.01"
-                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
+                   style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
+                   onchange="updateLineTotal(${lineItemIndex}); freezeProductName(${lineItemIndex})">
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
@@ -2896,8 +2897,8 @@ function addLineItem() {
             <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
         </div>
         <div>
-            <button type="button" onclick="removeLineItem(${lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                Ã—
+            <button type="button" onclick="removeLineItem(${lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
+                ×
             </button>
         </div>
     `;
@@ -2935,6 +2936,97 @@ function updateLineTotal(index) {
         updateSubtotal();
     }
 }
+
+function freezeProductName(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!item) return;
+    
+    const productInput = item.querySelector(`input[name="items[${index}][name]"]`);
+    const productIdInput = item.querySelector(`input[name="items[${index}][id]"]`);
+    const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
+    
+    // Only freeze if product is selected and quantity is entered
+    if (productInput && productIdInput && productIdInput.value && quantityInput && quantityInput.value > 0) {
+        // Freeze the product input
+        productInput.readOnly = true;
+        productInput.style.backgroundColor = '#f3f4f6';
+        productInput.style.cursor = 'not-allowed';
+        productInput.style.color = '#6b7280';
+        
+        // Disable the dropdown
+        productInput.onkeyup = null;
+        productInput.onkeydown = null;
+        productInput.onfocus = null;
+        
+        // Add a visual indicator
+        const label = productInput.previousElementSibling;
+        if (label && !label.querySelector('.frozen-indicator')) {
+            const indicator = document.createElement('span');
+            indicator.className = 'frozen-indicator';
+            indicator.style.cssText = 'margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;';
+            indicator.innerHTML = '🔒 Locked (delete to change)';
+            label.appendChild(indicator);
+        }
+    }
+}
+
+// Freeze all existing line items (for edit mode)
+function freezeAllExistingLineItems() {
+    const items = document.querySelectorAll('.line-item');
+    items.forEach(item => {
+        const index = item.getAttribute('data-index');
+        if (!index) return;
+        
+        // Check if this is an existing line item (has product_id)
+        const productIdInput = item.querySelector(`input[name*="[id]"]`);
+        const productInput = item.querySelector(`input[name*="[name]"]`);
+        
+        // If line item has a product_id and product name, it's existing - freeze it
+        if (productIdInput && productIdInput.value && productInput && productInput.value) {
+            freezeProductName(index);
+        }
+    });
+}
+
+// Auto-freeze existing line items when modal/page loads
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+        setTimeout(freezeAllExistingLineItems, 500);
+    });
+} else {
+    setTimeout(freezeAllExistingLineItems, 500);
+}
+
+// Also observe for dynamically added content (edit modal)
+const observeLineItems = function() {
+    const container = document.getElementById('lineItemsContainer');
+    if (container && !container.hasAttribute('data-observer-attached')) {
+        container.setAttribute('data-observer-attached', 'true');
+        
+        const observer = new MutationObserver(function(mutations) {
+            let shouldFreeze = false;
+            mutations.forEach(function(mutation) {
+                if (mutation.addedNodes.length) {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.classList && node.classList.contains('line-item')) {
+                            shouldFreeze = true;
+                        }
+                    });
+                }
+            });
+            if (shouldFreeze) {
+                setTimeout(freezeAllExistingLineItems, 100);
+            }
+        });
+        
+        observer.observe(container, { childList: true });
+    }
+};
+
+// Try to attach observer immediately and also after delays
+observeLineItems();
+setTimeout(observeLineItems, 1000);
+setTimeout(observeLineItems, 3000);
 function updateSubtotal() {
     let subtotal = 0;
     const items = document.querySelectorAll('.line-item');
@@ -3751,7 +3843,7 @@ function popoutOrder() {
                                     <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
                                 </div>
                                 <div>
-                                    <button type="button" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Remove</button>
+                                    <button type="button" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">×</button>
                                 </div>`;
                             container.appendChild(div);
                         }
@@ -3831,7 +3923,7 @@ function popoutOrder() {
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
                     <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][quantity]" value="1" min="0.01"
-                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex})">
+                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex}); freezeProductName(${newWindow.lineItemIndex})">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
@@ -3843,8 +3935,8 @@ function popoutOrder() {
                     <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
                 </div>
                 <div>
-                    <button type="button" onclick="removeLineItem(${newWindow.lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                        Remove
+                    <button type="button" onclick="removeLineItem(${newWindow.lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
+                        ×
                     </button>
                 </div>
             `;

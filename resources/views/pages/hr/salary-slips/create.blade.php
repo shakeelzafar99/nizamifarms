@@ -216,13 +216,13 @@
                                 <div class="text-gray-600">Present Days</div>
                                 <div class="font-bold text-lg text-green-600" id="present-days">0</div>
                             </div>
-                            <div class="p-3 bg-blue-50 rounded">
-                                <div class="text-gray-600">Leave Days</div>
-                                <div class="font-bold text-lg text-blue-600" id="leave-days">0</div>
+                            <div class="p-3 bg-red-50 rounded">
+                                <div class="text-gray-600">Absent Days</div>
+                                <div class="font-bold text-lg text-red-600" id="absent-days">0</div>
                             </div>
-                            <div class="p-3 bg-orange-50 rounded">
-                                <div class="text-gray-600">Half Days</div>
-                                <div class="font-bold text-lg text-orange-600" id="half-days">0</div>
+                            <div class="p-3 bg-blue-50 rounded">
+                                <div class="text-gray-600">On Leave</div>
+                                <div class="font-bold text-lg text-blue-600" id="leave-days">0</div>
                             </div>
                         </div>
 
@@ -289,15 +289,23 @@
 
       <!-- Stats Bar -->
       <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;">
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
             <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="salaryModalStatPresent">0</p>
           </div>
           <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Absent</p>
+            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="salaryModalStatAbsent">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">On Leave</p>
+            <p style="font-size: 18px; font-weight: bold; color: #3b82f6; margin: 0;" id="salaryModalStatLeave">0</p>
+          </div>
+          <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
-            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="salaryModalStatLate">0</p>
-            <p style="font-size: 9px; color: #dc2626; margin: 4px 0 0 0;" id="salaryModalStatLateHours">0h 0m</p>
+            <p style="font-size: 18px; font-weight: bold; color: #f59e0b; margin: 0;" id="salaryModalStatLate">0</p>
+            <p style="font-size: 9px; color: #f59e0b; margin: 4px 0 0 0;" id="salaryModalStatLateHours">0h 0m</p>
           </div>
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
@@ -660,8 +668,8 @@ function populateForm(data) {
     // Attendance summary
     document.getElementById('working-days').textContent = data.working_days;
     document.getElementById('present-days').textContent = data.present_days;
+    document.getElementById('absent-days').textContent = data.absent_days || 0;
     document.getElementById('leave-days').textContent = data.leave_days;
-    document.getElementById('half-days').textContent = data.half_days;
     
     // Info texts
     if (data.advance_info) {
@@ -910,6 +918,8 @@ function showSalaryAttendanceModal(employee) {
     const modalName = document.getElementById('salaryModalEmployeeName');
     const modalMonth = document.getElementById('salaryModalMonthYear');
     const modalPresent = document.getElementById('salaryModalStatPresent');
+    const modalAbsent = document.getElementById('salaryModalStatAbsent');
+    const modalLeave = document.getElementById('salaryModalStatLeave');
     const modalLate = document.getElementById('salaryModalStatLate');
     const modalOT = document.getElementById('salaryModalStatOT');
     const modalHours = document.getElementById('salaryModalStatHours');
@@ -921,6 +931,8 @@ function showSalaryAttendanceModal(employee) {
     
     // Populate stats
     modalPresent.textContent = employee.present_days || 0;
+    modalAbsent.textContent = employee.absent_days || 0;
+    modalLeave.textContent = employee.leave_days || 0;
     modalLate.textContent = employee.late_days || 0;
     modalOT.textContent = employee.overtime_days || 0;
     modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';

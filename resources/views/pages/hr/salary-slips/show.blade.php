@@ -203,13 +203,13 @@
                         <div class="text-sm text-gray-600">Present Days</div>
                         <div class="font-bold text-lg text-green-600">{{ $slip->present_days }}</div>
                     </div>
-                    <div class="p-3 bg-blue-50 rounded">
-                        <div class="text-sm text-gray-600">Leave Days</div>
-                        <div class="font-bold text-lg text-blue-600">{{ $slip->leave_days }}</div>
+                    <div class="p-3 bg-red-50 rounded">
+                        <div class="text-sm text-gray-600">Absent Days</div>
+                        <div class="font-bold text-lg text-red-600">{{ $slip->absent_days ?? 0 }}</div>
                     </div>
-                    <div class="p-3 bg-orange-50 rounded">
-                        <div class="text-sm text-gray-600">Half Days</div>
-                        <div class="font-bold text-lg text-orange-600">{{ $slip->half_days }}</div>
+                    <div class="p-3 bg-blue-50 rounded">
+                        <div class="text-sm text-gray-600">On Leave</div>
+                        <div class="font-bold text-lg text-blue-600">{{ $slip->leave_days }}</div>
                     </div>
                 </div>
             </div>
