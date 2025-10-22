@@ -136,7 +136,7 @@ class SalaryCalculationService
         // IMPORTANT: Only count days up to today (or end of month if past month)
         $attendanceQuery = "
             SELECT 
-                COUNT(DISTINCT CASE WHEN attendance_date IS NOT NULL THEN attendance_date END) as present_days,
+                COUNT(DISTINCT CASE WHEN login_time IS NOT NULL AND login_time != '' THEN attendance_date END) as present_days,
                 SUM(CASE WHEN login_time IS NOT NULL AND login_time != '' THEN 1 ELSE 0 END) as days_with_login,
                 SUM(CASE 
                     WHEN (login_time IS NULL OR login_time = '') AND attendance_date IS NOT NULL THEN 1 

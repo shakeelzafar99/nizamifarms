@@ -784,8 +784,13 @@ function updateAdjustmentsInfo() {
 }
 
 function saveSalarySlip(status) {
-    const userId = document.getElementById('employee-select').value;
-    const month = document.getElementById('salary-month').value + '-01';
+    const userId = currentUserId || document.getElementById('employee-select').value;
+    const month = currentMonth ? currentMonth + '-01' : null;
+    
+    if (!userId || !month) {
+        alert('❌ Error: Missing employee or month information');
+        return;
+    }
     
     const data = {
         user_id: userId,
