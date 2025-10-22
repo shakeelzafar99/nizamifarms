@@ -17,3 +17,4 @@ LIMIT 1;
 -- Check if the column exists and its type
 SHOW COLUMNS FROM t_fin_ledger LIKE 'bill_image';
 
+

@@ -116,7 +116,9 @@ class VendorModel extends BaseModel
             return 0;
         }
 
-        return LedgerModel::where('from_account_id', $this->account->id)
+        // Vendor payments: Money flows FROM other accounts TO vendor account
+        // So vendor account is the to_account_id (receiving the payment)
+        return LedgerModel::where('to_account_id', $this->account->id)
             ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
             ->sum('amount');
     }

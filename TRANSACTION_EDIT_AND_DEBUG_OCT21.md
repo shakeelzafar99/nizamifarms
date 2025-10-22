@@ -320,3 +320,4 @@ No bill image to display
 
 Please check the browser console and share what you see!
 
+

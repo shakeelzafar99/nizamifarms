@@ -274,3 +274,4 @@ bill_image VARCHAR(500) NULL  -- Stores: "vendor_bills/vendor_2_1729536000.jpg"
 
 **All enhancements complete and ready to use!** 🚀
 
+

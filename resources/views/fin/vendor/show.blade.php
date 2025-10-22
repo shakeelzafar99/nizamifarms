@@ -23,24 +23,94 @@
         </div>
     @endif
 
-    <!-- Vendor Summary Cards - Compact -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase">Opening</div>
-            <div class="text-lg font-bold text-gray-900 mt-1">Rs. {{ number_format($summary['opening_balance'], 2) }}</div>
+    <!-- Date Range Filter -->
+    <div class="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-3 mb-4 border border-blue-300 shadow-sm">
+        <form method="GET" action="{{ route('fin.vendors.show', $vendor->id) }}" class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-[150px]">
+                <label class="block text-xs font-semibold text-gray-700 mb-1">From Date</label>
+                <input type="date" name="date_from" value="{{ request('date_from', date('Y-m-01')) }}"
+                       class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-gray-900">
+            </div>
+            <div class="flex-1 min-w-[150px]">
+                <label class="block text-xs font-semibold text-gray-700 mb-1">To Date</label>
+                <input type="date" name="date_to" value="{{ request('date_to', date('Y-m-d')) }}"
+                       class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-gray-900">
+            </div>
+            <div class="flex gap-2">
+                <button type="submit" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                    🔍 Filter
+                </button>
+                @if(request('date_from') || request('date_to'))
+                    <a href="{{ route('fin.vendors.show', $vendor->id) }}" class="px-4 py-1.5 bg-gray-300 hover:bg-gray-400 text-gray-900 text-sm font-semibold rounded shadow-sm transition-colors">
+                        ✕ Clear
+                    </a>
+                @endif
+            </div>
+        </form>
+    </div>
+
+    <!-- Vendor Summary Cards - Horizontal Layout -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+        <!-- Card 1: Balance -->
+        <div class="bg-white border {{ $summary['current_balance'] > 0 ? 'border-red-300' : 'border-gray-300' }} rounded-lg p-3 shadow-sm">
+            <div class="flex items-center gap-3">
+                <div class="text-3xl flex-shrink-0">💰</div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs font-semibold text-gray-600 uppercase mb-1">Balance</div>
+                    <div class="text-xl font-bold {{ $summary['current_balance'] > 0 ? 'text-red-600' : 'text-green-600' }} truncate">
+                        Rs. {{ number_format($summary['current_balance'], 2) }}
+                    </div>
+                    @if($summary['last_payment_date'] && $summary['last_payment_amount'])
+                        <div class="text-xs text-gray-500 mt-1">
+                            Last: Rs. {{ number_format($summary['last_payment_amount'], 0) }} • {{ \Carbon\Carbon::parse($summary['last_payment_date'])->format('M d') }}
+                        </div>
+                    @endif
+                </div>
+            </div>
         </div>
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase">Purchases</div>
-            <div class="text-lg font-bold text-red-600 mt-1">Rs. {{ number_format($summary['total_purchases'], 2) }}</div>
+
+        <!-- Card 2: Purchases -->
+        <div class="bg-white border border-orange-300 rounded-lg p-3 shadow-sm">
+            <div class="flex items-center gap-3">
+                <div class="text-3xl flex-shrink-0">📦</div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs font-semibold text-gray-600 uppercase mb-1">
+                        Purchases @if(request('date_from') || request('date_to'))(Filtered)@endif
+                    </div>
+                    <div class="text-xl font-bold text-orange-600 truncate">
+                        Rs. {{ number_format($summary['filtered_purchases'], 0) }}
+                    </div>
+                    <div class="flex gap-3 text-xs text-gray-600 mt-1">
+                        <span>This Week: <strong class="text-gray-800">{{ number_format($summary['purchases_this_week'], 0) }}</strong></span>
+                        <span>Last Week: <strong class="text-gray-700">{{ number_format($summary['purchases_last_week'], 0) }}</strong></span>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="bg-white border border-gray-200 rounded-lg p-3">
-            <div class="text-xs text-gray-500 uppercase">Payments</div>
-            <div class="text-lg font-bold text-green-600 mt-1">Rs. {{ number_format($summary['total_payments'], 2) }}</div>
-        </div>
-        <div class="border border-gray-200 rounded-lg p-3 {{ $summary['current_balance'] > 0 ? 'bg-red-50' : 'bg-white' }}">
-            <div class="text-xs text-gray-500 uppercase">Payable</div>
-            <div class="text-lg font-bold {{ $summary['current_balance'] > 0 ? 'text-red-600' : 'text-gray-900' }} mt-1">
-                Rs. {{ number_format($summary['current_balance'], 2) }}
+
+        <!-- Card 3: Payments -->
+        <div class="bg-white border border-green-300 rounded-lg p-3 shadow-sm">
+            <div class="flex items-center gap-3">
+                <div class="text-3xl flex-shrink-0">💵</div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs font-semibold text-gray-600 uppercase mb-1">
+                        Payments @if(request('date_from') || request('date_to'))(Filtered)@endif
+                    </div>
+                    <div class="text-xl font-bold text-green-600 truncate">
+                        Rs. {{ number_format($summary['filtered_payments'], 2) }}
+                    </div>
+                    @if($summary['last_five_payments']->isNotEmpty())
+                        <div class="text-xs text-gray-600 mt-1">
+                            Last 5: 
+                            @foreach($summary['last_five_payments']->take(3) as $payment)
+                                <span class="text-green-700 font-medium">{{ number_format($payment->amount, 0) }}</span>{{ !$loop->last ? ',' : '' }}
+                            @endforeach
+                            @if($summary['last_five_payments']->count() > 3)
+                                <span class="text-gray-500">...</span>
+                            @endif
+                        </div>
+                    @endif
+                </div>
             </div>
         </div>
     </div>

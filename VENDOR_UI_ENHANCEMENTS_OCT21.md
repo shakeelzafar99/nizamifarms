@@ -208,3 +208,4 @@ The vendor management system now has a **modern, consistent, and user-friendly i
 
 All changes maintain backward compatibility and don't break any existing functionality.
 
+

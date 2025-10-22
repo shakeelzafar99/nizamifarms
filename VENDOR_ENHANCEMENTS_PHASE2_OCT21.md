@@ -245,3 +245,4 @@ Once SQL migration is complete, we can add:
 - Vendor products were already vendor-specific (no changes needed)
 - Bill image feature is additive (won't affect existing purchases)
 
+

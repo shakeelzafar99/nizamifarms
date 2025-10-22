@@ -149,12 +149,21 @@ class VendorController extends Controller
     /**
      * Show vendor details
      */
-    public function show($id)
+    public function show(Request $request, $id)
     {
         $vendor = VendorModel::with('account')->findOrFail($id);
         
-        // Get ledger transactions
-        $ledger = $vendor->getLedger();
+        // Get date range from request
+        $dateFrom = $request->input('date_from');
+        $dateTo = $request->input('date_to');
+        
+        // Get ledger transactions with optional date filter
+        if ($dateFrom && $dateTo) {
+            $ledger = $vendor->getLedger()
+                ->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+        } else {
+            $ledger = $vendor->getLedger();
+        }
         
         // Calculate running balance
         $runningBalance = $vendor->account ? $vendor->account->opening_balance : 0;
@@ -173,12 +182,97 @@ class VendorController extends Controller
             return $transaction;
         });
 
+        // Get last payment info
+        $lastPayment = null;
+        if ($vendor->account) {
+            $lastPayment = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                ->where('to_account_id', $vendor->account->id)
+                ->orderBy('transaction_date', 'desc')
+                ->orderBy('created_at', 'desc')
+                ->first();
+        }
+
+        // Calculate week dates (Tuesday to Monday)
+        // Week starts on Tuesday and ends on Monday
+        // Tuesday purchases count towards the NEXT week (starting that Tuesday)
+        $today = \Carbon\Carbon::now();
+        $dayOfWeek = $today->dayOfWeek; // 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, etc.
+        
+        // Find the start of current week (last Tuesday)
+        if ($dayOfWeek >= 2) { // Tuesday to Saturday
+            $thisWeekStart = $today->copy()->subDays($dayOfWeek - 2)->startOfDay();
+        } else { // Sunday or Monday
+            $thisWeekStart = $today->copy()->subDays($dayOfWeek + 5)->startOfDay();
+        }
+        
+        $thisWeekEnd = $thisWeekStart->copy()->addDays(6)->endOfDay(); // Next Monday 23:59:59
+        $lastWeekStart = $thisWeekStart->copy()->subWeek()->startOfDay();
+        $lastWeekEnd = $thisWeekStart->copy()->subDay()->endOfDay();
+
+        // Get purchases for this week and last week
+        $purchasesThisWeek = 0;
+        $purchasesLastWeek = 0;
+        
+        if ($vendor->account) {
+            $purchasesThisWeek = LedgerModel::where('to_account_id', $vendor->account->id)
+                ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+                ->whereBetween('transaction_date', [$thisWeekStart, $thisWeekEnd])
+                ->sum('amount');
+            
+            $purchasesLastWeek = LedgerModel::where('to_account_id', $vendor->account->id)
+                ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+                ->whereBetween('transaction_date', [$lastWeekStart, $lastWeekEnd])
+                ->sum('amount');
+        }
+
+        // Get last 5 payments
+        $lastFivePayments = [];
+        if ($vendor->account) {
+            $lastFivePayments = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                ->where('to_account_id', $vendor->account->id)
+                ->orderBy('transaction_date', 'desc')
+                ->orderBy('created_at', 'desc')
+                ->limit(5)
+                ->get();
+        }
+
+        // Get filtered purchases and payments based on date range
+        $filteredPurchases = 0;
+        $filteredPayments = 0;
+        
+        if ($vendor->account) {
+            $purchaseQuery = LedgerModel::where('to_account_id', $vendor->account->id)
+                ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE);
+            
+            $paymentQuery = LedgerModel::where('to_account_id', $vendor->account->id)
+                ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT);
+            
+            if ($dateFrom && $dateTo) {
+                $purchaseQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+                $paymentQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            }
+            
+            $filteredPurchases = $purchaseQuery->sum('amount');
+            $filteredPayments = $paymentQuery->sum('amount');
+        }
+        
+        // If no filter applied, use total values
+        if (!$dateFrom && !$dateTo) {
+            $filteredPurchases = $vendor->getTotalPurchases();
+            $filteredPayments = $vendor->getTotalPayments();
+        }
+
         // Get summary
         $summary = [
-            'opening_balance' => $vendor->account ? $vendor->account->opening_balance : 0,
-            'total_purchases' => $vendor->getTotalPurchases(),
+            'current_balance' => $vendor->getBalance(),
+            'last_payment_date' => $lastPayment ? $lastPayment->transaction_date : null,
+            'last_payment_amount' => $lastPayment ? $lastPayment->amount : null,
+            'purchases_this_week' => $purchasesThisWeek,
+            'purchases_last_week' => $purchasesLastWeek,
+            'filtered_purchases' => $filteredPurchases,
+            'filtered_payments' => $filteredPayments,
             'total_payments' => $vendor->getTotalPayments(),
-            'current_balance' => $vendor->getBalance()
+            'last_five_payments' => $lastFivePayments
         ];
 
         return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'summary'));
@@ -567,6 +661,149 @@ class VendorController extends Controller
             
             return back()->withInput()
                        ->with('error', 'Error recording weighted purchase: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Generate vendor report with daily summary
+     */
+    public function getReport(Request $request)
+    {
+        try {
+            $dateFrom = $request->input('date_from');
+            $dateTo = $request->input('date_to');
+            $vendorId = $request->input('vendor_id');
+
+            if (!$dateFrom || !$dateTo) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please provide both start and end dates'
+                ], 400);
+            }
+
+            // Build vendor query
+            $vendorQuery = VendorModel::with('account')->where('is_active', 1);
+            
+            if ($vendorId) {
+                $vendorQuery->where('id', $vendorId);
+            }
+            
+            $vendors = $vendorQuery->orderBy('vendor_name')->get();
+
+            $reportData = [];
+            $grandTotalPurchases = 0;
+            $grandTotalPayments = 0;
+
+            foreach ($vendors as $vendor) {
+                if (!$vendor->account) {
+                    continue;
+                }
+
+                // Get all transactions for this vendor in the date range
+                $transactions = LedgerModel::where(function($q) use ($vendor) {
+                        $q->where('from_account_id', $vendor->account->id)
+                          ->orWhere('to_account_id', $vendor->account->id);
+                    })
+                    ->whereBetween('transaction_date', [$dateFrom, $dateTo])
+                    ->whereIn('transaction_type', [
+                        LedgerModel::TYPE_VENDOR_PURCHASE,
+                        LedgerModel::TYPE_VENDOR_PAYMENT
+                    ])
+                    ->orderBy('transaction_date')
+                    ->orderBy('created_at')
+                    ->get();
+
+                if ($transactions->isEmpty()) {
+                    continue; // Skip vendors with no transactions in this period
+                }
+
+                // Group transactions by date
+                $dailySummary = [];
+                $vendorTotalPurchases = 0;
+                $vendorTotalPayments = 0;
+
+                foreach ($transactions as $txn) {
+                    $date = $txn->transaction_date->format('M j, Y');
+                    
+                    if (!isset($dailySummary[$date])) {
+                        $dailySummary[$date] = [
+                            'date' => $date,
+                            'total_purchases' => 0,
+                            'total_payments' => 0,
+                            'transactions' => []
+                        ];
+                    }
+
+                    $isPurchase = $txn->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE;
+                    $amount = $txn->amount;
+
+                    // Fetch line items for weighted purchases
+                    $lineItems = [];
+                    if ($isPurchase) {
+                        $lineItems = \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $txn->id)
+                            ->get()
+                            ->map(function($item) {
+                                return [
+                                    'product_name' => $item->product_name,
+                                    'quantity' => $item->quantity,
+                                    'unit' => $item->unit,
+                                    'rate_per_unit' => $item->rate_per_unit,
+                                    'line_total' => $item->line_total
+                                ];
+                            })
+                            ->toArray();
+                    }
+
+                    $dailySummary[$date]['transactions'][] = [
+                        'transaction_id' => $txn->transaction_id,
+                        'type' => $isPurchase ? 'purchase' : 'payment',
+                        'amount' => $amount,
+                        'description' => $txn->description,
+                        'line_items' => $lineItems
+                    ];
+
+                    if ($isPurchase) {
+                        $dailySummary[$date]['total_purchases'] += $amount;
+                        $vendorTotalPurchases += $amount;
+                    } else {
+                        $dailySummary[$date]['total_payments'] += $amount;
+                        $vendorTotalPayments += $amount;
+                    }
+                }
+
+                $grandTotalPurchases += $vendorTotalPurchases;
+                $grandTotalPayments += $vendorTotalPayments;
+
+                $reportData[] = [
+                    'vendor_name' => $vendor->vendor_name,
+                    'contact_person' => $vendor->contact_person,
+                    'contact_phone' => $vendor->contact_phone,
+                    'current_balance' => $vendor->account->current_balance,
+                    'total_purchases' => $vendorTotalPurchases,
+                    'total_payments' => $vendorTotalPayments,
+                    'daily_summary' => array_values($dailySummary)
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'report' => [
+                    'date_from' => \Carbon\Carbon::parse($dateFrom)->format('M j, Y'),
+                    'date_to' => \Carbon\Carbon::parse($dateTo)->format('M j, Y'),
+                    'vendors' => $reportData,
+                    'grand_total' => [
+                        'total_purchases' => $grandTotalPurchases,
+                        'total_payments' => $grandTotalPayments
+                    ]
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error generating vendor report: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error generating report: ' . $e->getMessage()
+            ], 500);
         }
     }
 }

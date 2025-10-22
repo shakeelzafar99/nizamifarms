@@ -156,3 +156,4 @@ storage/logs/laravel-2025-10-21.log
 
 Please upload a bill image and share the log messages!
 
+

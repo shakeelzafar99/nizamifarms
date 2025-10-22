@@ -22,3 +22,4 @@ SELECT
 FROM t_fin_ledger
 WHERE transaction_type = 'vendor_purchase';
 
+

@@ -1,10 +1,120 @@
 @extends('layouts.app')
 
 @section('content')
+<style>
+@media print {
+    /* Hide everything except the report content */
+    body * {
+        visibility: hidden;
+    }
+    #reportContent, #reportContent * {
+        visibility: visible;
+    }
+    #reportContent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        padding: 0;
+    }
+    
+    /* Hide modal backdrop and other UI elements */
+    #reportModal {
+        background: white !important;
+        backdrop-filter: none !important;
+    }
+    
+    /* Hide the print button when printing */
+    button[onclick="printReport()"] {
+        display: none !important;
+    }
+    
+    /* Ensure proper page breaks */
+    .vendor-section {
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }
+    
+    /* Better spacing for print */
+    .bg-gradient-to-r {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        color-adjust: exact;
+    }
+    
+    /* Preserve table borders */
+    table, th, td {
+        border: 1px solid #000 !important;
+    }
+    
+    /* Preserve colors for amounts */
+    .text-red-600, .text-red-700 {
+        color: #dc2626 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .text-green-600, .text-green-700 {
+        color: #16a34a !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .text-purple-600, .text-purple-700 {
+        color: #9333ea !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    /* Background colors for print */
+    .bg-purple-100, .print\:bg-purple-200 {
+        background-color: #f3e8ff !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .bg-gray-100, .print\:bg-gray-200 {
+        background-color: #f3f4f6 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .bg-green-50, .bg-red-50 {
+        background-color: transparent !important;
+    }
+    
+    /* Compact spacing for print */
+    .p-6 {
+        padding: 1rem !important;
+    }
+    
+    .mb-6 {
+        margin-bottom: 1rem !important;
+    }
+    
+    /* Font sizes for print */
+    body {
+        font-size: 10pt;
+    }
+    
+    h3 {
+        font-size: 14pt;
+    }
+    
+    h4 {
+        font-size: 12pt;
+    }
+}
+</style>
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Vendors</h1>
         <div class="flex gap-3">
+            <button onclick="openReportModal()" 
+                    class="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md"
+                    style="background-color: #7c3aed !important; color: white !important;">
+                <span style="color: white !important;">📊 Report</span>
+            </button>
             <button onclick="openCreateVendorModal()" 
                     class="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md"
                     style="background-color: #059669 !important; color: white !important;">
@@ -159,8 +269,8 @@
                 </div>
             </div>
             <button type="button" onclick="closeCreateVendorModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
-        </div>
-        
+            </div>
+            
         <!-- Scrollable Content -->
         <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
             <form action="{{ route('fin.vendors.store') }}" method="POST" id="createVendorForm">
@@ -220,13 +330,13 @@
         <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; gap: 12px;">
             <button type="button" onclick="closeCreateVendorModal()" 
                     style="flex: 1; padding: 10px 16px; border: 2px solid #d1d5db; background: white; color: #374151; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
-                Cancel
-            </button>
+                            Cancel
+                        </button>
             <button type="submit" form="createVendorForm"
                     style="flex: 1; padding: 10px 16px; border: none; background: #059669; color: white; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                 ✓ Create Vendor
-            </button>
-        </div>
+                        </button>
+                    </div>
     </div>
 </div>
 
@@ -453,7 +563,439 @@ function confirmDeleteVendor(vendorId, vendorName) {
         alert('An error occurred while deleting vendor');
     });
 }
+
+// Report Modal Functions
+function openReportModal() {
+    const modal = document.getElementById('reportModal');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+
+function closeReportModal() {
+    const modal = document.getElementById('reportModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    document.body.style.overflow = 'auto';
+    
+    // Clear report content
+    document.getElementById('reportContent').innerHTML = '';
+    document.getElementById('reportContent').style.display = 'none';
+    
+    // Hide print and Excel buttons
+    document.getElementById('printBtn').style.display = 'none';
+    document.getElementById('excelBtn').style.display = 'none';
+    
+    // Clear stored report data
+    window.currentReportData = null;
+}
+
+function generateReport() {
+    const dateFrom = document.getElementById('report_date_from').value;
+    const dateTo = document.getElementById('report_date_to').value;
+    const vendorId = document.getElementById('report_vendor_id').value;
+    
+    if (!dateFrom || !dateTo) {
+        alert('Please select both start and end dates');
+        return;
+    }
+    
+    // Show loading
+    const reportContent = document.getElementById('reportContent');
+    reportContent.style.display = 'block';
+    reportContent.innerHTML = `
+        <div class="text-center py-12">
+            <div class="animate-spin rounded-full h-16 w-16 border-b-2 border-purple-600 mx-auto"></div>
+            <p class="mt-4 text-gray-600 font-medium">Generating report...</p>
+        </div>
+    `;
+    
+    // Fetch report data
+    const params = new URLSearchParams({
+        date_from: dateFrom,
+        date_to: dateTo
+    });
+    if (vendorId) {
+        params.append('vendor_id', vendorId);
+    }
+    
+    fetch(`/finance/vendors/report?${params.toString()}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayReport(data.report);
+            } else {
+                reportContent.innerHTML = `
+                    <div class="text-center py-12">
+                        <p class="text-red-600 font-medium">Error: ${data.message || 'Failed to generate report'}</p>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            reportContent.innerHTML = `
+                <div class="text-center py-12">
+                    <p class="text-red-600 font-medium">Error generating report</p>
+                </div>
+            `;
+        });
+}
+
+function displayReport(report) {
+    const reportContent = document.getElementById('reportContent');
+    
+    // Show print and Excel buttons
+    document.getElementById('printBtn').style.display = 'inline-block';
+    document.getElementById('excelBtn').style.display = 'inline-block';
+    
+    // Store report data globally for Excel export
+    window.currentReportData = report;
+    
+    let html = `
+        <div id="printableReport" class="bg-white rounded-lg border-2 border-purple-200 overflow-hidden">
+            <!-- Report Header -->
+            <div class="bg-gradient-to-r from-purple-600 to-purple-700 text-white px-6 py-4 print:bg-purple-700">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h3 class="text-xl font-bold">📊 Vendor Transaction Report</h3>
+                        <p class="text-sm text-purple-100 mt-1">
+                            Period: ${report.date_from} to ${report.date_to}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Report Body -->
+            <div class="p-6">
+    `;
+    
+    // Loop through each vendor
+    report.vendors.forEach((vendor, index) => {
+        html += `
+            <div class="vendor-section mb-6 ${index > 0 ? 'border-t-2 border-gray-300 pt-6' : ''} print:break-inside-avoid">
+                <!-- Vendor Header -->
+                <div class="flex justify-between items-center mb-3 bg-gray-100 px-4 py-3 rounded-lg print:bg-gray-200">
+                    <div>
+                        <h4 class="text-lg font-bold text-gray-900">${vendor.vendor_name}</h4>
+                        <p class="text-xs text-gray-600 mt-0.5">
+                            ${vendor.contact_person ? 'Contact: ' + vendor.contact_person : ''} ${vendor.contact_phone ? '• ' + vendor.contact_phone : ''}
+                        </p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-xs text-gray-500 uppercase">Current Balance</div>
+                        <div class="text-lg font-bold ${vendor.current_balance > 0 ? 'text-red-600' : 'text-green-600'}">
+                            Rs. ${Number(vendor.current_balance).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Transactions Table -->
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm border-collapse">
+                        <thead>
+                            <tr class="bg-purple-100 print:bg-purple-200">
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Date</th>
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Type</th>
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Details</th>
+                                <th class="border border-gray-300 px-3 py-2 text-right font-semibold text-gray-700">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        // Loop through each day and transaction
+        vendor.daily_summary.forEach(day => {
+            let dayRowSpan = 0;
+            
+            // Count total rows for this day (including line items)
+            day.transactions.forEach(txn => {
+                if (txn.line_items && txn.line_items.length > 0) {
+                    dayRowSpan += txn.line_items.length;
+                } else {
+                    dayRowSpan += 1;
+                }
+            });
+            
+            let isFirstRowOfDay = true;
+            
+            day.transactions.forEach(txn => {
+                const isPayment = txn.type === 'payment';
+                const amountColor = isPayment ? 'text-green-700' : 'text-red-700';
+                const bgColor = isPayment ? 'bg-green-50' : 'bg-red-50';
+                
+                if (txn.line_items && txn.line_items.length > 0) {
+                    // Weighted purchase with line items
+                    txn.line_items.forEach((item, itemIndex) => {
+                        html += `<tr class="${bgColor} print:bg-white">`;
+                        
+                        // Date column (only on first row of the day)
+                        if (isFirstRowOfDay) {
+                            html += `<td class="border border-gray-300 px-3 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
+                            isFirstRowOfDay = false;
+                        }
+                        
+                        // Type column (only on first line item)
+                        if (itemIndex === 0) {
+                            html += `
+                                <td class="border border-gray-300 px-3 py-2 align-top" rowspan="${txn.line_items.length}">
+                                    <div class="font-medium ${amountColor}">${isPayment ? '💰 Payment' : '📦 Purchase'}</div>
+                                    <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
+                                    ${txn.description ? `<div class="text-xs text-gray-600 mt-1">${txn.description}</div>` : ''}
+                                </td>
+                            `;
+                        }
+                        
+                        // Details column (product details)
+                        html += `
+                            <td class="border border-gray-300 px-3 py-2">
+                                <div class="flex justify-between items-center">
+                                    <span class="font-medium text-gray-800">${item.product_name}</span>
+                                    <span class="text-gray-600 ml-4">${item.quantity} ${item.unit} × Rs. ${Number(item.rate_per_unit).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                </div>
+                            </td>
+                        `;
+                        
+                        // Amount column (only on first line item, show total)
+                        if (itemIndex === 0) {
+                            html += `
+                                <td class="border border-gray-300 px-3 py-2 text-right align-top font-bold ${amountColor}" rowspan="${txn.line_items.length}">
+                                    Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </td>
+                            `;
+                        }
+                        
+                        html += `</tr>`;
+                    });
+                } else {
+                    // Simple transaction (payment or flat purchase)
+                    html += `<tr class="${bgColor} print:bg-white">`;
+                    
+                    // Date column (only on first row of the day)
+                    if (isFirstRowOfDay) {
+                        html += `<td class="border border-gray-300 px-3 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
+                        isFirstRowOfDay = false;
+                    }
+                    
+                    // Type column
+                    html += `
+                        <td class="border border-gray-300 px-3 py-2">
+                            <div class="font-medium ${amountColor}">${isPayment ? '💰 Payment' : '📦 Purchase'}</div>
+                            <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
+                        </td>
+                    `;
+                    
+                    // Details column
+                    html += `
+                        <td class="border border-gray-300 px-3 py-2">
+                            ${txn.description ? `<span class="text-gray-700">${txn.description}</span>` : '<span class="text-gray-400 italic">No description</span>'}
+                        </td>
+                    `;
+                    
+                    // Amount column
+                    html += `
+                        <td class="border border-gray-300 px-3 py-2 text-right font-bold ${amountColor}">
+                            Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </td>
+                    `;
+                    
+                    html += `</tr>`;
+                }
+            });
+        });
+        
+        // Vendor Summary Row
+        html += `
+                            <tr class="bg-purple-100 font-bold print:bg-purple-200">
+                                <td colspan="3" class="border border-gray-300 px-3 py-2 text-right">
+                                    <span class="text-gray-700">Vendor Total:</span>
+                                    <span class="text-red-600 ml-4">Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                    <span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                </td>
+                                <td class="border border-gray-300 px-3 py-2 text-right ${(vendor.total_purchases - vendor.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
+                                    Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    });
+    
+    // Grand Total
+    html += `
+                <div class="border-t-4 border-purple-600 pt-4 mt-6 print:break-inside-avoid">
+                    <div class="bg-gradient-to-r from-purple-50 to-purple-100 rounded-lg p-4 border-2 border-purple-300 print:bg-purple-100">
+                        <h4 class="text-lg font-bold text-gray-900 mb-3">📈 Grand Total (All Vendors)</h4>
+                        <div class="grid grid-cols-3 gap-4">
+                            <div class="text-center">
+                                <div class="text-xs text-gray-600 uppercase mb-1">Total Purchases</div>
+                                <div class="text-2xl font-bold text-red-600">Rs. ${Number(report.grand_total.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs text-gray-600 uppercase mb-1">Total Payments</div>
+                                <div class="text-2xl font-bold text-green-600">Rs. ${Number(report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs text-gray-600 uppercase mb-1">Net Change</div>
+                                <div class="text-2xl font-bold ${(report.grand_total.total_purchases - report.grand_total.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
+                                    Rs. ${Number(report.grand_total.total_purchases - report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    reportContent.innerHTML = html;
+}
+
+function printReport() {
+    window.print();
+}
+
+function exportToExcel() {
+    if (!window.currentReportData) {
+        alert('Please generate a report first');
+        return;
+    }
+    
+    const report = window.currentReportData;
+    
+    // Create CSV content
+    let csvContent = "Vendor Transaction Report\n";
+    csvContent += `Period: ${report.date_from} to ${report.date_to}\n\n`;
+    
+    // Loop through each vendor
+    report.vendors.forEach((vendor, vendorIndex) => {
+        if (vendorIndex > 0) csvContent += "\n\n";
+        
+        csvContent += `${vendor.vendor_name}\n`;
+        csvContent += `Contact: ${vendor.contact_person || 'N/A'}${vendor.contact_phone ? ' • ' + vendor.contact_phone : ''}\n`;
+        csvContent += `Current Balance: Rs. ${Number(vendor.current_balance).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n\n`;
+        
+        // Table header
+        csvContent += "Date,Type,Details,Amount\n";
+        
+        // Loop through each day
+        vendor.daily_summary.forEach(day => {
+            day.transactions.forEach(txn => {
+                const type = txn.type === 'payment' ? 'Payment' : 'Purchase';
+                const amount = Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2});
+                
+                if (txn.line_items && txn.line_items.length > 0) {
+                    // Weighted purchase with line items
+                    txn.line_items.forEach((item, itemIndex) => {
+                        const date = itemIndex === 0 ? day.date : '';
+                        const typeCol = itemIndex === 0 ? `${type} (${txn.transaction_id})` : '';
+                        const details = `${item.product_name} (${item.quantity} ${item.unit} × Rs. ${Number(item.rate_per_unit).toLocaleString('en-PK', {minimumFractionDigits: 2})})`;
+                        const amountCol = itemIndex === 0 ? `Rs. ${amount}` : '';
+                        
+                        csvContent += `"${date}","${typeCol}","${details}","${amountCol}"\n`;
+                    });
+                } else {
+                    // Simple transaction
+                    const details = txn.description || 'No description';
+                    csvContent += `"${day.date}","${type} (${txn.transaction_id})","${details}","Rs. ${amount}"\n`;
+                }
+            });
+        });
+        
+        // Vendor summary
+        csvContent += `\n"Vendor Total","","Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})} | Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}","Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}"\n`;
+    });
+    
+    // Grand total
+    csvContent += `\n\nGrand Total (All Vendors)\n`;
+    csvContent += `Total Purchases,Rs. ${Number(report.grand_total.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
+    csvContent += `Total Payments,Rs. ${Number(report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
+    csvContent += `Net Change,Rs. ${Number(report.grand_total.total_purchases - report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
+    
+    // Create download link
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    const filename = `Vendor_Report_${report.date_from.replace(/ /g, '_')}_to_${report.date_to.replace(/ /g, '_')}.csv`;
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 </script>
+
+<!-- Report Modal -->
+<div id="reportModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="if(event.target === this) closeReportModal()">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1400px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #f3e8ff 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #c084fc; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    📊
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Vendor Report</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">View detailed purchase and payment summary</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeReportModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <!-- Report Filters - Compact Design -->
+            <div class="bg-gradient-to-r from-purple-50 to-purple-100 rounded-lg p-3 border border-purple-300 mb-4 shadow-sm">
+                <div class="flex flex-wrap items-end gap-3">
+                    <div class="flex-1 min-w-[150px]">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">From <span class="text-red-600">*</span></label>
+                        <input type="date" id="report_date_from" value="{{ date('Y-m-01') }}"
+                               class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900">
+                    </div>
+                    <div class="flex-1 min-w-[150px]">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">To <span class="text-red-600">*</span></label>
+                        <input type="date" id="report_date_to" value="{{ date('Y-m-d') }}"
+                               class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900">
+                    </div>
+                    <div class="flex-1 min-w-[180px]">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">Vendor</label>
+                        <select id="report_vendor_id"
+                                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900 bg-white">
+                            <option value="">All Vendors</option>
+                            @foreach($vendors as $vendor)
+                                <option value="{{ $vendor->id }}">{{ $vendor->vendor_name }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="generateReport()" 
+                                class="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            🔍 Generate
+                        </button>
+                        <button onclick="printReport()" id="printBtn" style="display: none;"
+                                class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            🖨️ Print
+                        </button>
+                        <button onclick="exportToExcel()" id="excelBtn" style="display: none;"
+                                class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            📊 Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Report Content -->
+            <div id="reportContent" style="display: none;">
+                <!-- Report will be loaded here -->
+            </div>
+        </div>
+    </div>
+</div>
 
 @endsection
 

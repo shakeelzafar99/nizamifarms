@@ -320,6 +320,7 @@ Route::middleware(['auth'])->group(function () {
         // Vendor Routes
         Route::prefix('vendors')->name('vendors.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index'])->name('index');
+            Route::get('/report', [\App\Http\Controllers\FIN\VendorController::class, 'getReport'])->name('report');
             Route::get('/create', [\App\Http\Controllers\FIN\VendorController::class, 'create'])->name('create');
             Route::post('/', [\App\Http\Controllers\FIN\VendorController::class, 'store'])->name('store');
             Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show'])->name('show');

@@ -132,3 +132,4 @@ Laravel silently ignores fields not in `$fillable` for security (mass-assignment
 
 Vendors can now properly switch between purchase methods, and the system correctly shows the appropriate buttons and options based on their preference.
 
+

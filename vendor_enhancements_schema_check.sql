@@ -36,3 +36,4 @@ WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 't_fin_vendor_products'
   AND COLUMN_NAME = 'vendor_id';
 
+

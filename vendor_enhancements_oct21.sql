@@ -125,3 +125,4 @@ SELECT '1. Added default_purchase_method to t_fin_vendors (by_weight or by_total
 SELECT '2. Added bill_image to t_fin_ledger (stores image path)' as '';
 SELECT '3. Confirmed vendor_products already have vendor_id (vendor-specific)' as '';
 
+

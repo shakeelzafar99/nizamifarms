@@ -49,7 +49,7 @@
 - [ ] Click "More Actions" → "SDK Manager"
 - [ ] In "SDK Platforms" tab, install:
   - ✅ Android 13.0 (Tiramisu) API Level 33 or higher
-- [ ] In "SDK Tools" tab, ensure these are installed:
+- [ ] In "SDK Tools" tab, ensure these are iimage.pngnstalled:
   - ✅ Android SDK Build-Tools
   - ✅ Android SDK Command-line Tools
   - ✅ Android Emulator
@@ -165,4 +165,5 @@ Reply with:
 ---
 
 **Take your time with the installation. Once done, development will be smooth! 🎉**
+
 
