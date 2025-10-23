@@ -207,9 +207,14 @@
                                     👁️
                                 </button>
                                 <button onclick="openEditTransactionModal({{ $transaction->id }})" 
-                                        class="text-indigo-600 hover:text-indigo-900"
+                                        class="text-indigo-600 hover:text-indigo-900 mr-2"
                                         title="Edit Transaction">
                                     ✏️
+                                </button>
+                                <button onclick="confirmDeleteTransaction({{ $transaction->id }}, '{{ $transaction->transaction_type }}', {{ $transaction->amount }})" 
+                                        class="text-red-600 hover:text-red-900"
+                                        title="Delete Transaction">
+                                    🗑️
                                 </button>
                             </td>
                         </tr>
@@ -226,55 +231,78 @@
     </div>
 </div>
 
-<!-- Record Purchase Modal - Modern Design -->
-<div id="purchaseModal" class="hidden fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 overflow-y-auto" style="z-index: 9999;">
-    <div class="bg-white rounded-xl shadow-2xl max-w-md w-full my-8 border-4 border-red-500" onclick="event.stopPropagation()">
-        <div class="p-6 max-h-[85vh] overflow-y-auto">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-semibold text-gray-900">📦 Record Purchase</h3>
-                <button onclick="closePurchaseModal()" class="text-gray-500 hover:text-gray-700 text-2xl leading-none font-bold">&times;</button>
+<!-- Record Purchase Modal - Elegant Design (Matching Weighted Purchase Style) -->
+<div id="purchaseModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 600px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #fecaca; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    📦
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Record Purchase</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Enter total purchase amount from vendor</p>
+                </div>
             </div>
-            <form action="{{ route('fin.vendors.purchase', $vendor->id) }}" method="POST" enctype="multipart/form-data">
+            <button type="button" onclick="closePurchaseModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <form action="{{ route('fin.vendors.purchase', $vendor->id) }}" method="POST" id="purchaseForm" enctype="multipart/form-data">
                 @csrf
-                <div class="space-y-4">
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <!-- Date Field -->
                     <div>
-                        <label class="block text-sm font-semibold text-gray-800 mb-1">Date <span class="text-red-600">*</span></label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Date <span class="text-red-500">*</span></label>
                         <input type="date" name="transaction_date" value="{{ date('Y-m-d') }}" required
-                               class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 text-gray-900">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent">
                     </div>
+                    
+                    <!-- Amount Field -->
                     <div>
-                        <label class="block text-sm font-semibold text-gray-800 mb-1">Amount (Rs.) <span class="text-red-600">*</span></label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Amount (Rs.) <span class="text-red-500">*</span></label>
                         <input type="number" name="amount" step="0.01" min="0.01" required placeholder="0.00"
-                               class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 text-gray-900">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-lg font-semibold">
                     </div>
+                    
+                    <!-- Description -->
                     <div>
-                        <label class="block text-sm font-semibold text-gray-800 mb-1">Description</label>
-                        <textarea name="description" rows="3" placeholder="Optional purchase details..."
-                                  class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 text-gray-900"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
+                        <textarea name="description" rows="2" placeholder="Add any notes about this purchase..."
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"></textarea>
                     </div>
+                    
+                    <!-- Bill Image Upload -->
                     <div>
-                        <label class="block text-sm font-semibold text-gray-800 mb-1">Bill Image 📷</label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Bill Image 📷</label>
                         <input type="file" name="bill_image" accept="image/*"
-                               class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 text-gray-900 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100">
-                        <p class="text-xs text-gray-600 mt-1">📸 Upload vendor's bill/receipt (optional)</p>
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100">
+                        <p class="text-xs text-gray-500 mt-1">📸 Upload vendor's bill/receipt (optional)</p>
                     </div>
-                    <div class="p-3 bg-red-50 border-2 border-red-200 rounded-md">
-                        <p class="text-xs text-red-900 font-semibold">
+                    
+                    <!-- Warning -->
+                    <div style="padding: 12px; background: #fef2f2; border: 2px solid #fecaca; border-radius: 8px;">
+                        <p style="font-size: 12px; color: #991b1b; font-weight: 600; margin: 0;">
                             ⚠️ This will increase the amount payable to this vendor.
                         </p>
                     </div>
-                    <div class="flex gap-3 mt-6">
-                        <button type="button" onclick="closePurchaseModal()" 
-                                class="flex-1 px-4 py-2 border-2 border-gray-300 text-gray-700 font-semibold rounded-md hover:bg-gray-100 transition">
-                            Cancel
-                        </button>
-                        <button type="submit" 
-                                class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-md transition shadow-md">
-                            ✓ Record Purchase
-                        </button>
-                    </div>
                 </div>
             </form>
+        </div>
+        
+        <!-- Fixed Footer with Actions -->
+        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 20px 24px; flex-shrink: 0;">
+            <div style="display: flex; gap: 12px;">
+                <button type="button" onclick="closePurchaseModal()" style="flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                    Cancel
+                </button>
+                <button type="submit" form="purchaseForm"
+                        style="flex: 1; padding: 12px 16px; background: #dc2626; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
+                    ✓ Record Purchase
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -840,8 +868,16 @@ function openEditTransactionModal(transactionId) {
             if (data.success) {
                 const transaction = data.transaction;
                 
-                // Populate form
+                // Check if this is a weighted purchase (has line items)
+                if (transaction.line_items && transaction.line_items.length > 0) {
+                    // Open weighted purchase edit modal
+                    openWeightedPurchaseEditModal(transaction);
+                    return;
+                }
+                
+                // Populate form for simple transactions
                 document.getElementById('edit_transaction_id').value = transaction.id;
+                document.getElementById('edit_transaction_date').value = transaction.transaction_date.split(' ')[0];
                 document.getElementById('edit_amount').value = transaction.amount;
                 document.getElementById('edit_description').value = transaction.description || '';
                 
@@ -871,6 +907,166 @@ function openEditTransactionModal(transactionId) {
         });
 }
 
+// Edit Weighted Purchase Modal
+function openWeightedPurchaseEditModal(transaction) {
+    console.log('Opening weighted purchase edit modal with transaction:', transaction);
+    
+    // Populate edit form with existing data
+    document.getElementById('edit_weighted_transaction_id').value = transaction.id;
+    
+    // Set date directly (backend now returns Y-m-d format)
+    document.getElementById('edit_weighted_date').value = transaction.transaction_date;
+    document.getElementById('edit_weighted_description').value = transaction.description || '';
+    
+    // Clear and populate line items
+    const container = document.getElementById('editLineItemsContainer');
+    container.innerHTML = '';
+    
+    let editLineItemCounter = 0;
+    transaction.line_items.forEach((item, index) => {
+        console.log('Adding line item:', item);
+        addEditLineItem(item, editLineItemCounter++);
+    });
+    
+    // Update grand total after a short delay to ensure DOM is ready
+    setTimeout(() => {
+        updateEditGrandTotal();
+    }, 100);
+    
+    // Show modal
+    const modal = document.getElementById('editWeightedPurchaseModal');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+}
+
+function closeEditWeightedPurchaseModal() {
+    const modal = document.getElementById('editWeightedPurchaseModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    document.getElementById('editLineItemsContainer').innerHTML = '';
+}
+
+function addEditLineItem(existingItem = null, index = null) {
+    const container = document.getElementById('editLineItemsContainer');
+    const itemIndex = index !== null ? index : Date.now();
+    
+    console.log('addEditLineItem called with:', {existingItem, index, itemIndex});
+    
+    // Build product options HTML
+    let productOptionsHtml = '<option value="">Select Product</option>';
+    vendorProducts.forEach(p => {
+        const selected = existingItem && existingItem.vendor_product_id == p.id ? 'selected' : '';
+        console.log(`Product ${p.product_name}: existingItem.vendor_product_id=${existingItem?.vendor_product_id}, p.id=${p.id}, selected=${selected}`);
+        productOptionsHtml += `<option value="${p.id}" data-unit="${p.unit}" data-rate="${p.default_rate}" data-name="${p.product_name}" ${selected}>${p.product_name}</option>`;
+    });
+    
+    const itemHtml = `
+        <div class="edit-line-item border border-gray-300 rounded-lg p-3 bg-gray-50" data-index="${itemIndex}">
+            <div class="grid grid-cols-12 gap-2 items-end">
+                <div class="col-span-4">
+                    <label class="block text-xs font-medium text-gray-700 mb-1">Product</label>
+                    <select name="items[${itemIndex}][product_id]" required onchange="updateEditProductDetails(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
+                        ${productOptionsHtml}
+                    </select>
+                    <input type="hidden" name="items[${itemIndex}][product_name]" value="${existingItem ? existingItem.product_name : ''}">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                    <input type="number" name="items[${itemIndex}][quantity]" step="0.001" min="0.001" value="${existingItem ? existingItem.quantity : ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-700 mb-1">Unit</label>
+                    <input type="text" name="items[${itemIndex}][unit]" value="${existingItem ? existingItem.unit : ''}" required readonly class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100">
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-xs font-medium text-gray-700 mb-1">Rate</label>
+                    <input type="number" name="items[${itemIndex}][rate]" step="0.01" min="0.01" value="${existingItem ? existingItem.rate_per_unit : ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
+                </div>
+                <div class="col-span-1">
+                    <label class="block text-xs font-medium text-gray-700 mb-1">Total</label>
+                    <input type="text" readonly class="line-total w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100 font-semibold" value="${existingItem ? parseFloat(existingItem.line_total).toFixed(2) : '0.00'}">
+                </div>
+                <div class="col-span-1 flex items-end justify-center">
+                    <button type="button" onclick="removeEditLineItem(${itemIndex})" class="px-2 py-1.5 text-red-600 hover:text-red-800 text-lg font-bold">×</button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    container.insertAdjacentHTML('beforeend', itemHtml);
+}
+
+function updateEditProductDetails(index) {
+    const item = document.querySelector(`.edit-line-item[data-index="${index}"]`);
+    const select = item.querySelector('select');
+    const selectedOption = select.options[select.selectedIndex];
+    
+    if (selectedOption.value) {
+        item.querySelector('input[name*="[unit]"]').value = selectedOption.dataset.unit || '';
+        item.querySelector('input[name*="[rate]"]').value = selectedOption.dataset.rate || '';
+        item.querySelector('input[name*="[product_name]"]').value = selectedOption.dataset.name || selectedOption.text;
+        calculateEditLineTotal(index);
+    }
+}
+
+function calculateEditLineTotal(index) {
+    const item = document.querySelector(`.edit-line-item[data-index="${index}"]`);
+    const qty = parseFloat(item.querySelector('input[name*="[quantity]"]').value) || 0;
+    const rate = parseFloat(item.querySelector('input[name*="[rate]"]').value) || 0;
+    const total = qty * rate;
+    
+    item.querySelector('.line-total').value = total.toFixed(2);
+    updateEditGrandTotal();
+}
+
+function removeEditLineItem(index) {
+    document.querySelector(`.edit-line-item[data-index="${index}"]`).remove();
+    updateEditGrandTotal();
+}
+
+function updateEditGrandTotal() {
+    let total = 0;
+    document.querySelectorAll('#editLineItemsContainer .line-total').forEach(input => {
+        total += parseFloat(input.value) || 0;
+    });
+    document.getElementById('editGrandTotal').textContent = 'Rs. ' + total.toFixed(2);
+}
+
+function submitEditWeightedPurchase() {
+    const form = document.getElementById('editWeightedPurchaseForm');
+    const formData = new FormData(form);
+    const transactionId = document.getElementById('edit_weighted_transaction_id').value;
+    
+    // Validate that we have at least one line item
+    const lineItems = document.querySelectorAll('.edit-line-item');
+    if (lineItems.length === 0) {
+        alert('Please add at least one product line item');
+        return;
+    }
+    
+    fetch(`/finance/vendors/transaction/${transactionId}/update`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            closeEditWeightedPurchaseModal();
+            // Force a full page reload to refresh all data including balance cards
+            window.location.reload(true);
+        } else {
+            alert('Error: ' + (data.message || 'Failed to update transaction'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error updating transaction');
+    });
+}
+
 function closeEditTransactionModal() {
     const modal = document.getElementById('editTransactionModal');
     modal.classList.add('hidden');
@@ -885,7 +1081,7 @@ function submitEditTransaction() {
     const form = document.getElementById('editTransactionForm');
     const formData = new FormData(form);
     
-    fetch(`/finance/ledger/transaction/${transactionId}/update`, {
+    fetch(`/finance/vendors/transaction/${transactionId}/update`, {
         method: 'POST',
         body: formData,
         headers: {
@@ -895,9 +1091,9 @@ function submitEditTransaction() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Transaction updated successfully!');
             closeEditTransactionModal();
-            location.reload(); // Reload to show updated data
+            // Force a full page reload to refresh all data including balance cards
+            window.location.reload(true);
         } else {
             alert('Error: ' + (data.message || 'Failed to update transaction'));
         }
@@ -906,6 +1102,45 @@ function submitEditTransaction() {
         console.error('Error:', error);
         alert('Error updating transaction');
     });
+}
+
+// Delete Transaction Function
+function confirmDeleteTransaction(transactionId, transactionType, amount) {
+    const typeName = transactionType === 'vendor_purchase' ? 'Purchase' : 'Payment';
+    const message = `Are you sure you want to delete this ${typeName} of Rs. ${parseFloat(amount).toFixed(2)}?\n\nThis will:\n- Remove the transaction from ledger\n- Reverse the account balances\n- Delete any associated line items\n\nThis action cannot be undone!`;
+    
+    if (confirm(message)) {
+        // Show loading state
+        const deleteBtn = event.target;
+        const originalText = deleteBtn.innerHTML;
+        deleteBtn.innerHTML = '⏳';
+        deleteBtn.disabled = true;
+        
+        fetch(`/finance/vendors/transaction/${transactionId}/delete`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Transaction deleted successfully!');
+                location.reload();
+            } else {
+                alert('Error: ' + (data.message || 'Failed to delete transaction'));
+                deleteBtn.innerHTML = originalText;
+                deleteBtn.disabled = false;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error deleting transaction');
+            deleteBtn.innerHTML = originalText;
+            deleteBtn.disabled = false;
+        });
+    }
 }
 </script>
 
@@ -966,6 +1201,12 @@ function submitEditTransaction() {
                 
                 <div style="display: flex; flex-direction: column; gap: 16px;">
                     <div>
+                        <label class="block text-sm font-semibold text-gray-800 mb-1">Date <span class="text-red-600">*</span></label>
+                        <input type="date" id="edit_transaction_date" name="transaction_date" required
+                               class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-gray-900">
+                    </div>
+                    
+                    <div>
                         <label class="block text-sm font-semibold text-gray-800 mb-1">Amount (Rs.) <span class="text-red-600">*</span></label>
                         <input type="number" id="edit_amount" name="amount" step="0.01" min="0.01" required
                                class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-gray-900">
@@ -1008,6 +1249,86 @@ function submitEditTransaction() {
                     style="flex: 1; padding: 10px 16px; border: none; background: #f59e0b; color: white; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                 ✓ Update Transaction
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Weighted Purchase Modal -->
+<div id="editWeightedPurchaseModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1000px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #fed7aa; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    ✏️
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Edit Weighted Purchase</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Modify products, quantities, and rates</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeEditWeightedPurchaseModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <form id="editWeightedPurchaseForm" method="POST" enctype="multipart/form-data">
+                @csrf
+                <input type="hidden" id="edit_weighted_transaction_id" name="transaction_id">
+                
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <!-- Date Field -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1.5">Date <span class="text-red-500">*</span></label>
+                            <input type="date" id="edit_weighted_date" name="transaction_date" required
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent">
+                        </div>
+                        <div class="flex items-end">
+                            <button type="button" onclick="addEditLineItem()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
+                                + Add Line Item
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Line Items Section -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Purchase Items</label>
+                        <div id="editLineItemsContainer" class="space-y-3">
+                            <!-- Line items will be added here dynamically -->
+                        </div>
+                    </div>
+                    
+                    <!-- Description -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
+                        <textarea id="edit_weighted_description" name="description" rows="2" placeholder="Add any notes about this purchase..."
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm"></textarea>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
+        <!-- Fixed Footer with Total and Actions -->
+        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 20px 24px; flex-shrink: 0;">
+            <!-- Total Display -->
+            <div style="margin-bottom: 16px; padding: 16px; background: linear-gradient(135deg, #fed7aa 0%, #ffedd5 100%); border: 2px solid #fb923c; border-radius: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 18px; font-weight: 600; color: #7c2d12;">Grand Total:</span>
+                    <span style="font-size: 28px; font-weight: bold; color: #7c2d12;" id="editGrandTotal">Rs. 0.00</span>
+                </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div style="display: flex; gap: 12px;">
+                <button type="button" onclick="closeEditWeightedPurchaseModal()" style="flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                    Cancel
+                </button>
+                <button type="button" onclick="submitEditWeightedPurchase()"
+                        style="flex: 1; padding: 12px 16px; background: #ea580c; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
+                    ✓ Update Purchase
+                </button>
+            </div>
         </div>
     </div>
 </div>

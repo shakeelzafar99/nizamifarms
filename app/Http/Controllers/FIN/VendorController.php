@@ -38,6 +38,14 @@ class VendorController extends Controller
 
         $vendors = $query->orderBy('vendor_name', 'asc')->paginate(20);
 
+        // Calculate total balance for all active vendors
+        $totalBalance = VendorModel::with('account')
+            ->where('is_active', 1)
+            ->get()
+            ->sum(function($vendor) {
+                return $vendor->account ? $vendor->account->current_balance : 0;
+            });
+
         // Get last payment info for each vendor
         foreach ($vendors as $vendor) {
             if ($vendor->account) {
@@ -59,7 +67,7 @@ class VendorController extends Controller
             }
         }
 
-        return view('fin.vendor.index', compact('vendors'));
+        return view('fin.vendor.index', compact('vendors', 'totalBalance'));
     }
 
     /**
@@ -386,13 +394,23 @@ class VendorController extends Controller
 
             DB::beginTransaction();
 
-            // Delete the vendor account
-            if ($vendor->account) {
-                $vendor->account->delete();
-            }
+            // Store account ID before deleting vendor
+            $accountId = $vendor->account_id;
+
+            // Set account_id to null first to avoid foreign key constraint
+            $vendor->account_id = null;
+            $vendor->save();
 
             // Delete the vendor
             $vendor->delete();
+
+            // Delete the vendor account
+            if ($accountId) {
+                $account = AccountModel::find($accountId);
+                if ($account) {
+                    $account->delete();
+                }
+            }
 
             DB::commit();
 
@@ -807,6 +825,244 @@ class VendorController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error generating report: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete vendor transaction (purchase or payment)
+     * Reverses all ledger entries and balances
+     */
+    public function deleteTransaction($transactionId)
+    {
+        try {
+            DB::beginTransaction();
+
+            // Find the transaction
+            $transaction = LedgerModel::findOrFail($transactionId);
+            
+            // Verify it's a vendor transaction
+            if (!in_array($transaction->transaction_type, [
+                LedgerModel::TYPE_VENDOR_PURCHASE,
+                LedgerModel::TYPE_VENDOR_PAYMENT
+            ])) {
+                throw new \Exception("This is not a vendor transaction");
+            }
+
+            // Get the vendor account - for both purchases and payments, vendor is to_account_id
+            $vendorAccount = AccountModel::find($transaction->to_account_id);
+            if (!$vendorAccount) {
+                Log::error("Vendor account not found. Transaction ID: {$transactionId}, to_account_id: {$transaction->to_account_id}");
+                throw new \Exception("Vendor account not found (ID: {$transaction->to_account_id})");
+            }
+            
+            // Verify it's actually a vendor account (allow both 'vendor' and 'vendor_payable')
+            $validCategories = ['vendor', 'vendor_payable'];
+            if ($vendorAccount->account_category && !in_array($vendorAccount->account_category, $validCategories)) {
+                Log::error("Account is not a vendor account. Category: {$vendorAccount->account_category}");
+                throw new \Exception("This is not a vendor account (Category: {$vendorAccount->account_category})");
+            }
+
+            $isPurchase = $transaction->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE;
+            $amount = $transaction->amount;
+
+            // Reverse account balances
+            if ($isPurchase) {
+                // Reverse purchase: decrease vendor balance and purchase account balance
+                $vendorAccount->current_balance -= $amount;
+                $vendorAccount->save();
+
+                // Get and update purchase account
+                $purchaseAccount = AccountModel::find($transaction->from_account_id);
+                if ($purchaseAccount) {
+                    $purchaseAccount->current_balance -= $amount;
+                    $purchaseAccount->save();
+                }
+            } else {
+                // Reverse payment: increase vendor balance and payment source balance
+                // Only if the transaction was approved
+                if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
+                    $vendorAccount->current_balance += $amount;
+                    $vendorAccount->save();
+
+                    // Get and update payment source account
+                    $paymentAccount = AccountModel::find($transaction->from_account_id);
+                    if ($paymentAccount) {
+                        $paymentAccount->current_balance += $amount;
+                        $paymentAccount->save();
+                    }
+                }
+            }
+
+            // Delete associated line items if it's a weighted purchase
+            if ($isPurchase) {
+                \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)->delete();
+            }
+
+            // Delete the transaction
+            $transaction->delete();
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Transaction deleted successfully'
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error deleting vendor transaction: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error deleting transaction: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Update vendor transaction
+     * Allows editing date, amount, description, and line items
+     */
+    public function updateTransaction(Request $request, $transactionId)
+    {
+        $request->validate([
+            'transaction_date' => 'required|date',
+            'amount' => 'nullable|numeric|min:0.01',
+            'description' => 'nullable|string|max:500',
+            'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
+            'items' => 'nullable|array',
+            'items.*.product_id' => 'required_with:items|exists:t_fin_vendor_products,id',
+            'items.*.quantity' => 'required_with:items|numeric|min:0.001',
+            'items.*.rate' => 'required_with:items|numeric|min:0.01',
+            'items.*.unit' => 'required_with:items|string|max:50',
+            'items.*.product_name' => 'required_with:items|string|max:255'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $transaction = LedgerModel::findOrFail($transactionId);
+            
+            // Verify it's a vendor transaction
+            if (!in_array($transaction->transaction_type, [
+                LedgerModel::TYPE_VENDOR_PURCHASE,
+                LedgerModel::TYPE_VENDOR_PAYMENT
+            ])) {
+                throw new \Exception("This is not a vendor transaction");
+            }
+
+            $isPurchase = $transaction->transaction_type === LedgerModel::TYPE_VENDOR_PURCHASE;
+            $oldAmount = $transaction->amount;
+            
+            // Check if this is a weighted purchase
+            $hasLineItems = \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)->exists();
+
+            // Handle weighted purchase updates
+            if ($hasLineItems && $request->has('items')) {
+                // Delete old line items
+                \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)->delete();
+                
+                // Calculate new total from items
+                $newAmount = 0;
+                foreach ($request->items as $item) {
+                    $lineTotal = $item['quantity'] * $item['rate'];
+                    $newAmount += $lineTotal;
+                    
+                    // Create new line item
+                    \App\Models\FIN\VendorPurchaseItemModel::create([
+                        'ledger_id' => $transaction->id,
+                        'vendor_product_id' => $item['product_id'],
+                        'product_name' => $item['product_name'],
+                        'quantity' => $item['quantity'],
+                        'unit' => $item['unit'],
+                        'rate_per_unit' => $item['rate'],
+                        'line_total' => $lineTotal
+                    ]);
+                }
+                
+                $transaction->amount = $newAmount;
+            } elseif ($request->has('amount')) {
+                // Simple transaction - use provided amount
+                $newAmount = $request->amount;
+                $transaction->amount = $newAmount;
+            } else {
+                $newAmount = $oldAmount;
+            }
+
+            // Update basic fields
+            $transaction->transaction_date = $request->transaction_date;
+            if ($request->has('description')) {
+                $transaction->description = $request->description;
+            }
+
+            // Handle bill image update
+            if ($request->hasFile('bill_image')) {
+                // Delete old image if exists
+                if ($transaction->bill_image && \Storage::disk('public')->exists($transaction->bill_image)) {
+                    \Storage::disk('public')->delete($transaction->bill_image);
+                }
+                
+                // Upload new image
+                $file = $request->file('bill_image');
+                $filename = 'vendor_bill_' . $transaction->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
+                $transaction->bill_image = $billImagePath;
+            }
+
+            $transaction->save();
+
+            // Update account balances if amount changed
+            if ($oldAmount != $newAmount) {
+                $amountDiff = $newAmount - $oldAmount;
+                
+                // Get accounts
+                $vendorAccount = AccountModel::find($transaction->to_account_id);
+                
+                if ($isPurchase) {
+                    // Update vendor balance
+                    if ($vendorAccount) {
+                        $vendorAccount->current_balance += $amountDiff;
+                        $vendorAccount->save();
+                    }
+                    
+                    // Update purchase account
+                    $purchaseAccount = AccountModel::find($transaction->from_account_id);
+                    if ($purchaseAccount) {
+                        $purchaseAccount->current_balance += $amountDiff;
+                        $purchaseAccount->save();
+                    }
+                } else {
+                    // For payments, only update if approved
+                    if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
+                        if ($vendorAccount) {
+                            $vendorAccount->current_balance -= $amountDiff;
+                            $vendorAccount->save();
+                        }
+                        
+                        $paymentAccount = AccountModel::find($transaction->from_account_id);
+                        if ($paymentAccount) {
+                            $paymentAccount->current_balance -= $amountDiff;
+                            $paymentAccount->save();
+                        }
+                    }
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Transaction updated successfully'
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error updating vendor transaction: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error updating transaction: ' . $e->getMessage()
             ], 500);
         }
     }

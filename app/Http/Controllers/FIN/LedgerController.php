@@ -715,6 +715,7 @@ class LedgerController extends Controller
                     ->get()
                     ->map(function($item) {
                         return [
+                            'vendor_product_id' => $item->vendor_product_id,
                             'product_name' => $item->product_name,
                             'quantity' => $item->quantity,
                             'unit' => $item->unit,
@@ -729,7 +730,8 @@ class LedgerController extends Controller
                 'success' => true,
                 'transaction' => [
                     'id' => $transaction->id,
-                    'transaction_date' => $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-',
+                    'transaction_date' => $transaction->transaction_date ? $transaction->transaction_date->format('Y-m-d') : '-',
+                    'transaction_date_formatted' => $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-',
                     'transaction_type' => ucfirst(str_replace('_', ' ', $transaction->transaction_type)),
                     'description' => $transaction->description,
                     'amount' => $transaction->amount,

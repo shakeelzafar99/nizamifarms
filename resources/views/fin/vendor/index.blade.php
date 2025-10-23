@@ -108,7 +108,21 @@
 </style>
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-semibold text-gray-900">Vendors</h1>
+        <div class="flex items-center gap-4">
+            <h1 class="text-2xl font-semibold text-gray-900">Vendors</h1>
+            <!-- Total Balance Card -->
+            <div class="bg-gradient-to-r from-red-50 to-red-100 border-2 border-red-300 rounded-lg px-4 py-2 shadow-sm">
+                <div class="flex items-center gap-3">
+                    <div class="text-2xl">💰</div>
+                    <div>
+                        <div class="text-xs font-semibold text-red-700 uppercase">Total Payable</div>
+                        <div class="text-lg font-bold {{ $totalBalance > 0 ? 'text-red-600' : 'text-green-600' }}">
+                            Rs. {{ number_format($totalBalance, 2) }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="flex gap-3">
             <button onclick="openReportModal()" 
                     class="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md"
