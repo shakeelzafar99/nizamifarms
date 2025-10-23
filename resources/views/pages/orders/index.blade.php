@@ -2943,10 +2943,12 @@ function freezeProductName(index) {
     
     const productInput = item.querySelector(`input[name="items[${index}][name]"]`);
     const productIdInput = item.querySelector(`input[name="items[${index}][id]"]`);
-    const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
     
-    // Only freeze if product is selected and quantity is entered
-    if (productInput && productIdInput && productIdInput.value && quantityInput && quantityInput.value > 0) {
+    // Only freeze if product is selected (has product_id and name)
+    if (productInput && productInput.value && productIdInput && productIdInput.value) {
+        // Check if already frozen
+        if (productInput.readOnly) return;
+        
         // Freeze the product input
         productInput.readOnly = true;
         productInput.style.backgroundColor = '#f3f4f6';
@@ -4536,11 +4538,20 @@ function showProductResults(products, index) {
     dropdown.style.display = 'block';
 }
 function selectProduct(index, productId, productName, price) {
-    // Fill in the product details
-    const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
-    const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
+    // Get the specific line item by data-index attribute to avoid selecting wrong row
+    const lineItem = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!lineItem) {
+        console.error('Line item not found for index:', index);
+        return;
+    }
+    
+    // Fill in the product details using the specific line item context
+    const nameInput = lineItem.querySelector(`input[name="items[${index}][name]"]`);
+    const priceInput = lineItem.querySelector(`input[name="items[${index}][unit_price]"]`);
+    const idInput = lineItem.querySelector(`input[name="items[${index}][id]"]`);
     
     if (nameInput) nameInput.value = productName;
+    if (idInput) idInput.value = productId;
     if (priceInput) {
         priceInput.value = price;
         // Make price readonly when selected from product dropdown
@@ -4556,6 +4567,11 @@ function selectProduct(index, productId, productName, price) {
     
     // Hide dropdown
     hideProductDropdown(index);
+    
+    // Freeze the product name immediately after selection
+    setTimeout(() => {
+        freezeProductName(index);
+    }, 50);
     
     // Auto-add new line item after a short delay to allow current selection to complete
     setTimeout(() => {

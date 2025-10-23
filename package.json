@@ -4,7 +4,7 @@
     "scripts": {
         "build": "vite build",
         "dev": "vite",
-        "serve": "php artisan serve",
+        "serve": "php artisan serve --host=0.0.0.0",
         "tailwind:watch": "tailwindcss -i ./resources/css/app.css -o ./public/css/app.css --watch",
         "start": "concurrently \"npm run serve\" \"npm run dev\""
     },

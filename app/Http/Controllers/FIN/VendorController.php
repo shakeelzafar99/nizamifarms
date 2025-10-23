@@ -170,11 +170,12 @@ class VendorController extends Controller
         $vendorAccountId = $vendor->account ? $vendor->account->id : null;
         
         $ledgerWithBalance = $ledger->map(function($transaction) use (&$runningBalance, $vendorAccountId) {
-            if ($transaction->to_account_id === $vendorAccountId) {
-                // Purchase - increases liability
+            // Check transaction type instead of account direction
+            if ($transaction->transaction_type === 'vendor_purchase') {
+                // Purchase - increases liability (vendor owes us or we owe vendor)
                 $runningBalance += $transaction->amount;
-            } else {
-                // Payment - decreases liability
+            } elseif ($transaction->transaction_type === 'vendor_payment') {
+                // Payment - decreases liability (we pay vendor)
                 $runningBalance -= $transaction->amount;
             }
             
@@ -673,6 +674,7 @@ class VendorController extends Controller
             $dateFrom = $request->input('date_from');
             $dateTo = $request->input('date_to');
             $vendorId = $request->input('vendor_id');
+            $showPayments = $request->input('show_payments', '1') === '1'; // Default to showing payments
 
             if (!$dateFrom || !$dateTo) {
                 return response()->json([
@@ -700,15 +702,17 @@ class VendorController extends Controller
                 }
 
                 // Get all transactions for this vendor in the date range
+                $transactionTypes = [LedgerModel::TYPE_VENDOR_PURCHASE];
+                if ($showPayments) {
+                    $transactionTypes[] = LedgerModel::TYPE_VENDOR_PAYMENT;
+                }
+                
                 $transactions = LedgerModel::where(function($q) use ($vendor) {
                         $q->where('from_account_id', $vendor->account->id)
                           ->orWhere('to_account_id', $vendor->account->id);
                     })
                     ->whereBetween('transaction_date', [$dateFrom, $dateTo])
-                    ->whereIn('transaction_type', [
-                        LedgerModel::TYPE_VENDOR_PURCHASE,
-                        LedgerModel::TYPE_VENDOR_PAYMENT
-                    ])
+                    ->whereIn('transaction_type', $transactionTypes)
                     ->orderBy('transaction_date')
                     ->orderBy('created_at')
                     ->get();

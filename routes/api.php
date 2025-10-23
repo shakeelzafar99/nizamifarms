@@ -69,3 +69,26 @@ Route::prefix('webhook')->group(function () {
   
  
 // Protected routes (requires authentication)
+
+// Mobile App API Routes
+// These routes are for the mobile app and return JSON responses
+
+// Authentication (uses existing AuthController)
+Route::post('/auth/authenticate', [AuthController::class, 'authenticate']);
+
+// Authenticated mobile routes
+Route::middleware('auth:sanctum')->group(function () {
+    
+    // Auth endpoints
+    Route::get('/auth/me', [AuthController::class, 'me']);
+    Route::get('/auth/logout', [AuthController::class, 'logout']);
+    
+    // Rider-specific routes
+    Route::prefix('rider')->group(function () {
+        // TODO: Add rider-specific routes here as we build features
+        // Examples:
+        // Route::get('/orders', [OrderController::class, 'apiRiderOrders']);
+        // Route::get('/ledger', [EmployeeCashController::class, 'apiShow']);
+        // Route::get('/requests', [RequestController::class, 'apiIndex']);
+    });
+});

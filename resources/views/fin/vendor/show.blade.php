@@ -309,8 +309,8 @@
                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent">
                         </div>
                         <div class="flex items-end">
-                            <button type="button" onclick="addLineItem()" class="w-full px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors duration-150 text-sm font-medium">
-                                ➕ Add Product Line
+                            <button type="button" onclick="addLineItem()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
+                                + Add Line Item
                             </button>
                         </div>
                     </div>

@@ -64,21 +64,28 @@ class AuthController extends Controller
 
         $user = User::where('email', $credentials['email'])->first();
 
-        // Create log model early
-        $userLog = new LogModel([
-            'user_id' => $user->id ?? null,
-            'terminal' => $request->ip(),
-            'status' => 'login',
-        ]);
-
         if (!$user || !Hash::check($credentials['password'], $user->password)) {
-            $userLog->status = 'Invalid-credentials';
-            $userLog->save();
+            // Log failed login attempt only if user exists
+            if ($user) {
+                $userLog = new LogModel([
+                    'user_id' => $user->id,
+                    'terminal' => $request->ip(),
+                    'status' => 'Invalid-credentials',
+                ]);
+                $userLog->save();
+            }
 
             return $request->expectsJson()
                 ? response()->json(['isError' => true, 'message' => 'Invalid credentials.'], 401)
                 : back()->withErrors(['email' => 'Invalid credentials'])->withInput();
         }
+
+        // Create log model for successful login
+        $userLog = new LogModel([
+            'user_id' => $user->id,
+            'terminal' => $request->ip(),
+            'status' => 'login',
+        ]);
 
         // User authenticated
         $token = $user->createToken('gx-token')->plainTextToken;
@@ -86,7 +93,7 @@ class AuthController extends Controller
         $userLog->save();
 
         if ($request->expectsJson()) {
-            return $this->respondWithToken($token);
+            return $this->respondWithToken($token, $user);
         }
 
         // Laravel web session auth (only needed if using session-based auth)
@@ -156,18 +163,32 @@ class AuthController extends Controller
      * Get the token array structure.
      *
      * @param  string $token
+     * @param  \App\Models\User $user
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    protected function respondWithToken($token)
+    protected function respondWithToken($token, $user = null)
     {
         $expirationTime = Carbon::now()->addMinutes(60);
+        
+        // Get user data - use passed user or Auth::user() for backward compatibility
+        if (!$user) {
+            $user = Auth::user();
+        }
+        
         return response()->json([
             'isError' => false,
-            'authToken' => $token,
+            'access_token' => $token, // Mobile app expects this key
+            'authToken' => $token, // Keep for backward compatibility with webapp
             'refreshToken' => $token,
             'tokenType' => 'bearer',
-            'expires_at' => $expirationTime
+            'expires_at' => $expirationTime,
+            'user' => [ // Add user data for mobile app
+                'id' => $user->id,
+                'fullname' => $user->fullname,
+                'email' => $user->email,
+                'user_type' => $user->user_type,
+            ]
         ]);
     }
 

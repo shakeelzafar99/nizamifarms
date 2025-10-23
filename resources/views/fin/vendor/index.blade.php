@@ -594,6 +594,7 @@ function generateReport() {
     const dateFrom = document.getElementById('report_date_from').value;
     const dateTo = document.getElementById('report_date_to').value;
     const vendorId = document.getElementById('report_vendor_id').value;
+    const showPayments = document.getElementById('show_payments').checked;
     
     if (!dateFrom || !dateTo) {
         alert('Please select both start and end dates');
@@ -613,7 +614,8 @@ function generateReport() {
     // Fetch report data
     const params = new URLSearchParams({
         date_from: dateFrom,
-        date_to: dateTo
+        date_to: dateTo,
+        show_payments: showPayments ? '1' : '0'
     });
     if (vendorId) {
         params.append('vendor_id', vendorId);
@@ -623,7 +625,7 @@ function generateReport() {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                displayReport(data.report);
+                displayReport(data.report, showPayments);
             } else {
                 reportContent.innerHTML = `
                     <div class="text-center py-12">
@@ -642,7 +644,7 @@ function generateReport() {
         });
 }
 
-function displayReport(report) {
+function displayReport(report, showPayments = true) {
     const reportContent = document.getElementById('reportContent');
     
     // Show print and Excel buttons
@@ -651,6 +653,7 @@ function displayReport(report) {
     
     // Store report data globally for Excel export
     window.currentReportData = report;
+    window.currentShowPayments = showPayments;
     
     let html = `
         <div id="printableReport" class="bg-white rounded-lg border-2 border-purple-200 overflow-hidden">
@@ -810,7 +813,7 @@ function displayReport(report) {
                                 <td colspan="3" class="border border-gray-300 px-3 py-2 text-right">
                                     <span class="text-gray-700">Vendor Total:</span>
                                     <span class="text-red-600 ml-4">Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
-                                    <span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                    ${showPayments ? `<span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>` : ''}
                                 </td>
                                 <td class="border border-gray-300 px-3 py-2 text-right ${(vendor.total_purchases - vendor.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
                                     Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -828,15 +831,17 @@ function displayReport(report) {
                 <div class="border-t-4 border-purple-600 pt-4 mt-6 print:break-inside-avoid">
                     <div class="bg-gradient-to-r from-purple-50 to-purple-100 rounded-lg p-4 border-2 border-purple-300 print:bg-purple-100">
                         <h4 class="text-lg font-bold text-gray-900 mb-3">📈 Grand Total (All Vendors)</h4>
-                        <div class="grid grid-cols-3 gap-4">
+                        <div class="grid ${showPayments ? 'grid-cols-3' : 'grid-cols-2'} gap-4">
                             <div class="text-center">
                                 <div class="text-xs text-gray-600 uppercase mb-1">Total Purchases</div>
                                 <div class="text-2xl font-bold text-red-600">Rs. ${Number(report.grand_total.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                             </div>
+                            ${showPayments ? `
                             <div class="text-center">
                                 <div class="text-xs text-gray-600 uppercase mb-1">Total Payments</div>
                                 <div class="text-2xl font-bold text-green-600">Rs. ${Number(report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                             </div>
+                            ` : ''}
                             <div class="text-center">
                                 <div class="text-xs text-gray-600 uppercase mb-1">Net Change</div>
                                 <div class="text-2xl font-bold ${(report.grand_total.total_purchases - report.grand_total.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
@@ -864,6 +869,7 @@ function exportToExcel() {
     }
     
     const report = window.currentReportData;
+    const showPayments = window.currentShowPayments !== undefined ? window.currentShowPayments : true;
     
     // Create CSV content
     let csvContent = "Vendor Transaction Report\n";
@@ -905,13 +911,18 @@ function exportToExcel() {
         });
         
         // Vendor summary
-        csvContent += `\n"Vendor Total","","Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})} | Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}","Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}"\n`;
+        const vendorSummary = showPayments 
+            ? `Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})} | Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}`
+            : `Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}`;
+        csvContent += `\n"Vendor Total","","${vendorSummary}","Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}"\n`;
     });
     
     // Grand total
     csvContent += `\n\nGrand Total (All Vendors)\n`;
     csvContent += `Total Purchases,Rs. ${Number(report.grand_total.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
-    csvContent += `Total Payments,Rs. ${Number(report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
+    if (showPayments) {
+        csvContent += `Total Payments,Rs. ${Number(report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
+    }
     csvContent += `Net Change,Rs. ${Number(report.grand_total.total_purchases - report.grand_total.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}\n`;
     
     // Create download link
@@ -971,6 +982,12 @@ function exportToExcel() {
                                 <option value="{{ $vendor->id }}">{{ $vendor->vendor_name }}</option>
                             @endforeach
                         </select>
+                    </div>
+                    <div class="flex items-end">
+                        <label class="inline-flex items-center px-3 py-1.5 bg-white border border-gray-300 rounded cursor-pointer hover:bg-gray-50 transition-colors">
+                            <input type="checkbox" id="show_payments" checked class="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500 focus:ring-2">
+                            <span class="ml-2 text-sm font-medium text-gray-700">Show Payments</span>
+                        </label>
                     </div>
                     <div class="flex gap-2">
                         <button onclick="generateReport()" 

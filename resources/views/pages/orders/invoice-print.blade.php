@@ -31,7 +31,7 @@
         .invoice-header {
             display: flex;
             justify-content: space-between;
-            align-items: flex-start;
+            align-items: center;
             padding: 20px 30px;
             border-bottom: 2px solid #e2e8f0;
         }
@@ -39,7 +39,7 @@
         .logo-section {
             flex: 1;
             display: flex;
-            align-items: flex-start;
+            align-items: center;
         }
         
         .logo {
@@ -49,9 +49,11 @@
         }
         
         .logo img {
-            height: 60px;
+            height: 80px;
             width: auto;
             object-fit: contain;
+            transform: scale(1.4);
+            transform-origin: left center;
         }
         
         .company-details {
@@ -60,6 +62,9 @@
             font-size: 12px;
             line-height: 1.4;
             color: #4a5568;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
         }
         
         .company-details div {
