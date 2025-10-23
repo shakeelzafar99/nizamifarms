@@ -231,17 +231,25 @@
         </div>
       </div>
 
-      <!-- Stats Bar -->
+      <!-- Stats Bar - Matches Salary Section -->
       <div style="padding: 12px 24px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;">
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Present</p>
             <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="modalStatPresent">0</p>
           </div>
           <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Absent</p>
+            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="modalStatAbsent">0</p>
+          </div>
+          <div style="text-align: center;">
+            <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">On Leave</p>
+            <p style="font-size: 18px; font-weight: bold; color: #3b82f6; margin: 0;" id="modalStatLeave">0</p>
+          </div>
+          <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Late</p>
-            <p style="font-size: 18px; font-weight: bold; color: #dc2626; margin: 0;" id="modalStatLate">0</p>
-            <p style="font-size: 9px; color: #dc2626; margin: 4px 0 0 0;" id="modalStatLateHours">0h 0m</p>
+            <p style="font-size: 18px; font-weight: bold; color: #f59e0b; margin: 0;" id="modalStatLate">0</p>
+            <p style="font-size: 9px; color: #f59e0b; margin: 4px 0 0 0;" id="modalStatLateHours">0h 0m</p>
           </div>
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Overtime</p>
@@ -250,7 +258,7 @@
           </div>
           <div style="text-align: center;">
             <p style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 4px 0;">Total Hours</p>
-            <p style="font-size: 18px; font-weight: bold; color: #111827; margin: 0;" id="modalStatHours">0h</p>
+            <p style="font-size: 18px; font-weight: bold; color: #7c3aed; margin: 0;" id="modalStatHours">0h</p>
           </div>
         </div>
       </div>
@@ -463,7 +471,11 @@ function showDailyDetails(userId) {
 
   modalName.textContent = employee.fullname || 'Unknown';
   modalMonth.textContent = new Date(currentMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  
+  // Update stats to match salary section
   modalPresent.textContent = employee.present_days || 0;
+  document.getElementById('modalStatAbsent').textContent = employee.absent_days || 0;
+  document.getElementById('modalStatLeave').textContent = employee.leave_days || 0;
   modalLate.textContent = employee.late_days || 0;
   modalOT.textContent = employee.overtime_days || 0;
   modalHours.textContent = (employee.total_hours || 0).toFixed(1) + 'h';

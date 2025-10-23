@@ -161,8 +161,8 @@ class ApprovalController extends Controller
             ->where('level_2_status', LedgerAdjustmentModel::APPROVAL_STATUS_PENDING)
             ->with(['ledger', 'order', 'requestedBy'])
             ->orderBy('requested_at', 'desc') // Newest first
-            ->get();
-        
+                ->get();
+            
         foreach ($pendingAdjustments as $adj) {
             $items[] = $this->formatAdjustmentItem($adj, 2, $expFundAccount, $nfCashAccount, $onlineAccount);
         }

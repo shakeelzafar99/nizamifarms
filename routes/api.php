@@ -85,10 +85,30 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Rider-specific routes
     Route::prefix('rider')->group(function () {
-        // TODO: Add rider-specific routes here as we build features
-        // Examples:
-        // Route::get('/orders', [OrderController::class, 'apiRiderOrders']);
-        // Route::get('/ledger', [EmployeeCashController::class, 'apiShow']);
-        // Route::get('/requests', [RequestController::class, 'apiIndex']);
+        // Dashboard
+        Route::get('/dashboard', [\App\Http\Controllers\API\RiderController::class, 'dashboard']);
+        
+        // Orders - reusing existing filter endpoint
+        Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
+        Route::get('/orders/{id}', [\App\Http\Controllers\API\RiderController::class, 'getOrderDetails']);
+        Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
+        
+        // Ledger & Settlements
+        Route::get('/ledger', [\App\Http\Controllers\API\RiderController::class, 'getLedger']);
+        Route::get('/ledger/outstanding-invoices', [\App\Http\Controllers\API\RiderController::class, 'getOutstandingInvoices']);
+        Route::get('/ledger/expense-categories', [\App\Http\Controllers\API\RiderController::class, 'getExpenseCategories']);
+        Route::post('/ledger/settle', [\App\Http\Controllers\API\RiderController::class, 'settleInvoices']);
+        Route::post('/ledger/settle-short-cash', [\App\Http\Controllers\API\RiderController::class, 'settleShortCash']);
+        
+        // Attendance
+        Route::get('/attendance/today', [\App\Http\Controllers\API\RiderController::class, 'getTodayAttendance']);
+        Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);
+        Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
+        Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
+        
+        // Requests
+        Route::get('/requests/categories', [\App\Http\Controllers\API\RiderController::class, 'getRequestCategories']);
+        Route::get('/requests', [\App\Http\Controllers\API\RiderController::class, 'getRequests']);
+        Route::post('/requests', [\App\Http\Controllers\API\RiderController::class, 'createRequest']);
     });
 });
