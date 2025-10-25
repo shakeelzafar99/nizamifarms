@@ -397,6 +397,7 @@ class EmployeeCashController extends Controller
             ->paginate(50);
 
         // Calculate running balance (from oldest to newest for calculation)
+        // IMPORTANT: Get ALL transactions for display, but only update balance for APPROVED ones
         $allTransactionsQuery = LedgerModel::where(function($q) use ($id) {
             $q->where('from_account_id', $id)
               ->orWhere('to_account_id', $id);
@@ -416,19 +417,26 @@ class EmployeeCashController extends Controller
         $balanceMap = [];
         
         foreach ($allTransactions as $transaction) {
-            if ($transaction->to_account_id === $account->id) {
-                // Money coming in
-                $runningBalance += $transaction->amount;
-            } else {
-                // Money going out
-                $runningBalance -= $transaction->amount;
+            // Only update balance for APPROVED transactions
+            // Pending and rejected transactions show the balance WITHOUT their effect
+            if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
+                if ($transaction->to_account_id === $account->id) {
+                    // Money coming in
+                    $runningBalance += $transaction->amount;
+                } else {
+                    // Money going out
+                    $runningBalance -= $transaction->amount;
+                }
             }
+            // Store the current balance for this transaction (whether approved or not)
+            // Rejected/pending transactions will show the balance as if they never happened
             $balanceMap[$transaction->id] = $runningBalance;
         }
 
         // Attach running balances to paginated results (in reverse since we display newest first)
-        $ledger->getCollection()->transform(function($transaction) use ($balanceMap) {
-            $transaction->running_balance = $balanceMap[$transaction->id] ?? 0;
+        $ledger->getCollection()->transform(function($transaction) use ($balanceMap, $account) {
+            // Use the balance from the map, or fall back to current balance if not found
+            $transaction->running_balance = $balanceMap[$transaction->id] ?? $account->current_balance;
             return $transaction;
         });
 
@@ -442,14 +450,17 @@ class EmployeeCashController extends Controller
             ->where('transaction_type', LedgerModel::TYPE_EXPENSE);
         
         // FIXED: Deposits direction depends on account type
+        // IMPORTANT: Only count APPROVED deposits (exclude pending and rejected)
         if ($isEmployeeAccount) {
             // Employee depositing TO company: money going FROM employee account
             $depositsQuery = LedgerModel::where('from_account_id', $account->id)
-                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT);
+                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED);
         } else {
             // Company receiving deposits: money coming TO company account
             $depositsQuery = LedgerModel::where('to_account_id', $account->id)
-                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT);
+                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', LedgerModel::STATUS_APPROVED);
         }
 
         // Apply date filters to summary calculations
