@@ -437,7 +437,7 @@ class VendorController extends Controller
     {
         $request->validate([
             'amount' => 'required|numeric|min:0.01',
-            'description' => 'required|string|max:500',
+            'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
             'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Max 5MB
         ]);
@@ -464,7 +464,7 @@ class VendorController extends Controller
             LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PURCHASE,
-                'description' => $request->description,
+                'description' => $request->description ?: "Purchase from {$vendor->vendor_name}",
                 'from_account_id' => $purchaseAccount->id,
                 'to_account_id' => $vendor->account->id,
                 'amount' => $request->amount,
@@ -528,13 +528,30 @@ class VendorController extends Controller
                 throw new \Exception("Payment amount cannot exceed vendor balance");
             }
 
-            // Determine approval status based on source account
-            // Online accounts or manager cash accounts require approval
-            $requiresApproval = in_array($paymentAccount->account_code, ['ONLINE']) || 
-                               $paymentAccount->account_category === 'employee_cash';
+            // Check approval configuration for vendor payments
+            $vendorPaymentCategory = \App\Models\Request\RequestCategoryModel::getByCode('vendor_payment');
+            $requiresApproval = false;
+            
+            if ($vendorPaymentCategory && $vendorPaymentCategory->approvalConfig) {
+                // Check if any approval level is required
+                $requiresApproval = $vendorPaymentCategory->approvalConfig->requires_level_1 || 
+                                   $vendorPaymentCategory->approvalConfig->requires_level_2;
+            }
             
             $approvalStatus = $requiresApproval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
             $mode = ($paymentAccount->account_code === 'ONLINE') ? LedgerModel::MODE_ONLINE : LedgerModel::MODE_CASH;
+            
+            \Log::info("Vendor payment approval check", [
+                'vendor_id' => $vendor->id,
+                'vendor_name' => $vendor->vendor_name,
+                'amount' => $request->amount,
+                'payment_source' => $paymentAccount->account_name,
+                'payment_source_code' => $paymentAccount->account_code,
+                'requires_approval' => $requiresApproval,
+                'approval_status' => $approvalStatus,
+                'category_found' => $vendorPaymentCategory ? true : false,
+                'config_exists' => $vendorPaymentCategory && $vendorPaymentCategory->approvalConfig ? true : false
+            ]);
 
             // Create ledger entry
             // Dr Vendor Account (liability decreases) → Cr Payment Account (cash/bank decreases)

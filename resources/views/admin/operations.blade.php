@@ -331,6 +331,92 @@
         </div>
 
         <script>
+        function executeSelectedImport() {
+            const source = document.getElementById('importSource').value;
+            const importType = document.getElementById('importType').value;
+            
+            closeModal('importProductsModal');
+            
+            const sourceName = source === 'woocommerce' ? 'WooCommerce' : 'Shopify';
+            if (confirm(`This will import products from your ${sourceName} store.\n\nFor existing products (matched by SKU), only prices will be updated.\nYour categories and attributes will remain unchanged.\n\nContinue?`)) {
+                executeImportAll(sourceName);
+            }
+        }
+        
+        function executeImportAll(source = 'Shopify') {
+            // Show loading overlay
+            const loadingOverlay = document.createElement('div');
+            loadingOverlay.id = 'importAllOverlay';
+            loadingOverlay.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+                background: rgba(0,0,0,0.8); z-index: 9999; display: flex; 
+                align-items: center; justify-content: center; color: white;
+            `;
+            loadingOverlay.innerHTML = `
+                <div style="text-align: center; background: white; padding: 40px; border-radius: 12px; color: #111827;">
+                    <div style="display: inline-block; width: 48px; height: 48px; border: 4px solid #e5e7eb; border-top: 4px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 16px;"></div>
+                    <h3 style="margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">Importing Products</h3>
+                    <p style="margin: 0; color: #6b7280;">This may take several minutes. Please don't close this window...</p>
+                </div>
+                <style>
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                    }
+                </style>
+            `;
+            document.body.appendChild(loadingOverlay);
+            
+            // Get CSRF token
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                             document.querySelector('input[name="_token"]')?.value || '';
+            
+            // Make API call
+            const url = '/products/import-all' + (source ? ('?source=' + encodeURIComponent(source)) : '');
+            fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                body: JSON.stringify({
+                    _token: csrfToken,
+                    price_only_update: true  // Flag to update only prices for existing products
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Remove loading overlay
+                if (document.body.contains(loadingOverlay)) {
+                    document.body.removeChild(loadingOverlay);
+                }
+                
+                if (data.success) {
+                    alert(`Import completed!\n\n${data.message}\n\nTotal Products: ${data.total_products}\nNew: ${data.imported_count}\nUpdated (prices only): ${data.updated_count}\nErrors: ${data.error_count}`);
+                    // Reload the page
+                    window.location.reload();
+                } else {
+                    alert('Import failed: ' + data.message);
+                }
+            })
+            .catch(error => {
+                // Remove loading overlay
+                if (document.body.contains(loadingOverlay)) {
+                    document.body.removeChild(loadingOverlay);
+                }
+                alert('Import error: ' + error.message);
+            });
+        }
+        
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+        
         function confirmClear() {
             const confirmText = document.getElementById('confirmationText').value;
             

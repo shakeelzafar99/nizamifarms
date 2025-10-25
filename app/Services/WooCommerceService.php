@@ -211,8 +211,7 @@ class WooCommerceService
         $totalInventory = array_sum(array_map(fn($v) => (int)($v['inventory_quantity'] ?? 0), $variantPayloads));
 
         return [
-            'external_source' => 'woocommerce',
-            'external_id' => $wooProduct['id'] ?? null,
+            'shopify_product_id' => $wooProduct['id'] ?? null,  // Store WooCommerce ID in shopify_product_id field
             'title' => $title,
             'vendor' => config('app.name'),
             'product_type' => $productType,

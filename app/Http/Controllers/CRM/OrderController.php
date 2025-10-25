@@ -450,10 +450,16 @@ class OrderController extends Controller
             // LEDGER ADJUSTMENT DETECTION
             // ================================================================
             // Check if this order has a ledger entry (i.e., was delivered) and if the total_price changed
+            // IMPORTANT: Skip ledger adjustments for webhook updates (WooCommerce/Shopify)
+            // Only create adjustments for manual edits from the webapp frontend
             $ledgerAdjustmentCreated = false;
             $adjustmentId = null;
             
-            if ($order->ledger_transaction_id) {
+            // Check if this update is from a webhook (external source)
+            $isWebhookUpdate = $request->has('_skip_ledger_adjustment') || 
+                               (isset($validated['_skip_ledger_adjustment']) && $validated['_skip_ledger_adjustment']);
+            
+            if ($order->ledger_transaction_id && !$isWebhookUpdate) {
                 $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
                 
                 if ($ledger) {
@@ -496,10 +502,18 @@ class OrderController extends Controller
                             'old_amount' => $oldAmount,
                             'new_amount' => $newAmount,
                             'difference' => $newAmount - $oldAmount,
-                            'ledger_id' => $ledger->id
+                            'ledger_id' => $ledger->id,
+                            'source' => 'webapp_manual_edit'
                         ]);
                     }
                 }
+            } elseif ($isWebhookUpdate && $order->ledger_transaction_id) {
+                \Log::info("Ledger adjustment skipped for webhook update", [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'source' => 'webhook',
+                    'has_ledger' => true
+                ]);
             }
             
             // Update order

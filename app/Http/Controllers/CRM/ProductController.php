@@ -1257,6 +1257,13 @@ class ProductController extends Controller
             \Log::info('Starting bulk import of all products from Shopify');
 
             $source = $request->get('source', 'Shopify');
+            $priceOnlyUpdate = $request->get('price_only_update', false);
+            
+            \Log::info('Import settings', [
+                'source' => $source,
+                'price_only_update' => $priceOnlyUpdate
+            ]);
+            
             if (strcasecmp($source, 'WooCommerce') === 0) {
                 \Log::info('Bulk import source selected: WooCommerce');
                 $wooProductsRaw = $this->wooCommerce->fetchAllProducts();
@@ -1291,6 +1298,11 @@ class ProductController extends Controller
 
             foreach ($products as $index => $productPayload) {
                 try {
+                    // Add price_only_update flag to payload
+                    if ($priceOnlyUpdate) {
+                        $productPayload['_price_only_update'] = true;
+                    }
+                    
                     // Reuse store method that expects canonical payload
                     $stored = ProductModel::storeProductFromApi($productPayload);
                     $isUpdate = $stored->wasRecentlyCreated === false;
@@ -1324,7 +1336,11 @@ class ProductController extends Controller
                 $message .= " {$importedCount} new products imported.";
             }
             if ($updatedCount > 0) {
-                $message .= " {$updatedCount} existing products updated.";
+                if ($priceOnlyUpdate) {
+                    $message .= " {$updatedCount} existing products updated (prices only, categories/attributes preserved).";
+                } else {
+                    $message .= " {$updatedCount} existing products updated.";
+                }
             }
             if ($errorCount > 0) {
                 $message .= " {$errorCount} products failed to process.";

@@ -366,6 +366,10 @@ class ProductModel extends BaseModel
         \DB::beginTransaction();
         
         try {
+            // Check for price-only update flag
+            $priceOnlyUpdate = $productData['_price_only_update'] ?? false;
+            unset($productData['_price_only_update']); // Remove flag from data
+            
             // Check for existing product
             $existingProduct = null;
             
@@ -374,15 +378,9 @@ class ProductModel extends BaseModel
                 $existingProduct = static::find($productData['existing_product_id']);
                 unset($productData['existing_product_id']); // Remove from data to avoid DB issues
             }
-            // Then check for Shopify products
+            // Then check for Shopify/WooCommerce products by their platform ID
             elseif (isset($productData['shopify_product_id'])) {
                 $existingProduct = static::where('shopify_product_id', $productData['shopify_product_id'])->first();
-            }
-            // Finally check for external_id (WooCommerce, etc.)
-            elseif (isset($productData['external_id']) && isset($productData['external_source'])) {
-                $existingProduct = static::where('external_id', $productData['external_id'])
-                    ->where('external_source', $productData['external_source'])
-                    ->first();
             }
 
             // Prepare product data
@@ -396,7 +394,27 @@ class ProductModel extends BaseModel
 
             // Create or update product
             if ($existingProduct) {
-                $existingProduct->update($productAttributes);
+                if ($priceOnlyUpdate) {
+                    // For price-only updates, only update specific fields
+                    $updateFields = [
+                        'updated_by' => $productAttributes['updated_by'],
+                        'updated_at' => now(),
+                    ];
+                    
+                    // Only update sync-related fields if they exist
+                    if (isset($productAttributes['sync_status'])) {
+                        $updateFields['sync_status'] = $productAttributes['sync_status'];
+                    }
+                    if (isset($productAttributes['last_synced_at'])) {
+                        $updateFields['last_synced_at'] = $productAttributes['last_synced_at'];
+                    }
+                    
+                    $existingProduct->update($updateFields);
+                    \Log::info("Price-only update for product: {$existingProduct->title}");
+                } else {
+                    // Full update - update all fields except categories/attributes
+                    $existingProduct->update($productAttributes);
+                }
                 $product = $existingProduct;
             } else {
                 $product = static::create($productAttributes);
@@ -404,45 +422,87 @@ class ProductModel extends BaseModel
 
             // Store variants
             if (!empty($variants)) {
-                // Delete existing variants if updating
-                if ($existingProduct) {
-                    $product->variants()->delete();
-                }
+                if ($existingProduct && $priceOnlyUpdate) {
+                    // For price-only updates, match variants by shopify_variant_id or SKU and update prices only
+                    foreach ($variants as $variantData) {
+                        $mappedVariant = ProductVariantModel::mapShopifyVariant($variantData);
+                        $variantId = $mappedVariant['shopify_variant_id'] ?? null;
+                        $sku = $mappedVariant['sku'] ?? null;
+                        
+                        $existingVariant = null;
+                        
+                        // First try to match by shopify_variant_id (WooCommerce/Shopify variant ID)
+                        if ($variantId) {
+                            $existingVariant = $product->variants()->where('shopify_variant_id', $variantId)->first();
+                        }
+                        
+                        // If not found and SKU exists, try matching by SKU
+                        if (!$existingVariant && $sku) {
+                            $existingVariant = $product->variants()->where('sku', $sku)->first();
+                        }
+                        
+                        if ($existingVariant) {
+                            // Update only price-related fields
+                            $priceUpdateFields = [
+                                'price' => $mappedVariant['price'] ?? $existingVariant->price,
+                                'compare_at_price' => $mappedVariant['compare_at_price'] ?? $existingVariant->compare_at_price,
+                                'cost_price' => $mappedVariant['cost_price'] ?? $existingVariant->cost_price,
+                                'updated_at' => now(),
+                            ];
+                            $existingVariant->update($priceUpdateFields);
+                            \Log::info("Updated prices for variant ID: {$variantId}, SKU: {$sku}");
+                        } else {
+                            // New variant - add it
+                            $mappedVariant['product_id'] = $product->id;
+                            $mappedVariant['created_by'] = auth()->check() ? auth()->id() : null;
+                            ProductVariantModel::create($mappedVariant);
+                            \Log::info("Added new variant ID: {$variantId}, SKU: {$sku}");
+                        }
+                    }
+                } else {
+                    // Full update or new product - delete and recreate variants
+                    if ($existingProduct) {
+                        $product->variants()->delete();
+                    }
 
-                $variantModels = [];
-                foreach ($variants as $variant) {
-                    $variantData = ProductVariantModel::mapShopifyVariant($variant);
-                    $variantData['product_id'] = $product->id;
-                    $variantData['created_by'] = auth()->check() ? auth()->id() : null;
-                    $variantModels[] = new ProductVariantModel($variantData);
+                    $variantModels = [];
+                    foreach ($variants as $variant) {
+                        $variantData = ProductVariantModel::mapShopifyVariant($variant);
+                        $variantData['product_id'] = $product->id;
+                        $variantData['created_by'] = auth()->check() ? auth()->id() : null;
+                        $variantModels[] = new ProductVariantModel($variantData);
+                    }
+                    
+                    $product->variants()->saveMany($variantModels);
                 }
-                
-                $product->variants()->saveMany($variantModels);
             }
 
             // Auto-assign optional attribute labels by match rules stored in JSON (title contains)
-            try {
-                $title = (string) ($product->title ?? '');
-                $labelsPath = storage_path('app/private/attribute_auto_rules.json');
-                if (is_file($labelsPath) && $title !== '') {
-                    $rules = json_decode(file_get_contents($labelsPath), true) ?: [];
-                    foreach ([1,2,3] as $key) {
-                        $column = 'attribute_' . $key;
-                        if (!empty($rules[(string)$key]) && empty($product->{$column})) {
-                            foreach ($rules[(string)$key] as $rule) { // assume already sorted by priority desc
-                                $needle = (string) ($rule['match'] ?? '');
-                                $groupName = (string) ($rule['group'] ?? '');
-                                if ($needle !== '' && $groupName !== '' && stripos($title, $needle) !== false) {
-                                    $product->{$column} = $groupName;
-                                    break;
+            // Skip this for price-only updates to preserve existing categories
+            if (!$priceOnlyUpdate || !$existingProduct) {
+                try {
+                    $title = (string) ($product->title ?? '');
+                    $labelsPath = storage_path('app/private/attribute_auto_rules.json');
+                    if (is_file($labelsPath) && $title !== '') {
+                        $rules = json_decode(file_get_contents($labelsPath), true) ?: [];
+                        foreach ([1,2,3] as $key) {
+                            $column = 'attribute_' . $key;
+                            if (!empty($rules[(string)$key]) && empty($product->{$column})) {
+                                foreach ($rules[(string)$key] as $rule) { // assume already sorted by priority desc
+                                    $needle = (string) ($rule['match'] ?? '');
+                                    $groupName = (string) ($rule['group'] ?? '');
+                                    if ($needle !== '' && $groupName !== '' && stripos($title, $needle) !== false) {
+                                        $product->{$column} = $groupName;
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        $product->save();
                     }
-                    $product->save();
+                } catch (\Throwable $e) {
+                    // fail silently to avoid impacting core flows
                 }
-            } catch (\Throwable $e) {
-                // fail silently to avoid impacting core flows
             }
 
             \DB::commit();

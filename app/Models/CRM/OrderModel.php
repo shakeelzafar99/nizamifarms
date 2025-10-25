@@ -373,6 +373,10 @@ class OrderModel extends BaseModel
                         }
                     }
                     
+                    // Mark this update as coming from an external source (webhook)
+                    // This prevents ledger adjustments from being triggered
+                    $orderAttributes['_skip_ledger_adjustment'] = true;
+                    
                     // Now update order - status already removed if needed
                     $existingOrder->update($orderAttributes);
                     $order = $existingOrder;
