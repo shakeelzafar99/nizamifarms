@@ -516,6 +516,69 @@ class OrderController extends Controller
                 ]);
             }
             
+            // ================================================================
+            // PAYMENT METHOD CHANGE DETECTION (After Delivery)
+            // ================================================================
+            // Check if payment method changed for a delivered order with ledger entry
+            $paymentMethodChanged = false;
+            $paymentMethodChangeMessage = null;
+            
+            if ($order->ledger_transaction_id && !$isWebhookUpdate) {
+                $oldPaymentMethod = $order->payment_method;
+                $newPaymentMethod = $validated['payment_method'] ?? $oldPaymentMethod;
+                
+                // Check if payment method actually changed
+                if ($oldPaymentMethod !== $newPaymentMethod) {
+                    $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
+                    
+                    if ($ledger) {
+                        // Check if invoice is already settled
+                        if ($ledger->settlement_status === 'settled') {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'Cannot change payment method: Invoice has already been settled.',
+                                'error_type' => 'already_settled'
+                            ], 422);
+                        }
+                        
+                        // Check if there's a partial settlement
+                        if ($ledger->settlement_status === 'partial' || ($ledger->settled_amount > 0)) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'Cannot change payment method: Invoice has partial settlement.',
+                                'error_type' => 'partial_settlement'
+                            ], 422);
+                        }
+                        
+                        // Payment method can be changed - handle it
+                        try {
+                            $result = $this->handlePaymentMethodChange($order, $ledger, $newPaymentMethod);
+                            $paymentMethodChanged = true;
+                            $paymentMethodChangeMessage = "Payment method changed from '{$oldPaymentMethod}' to '{$newPaymentMethod}'. Ledger entry updated.";
+                            
+                            \Log::info("Payment method changed successfully", [
+                                'order_id' => $order->id,
+                                'old_method' => $oldPaymentMethod,
+                                'new_method' => $newPaymentMethod,
+                                'old_ledger_id' => $result['old_ledger_id'],
+                                'new_ledger_id' => $result['new_ledger_id']
+                            ]);
+                        } catch (\Exception $e) {
+                            \Log::error("Failed to handle payment method change", [
+                                'order_id' => $order->id,
+                                'error' => $e->getMessage()
+                            ]);
+                            
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'Failed to change payment method: ' . $e->getMessage(),
+                                'error_type' => 'payment_method_change_failed'
+                            ], 500);
+                        }
+                    }
+                }
+            }
+            
             // Update order
             $order->update($validated);
             
@@ -580,19 +643,29 @@ class OrderController extends Controller
                 }
             }
             
-            // Prepare response based on whether a ledger adjustment was created
+            // Prepare response based on whether a ledger adjustment was created or payment method changed
             if ($ledgerAdjustmentCreated) {
+                $message = 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.';
+                if ($paymentMethodChanged) {
+                    $message .= ' ' . $paymentMethodChangeMessage;
+                }
                 return response()->json([
                     'success' => true,
-                    'message' => 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.',
+                    'message' => $message,
                     'requires_approval' => true,
                     'adjustment_id' => $adjustmentId,
+                    'payment_method_changed' => $paymentMethodChanged,
                     'order' => $order->load(['customer', 'lineItems', 'discounts'])
                 ]);
             } else {
+                $message = 'Order updated successfully!';
+                if ($paymentMethodChanged) {
+                    $message = $paymentMethodChangeMessage;
+                }
                 return response()->json([
                     'success' => true,
-                    'message' => 'Order updated successfully',
+                    'message' => $message,
+                    'payment_method_changed' => $paymentMethodChanged,
                     'order' => $order->load(['customer', 'lineItems', 'discounts'])
                 ]);
             }
@@ -1782,5 +1855,123 @@ class OrderController extends Controller
         }
         
         return $normalized;
+    }
+
+    /**
+     * Handle payment method change for delivered order
+     * Reverses old ledger entry and creates new one with correct payment method
+     * 
+     * @param OrderModel $order
+     * @param \App\Models\FIN\LedgerModel $oldLedger
+     * @param string $newPaymentMethod
+     * @return array
+     */
+    private function handlePaymentMethodChange($order, $oldLedger, $newPaymentMethod)
+    {
+        \DB::beginTransaction();
+        
+        try {
+            $oldPaymentMethod = $order->payment_method;
+            
+            // 1. Reverse the old ledger entry
+            $this->reverseLedgerEntry($oldLedger, "Payment method changed from '{$oldPaymentMethod}' to '{$newPaymentMethod}'");
+            
+            // 2. Clear the old ledger_transaction_id so new one can be created
+            $order->ledger_transaction_id = null;
+            $order->save();
+            
+            // 3. Temporarily update order payment method for posting
+            $order->payment_method = $newPaymentMethod;
+            
+            // 4. Create new ledger entry with correct payment method
+            $ledgerService = new \App\Services\FIN\LedgerPostingService();
+            $result = $ledgerService->postInvoiceFromOrder($order);
+            
+            if (!$result['success']) {
+                throw new \Exception("Failed to repost invoice: " . $result['message']);
+            }
+            
+            // 5. Add note to new ledger entry
+            $newLedger = \App\Models\FIN\LedgerModel::find($result['ledger_id']);
+            if ($newLedger) {
+                $newLedger->comments = "Payment method changed from '{$oldPaymentMethod}' to '{$newPaymentMethod}'. Original ledger #{$oldLedger->id} reversed.";
+                $newLedger->save();
+            } else {
+                throw new \Exception("New ledger entry was not created properly");
+            }
+            
+            \DB::commit();
+            
+            return [
+                'success' => true,
+                'old_ledger_id' => $oldLedger->id,
+                'new_ledger_id' => $newLedger->id
+            ];
+            
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error("Failed to handle payment method change", [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e;
+        }
+    }
+
+    /**
+     * Reverse a ledger entry and update balances
+     * 
+     * @param \App\Models\FIN\LedgerModel $ledger
+     * @param string $reason
+     * @return void
+     */
+    private function reverseLedgerEntry($ledger, $reason = 'Reversed')
+    {
+        $wasApproved = $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED;
+        
+        // Mark ledger as reversed
+        $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+        $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . "REVERSED: {$reason}";
+        $ledger->save();
+        
+        // Reverse balances ONLY if the transaction was approved
+        if ($wasApproved) {
+            $fromAccount = $ledger->fromAccount;
+            $toAccount = $ledger->toAccount;
+            
+            if ($fromAccount) {
+                // Reverse the debit (add back)
+                $fromAccount->current_balance += $ledger->amount;
+                $fromAccount->save();
+                
+                \Log::info("Reversed balance for from_account", [
+                    'account_id' => $fromAccount->id,
+                    'account_name' => $fromAccount->account_name,
+                    'amount_added_back' => $ledger->amount,
+                    'new_balance' => $fromAccount->current_balance
+                ]);
+            }
+            
+            if ($toAccount) {
+                // Reverse the credit (subtract back)
+                $toAccount->current_balance -= $ledger->amount;
+                $toAccount->save();
+                
+                \Log::info("Reversed balance for to_account", [
+                    'account_id' => $toAccount->id,
+                    'account_name' => $toAccount->account_name,
+                    'amount_subtracted' => $ledger->amount,
+                    'new_balance' => $toAccount->current_balance
+                ]);
+            }
+        }
+        
+        \Log::info("Ledger entry reversed", [
+            'ledger_id' => $ledger->id,
+            'was_approved' => $wasApproved,
+            'balances_reversed' => $wasApproved,
+            'reason' => $reason
+        ]);
     }
 }

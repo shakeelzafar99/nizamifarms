@@ -423,9 +423,11 @@ class RiderController extends Controller
                 ]);
             }
 
-            // Calculate balance from ledger
+            // Calculate balance from APPROVED transactions only (match webapp logic)
             $balance = \App\Models\FIN\LedgerModel::where('from_account_id', $account->id)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
                 ->sum('amount') - \App\Models\FIN\LedgerModel::where('to_account_id', $account->id)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
                 ->sum('amount');
 
             // Get recent transactions (last 30 days)
@@ -501,7 +503,11 @@ class RiderController extends Controller
                 ->distinct()
                 ->pluck('expense_category')
                 ->sort()
-                ->values();
+                ->values()
+                ->toArray();
+
+            // Add PENDING as a special option at the top for partial payments
+            array_unshift($categories, 'PENDING');
 
             return response()->json([
                 'success' => true,
@@ -591,11 +597,11 @@ class RiderController extends Controller
                 throw new \Exception("Destination account not found");
             }
 
-            // Verify selected invoices
+            // Verify selected invoices (include both open and partial invoices)
             $selectedInvoices = \App\Models\FIN\LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $account->id)
                 ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
@@ -706,11 +712,11 @@ class RiderController extends Controller
                 throw new \Exception("Destination account not found");
             }
 
-            // Verify selected invoices
+            // Verify selected invoices (include both open and partial invoices)
             $selectedInvoices = \App\Models\FIN\LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $account->id)
                 ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
@@ -718,7 +724,7 @@ class RiderController extends Controller
                 throw new \Exception("Some selected invoices are invalid or already settled");
             }
 
-            // Calculate expected amount and shortage
+            // Calculate expected amount and shortage (remaining balance for partial invoices)
             $totalOutstanding = $selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
             });
@@ -730,30 +736,45 @@ class RiderController extends Controller
                 throw new \Exception("Deposit amount cannot exceed total outstanding");
             }
 
-            // Create expense request for shortage
-            $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
-            if (!$category) {
-                throw new \Exception("Expense category not found in system");
-            }
+            // Check if this is a PENDING (partial payment) or actual expense
+            $expenseRequest = null;
+            $isPartialPayment = false;
+            
+            if (strtoupper($request->expense_category) === 'PENDING') {
+                // Partial payment - no expense request, just settle what was deposited
+                $isPartialPayment = true;
+                \Log::info("Mobile: Partial payment settlement - keeping invoices open", [
+                    'user_id' => $user->id,
+                    'deposit_amount' => $depositAmount,
+                    'remaining_amount' => $shortCashAmount,
+                    'total_outstanding' => $totalOutstanding
+                ]);
+            } else {
+                // Create expense request for shortage
+                $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
+                if (!$category) {
+                    throw new \Exception("Expense category not found in system");
+                }
 
-            $expenseRequest = \App\Models\Request\RequestModel::create([
-                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
-                'category_id' => $category->id,
-                'requester_user_id' => $account->user_id,
-                'title' => "Short Cash - {$request->expense_category}",
-                'amount' => $shortCashAmount,
-                'expense_category' => $request->expense_category,
-                'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
-                'payment_source_account_id' => $account->id,
-                'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
-                'settlement_status' => 'pending',
-                'requires_level_1' => $category->requiresLevel1(),
-                'requires_level_2' => $category->requiresLevel2(),
-                'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
-                'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
-                'submitted_at' => now(),
-                'created_by' => $user->id,
-            ]);
+                $expenseRequest = \App\Models\Request\RequestModel::create([
+                    'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
+                    'category_id' => $category->id,
+                    'requester_user_id' => $account->user_id,
+                    'title' => "Short Cash - {$request->expense_category}",
+                    'amount' => $shortCashAmount,
+                    'expense_category' => $request->expense_category,
+                    'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
+                    'payment_source_account_id' => $account->id,
+                    'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
+                    'settlement_status' => 'pending',
+                    'requires_level_1' => $category->requiresLevel1(),
+                    'requires_level_2' => $category->requiresLevel2(),
+                    'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                    'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                    'submitted_at' => now(),
+                    'created_by' => $user->id,
+                ]);
+            }
 
             // Build description
             $invoiceNumbers = $selectedInvoices->map(function($invoice) {
@@ -764,7 +785,33 @@ class RiderController extends Controller
                 $invoiceNumbers .= " + " . ($selectedInvoices->count() - 3) . " more";
             }
 
-            $description = "Short Cash Settlement: {$invoiceNumbers} (Shortage: {$request->expense_category})";
+            // Build description and metadata based on settlement type
+            if ($isPartialPayment) {
+                $description = "Partial Payment: {$invoiceNumbers} - Paid Rs. " . number_format($depositAmount, 2) . ", Remaining Rs. " . number_format($shortCashAmount, 2);
+                $comments = "Partial payment. Paid: Rs. " . number_format($depositAmount, 2) . ", Remaining: Rs. " . number_format($shortCashAmount, 2) . " (will remain open)";
+                $settlementMetadata = [
+                    'invoice_ids' => $request->invoice_ids,
+                    'deposit_amount' => $depositAmount,
+                    'total_outstanding' => $totalOutstanding,
+                    'is_partial_payment' => true,
+                    'is_short_cash_settlement' => false,
+                    'short_cash_amount' => $shortCashAmount,
+                    'expense_category' => 'PENDING'
+                ];
+            } else {
+                $description = "Short Cash Settlement: {$invoiceNumbers} (Shortage: {$request->expense_category})";
+                $comments = "Short cash settlement. Deposit: Rs. " . number_format($depositAmount, 2) . ", Shortage (Expense #{$expenseRequest->request_number}): Rs. " . number_format($shortCashAmount, 2);
+                $settlementMetadata = [
+                    'invoice_ids' => $request->invoice_ids,
+                    'deposit_amount' => $depositAmount,
+                    'total_outstanding' => $totalOutstanding,
+                    'is_short_cash_settlement' => true,
+                    'is_partial_payment' => false,
+                    'short_cash_amount' => $shortCashAmount,
+                    'expense_request_id' => $expenseRequest->id,
+                    'expense_category' => $request->expense_category
+                ];
+            }
 
             // Create deposit transaction
             $depositLedger = \App\Models\FIN\LedgerModel::create([
@@ -777,26 +824,32 @@ class RiderController extends Controller
                 'mode' => \App\Models\FIN\LedgerModel::MODE_CASH,
                 'approval_status' => \App\Models\FIN\LedgerModel::STATUS_PENDING,
                 'created_by' => $user->id,
-                'comments' => "Short cash settlement. Deposit: Rs. " . number_format($depositAmount, 2) . ", Shortage (Expense #{$expenseRequest->request_number}): Rs. " . number_format($shortCashAmount, 2),
-                'settlement_metadata' => [
-                    'invoice_ids' => $request->invoice_ids,
-                    'deposit_amount' => $depositAmount,
-                    'total_outstanding' => $totalOutstanding,
-                    'is_short_cash_settlement' => true,
-                    'short_cash_amount' => $shortCashAmount,
-                    'expense_request_id' => $expenseRequest->id,
-                    'expense_category' => $request->expense_category
-                ]
+                'comments' => $comments,
+                'settlement_metadata' => $settlementMetadata
             ]);
 
             \DB::commit();
 
-            return response()->json([
-                'success' => true,
-                'message' => "Short cash settlement recorded! Deposit: Rs. " . number_format($depositAmount, 2) . ". Expense request #{$expenseRequest->request_number} created for shortage of Rs. " . number_format($shortCashAmount, 2),
-                'deposit_id' => $depositLedger->id,
-                'expense_request_id' => $expenseRequest->id,
-            ]);
+            // Build response message
+            if ($isPartialPayment) {
+                $message = "Partial payment recorded! Paid: Rs. " . number_format($depositAmount, 2) . ". Remaining Rs. " . number_format($shortCashAmount, 2) . " will stay open for future settlement.";
+                $responseData = [
+                    'success' => true,
+                    'message' => $message,
+                    'deposit_id' => $depositLedger->id,
+                    'is_partial_payment' => true
+                ];
+            } else {
+                $message = "Short cash settlement recorded! Deposit: Rs. " . number_format($depositAmount, 2) . ". Expense request #{$expenseRequest->request_number} created for shortage of Rs. " . number_format($shortCashAmount, 2);
+                $responseData = [
+                    'success' => true,
+                    'message' => $message,
+                    'deposit_id' => $depositLedger->id,
+                    'expense_request_id' => $expenseRequest->id
+                ];
+            }
+
+            return response()->json($responseData);
 
         } catch (\Exception $e) {
             \DB::rollBack();
@@ -953,48 +1006,41 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            
+
             // Get month parameter (default to current month)
             $month = $request->input('month', now()->format('Y-m-01'));
-            
-            // Use salary service to get attendance data (same logic as salary calculation)
-            $salaryService = new \App\Services\HR\SalaryCalculationService();
-            $salaryData = $salaryService->calculateSalary($user->id, $month, []);
-            
-            if (!$salaryData['success']) {
-                return response()->json(['success' => false, 'message' => 'Failed to calculate attendance'], 500);
-            }
-            
-            // Get detailed attendance records for the month
+
+            // Establish date range (limit to today for current month)
             $startDate = date('Y-m-01', strtotime($month));
             $endDate = date('Y-m-t', strtotime($month));
             $today = date('Y-m-d');
             $effectiveEndDate = ($endDate > $today) ? $today : $endDate;
-            
-            // Get actual attendance records
+
+            // Attempt to reuse salary service for summary (matches salary section)
+            $salaryService = new \App\Services\HR\SalaryCalculationService();
+            $salaryData = $salaryService->calculateSalary($user->id, $month, []);
+
+            // Prepare attendance records (used by both primary and fallback flows)
             $attendanceRecords = \DB::table('t_ops_attendance')
                 ->where('user_id', $user->id)
                 ->whereBetween('attendance_date', [$startDate, $effectiveEndDate])
                 ->get()
                 ->keyBy('attendance_date');
-            
-            // Get user's shift to determine working days
+
+            // Get user's shift utilities
             $shiftService = new \App\Services\ShiftResolutionService();
-            
-            // Generate all working days and merge with attendance
+
+            // Build calendar history of working days with attendance/absent
             $history = [];
             $currentDate = new \DateTime($startDate);
             $endDateTime = new \DateTime($effectiveEndDate);
-            
+
             while ($currentDate <= $endDateTime) {
                 $dateStr = $currentDate->format('Y-m-d');
-                
-                // Check if this is a working day for the user
                 $isWorkingDay = $shiftService->isWorkingDay($user->id, $dateStr);
-                
+
                 if ($isWorkingDay) {
                     if (isset($attendanceRecords[$dateStr])) {
-                        // Has attendance record
                         $record = $attendanceRecords[$dateStr];
                         $history[] = [
                             'id' => $record->id,
@@ -1008,7 +1054,6 @@ class RiderController extends Controller
                             'notes' => $record->notes,
                         ];
                     } else {
-                        // Absent (no attendance record for working day)
                         $history[] = [
                             'id' => null,
                             'date' => $dateStr,
@@ -1022,23 +1067,80 @@ class RiderController extends Controller
                         ];
                     }
                 }
-                
+
                 $currentDate->modify('+1 day');
             }
-            
+
             // Sort by date descending
-            usort($history, function($a, $b) {
+            usort($history, function ($a, $b) {
                 return strcmp($b['date'], $a['date']);
             });
-            
-            // Summary from salary service (matches salary slip exactly)
-            $summary = [
-                'working_days' => $salaryData['working_days'],
-                'present_days' => $salaryData['present_days'],
-                'absent_days' => $salaryData['absent_days'],
-                'leave_days' => $salaryData['leave_days'],
-            ];
-            
+
+            // Build summary: prefer salary service; otherwise compute a safe fallback
+            if ($salaryData['success']) {
+                $summary = [
+                    'working_days' => $salaryData['working_days'],
+                    'present_days' => $salaryData['present_days'],
+                    'absent_days' => $salaryData['absent_days'],
+                    'leave_days' => $salaryData['leave_days'],
+                ];
+            } else {
+                // Fallback path: no salary profile/config in production etc.
+                // Compute working days using shift service and attendance + leave requests.
+                $workingDays = $shiftService->calculateWorkingDays($user->id, $startDate, $effectiveEndDate);
+
+                $presentDays = 0;
+                foreach ($attendanceRecords as $rec) {
+                    if (!empty($rec->login_time)) {
+                        $presentDays++;
+                    }
+                }
+
+                // Leave days from approved/pending leave requests overlapping the range
+                $leaveDays = 0;
+                $leaveRequests = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
+                    ->whereIn('status', ['approved', 'pending'])
+                    ->whereHas('category', function ($q) {
+                        $q->where('category_code', 'leave');
+                    })
+                    ->where(function ($q) use ($startDate, $effectiveEndDate) {
+                        $q->whereBetween('leave_start_date', [$startDate, $effectiveEndDate])
+                          ->orWhereBetween('leave_end_date', [$startDate, $effectiveEndDate])
+                          ->orWhere(function ($q2) use ($startDate, $effectiveEndDate) {
+                              $q2->where('leave_start_date', '<=', $startDate)
+                                 ->where('leave_end_date', '>=', $effectiveEndDate);
+                          });
+                    })
+                    ->get();
+
+                foreach ($leaveRequests as $req) {
+                    if ($req->leave_start_date && $req->leave_end_date) {
+                        $d = new \DateTime($req->leave_start_date);
+                        $dEnd = new \DateTime($req->leave_end_date);
+                        while ($d <= $dEnd) {
+                            $dateStr = $d->format('Y-m-d');
+                            if ($dateStr >= $startDate && $dateStr <= $effectiveEndDate) {
+                                $leaveDays++;
+                            }
+                            $d->modify('+1 day');
+                        }
+                    }
+                }
+
+                $summary = [
+                    'working_days' => $workingDays,
+                    'present_days' => $presentDays,
+                    'absent_days' => max(0, $workingDays - $presentDays - $leaveDays),
+                    'leave_days' => $leaveDays,
+                ];
+
+                \Log::warning('Monthly attendance fallback used', [
+                    'user_id' => $user->id,
+                    'month' => $month,
+                    'reason' => $salaryData['error'] ?? 'unknown'
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'month' => $month,
@@ -1051,7 +1153,7 @@ class RiderController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            
+
             return response()->json(['success' => false, 'message' => 'Failed to load attendance: ' . $e->getMessage()], 500);
         }
     }

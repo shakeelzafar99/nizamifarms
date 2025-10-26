@@ -71,6 +71,51 @@ $ledger->getCollection()->transform(function($transaction) use ($balanceMap) {
 
 This caused the balance column to show Rs. 0.00 for rejected transactions.
 
+### Problem 3: Date Grouping Showing "Balanced" Despite Rejected Transactions
+
+**Location:** `resources/views/fin/employee/show.blade.php` lines 414-435
+
+**Old Code:**
+```php
+@php
+    // Group transactions by date for accountability check
+    $groupedByDate = [];
+    foreach($ledger as $txn) {
+        $date = $txn->transaction_date ? $txn->transaction_date->format('Y-m-d') : 'unknown';
+        if (!isset($groupedByDate[$date])) {
+            $groupedByDate[$date] = ['in' => 0, 'out' => 0, 'transactions' => []];
+        }
+        if ($txn->to_account_id === $account->id) {
+            $groupedByDate[$date]['in'] += $txn->amount;  // ← Counting ALL transactions
+        } else {
+            $groupedByDate[$date]['out'] += $txn->amount; // ← Including rejected!
+        }
+        $groupedByDate[$date]['transactions'][] = $txn;
+    }
+    
+    // Later...
+    $netAmount = $dateData['in'] - $dateData['out'];
+    $isZero = abs($netAmount) < 0.01;
+@endphp
+
+@if($isZero)
+    <span>✅ Balanced</span>  // ← Shows "Balanced" even with rejected transactions!
+@endif
+```
+
+**Issue:** The date grouping was calculating "in" and "out" by summing **ALL** transactions (approved, pending, rejected). 
+
+**Example:**
+```
+Saturday, October 25, 2025:
+- Invoice (Approved): +Rs. 12,000 (in)
+- Settlement (Rejected): -Rs. 12,000 (out)
+- Net: Rs. 12,000 - Rs. 12,000 = Rs. 0
+- Badge: "✅ Balanced" ← WRONG! The rejected transaction shouldn't count!
+```
+
+The day should show **+Rs. 12,000 held** (only the approved invoice), not "Balanced".
+
 ## Solution
 
 ### Fix 1: Filter Deposits by Approval Status
@@ -94,17 +139,17 @@ if ($isEmployeeAccount) {
 
 **Change:** Added `->where('approval_status', LedgerModel::STATUS_APPROVED)` to only count approved deposits.
 
-### Fix 2: Exclude Non-Approved Transactions from Balance Calculation
+### Fix 2: Calculate Balance for ALL Transactions, But Only Update for Approved
 
-**New Code (Lines 399-432):**
+**New Code (Lines 399-441):**
 ```php
 // Calculate running balance (from oldest to newest for calculation)
-// IMPORTANT: Only include APPROVED transactions in balance calculation (exclude pending and rejected)
+// IMPORTANT: Get ALL transactions for display, but only update balance for APPROVED ones
 $allTransactionsQuery = LedgerModel::where(function($q) use ($id) {
     $q->where('from_account_id', $id)
       ->orWhere('to_account_id', $id);
-})
-->where('approval_status', LedgerModel::STATUS_APPROVED);
+});
+// NO approval filter here - we need ALL transactions in the map!
 
 // ... date filters ...
 
@@ -112,7 +157,8 @@ $runningBalance = $account->opening_balance;
 $balanceMap = [];
 
 foreach ($allTransactions as $transaction) {
-    // Only calculate balance for approved transactions
+    // Only update balance for APPROVED transactions
+    // Pending and rejected transactions show the balance WITHOUT their effect
     if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
         if ($transaction->to_account_id === $account->id) {
             // Money coming in
@@ -122,13 +168,78 @@ foreach ($allTransactions as $transaction) {
             $runningBalance -= $transaction->amount;
         }
     }
+    // Store the current balance for this transaction (whether approved or not)
+    // Rejected/pending transactions will show the balance as if they never happened
     $balanceMap[$transaction->id] = $runningBalance;
 }
+
+// Attach running balances to paginated results
+$ledger->getCollection()->transform(function($transaction) use ($balanceMap, $account) {
+    // Use the balance from the map, or fall back to current balance if not found
+    $transaction->running_balance = $balanceMap[$transaction->id] ?? $account->current_balance;
+    return $transaction;
+});
 ```
 
-**Changes:**
-1. Added `->where('approval_status', LedgerModel::STATUS_APPROVED)` to the query
-2. Added double-check inside the loop: `if ($transaction->approval_status === LedgerModel::STATUS_APPROVED)`
+**Key Changes:**
+1. **REMOVED** `->where('approval_status', LedgerModel::STATUS_APPROVED)` from the query
+   - We need ALL transactions in the loop to build the complete balance map
+2. **KEPT** the `if ($transaction->approval_status === LedgerModel::STATUS_APPROVED)` check inside the loop
+   - Only approved transactions actually update the running balance
+3. **ALL transactions** (approved, pending, rejected) get added to `$balanceMap`
+   - Rejected/pending transactions show the balance **as if they never happened**
+4. **Improved fallback** in transform: `?? $account->current_balance` instead of `?? 0`
+
+**How It Works:**
+```
+Transaction Timeline (oldest to newest):
+1. Invoice #14555 (Approved) → Balance: Rs. 12,000 ✅
+2. Settlement (Rejected) → Balance: Rs. 12,000 ✅ (NOT Rs. 0!)
+   - The settlement is in the map, but balance didn't change because it's rejected
+```
+
+### Fix 3: Only Count Approved Transactions in Date Grouping
+
+**New Code (Lines 414-435):**
+```php
+@php
+    // Group transactions by date for accountability check
+    // IMPORTANT: Only count APPROVED transactions for in/out totals (exclude pending/rejected)
+    $groupedByDate = [];
+    foreach($ledger as $txn) {
+        $date = $txn->transaction_date ? $txn->transaction_date->format('Y-m-d') : 'unknown';
+        if (!isset($groupedByDate[$date])) {
+            $groupedByDate[$date] = ['in' => 0, 'out' => 0, 'transactions' => []];
+        }
+        
+        // Only count approved transactions in the in/out totals
+        if ($txn->approval_status === 'approved') {
+            if ($txn->to_account_id === $account->id) {
+                $groupedByDate[$date]['in'] += $txn->amount;
+            } else {
+                $groupedByDate[$date]['out'] += $txn->amount;
+            }
+        }
+        
+        // But include ALL transactions in the list (for display)
+        $groupedByDate[$date]['transactions'][] = $txn;
+    }
+@endphp
+```
+
+**Key Changes:**
+1. Added `if ($txn->approval_status === 'approved')` check before counting in/out
+2. Only approved transactions affect the "in" and "out" totals
+3. All transactions (approved, pending, rejected) still appear in the transaction list
+
+**How It Works Now:**
+```
+Saturday, October 25, 2025:
+- Invoice (Approved): +Rs. 12,000 (counted in "in")
+- Settlement (Rejected): -Rs. 12,000 (NOT counted)
+- Net: Rs. 12,000 - Rs. 0 = Rs. 12,000
+- Badge: "🔴 +Rs. 12,000 held" ✅ CORRECT!
+```
 
 ## How It Works Now
 
@@ -160,7 +271,10 @@ Main Balance: Rs. 12,000 (CORRECT - unchanged)
 
 1. **app/Http/Controllers/FIN/EmployeeCashController.php**
    - Lines 444-456: Added approval status filter to deposits query
-   - Lines 399-432: Added approval status filter to balance calculation query
+   - Lines 399-441: Fixed balance calculation to include all transactions but only update for approved
+   
+2. **resources/views/fin/employee/show.blade.php**
+   - Lines 414-435: Fixed date grouping to only count approved transactions in "Balanced" calculation
 
 ## Testing Steps
 
@@ -179,6 +293,7 @@ Main Balance: Rs. 12,000 (CORRECT - unchanged)
    - ✅ Main balance card should remain correct
    - ✅ Settlement should show as "Rejected"
    - ✅ Invoices should be back to "Open" status
+   - ✅ **Date grouping badge should NOT show "Balanced" if there's a rejected transaction**
 
 ## Related Concepts
 

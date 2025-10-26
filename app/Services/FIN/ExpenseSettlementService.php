@@ -66,9 +66,19 @@ class ExpenseSettlementService
                 throw new \Exception("Settlement source and destination cannot be the same account");
             }
             
-            // 4. Check if expense fund has sufficient balance
+            // 4. Check if expense fund has sufficient balance (warn but allow negative)
+            $balanceWarning = null;
             if ($expenseFund->account_type === 'asset' && $expenseFund->current_balance < $expenseRequest->amount) {
-                throw new \Exception("Insufficient balance in {$expenseFund->account_name}. Current: Rs. " . number_format($expenseFund->current_balance, 2));
+                $balanceAfterSettlement = $expenseFund->current_balance - $expenseRequest->amount;
+                $balanceWarning = "Warning: {$expenseFund->account_name} will have negative balance after settlement. Current: Rs. " . number_format($expenseFund->current_balance, 2) . ", After: Rs. " . number_format($balanceAfterSettlement, 2);
+                
+                \Log::warning("Settlement proceeding with negative balance", [
+                    'account' => $expenseFund->account_name,
+                    'current_balance' => $expenseFund->current_balance,
+                    'settlement_amount' => $expenseRequest->amount,
+                    'balance_after' => $balanceAfterSettlement,
+                    'expense_request' => $expenseRequest->request_number
+                ]);
             }
             
             // 5. Create SETTLEMENT ledger transaction
@@ -130,14 +140,23 @@ class ExpenseSettlementService
                 'settlement_ledger_id' => $settlementLedger->id,
                 'amount' => $expenseRequest->amount,
                 'destination' => $settlementDestination->account_name,
-                'settled_by' => auth()->user()->name ?? auth()->id()
+                'settled_by' => auth()->user()->name ?? auth()->id(),
+                'balance_warning' => $balanceWarning
             ]);
+            
+            // Build success message with warning if applicable
+            $message = "Settlement completed: Rs. " . number_format($expenseRequest->amount, 2) . " transferred from {$expenseFund->account_name} to {$settlementDestination->account_name}";
+            if ($balanceWarning) {
+                $message .= "\n\n⚠️ " . $balanceWarning;
+            }
             
             return [
                 'success' => true,
-                'message' => "Settlement completed: Rs. " . number_format($expenseRequest->amount, 2) . " transferred from {$expenseFund->account_name} to {$settlementDestination->account_name}",
+                'message' => $message,
                 'settlement_ledger_id' => $settlementLedger->id,
-                'destination_account' => $settlementDestination->account_name
+                'destination_account' => $settlementDestination->account_name,
+                'has_warning' => $balanceWarning !== null,
+                'warning' => $balanceWarning
             ];
             
         } catch (\Exception $e) {

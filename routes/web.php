@@ -333,6 +333,7 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/weighted-purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordWeightedPurchase'])->name('weighted-purchase');
             Route::post('/transaction/{id}/delete', [\App\Http\Controllers\FIN\VendorController::class, 'deleteTransaction'])->name('transaction.delete');
             Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\VendorController::class, 'updateTransaction'])->name('transaction.update');
+            Route::post('/toggle-expand', [\App\Http\Controllers\FIN\VendorController::class, 'toggleExpandAll'])->name('toggle-expand');
             
             // Vendor Products Management
             Route::get('/{id}/products', [\App\Http\Controllers\FIN\VendorProductController::class, 'index'])->name('products');

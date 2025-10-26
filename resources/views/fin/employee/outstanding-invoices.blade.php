@@ -33,6 +33,17 @@
         </form>
     </div>
 
+    {{-- Flash messages for approve/reject actions --}}
+    @if(session('success'))
+    <div class="mb-3 rounded-md border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-800">
+        {{ session('success') }}
+    </div>
+    @elseif(session('error'))
+    <div class="mb-3 rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">
+        {{ session('error') }}
+    </div>
+    @endif
+
     <!-- Compact Statistics Cards -->
     <div class="grid grid-cols-3 gap-2 mb-4">
         <!-- Row 1: Invoice Cards -->
@@ -331,18 +342,20 @@
                             <tr style="background-color: #fffbeb !important;">
                                 <td colspan="7" class="px-3 py-2">
                                     <div class="flex items-center justify-between">
-                                        <a href="{{ route('fin.ledger.index') }}" class="text-xs text-amber-700 hover:text-amber-900 font-medium">
+                                        <a href="{{ route('fin.ledger.show', $settlement->id) }}" class="text-xs text-amber-700 hover:text-amber-900 font-medium">
                                             View in Approvals →
                                         </a>
                                         <div class="flex gap-2">
                                             <form method="POST" action="{{ route('fin.ledger.approve', $settlement->id) }}" class="inline" onsubmit="return confirm('Approve this settlement deposit of Rs. {{ number_format($settlement->amount, 2) }}?');">
                                                 @csrf
+                                                <input type="hidden" name="_origin" value="outstanding-invoices">
                                                 <button type="submit" style="background: linear-gradient(to right, #16a34a, #15803d) !important; color: white !important;" class="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-md shadow-sm hover:opacity-90">
                                                     ✓ Approve
                                                 </button>
                                             </form>
                                             <form method="POST" action="{{ route('fin.ledger.reject', $settlement->id) }}" class="inline" onsubmit="return confirm('Reject this settlement?');">
                                                 @csrf
+                                                <input type="hidden" name="_origin" value="outstanding-invoices">
                                                 <button type="submit" style="background: linear-gradient(to right, #dc2626, #b91c1c) !important; color: white !important;" class="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-md shadow-sm hover:opacity-90">
                                                     ✗ Reject
                                                 </button>

@@ -200,7 +200,8 @@ class EmployeeCashController extends Controller
         $onlinePending = 0;
         if ($onlineAccount) {
             $onlineQuery = LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE);
+                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED); // Exclude reversed transactions
             
             if ($startDate && $endDate) {
                 $onlineQuery->whereBetween('transaction_date', [$startDate, $endDate]);
@@ -445,9 +446,11 @@ class EmployeeCashController extends Controller
         // For COMPANY accounts (NF Cash): Deposits come TO account, expenses go FROM account
         
         $invoicesQuery = LedgerModel::where('to_account_id', $account->id)
-            ->where('transaction_type', LedgerModel::TYPE_INVOICE);
+            ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED); // Exclude reversed transactions
         $expensesQuery = LedgerModel::where('from_account_id', $account->id)
-            ->where('transaction_type', LedgerModel::TYPE_EXPENSE);
+            ->where('transaction_type', LedgerModel::TYPE_EXPENSE)
+            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED); // Exclude reversed transactions
         
         // FIXED: Deposits direction depends on account type
         // IMPORTANT: Only count APPROVED deposits (exclude pending and rejected)
@@ -492,7 +495,7 @@ class EmployeeCashController extends Controller
             }
             $cashInBreakdown['transfers_in'] = $transfersInQuery->sum('amount') ?? 0;
             
-            // Invoices IN (for Online Bank account specifically) - ONLY APPROVED
+            // Invoices IN (for Online Bank account specifically) - ONLY APPROVED (excludes reversed)
             $invoicesInQuery = LedgerModel::where('to_account_id', $account->id)
                 ->where('transaction_type', LedgerModel::TYPE_INVOICE)
                 ->where('approval_status', LedgerModel::STATUS_APPROVED);
@@ -501,12 +504,13 @@ class EmployeeCashController extends Controller
             }
             $cashInBreakdown['invoices'] = $invoicesInQuery->sum('amount') ?? 0;
             
-            // Others IN (adjustments, reimbursements, etc.)
+            // Others IN (adjustments, reimbursements, receipts, etc.)
             $othersInQuery = LedgerModel::where('to_account_id', $account->id)
                 ->whereIn('transaction_type', [
                     LedgerModel::TYPE_ADJUSTMENT,
                     LedgerModel::TYPE_REIMBURSEMENT_PAYMENT,
-                    LedgerModel::TYPE_SALARY_ADVANCE
+                    LedgerModel::TYPE_SALARY_ADVANCE,
+                    'company_receipt'  // External receipts
                 ]);
             if ($dateFrom && $dateTo) {
                 $othersInQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
@@ -604,11 +608,12 @@ class EmployeeCashController extends Controller
             }
             $cashOutBreakdown['expenses_ledger'] = $expensesOutQuery->sum('amount') ?? 0;
             
-            // Others OUT (adjustments, etc.)
+            // Others OUT (adjustments, payments, etc.)
             $othersOutQuery = LedgerModel::where('from_account_id', $account->id)
                 ->whereIn('transaction_type', [
                     LedgerModel::TYPE_ADJUSTMENT,
-                    LedgerModel::TYPE_VENDOR_PURCHASE
+                    LedgerModel::TYPE_VENDOR_PURCHASE,
+                    'company_payment'  // External payments
                 ]);
             if ($dateFrom && $dateTo) {
                 $othersOutQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
@@ -791,8 +796,10 @@ class EmployeeCashController extends Controller
             
             // Cash Invoices: ALL cash/COD invoices delivered (from employee accounts)
             // These go to rider accounts, not NF Cash directly
+            // Exclude reversed transactions (e.g., from payment method changes)
             $cashInvoicesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
                 ->where('mode', LedgerModel::MODE_CASH)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->whereHas('toAccount', function($q) {
                     $q->where('account_category', 'employee_cash');
                 });
@@ -1067,11 +1074,17 @@ class EmployeeCashController extends Controller
             $employeeAccount = AccountModel::findOrFail($id);
             
             // Get IDs of invoices that already have pending settlement deposits
+            // Also calculate pending settlement amounts per invoice
             $pendingSettlementInvoiceIds = [];
+            $pendingSettlementAmounts = []; // Track pending amounts per invoice
+            
             $pendingDeposits = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
                 ->where('from_account_id', $employeeAccount->id)
                 ->where('approval_status', LedgerModel::STATUS_PENDING)
-                ->where('description', 'LIKE', '%Settlement%')
+                ->where(function($q) {
+                    $q->where('description', 'LIKE', '%Settlement%')
+                      ->orWhere('description', 'LIKE', '%Partial Payment%');
+                })
                 ->get();
             
             foreach ($pendingDeposits as $deposit) {
@@ -1083,20 +1096,70 @@ class EmployeeCashController extends Controller
                 }
                 
                 if ($settlementData && isset($settlementData['invoice_ids'])) {
-                    $pendingSettlementInvoiceIds = array_merge($pendingSettlementInvoiceIds, $settlementData['invoice_ids']);
+                    $invoiceIds = $settlementData['invoice_ids'];
+                    $depositAmount = $settlementData['deposit_amount'] ?? 0;
+                    
+                    // Check if this is a short cash or partial payment
+                    $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
+                    $isPartialPayment = $settlementData['is_partial_payment'] ?? false;
+                    $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
+                    
+                    // Calculate total settlement amount
+                    if ($isShortCash) {
+                        $totalSettlementAmount = $depositAmount + $shortCashAmount;
+                    } else {
+                        $totalSettlementAmount = $depositAmount;
+                    }
+                    
+                    // Distribute pending amount across invoices (same logic as processInvoiceSettlement)
+                    $invoices = LedgerModel::whereIn('id', $invoiceIds)
+                        ->whereIn('settlement_status', ['open', 'partial'])
+                        ->orderBy('transaction_date', 'asc')
+                        ->get();
+                    
+                    $remainingAmount = $totalSettlementAmount;
+                    foreach ($invoices as $invoice) {
+                        $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
+                        $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
+                        
+                        if ($amountToSettle > 0) {
+                            if (!isset($pendingSettlementAmounts[$invoice->id])) {
+                                $pendingSettlementAmounts[$invoice->id] = 0;
+                            }
+                            $pendingSettlementAmounts[$invoice->id] += $amountToSettle;
+                            $remainingAmount -= $amountToSettle;
+                        }
+                    }
+                    
+                    // Only exclude invoices that will be fully settled by pending deposits
+                    foreach ($invoices as $invoice) {
+                        $pendingForInvoice = $pendingSettlementAmounts[$invoice->id] ?? 0;
+                        $outstandingAfterPending = ($invoice->amount - ($invoice->settled_amount ?? 0)) - $pendingForInvoice;
+                        
+                        if ($outstandingAfterPending <= 0) {
+                            // Will be fully settled - exclude from list
+                            $pendingSettlementInvoiceIds[] = $invoice->id;
+                        }
+                    }
                 }
             }
             
-            // Get all open invoices for this rider (exclude those with pending settlements)
+            // Get all open and partial invoices for this rider
+            // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
+            // Now we include invoices with pending settlements if they still have remaining balance
             $openInvoices = LedgerModel::where('to_account_id', $employeeAccount->id)
                 ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->whereNotIn('id', $pendingSettlementInvoiceIds)
                 ->orderBy('transaction_date', 'asc')
                 ->get();
             
-            // Calculate outstanding balance (amount - settled_amount for partial settlements)
-            $invoices = $openInvoices->map(function($invoice) {
+            // Calculate outstanding balance (amount - settled_amount - pending_amount)
+            $invoices = $openInvoices->map(function($invoice) use ($pendingSettlementAmounts) {
+                $pendingAmount = $pendingSettlementAmounts[$invoice->id] ?? 0;
+                $outstandingAmount = $invoice->amount - ($invoice->settled_amount ?? 0) - $pendingAmount;
+                
                 return [
                     'id' => $invoice->id,
                     'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
@@ -1104,7 +1167,8 @@ class EmployeeCashController extends Controller
                     'description' => $invoice->description,
                     'amount' => $invoice->amount,
                     'settled_amount' => $invoice->settled_amount ?? 0,
-                    'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0)
+                    'pending_settlement_amount' => $pendingAmount,
+                    'outstanding_amount' => $outstandingAmount
                 ];
             });
             
@@ -1152,11 +1216,13 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Destination account not found");
             }
 
-            // Verify selected invoices belong to this rider and are open
+            // Verify selected invoices belong to this rider and are open or partial
+            // Exclude reversed transactions (e.g., from payment method changes)
             $selectedInvoices = LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $employeeAccount->id)
                 ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
@@ -1164,7 +1230,7 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Some selected invoices are invalid or already settled");
             }
 
-            // Calculate expected amount
+            // Calculate expected amount (remaining balance for partial invoices)
             $totalOutstanding = $selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
             });
@@ -1255,11 +1321,13 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Destination account not found");
             }
 
-            // Verify selected invoices belong to this rider and are open
+            // Verify selected invoices belong to this rider and are open or partial
+            // Exclude reversed transactions (e.g., from payment method changes)
             $selectedInvoices = LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $employeeAccount->id)
                 ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
@@ -1267,7 +1335,7 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Some selected invoices are invalid or already settled");
             }
 
-            // Calculate expected amount and shortage
+            // Calculate expected amount and shortage (remaining balance for partial invoices)
             $totalOutstanding = $selectedInvoices->sum(function($invoice) {
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
             });
@@ -1281,37 +1349,50 @@ class EmployeeCashController extends Controller
 
             // Handle both full payment (no shortage) and short cash (with shortage)
             $expenseRequest = null;
+            $isPartialPayment = false;
+            
             if ($shortCashAmount > 0) {
-                // Only create expense request if there's actual shortage
-                $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
-                
-                if (!$category) {
-                    throw new \Exception("Expense category not found in system. Please contact administrator.");
-                }
-                
                 // Validate expense category is provided when there's shortage
                 if (!$request->expense_category) {
-                    throw new \Exception("Expense category is required when there is a shortage.");
+                    throw new \Exception("Category is required when there is a shortage.");
                 }
                 
-                $expenseRequest = \App\Models\Request\RequestModel::create([
-                    'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
-                    'category_id' => $category->id,
-                    'requester_user_id' => $employeeAccount->user_id,
-                    'title' => "Short Cash - {$request->expense_category}",
-                    'amount' => $shortCashAmount,
-                    'expense_category' => $request->expense_category,
-                    'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
-                    'payment_source_account_id' => $employeeAccount->id, // From rider's balance
-                    'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
-                    'settlement_status' => 'pending', // Needs settlement - deduct from rider balance
-                    'requires_level_1' => $category->requiresLevel1(),
-                    'requires_level_2' => $category->requiresLevel2(),
-                    'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
-                    'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
-                    'submitted_at' => now(),
-                    'created_by' => auth()->id(),
-                ]);
+                // Check if this is a PENDING (partial payment) or actual expense
+                if (strtoupper($request->expense_category) === 'PENDING') {
+                    // Partial payment - no expense request, just settle what was deposited
+                    $isPartialPayment = true;
+                    \Log::info("Partial payment settlement - keeping invoices open", [
+                        'deposit_amount' => $depositAmount,
+                        'remaining_amount' => $shortCashAmount,
+                        'total_outstanding' => $totalOutstanding
+                    ]);
+                } else {
+                    // Create expense request for actual shortage
+                    $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')->first();
+                    
+                    if (!$category) {
+                        throw new \Exception("Expense category not found in system. Please contact administrator.");
+                    }
+                    
+                    $expenseRequest = \App\Models\Request\RequestModel::create([
+                        'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
+                        'category_id' => $category->id,
+                        'requester_user_id' => $employeeAccount->user_id,
+                        'title' => "Short Cash - {$request->expense_category}",
+                        'amount' => $shortCashAmount,
+                        'expense_category' => $request->expense_category,
+                        'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
+                        'payment_source_account_id' => $employeeAccount->id, // From rider's balance
+                        'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
+                        'settlement_status' => 'pending', // Needs settlement - deduct from rider balance
+                        'requires_level_1' => $category->requiresLevel1(),
+                        'requires_level_2' => $category->requiresLevel2(),
+                        'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                        'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                        'submitted_at' => now(),
+                        'created_by' => auth()->id(),
+                    ]);
+                }
             }
 
             // Build description with invoice numbers
@@ -1325,9 +1406,15 @@ class EmployeeCashController extends Controller
 
             // Build description based on whether there's shortage or not
             if ($shortCashAmount > 0) {
-                // Short cash settlement
-                $description = "Short Cash Settlement: {$invoiceNumbers} - Deposit Rs. " . number_format($depositAmount, 2) . ", Expense Rs. " . number_format($shortCashAmount, 2) . " ({$request->expense_category})";
-                $comments = "Short cash settlement for {$selectedInvoices->count()} invoice(s). Total outstanding: Rs. " . number_format($totalOutstanding, 2) . ". Deposit: Rs. " . number_format($depositAmount, 2) . ". Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2);
+                if ($isPartialPayment) {
+                    // Partial payment settlement
+                    $description = "Partial Payment: {$invoiceNumbers} - Paid Rs. " . number_format($depositAmount, 2) . ", Remaining Rs. " . number_format($shortCashAmount, 2);
+                    $comments = "Partial payment for {$selectedInvoices->count()} invoice(s). Total outstanding: Rs. " . number_format($totalOutstanding, 2) . ". Paid: Rs. " . number_format($depositAmount, 2) . ". Remaining: Rs. " . number_format($shortCashAmount, 2) . " (will remain open for future settlement)";
+                } else {
+                    // Short cash settlement with expense
+                    $description = "Short Cash Settlement: {$invoiceNumbers} - Deposit Rs. " . number_format($depositAmount, 2) . ", Expense Rs. " . number_format($shortCashAmount, 2) . " ({$request->expense_category})";
+                    $comments = "Short cash settlement for {$selectedInvoices->count()} invoice(s). Total outstanding: Rs. " . number_format($totalOutstanding, 2) . ". Deposit: Rs. " . number_format($depositAmount, 2) . ". Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2);
+                }
             } else {
                 // Full payment settlement
                 $description = "Settlement for invoices: {$invoiceNumbers}";
@@ -1347,11 +1434,20 @@ class EmployeeCashController extends Controller
             ];
             
             // Add short cash details if applicable
-            if ($shortCashAmount > 0 && $expenseRequest) {
+            if ($shortCashAmount > 0) {
                 $settlementMetadata['short_cash_amount'] = $shortCashAmount;
                 $settlementMetadata['expense_category'] = $request->expense_category;
-                $settlementMetadata['expense_request_id'] = $expenseRequest->id;
-                $settlementMetadata['is_short_cash_settlement'] = true;
+                
+                if ($isPartialPayment) {
+                    // Partial payment - no expense, just partial settlement
+                    $settlementMetadata['is_partial_payment'] = true;
+                    $settlementMetadata['is_short_cash_settlement'] = false;
+                } else if ($expenseRequest) {
+                    // Short cash with expense
+                    $settlementMetadata['expense_request_id'] = $expenseRequest->id;
+                    $settlementMetadata['is_short_cash_settlement'] = true;
+                    $settlementMetadata['is_partial_payment'] = false;
+                }
             }
             
             $depositLedger = LedgerModel::create([
@@ -1374,10 +1470,17 @@ class EmployeeCashController extends Controller
 
             // Build success message based on settlement type
             if ($shortCashAmount > 0) {
-                $message = "Short cash settlement recorded and pending approval! ";
-                $message .= "Deposit: Rs. " . number_format($depositAmount, 2) . ", ";
-                $message .= "Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2) . ". ";
-                $message .= "Both transactions will be processed together upon manager approval.";
+                if ($isPartialPayment) {
+                    $message = "Partial payment recorded and pending approval! ";
+                    $message .= "Paid: Rs. " . number_format($depositAmount, 2) . ", ";
+                    $message .= "Remaining: Rs. " . number_format($shortCashAmount, 2) . ". ";
+                    $message .= "Invoice(s) will remain open with remaining balance after approval.";
+                } else {
+                    $message = "Short cash settlement recorded and pending approval! ";
+                    $message .= "Deposit: Rs. " . number_format($depositAmount, 2) . ", ";
+                    $message .= "Expense ({$request->expense_category}): Rs. " . number_format($shortCashAmount, 2) . ". ";
+                    $message .= "Both transactions will be processed together upon manager approval.";
+                }
             } else {
                 $message = "Settlement recorded and pending approval! ";
                 $message .= "Amount: Rs. " . number_format($depositAmount, 2) . " for {$selectedInvoices->count()} invoice(s). ";
@@ -1409,7 +1512,9 @@ class EmployeeCashController extends Controller
             $dateTo = $request->get('date_to');
             
             // Base query for ALL invoices (not just open)
+            // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
             $invoicesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->with(['toAccount', 'order'])
                 ->whereHas('toAccount', function($q) {
                     $q->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH);
@@ -1437,7 +1542,8 @@ class EmployeeCashController extends Controller
             });
             
             $partialInvoices = $allInvoices->filter(function($invoice) {
-                return $invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) > 0;
+                return $invoice->settlement_status === 'partial' || 
+                       ($invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) > 0);
             });
             
             $settledInvoices = $allInvoices->filter(function($invoice) {
@@ -1445,9 +1551,13 @@ class EmployeeCashController extends Controller
             });
             
             // Get pending settlement deposits (settlements awaiting approval)
+            // Include both "Settlement" and "Partial Payment" descriptions
             $pendingSettlements = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
                 ->where('approval_status', LedgerModel::STATUS_PENDING)
-                ->where('description', 'LIKE', '%Settlement%')
+                ->where(function($q) {
+                    $q->where('description', 'LIKE', '%Settlement%')
+                      ->orWhere('description', 'LIKE', '%Partial Payment%');
+                })
                 ->with(['fromAccount'])
                 ->orderBy('created_at', 'desc')
                 ->get();
@@ -1923,11 +2033,20 @@ class EmployeeCashController extends Controller
             $approvalStatus = $request->requires_approval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
             
             // Determine source
-            $fromAccountId = $request->from_account_id ?? null;
+            $fromAccountId = $request->from_account_id;
             $description = $request->description;
             
-            if (!$fromAccountId && $request->from_external) {
-                $description = "Receipt from: {$request->from_external} - {$description}";
+            // If no internal account specified, use Opening Equity for external receipts
+            if (!$fromAccountId) {
+                $openingEquityAccount = ConfigModel::getOpeningEquityAccount();
+                if (!$openingEquityAccount) {
+                    throw new \Exception("Opening Equity account not found. Please configure it in system settings.");
+                }
+                $fromAccountId = $openingEquityAccount->id;
+                
+                if ($request->from_external) {
+                    $description = "Receipt from: {$request->from_external} - {$description}";
+                }
             }
 
             // Create ledger entry
@@ -1999,11 +2118,20 @@ class EmployeeCashController extends Controller
             $approvalStatus = $request->requires_approval ? LedgerModel::STATUS_PENDING : LedgerModel::STATUS_APPROVED;
             
             // Determine destination
-            $toAccountId = $request->to_account_id ?? null;
+            $toAccountId = $request->to_account_id;
             $description = $request->description;
             
-            if (!$toAccountId && $request->to_external) {
-                $description = "Payment to: {$request->to_external} - {$description}";
+            // If no internal account specified, use Opening Equity for external payments
+            if (!$toAccountId) {
+                $openingEquityAccount = ConfigModel::getOpeningEquityAccount();
+                if (!$openingEquityAccount) {
+                    throw new \Exception("Opening Equity account not found. Please configure it in system settings.");
+                }
+                $toAccountId = $openingEquityAccount->id;
+                
+                if ($request->to_external) {
+                    $description = "Payment to: {$request->to_external} - {$description}";
+                }
             }
             
             if ($request->expense_category) {

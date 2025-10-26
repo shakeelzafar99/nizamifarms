@@ -77,6 +77,7 @@ class LedgerModel extends BaseModel
     const STATUS_PENDING = 'pending';
     const STATUS_APPROVED = 'approved';
     const STATUS_REJECTED = 'rejected';
+    const STATUS_REVERSED = 'reversed'; // For payment method changes after delivery
 
     /**
      * Relationships

@@ -377,10 +377,10 @@
         </a>
         @endif
         <button onclick="openCompanyReceiveModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #059669 !important; color: white !important;">
-            <span style="color: white !important;">💵 Record Receipt</span>
+            <span style="color: white !important;">💵 Payment IN</span>
         </button>
         <button onclick="openCompanyPaymentModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #2563eb !important; color: white !important;">
-            <span style="color: white !important;">💳 Record Payment</span>
+            <span style="color: white !important;">💳 Payment OUT</span>
         </button>
         <button onclick="openCompanyTransferModal()" class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md" style="background-color: #7c3aed !important; color: white !important;">
             <span style="color: white !important;">🔄 Transfer Between Accounts</span>
@@ -413,17 +413,24 @@
     <!-- Cash Accountability Alert (Days with undeposited cash) -->
     @php
         // Group transactions by date for accountability check
+        // IMPORTANT: Only count APPROVED transactions for in/out totals (exclude pending/rejected)
         $groupedByDate = [];
         foreach($ledger as $txn) {
             $date = $txn->transaction_date ? $txn->transaction_date->format('Y-m-d') : 'unknown';
             if (!isset($groupedByDate[$date])) {
                 $groupedByDate[$date] = ['in' => 0, 'out' => 0, 'transactions' => []];
             }
-            if ($txn->to_account_id === $account->id) {
-                $groupedByDate[$date]['in'] += $txn->amount;
-            } else {
-                $groupedByDate[$date]['out'] += $txn->amount;
+            
+            // Only count approved transactions in the in/out totals
+            if ($txn->approval_status === 'approved') {
+                if ($txn->to_account_id === $account->id) {
+                    $groupedByDate[$date]['in'] += $txn->amount;
+                } else {
+                    $groupedByDate[$date]['out'] += $txn->amount;
+                }
             }
+            
+            // But include ALL transactions in the list (for display)
             $groupedByDate[$date]['transactions'][] = $txn;
         }
         
@@ -1395,17 +1402,23 @@
                                     onchange="calculateShortage()"
                                     class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500">
                                 <option value="">Select Category</option>
-                                @if(count($expenseCategories) > 0)
-                                    @foreach($expenseCategories as $cat)
-                                    <option value="{{ $cat }}">{{ $cat }}</option>
-                                    @endforeach
-                                @else
-                                    {{-- Fallback options if no categories in database --}}
-                                    <option value="Petrol">Petrol</option>
-                                    <option value="Rent">Rent</option>
-                                    <option value="Office Supplies">Office Supplies</option>
-                                @endif
+                                <option value="PENDING" class="bg-blue-50 font-semibold">⏳ Pending (Partial Payment - Keep Invoice Open)</option>
+                                <optgroup label="Expense Categories">
+                                    @if(count($expenseCategories) > 0)
+                                        @foreach($expenseCategories as $cat)
+                                        <option value="{{ $cat }}">{{ $cat }}</option>
+                                        @endforeach
+                                    @else
+                                        {{-- Fallback options if no categories in database --}}
+                                        <option value="Petrol">Petrol</option>
+                                        <option value="Rent">Rent</option>
+                                        <option value="Office Supplies">Office Supplies</option>
+                                    @endif
+                                </optgroup>
                             </select>
+                            <p class="text-xs text-gray-500 mt-1">
+                                💡 Select "Pending" to make a partial payment and keep the invoice(s) open for future settlement.
+                            </p>
                         </div>
                     </div>
 
@@ -1605,7 +1618,7 @@
     <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
         <div class="p-6">
             <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold text-gray-800">💵 Record Receipt into {{ $account->account_name }}</h2>
+                <h2 class="text-lg font-semibold text-gray-800">💵 Payment IN to {{ $account->account_name }}</h2>
                 <button onclick="closeCompanyReceiveModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
             </div>
             
@@ -1676,7 +1689,7 @@
                 <div class="flex justify-end gap-3">
                     <button type="button" onclick="closeCompanyReceiveModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
                     <button type="submit" class="px-6 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md">
-                        💵 Record Receipt
+                        💵 Payment IN
                     </button>
                 </div>
             </form>
@@ -1689,7 +1702,7 @@
     <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
         <div class="p-6">
             <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold text-gray-800">💳 Record Payment from {{ $account->account_name }}</h2>
+                <h2 class="text-lg font-semibold text-gray-800">💳 Payment OUT from {{ $account->account_name }}</h2>
                 <button onclick="closeCompanyPaymentModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
             </div>
             
@@ -1774,7 +1787,7 @@
                 <div class="flex justify-end gap-3">
                     <button type="button" onclick="closeCompanyPaymentModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
                     <button type="submit" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">
-                        💳 Record Payment
+                        💳 Payment OUT
                     </button>
                 </div>
             </form>

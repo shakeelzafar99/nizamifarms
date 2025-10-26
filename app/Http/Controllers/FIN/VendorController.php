@@ -284,7 +284,41 @@ class VendorController extends Controller
             'last_five_payments' => $lastFivePayments
         ];
 
-        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'summary'));
+        // Group transactions by date for better organization
+        $groupedTransactions = $ledgerWithBalance->groupBy(function($transaction) {
+            return $transaction->transaction_date ? $transaction->transaction_date->format('Y-m-d') : 'unknown';
+        })->sortKeysDesc(); // Sort dates descending (latest first)
+        
+        // Calculate daily summaries
+        $dailySummaries = [];
+        foreach ($groupedTransactions as $date => $transactions) {
+            $purchases = 0;
+            $payments = 0;
+            $endBalance = 0;
+            
+            foreach ($transactions as $txn) {
+                if ($txn->transaction_type === 'vendor_purchase') {
+                    $purchases += $txn->amount;
+                }
+                if ($txn->transaction_type === 'vendor_payment') {
+                    $payments += $txn->amount;
+                }
+                $endBalance = $txn->running_balance; // Last transaction's balance
+            }
+            
+            $dailySummaries[$date] = [
+                'purchases' => $purchases,
+                'payments' => $payments,
+                'net' => $purchases - $payments,
+                'end_balance' => $endBalance,
+                'transaction_count' => $transactions->count()
+            ];
+        }
+        
+        // Get expand preference from session (default: collapsed)
+        $expandAll = session('vendor_transactions_expand_all', false);
+        
+        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll'));
     }
 
     /**
@@ -1082,6 +1116,20 @@ class VendorController extends Controller
                 'message' => 'Error updating transaction: ' . $e->getMessage()
             ], 500);
         }
+    }
+    
+    /**
+     * Toggle expand/collapse preference for vendor transactions
+     */
+    public function toggleExpandAll(Request $request)
+    {
+        $expandAll = $request->input('expand_all', false);
+        session(['vendor_transactions_expand_all' => $expandAll]);
+        
+        return response()->json([
+            'success' => true,
+            'expand_all' => $expandAll
+        ]);
     }
 }
 

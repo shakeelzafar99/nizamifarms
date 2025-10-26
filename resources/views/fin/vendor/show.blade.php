@@ -145,88 +145,139 @@
 
     <!-- Ledger Transactions -->
     <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
             <h2 class="text-lg font-medium text-gray-900">Transaction History</h2>
+            <button id="toggleExpandBtn" onclick="toggleExpandAll()" 
+                    class="px-4 py-2 text-sm font-medium rounded-md transition-colors"
+                    style="background-color: #6366f1; color: white;">
+                <span id="toggleExpandText">{{ $expandAll ? '📕 Collapse All' : '📖 Expand All' }}</span>
+            </button>
         </div>
         
         <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Purchase</th>
-                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Payment</th>
-                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Balance</th>
-                        <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    @forelse($ledgerWithBalance as $transaction)
-                        <tr class="hover:bg-gray-100 cursor-pointer transition-colors" onclick="viewTransactionDetails({{ $transaction->id }})">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                {{ $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-' }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-2 py-1 text-xs font-semibold rounded-full 
-                                    {{ $transaction->transaction_type == 'vendor_purchase' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800' }}">
-                                    {{ ucfirst(str_replace('_', ' ', $transaction->transaction_type)) }}
-                                </span>
-                            </td>
-                            <td class="px-6 py-4 text-sm text-gray-900">
-                                {{ $transaction->description }}
-                                @if($transaction->comments)
-                                    <div class="text-xs text-gray-500">{{ $transaction->comments }}</div>
-                                @endif
-                                @if($transaction->bill_image)
-                                    <div class="text-xs text-blue-600 mt-1">📎 Has Bill Image</div>
-                                @endif
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium text-red-600">
-                                @if($transaction->to_account_id === $vendor->account->id)
-                                    Rs. {{ number_format($transaction->amount, 2) }}
-                                @else
-                                    -
-                                @endif
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium text-green-600">
-                                @if($transaction->from_account_id === $vendor->account->id)
-                                    Rs. {{ number_format($transaction->amount, 2) }}
-                                @else
-                                    -
-                                @endif
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-bold {{ $transaction->running_balance > 0 ? 'text-red-600' : 'text-gray-900' }}">
-                                Rs. {{ number_format($transaction->running_balance, 2) }}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-center text-sm" onclick="event.stopPropagation()">
-                                <button onclick="viewTransactionDetails({{ $transaction->id }})" 
-                                        class="text-blue-600 hover:text-blue-900 mr-2"
-                                        title="View Details">
-                                    👁️
-                                </button>
-                                <button onclick="openEditTransactionModal({{ $transaction->id }})" 
-                                        class="text-indigo-600 hover:text-indigo-900 mr-2"
-                                        title="Edit Transaction">
-                                    ✏️
-                                </button>
-                                <button onclick="confirmDeleteTransaction({{ $transaction->id }}, '{{ $transaction->transaction_type }}', {{ $transaction->amount }})" 
-                                        class="text-red-600 hover:text-red-900"
-                                        title="Delete Transaction">
-                                    🗑️
-                                </button>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="7" class="px-6 py-8 text-center text-sm text-gray-500">
-                                No transactions found for this vendor.
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
+            @forelse($groupedTransactions as $date => $transactions)
+                @php
+                    $summary = $dailySummaries[$date];
+                    $dateObj = $date !== 'unknown' ? \Carbon\Carbon::parse($date) : null;
+                @endphp
+                
+                <!-- Date Group Header -->
+                <div class="border-b border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors" 
+                     onclick="toggleDateGroup('{{ $date }}')">
+                    <div class="px-6 py-3 flex justify-between items-center">
+                        <div class="flex items-center gap-3">
+                            <span class="text-2xl" id="icon-{{ $date }}">{{ $expandAll ? '📂' : '📁' }}</span>
+                            <div>
+                                <div class="text-sm font-semibold text-gray-900">
+                                    {{ $dateObj ? $dateObj->format('l, F j, Y') : 'Unknown Date' }}
+                                </div>
+                                <div class="text-xs text-gray-500">
+                                    {{ $summary['transaction_count'] }} transaction(s)
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-4 text-sm">
+                            @if($summary['purchases'] > 0)
+                                <div class="text-red-600 font-medium">
+                                    📦 Rs. {{ number_format($summary['purchases'], 0) }}
+                                </div>
+                            @endif
+                            @if($summary['payments'] > 0)
+                                <div class="text-green-600 font-medium">
+                                    💵 Rs. {{ number_format($summary['payments'], 0) }}
+                                </div>
+                            @endif
+                            <div class="px-3 py-1 rounded-full text-xs font-semibold
+                                {{ $summary['net'] > 0 ? 'bg-red-100 text-red-800' : ($summary['net'] < 0 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800') }}">
+                                Net: Rs. {{ number_format(abs($summary['net']), 0) }}
+                                {{ $summary['net'] > 0 ? '↑' : ($summary['net'] < 0 ? '↓' : '→') }}
+                            </div>
+                            <div class="text-gray-700 font-bold">
+                                Balance: Rs. {{ number_format($summary['end_balance'], 0) }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Transactions Table for this Date -->
+                <div id="group-{{ $date }}" class="{{ $expandAll ? '' : 'hidden' }}">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-100">
+                            <tr>
+                                <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
+                                <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                                <th class="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                <th class="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">Purchase</th>
+                                <th class="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">Payment</th>
+                                <th class="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">Balance</th>
+                                <th class="px-6 py-2 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            @foreach($transactions as $transaction)
+                                <tr class="hover:bg-gray-50 cursor-pointer transition-colors" onclick="viewTransactionDetails({{ $transaction->id }})">
+                                    <td class="px-6 py-3 whitespace-nowrap text-xs text-gray-600">
+                                        {{ $transaction->created_at ? $transaction->created_at->format('h:i A') : '-' }}
+                                    </td>
+                                    <td class="px-6 py-3 whitespace-nowrap">
+                                        <span class="px-2 py-1 text-xs font-semibold rounded-full 
+                                            {{ $transaction->transaction_type == 'vendor_purchase' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800' }}">
+                                            {{ ucfirst(str_replace('_', ' ', $transaction->transaction_type)) }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-3 text-sm text-gray-900">
+                                        {{ $transaction->description }}
+                                        @if($transaction->comments)
+                                            <div class="text-xs text-gray-500">{{ $transaction->comments }}</div>
+                                        @endif
+                                        @if($transaction->bill_image)
+                                            <div class="text-xs text-blue-600 mt-1">📎 Has Bill Image</div>
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-medium text-red-600">
+                                        @if($transaction->transaction_type === 'vendor_purchase')
+                                            Rs. {{ number_format($transaction->amount, 2) }}
+                                        @else
+                                            -
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-medium text-green-600">
+                                        @if($transaction->transaction_type === 'vendor_payment')
+                                            Rs. {{ number_format($transaction->amount, 2) }}
+                                        @else
+                                            -
+                                        @endif
+                                    </td>
+                                    <td class="px-6 py-3 whitespace-nowrap text-right text-sm font-bold {{ $transaction->running_balance > 0 ? 'text-red-600' : 'text-gray-900' }}">
+                                        Rs. {{ number_format($transaction->running_balance, 2) }}
+                                    </td>
+                                    <td class="px-6 py-3 whitespace-nowrap text-center text-sm" onclick="event.stopPropagation()">
+                                        <button onclick="viewTransactionDetails({{ $transaction->id }})" 
+                                                class="text-blue-600 hover:text-blue-900 mr-2"
+                                                title="View Details">
+                                            👁️
+                                        </button>
+                                        <button onclick="openEditTransactionModal({{ $transaction->id }})" 
+                                                class="text-indigo-600 hover:text-indigo-900 mr-2"
+                                                title="Edit Transaction">
+                                            ✏️
+                                        </button>
+                                        <button onclick="confirmDeleteTransaction({{ $transaction->id }}, '{{ $transaction->transaction_type }}', {{ $transaction->amount }})" 
+                                                class="text-red-600 hover:text-red-900"
+                                                title="Delete Transaction">
+                                            🗑️
+                                        </button>
+                                    </td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            @empty
+                <div class="px-6 py-8 text-center text-sm text-gray-500">
+                    No transactions found for this vendor.
+                </div>
+            @endforelse
         </div>
     </div>
 </div>
@@ -1141,6 +1192,64 @@ function confirmDeleteTransaction(transactionId, transactionType, amount) {
             deleteBtn.disabled = false;
         });
     }
+}
+
+// ===== DATE GROUPING EXPAND/COLLAPSE FUNCTIONS =====
+let expandAllState = {{ $expandAll ? 'true' : 'false' }};
+
+function toggleDateGroup(date) {
+    const group = document.getElementById('group-' + date);
+    const icon = document.getElementById('icon-' + date);
+    
+    if (group.classList.contains('hidden')) {
+        group.classList.remove('hidden');
+        icon.textContent = '📂';
+    } else {
+        group.classList.add('hidden');
+        icon.textContent = '📁';
+    }
+}
+
+function toggleExpandAll() {
+    expandAllState = !expandAllState;
+    
+    // Update UI
+    const allGroups = document.querySelectorAll('[id^="group-"]');
+    const allIcons = document.querySelectorAll('[id^="icon-"]');
+    const toggleText = document.getElementById('toggleExpandText');
+    
+    allGroups.forEach(group => {
+        if (expandAllState) {
+            group.classList.remove('hidden');
+        } else {
+            group.classList.add('hidden');
+        }
+    });
+    
+    allIcons.forEach(icon => {
+        icon.textContent = expandAllState ? '📂' : '📁';
+    });
+    
+    toggleText.textContent = expandAllState ? '📕 Collapse All' : '📖 Expand All';
+    
+    // Save preference to session
+    fetch('{{ route('fin.vendors.toggle-expand') }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify({
+            expand_all: expandAllState
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Expand preference saved:', data);
+    })
+    .catch(error => {
+        console.error('Error saving preference:', error);
+    });
 }
 </script>
 

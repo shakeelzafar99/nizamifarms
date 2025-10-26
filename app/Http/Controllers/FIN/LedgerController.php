@@ -517,7 +517,7 @@ class LedgerController extends Controller
             DB::commit();
 
             // Redirect back to where they came from (if from outstanding invoices page, stay there)
-            if (str_contains(url()->previous(), 'outstanding-invoices')) {
+            if ($request->input('_origin') === 'outstanding-invoices' || str_contains(url()->previous(), 'outstanding-invoices')) {
                 return redirect()->route('fin.employee.all-outstanding-invoices')
                                ->with('success', 'Settlement deposit approved successfully! Invoices have been settled.');
             }
@@ -529,6 +529,10 @@ class LedgerController extends Controller
             DB::rollBack();
             Log::error("Error approving transaction: " . $e->getMessage());
             
+            if ($request->input('_origin') === 'outstanding-invoices') {
+                return redirect()->route('fin.employee.all-outstanding-invoices')
+                               ->with('error', 'Error approving transaction: ' . $e->getMessage());
+            }
             return back()->with('error', 'Error approving transaction: ' . $e->getMessage());
         }
     }
@@ -566,7 +570,7 @@ class LedgerController extends Controller
             \Session::forget("settlement_pending_{$ledger->id}");
 
             // Redirect back to where they came from (if from outstanding invoices page, stay there)
-            if (str_contains(url()->previous(), 'outstanding-invoices')) {
+            if ($request->input('_origin') === 'outstanding-invoices' || str_contains(url()->previous(), 'outstanding-invoices')) {
                 return redirect()->route('fin.employee.all-outstanding-invoices')
                                ->with('success', 'Settlement deposit rejected successfully.');
             }
@@ -577,6 +581,10 @@ class LedgerController extends Controller
         } catch (\Exception $e) {
             Log::error("Error rejecting transaction: " . $e->getMessage());
             
+            if ($request->input('_origin') === 'outstanding-invoices') {
+                return redirect()->route('fin.employee.all-outstanding-invoices')
+                               ->with('error', 'Error rejecting transaction: ' . $e->getMessage());
+            }
             return back()->with('error', 'Error rejecting transaction: ' . $e->getMessage());
         }
     }
@@ -594,24 +602,31 @@ class LedgerController extends Controller
             $depositAmount = $settlementData['deposit_amount'];
             $totalOutstanding = $settlementData['total_outstanding'];
             
-            // Check if this is a short cash settlement
+            // Check if this is a short cash settlement or partial payment
             $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
+            $isPartialPayment = $settlementData['is_partial_payment'] ?? false;
             $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
             
             // For short cash, the total amount settling invoices = deposit + expense
-            $totalSettlementAmount = $isShortCash ? ($depositAmount + $shortCashAmount) : $depositAmount;
+            // For partial payment, only the deposit amount is used (remaining stays open)
+            if ($isShortCash) {
+                $totalSettlementAmount = $depositAmount + $shortCashAmount;
+            } else {
+                $totalSettlementAmount = $depositAmount;
+            }
             
             \Log::info("Processing invoice settlement", [
                 'deposit_id' => $depositLedger->id,
                 'is_short_cash' => $isShortCash,
+                'is_partial_payment' => $isPartialPayment,
                 'deposit_amount' => $depositAmount,
                 'short_cash_amount' => $shortCashAmount,
                 'total_settlement_amount' => $totalSettlementAmount
             ]);
             
-            // Get the invoices that need to be settled (in order)
+            // Get the invoices that need to be settled (in order) - include both open and partial
             $invoices = LedgerModel::whereIn('id', $invoiceIds)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
                 ->orderBy('transaction_date', 'asc')
                 ->get();
             
@@ -635,6 +650,9 @@ class LedgerController extends Controller
                     $invoice->settlement_status = 'settled';
                     $invoice->settled_at = now();
                     $invoice->settled_via_ledger_id = $depositLedger->id;
+                } else {
+                    // Partially settled: keep status 'open' (legacy behavior). We infer partial by settled_amount > 0
+                    // Do not write a non-existent enum value like 'partial' to the database.
                 }
                 $invoice->save();
                 
@@ -654,7 +672,8 @@ class LedgerController extends Controller
                 'total_settlement_amount' => $totalSettlementAmount,
                 'amount_allocated' => $totalSettlementAmount - $remainingAmount,
                 'amount_remaining' => $remainingAmount,
-                'is_short_cash' => $isShortCash
+                'is_short_cash' => $isShortCash,
+                'is_partial_payment' => $isPartialPayment
             ]);
             
         } catch (\Exception $e) {
