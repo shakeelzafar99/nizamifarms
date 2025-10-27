@@ -1343,8 +1343,17 @@ class EmployeeCashController extends Controller
             $depositAmount = $request->amount;
             $shortCashAmount = $totalOutstanding - $depositAmount;
 
-            if ($shortCashAmount < 0) {
+            // Use tolerance for floating-point comparison (0.01 Rs tolerance)
+            // This handles edge cases from old transactions or rounding issues
+            $TOLERANCE = 0.01;
+            
+            if ($shortCashAmount < -$TOLERANCE) {
                 throw new \Exception("Deposit amount cannot exceed total outstanding");
+            }
+            
+            // If shortage is within tolerance (e.g., 0.001 Rs), treat as exact match
+            if (abs($shortCashAmount) < $TOLERANCE) {
+                $shortCashAmount = 0;
             }
 
             // Handle both full payment (no shortage) and short cash (with shortage)

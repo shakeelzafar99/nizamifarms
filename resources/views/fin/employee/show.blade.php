@@ -2442,11 +2442,15 @@ function calculateShortage() {
     const depositAmount = parseFloat(document.getElementById('shortcash-amount').value) || 0;
     const shortage = totalOutstanding - depositAmount;
     
+    // Use tolerance for floating-point comparison (0.01 Rs tolerance)
+    const TOLERANCE = 0.01;
+    const isExactMatch = Math.abs(shortage) < TOLERANCE;
+    
     const shortageSection = document.getElementById('shortage-section');
     const summarySection = document.getElementById('shortcash-summary');
     const submitBtn = document.getElementById('submit-shortcash-btn');
     
-    if (shortage > 0 && depositAmount > 0) {
+    if (shortage > TOLERANCE && depositAmount > 0) {
         // Show shortage section
         shortageSection.classList.remove('hidden');
         document.getElementById('shortage-amount').textContent = 'Rs. ' + shortage.toFixed(2);
@@ -2469,8 +2473,8 @@ function calculateShortage() {
         
         // Make expense category required
         categorySelect.setAttribute('required', 'required');
-    } else if (shortage === 0 && depositAmount > 0) {
-        // No shortage - full payment! Hide shortage section but allow submission
+    } else if (isExactMatch && depositAmount > 0) {
+        // No shortage (or within tolerance) - full payment! Hide shortage section but allow submission
         shortageSection.classList.add('hidden');
         summarySection.classList.add('hidden');
         
@@ -2484,8 +2488,8 @@ function calculateShortage() {
         // Remove required from category (not needed for full payment)
         const categorySelect = document.getElementById('shortcash-expense-category');
         categorySelect.removeAttribute('required');
-    } else if (shortage < 0) {
-        // Deposit exceeds total - show error
+    } else if (shortage < -TOLERANCE) {
+        // Deposit exceeds total (beyond tolerance) - show error
         shortageSection.classList.add('hidden');
         summarySection.classList.add('hidden');
         
@@ -2556,15 +2560,20 @@ function handleShortCashSubmit(event) {
     const depositAmount = parseFloat(document.getElementById('shortcash-amount').value) || 0;
     const shortage = totalOutstanding - depositAmount;
     
+    // Use tolerance for floating-point comparison (0.01 Rs tolerance)
+    const TOLERANCE = 0.01;
+    const isExactMatch = Math.abs(shortage) < TOLERANCE;
+    
     console.log('Settlement Submit - Validation:', {
         selectedInvoices: selectedInvoices.length,
         totalOutstanding,
         depositAmount,
-        shortage
+        shortage,
+        isExactMatch
     });
     
-    // If there's a shortage, category is required
-    if (shortage > 0) {
+    // If there's a shortage (beyond tolerance), category is required
+    if (shortage > TOLERANCE) {
         const categorySelect = document.getElementById('shortcash-expense-category');
         console.log('Settlement Submit - Shortage detected, Category:', categorySelect.value);
         
@@ -2573,11 +2582,11 @@ function handleShortCashSubmit(event) {
             event.preventDefault();
             return false;
         }
-    } else if (shortage === 0) {
-        // Full payment - no category needed
+    } else if (isExactMatch) {
+        // Full payment (or within tolerance) - no category needed
         console.log('Settlement Submit - Full payment, no shortage');
-    } else {
-        // Deposit exceeds total
+    } else if (shortage < -TOLERANCE) {
+        // Deposit exceeds total (beyond tolerance)
         alert('Deposit amount cannot exceed total outstanding.');
         event.preventDefault();
         return false;
