@@ -278,6 +278,8 @@ class RiderController extends Controller
                         'total_formatted' => 'Rs. ' . number_format($order->total_price, 0),
                     ],
                     'notes' => $order->note,
+                    'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
+                    'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
                     'line_items' => $lineItems,
                     'status_history' => $statusHistory,
                 ],
@@ -331,14 +333,28 @@ class RiderController extends Controller
                 ], 400);
             }
 
-            // Get notes and GPS coordinates from request (optional)
+            // Get notes, GPS coordinates, and packet count from request (optional)
             $notes = $request->input('notes', 'Marked as delivered by rider via mobile app');
             $latitude = $request->input('latitude');
             $longitude = $request->input('longitude');
+            $actualPackets = $request->input('actual_packets'); // Optional packet count from rider
 
             // Add GPS coordinates to notes if provided
             if ($latitude && $longitude) {
                 $notes .= " (GPS: {$latitude}, {$longitude})";
+            }
+
+            // Update actual_packets if provided by rider
+            if ($actualPackets !== null && is_numeric($actualPackets)) {
+                $order->actual_packets = (int)$actualPackets;
+                $order->save();
+                
+                \Log::info('Rider entered packet count', [
+                    'order_id' => $order->id,
+                    'expected_packets' => $order->expected_packets,
+                    'actual_packets' => $actualPackets,
+                    'match' => $order->expected_packets == $actualPackets
+                ]);
             }
 
             // Use the existing changeStatus method

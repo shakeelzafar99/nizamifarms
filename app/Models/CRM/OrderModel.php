@@ -51,6 +51,8 @@ class OrderModel extends BaseModel
         'coupon_code',
         'payment_method',
         'note',
+        'expected_packets',  // Number of packets expected (entered by manager/admin)
+        'actual_packets',    // Number of packets delivered (entered by rider)
         'raw_products_text',
         'converted',
         'ledger_transaction_id',
@@ -66,7 +68,9 @@ class OrderModel extends BaseModel
         'tip_amount' => 'decimal:2',
         'total_price' => 'decimal:2',
         'total_weight' => 'integer',
-        'converted' => 'boolean'
+        'converted' => 'boolean',
+        'expected_packets' => 'integer',
+        'actual_packets' => 'integer'
     ];
 
     // Ensure relationships are included when converting to array/JSON

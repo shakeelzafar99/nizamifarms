@@ -157,11 +157,32 @@ class OrderController extends Controller
             // Attach discounts to the order object for frontend convenience
             $order->discounts = $order->discounts ?? [];
             
+            // Get delivery location if order is delivered
+            $deliveryLocation = null;
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                $deliveryHistory = \DB::table('t_crm_order_status_history')
+                    ->where('order_id', $order->id)
+                    ->where('status_code', 'delivered')
+                    ->where('is_current', 1)
+                    ->select('delivery_latitude', 'delivery_longitude', 'changed_at')
+                    ->first();
+                
+                if ($deliveryHistory && $deliveryHistory->delivery_latitude && $deliveryHistory->delivery_longitude) {
+                    $deliveryLocation = [
+                        'latitude' => $deliveryHistory->delivery_latitude,
+                        'longitude' => $deliveryHistory->delivery_longitude,
+                        'delivered_at' => $deliveryHistory->changed_at,
+                        'google_maps_url' => "https://www.google.com/maps?q={$deliveryHistory->delivery_latitude},{$deliveryHistory->delivery_longitude}"
+                    ];
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'order' => $order,
                 'lineItems' => $order->lineItems, // Explicitly include line items
-                'discounts' => $order->discounts // Include discount details for frontend display (backward compat)
+                'discounts' => $order->discounts, // Include discount details for frontend display (backward compat)
+                'delivery_location' => $deliveryLocation // Include delivery GPS location if available
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -408,6 +429,7 @@ class OrderController extends Controller
                 'coupon_code' => 'nullable|string',
                 'payment_method' => 'nullable|string',
                 'note' => 'nullable|string',
+                'expected_packets' => 'nullable|integer|min:0', // Packet tracking (optional)
                 'items' => 'required|array',
                 'items.*.name' => 'required|string',
                 'items.*.quantity' => 'required|numeric|min:0.001',

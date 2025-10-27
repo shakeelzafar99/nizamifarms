@@ -1841,6 +1841,49 @@ function viewOrderDetails(orderId) {
                 html += '</div>';
             }
 
+            // Packet Tracking Section (if packet data exists)
+            if (order.expected_packets || order.actual_packets) {
+                html += '<div style="padding: 20px; background-color: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; margin: 20px 0 0 0;">';
+                html += '<h3 style="margin: 0 0 12px 0; color: #92400e; font-size: 16px; display: flex; align-items: center; gap: 8px;"><span>📦</span> Packet Tracking</h3>';
+                html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px;">';
+                html += '<div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Expected Packets (Manager)</div>';
+                html += '<div style="font-size: 24px; font-weight: 700; color: #111827;">' + (order.expected_packets || '-') + '</div>';
+                html += '</div>';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px;">';
+                html += '<div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Actual Packets Delivered (Rider)</div>';
+                html += '<div style="font-size: 24px; font-weight: 700; color: #111827;">' + (order.actual_packets || '-') + '</div>';
+                if (order.expected_packets && order.actual_packets) {
+                    if (order.expected_packets != order.actual_packets) {
+                        html += '<div style="margin-top: 8px; padding: 6px 10px; background-color: #fee2e2; color: #dc2626; border-radius: 4px; font-size: 12px; font-weight: 600;">⚠️ Mismatch Detected</div>';
+                    } else {
+                        html += '<div style="margin-top: 8px; padding: 6px 10px; background-color: #d1fae5; color: #059669; border-radius: 4px; font-size: 12px; font-weight: 600;">✅ Verified</div>';
+                    }
+                }
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+
+            // Delivery Location Section (if available)
+            if (data.delivery_location) {
+                var loc = data.delivery_location;
+                html += '<div style="padding: 20px; background-color: #dbeafe; border: 1px solid #3b82f6; border-radius: 8px; margin: 20px 0 0 0;">';
+                html += '<h3 style="margin: 0 0 12px 0; color: #1e40af; font-size: 16px; display: flex; align-items: center; gap: 8px;"><span>📍</span> Delivery Location</h3>';
+                html += '<div style="background-color: white; padding: 16px; border-radius: 6px;">';
+                html += '<div style="display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;">';
+                html += '<div style="font-size: 14px; color: #6b7280;">Coordinates:</div>';
+                html += '<div style="font-size: 14px; color: #111827; font-family: monospace;">' + loc.latitude + ', ' + loc.longitude + '</div>';
+                html += '<div style="font-size: 14px; color: #6b7280;">Delivered At:</div>';
+                html += '<div style="font-size: 14px; color: #111827;">' + formatDate(loc.delivered_at) + '</div>';
+                html += '</div>';
+                html += '<a href="' + loc.google_maps_url + '" target="_blank" style="display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 8px 16px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500;">';
+                html += '<span>🗺️</span> View on Google Maps';
+                html += '</a>';
+                html += '</div>';
+                html += '</div>';
+            }
+
             // Rider Assignment Section
             html += '<div style="padding: 20px; background-color: #f0f9ff; border: 1px solid #0891b2; border-radius: 8px; margin: 20px 0 0 0;">';
             html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">';
@@ -2603,6 +2646,41 @@ function loadEditForm(order) {
             <div style="margin-bottom: 20px;">
                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Order Notes</label>
                 <textarea name="note" rows="3" style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;" placeholder="Order notes...">${order.note || ''}</textarea>
+            </div>
+
+            <!-- Packet Tracking Section (Optional) -->
+            <div style="background-color: #fef3c7; padding: 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #fbbf24;">
+                <h4 style="font-weight: 600; color: #92400e; margin: 0 0 12px 0; display: flex; align-items: center; gap: 8px;">
+                    <span>📦</span> Packet Tracking (Optional)
+                </h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
+                            Expected Packets
+                            <span style="font-size: 12px; color: #6b7280; font-weight: normal;">(Manager/Admin)</span>
+                        </label>
+                        <input type="number" name="expected_packets" value="${order.expected_packets || ''}" min="0" step="1"
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" 
+                               placeholder="Enter number of packets">
+                        <p style="font-size: 12px; color: #6b7280; margin-top: 4px;">Number of packets you're sending with this order</p>
+                    </div>
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">
+                            Actual Packets Delivered
+                            <span style="font-size: 12px; color: #6b7280; font-weight: normal;">(Rider)</span>
+                        </label>
+                        <input type="number" name="actual_packets" value="${order.actual_packets || ''}" min="0" step="1"
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #f3f4f6; border-radius: 6px; font-size: 14px; background-color: #f9fafb; cursor: not-allowed;" 
+                               placeholder="Entered by rider on delivery" readonly>
+                        <p style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+                            ${order.actual_packets ? 
+                                (order.expected_packets && order.actual_packets != order.expected_packets ? 
+                                    `⚠️ <span style="color: #dc2626; font-weight: 500;">Mismatch detected!</span>` : 
+                                    `✅ <span style="color: #059669; font-weight: 500;">Verified</span>`) : 
+                                'Rider will enter this on delivery'}
+                        </p>
+                    </div>
+                </div>
             </div>
 
             <!-- Line Items Section -->
@@ -3529,6 +3607,7 @@ function saveOrderChanges(orderId) {
         total_price: parseFloat(formData.get('total_price')) || 0,
         payment_method: formData.get('payment_method'),
         note: formData.get('note'),
+        expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
         items: items,
         discounts: discounts, // NEW: Include discounts array
         // Address fields
@@ -3671,6 +3750,7 @@ function saveAndCloseOrder(orderId) {
         total_price: parseFloat(formData.get('total_price')) || 0,
         payment_method: formData.get('payment_method'),
         note: formData.get('note'),
+        expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
         items: items,
         discounts: discounts, // NEW: Include discounts array
         // Address fields
