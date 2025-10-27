@@ -248,6 +248,26 @@ class RiderController extends Controller
             $paymentMethod = strtolower($order->payment_method ?? 'cash');
             $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
 
+            // Get delivery location if order is delivered
+            $deliveryLocation = null;
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                $deliveryHistory = \DB::table('t_crm_order_status_history')
+                    ->where('order_id', $order->id)
+                    ->where('status_code', 'delivered')
+                    ->where('is_current', 1)
+                    ->select('delivery_latitude', 'delivery_longitude', 'changed_at')
+                    ->first();
+                
+                if ($deliveryHistory && $deliveryHistory->delivery_latitude && $deliveryHistory->delivery_longitude) {
+                    $deliveryLocation = [
+                        'latitude' => (float)$deliveryHistory->delivery_latitude,
+                        'longitude' => (float)$deliveryHistory->delivery_longitude,
+                        'delivered_at' => $deliveryHistory->changed_at,
+                        'google_maps_url' => "https://www.google.com/maps?q={$deliveryHistory->delivery_latitude},{$deliveryHistory->delivery_longitude}"
+                    ];
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => [
@@ -280,6 +300,7 @@ class RiderController extends Controller
                     'notes' => $order->note,
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
+                    'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
                     'line_items' => $lineItems,
                     'status_history' => $statusHistory,
                 ],
@@ -339,6 +360,18 @@ class RiderController extends Controller
             $longitude = $request->input('longitude');
             $actualPackets = $request->input('actual_packets'); // Optional packet count from rider
 
+            // Log received GPS data for debugging
+            \Log::info('Received GPS data from mobile app', [
+                'order_id' => $order->id,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'latitude_type' => gettype($latitude),
+                'longitude_type' => gettype($longitude),
+                'latitude_is_null' => is_null($latitude),
+                'longitude_is_null' => is_null($longitude),
+                'full_request' => $request->all()
+            ]);
+
             // Add GPS coordinates to notes if provided
             if ($latitude && $longitude) {
                 $notes .= " (GPS: {$latitude}, {$longitude})";
@@ -370,6 +403,12 @@ class RiderController extends Controller
                         'delivery_latitude' => $latitude,
                         'delivery_longitude' => $longitude
                     ]);
+                
+                \Log::info('GPS location stored', [
+                    'order_id' => $order->id,
+                    'latitude' => $latitude,
+                    'longitude' => $longitude
+                ]);
             }
 
             if ($result) {
