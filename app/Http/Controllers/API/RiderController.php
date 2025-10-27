@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Models\CRM\OrderModel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -444,6 +445,85 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to mark order as delivered: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Change payment method for an order (rider can switch between cash/online)
+     * For non-delivered orders only
+     */
+    public function changePaymentMethod(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            $request->validate([
+                'payment_type' => 'required|in:cash,online',
+            ]);
+            
+            $order = OrderModel::where('id', $id)
+                ->where('assigned_rider_user_id', $user->id) // Fixed: correct column name
+                ->first();
+            
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found or not assigned to you',
+                ], 404);
+            }
+            
+            // Check if order is already delivered - riders can only change before delivery
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot change payment method for delivered orders',
+                ], 400);
+            }
+            
+            $newPaymentType = $request->payment_type;
+            $oldPaymentMethod = $order->payment_method;
+            $oldPaymentType = in_array($oldPaymentMethod, ['cash', 'cash_on_delivery', 'cod']) ? 'cash' : 'online';
+            
+            if ($oldPaymentType === $newPaymentType) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Payment method is already set to ' . $newPaymentType,
+                ], 400);
+            }
+            
+            // Map the payment type to actual payment method value
+            $newPaymentMethod = $newPaymentType === 'cash' ? 'cash_on_delivery' : 'online_payment';
+            
+            // Update payment method
+            $order->payment_method = $newPaymentMethod;
+            $order->save();
+            
+            \Log::info('Payment method changed by rider (before delivery)', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'rider_id' => $user->id,
+                'rider_name' => $user->fullname,
+                'old_method' => $oldPaymentMethod,
+                'new_method' => $newPaymentMethod,
+                'order_status' => $order->order_status
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment method changed to ' . ($newPaymentType === 'cash' ? 'Cash' : 'Online/Bank'),
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to change payment method', [
+                'order_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to change payment method: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -1140,6 +1220,35 @@ class RiderController extends Controller
                 return strcmp($b['date'], $a['date']);
             });
 
+            // Calculate total late minutes for the month
+            $userShift = $shiftService->getUserShift($user->id);
+            $shiftStart = $userShift['shift_start'] ?? '09:00:00';
+            
+            $lateMinutesQuery = "
+                SELECT 
+                    COALESCE(SUM(CASE 
+                        WHEN login_time > ? AND login_time IS NOT NULL THEN 
+                            TIMESTAMPDIFF(MINUTE, 
+                                CONCAT(attendance_date, ' ', ?),
+                                CONCAT(attendance_date, ' ', login_time)
+                            )
+                        ELSE 0 
+                    END), 0) as total_late_minutes
+                FROM t_ops_attendance
+                WHERE user_id = ?
+                AND attendance_date IS NOT NULL
+                AND attendance_date BETWEEN ? AND ?
+                AND login_time IS NOT NULL
+                AND login_time != ''
+            ";
+            
+            $lateResult = DB::selectOne($lateMinutesQuery, [
+                $shiftStart, $shiftStart, // For late calculation
+                $user->id, $startDate, $effectiveEndDate
+            ]);
+            
+            $totalLateMinutes = $lateResult->total_late_minutes ?? 0;
+
             // Build summary: prefer salary service; otherwise compute a safe fallback
             if ($salaryData['success']) {
                 $summary = [
@@ -1147,6 +1256,7 @@ class RiderController extends Controller
                     'present_days' => $salaryData['present_days'],
                     'absent_days' => $salaryData['absent_days'],
                     'leave_days' => $salaryData['leave_days'],
+                    'late_minutes' => $totalLateMinutes,
                 ];
             } else {
                 // Fallback path: no salary profile/config in production etc.
@@ -1196,6 +1306,7 @@ class RiderController extends Controller
                     'present_days' => $presentDays,
                     'absent_days' => max(0, $workingDays - $presentDays - $leaveDays),
                     'leave_days' => $leaveDays,
+                    'late_minutes' => $totalLateMinutes,
                 ];
 
                 \Log::warning('Monthly attendance fallback used', [

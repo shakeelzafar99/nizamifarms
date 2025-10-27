@@ -92,6 +92,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
         Route::get('/orders/{id}', [\App\Http\Controllers\API\RiderController::class, 'getOrderDetails']);
         Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
+        Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
         
         // Ledger & Settlements
         Route::get('/ledger', [\App\Http\Controllers\API\RiderController::class, 'getLedger']);
