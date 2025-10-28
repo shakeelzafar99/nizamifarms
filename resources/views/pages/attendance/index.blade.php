@@ -535,6 +535,7 @@
         <thead style="position: sticky; top: 0; background: #f3f4f6; z-index: 10;">
           <tr>
             <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Date</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Status</th>
             <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Login</th>
             <th style="padding: 10px 16px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Logout</th>
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Hours</th>
@@ -547,7 +548,7 @@
         </thead>
         <tbody id="employeeDetailsBody" style="background: white;">
           <tr>
-            <td colspan="9" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
+            <td colspan="10" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
           </tr>
         </tbody>
       </table>
@@ -1680,7 +1681,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
     // Render table
     if (!records || records.length === 0) {
-      body.innerHTML = '<tr><td colspan="9" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
       return;
     }
     
@@ -1689,6 +1690,30 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
       const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
+      
+      // Determine status: On Leave, Present, Late, or Absent
+      const isOnLeave = day.leave_request_id && (day.leave_status === 'approved' || day.leave_status === 'pending');
+      const isPresent = day.login_time && day.login_time !== '-';
+      const isLate = isPresent && day.late_minutes > 0;
+      
+      let status, statusBg, statusColor;
+      if (isOnLeave) {
+        status = 'On Leave';
+        statusBg = '#dbeafe';
+        statusColor = '#1e40af';
+      } else if (isLate) {
+        status = 'Late';
+        statusBg = '#fee2e2';
+        statusColor = '#991b1b';
+      } else if (isPresent) {
+        status = 'Present';
+        statusBg = '#dcfce7';
+        statusColor = '#166534';
+      } else {
+        status = 'Absent';
+        statusBg = '#fef2f2';
+        statusColor = '#991b1b';
+      }
       
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
@@ -1705,6 +1730,11 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">
             <div style="font-weight: 600;">${dayName}</div>
             <div style="font-size: 11px; color: #6b7280;">${formattedDate}</div>
+          </td>
+          <td style="padding: 12px 16px; font-size: 13px; text-align: center; border-bottom: 1px solid #e5e7eb;">
+            <span style="display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 600; background: ${statusBg}; color: ${statusColor};">
+              ${status}
+            </span>
           </td>
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${loginTime}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">${logoutTime}</td>
@@ -1724,7 +1754,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
   } catch(e) {
     console.error('Error loading employee details:', e);
-    body.innerHTML = `<tr><td colspan="9" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
   }
 }
 

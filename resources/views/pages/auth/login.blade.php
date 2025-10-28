@@ -52,5 +52,23 @@
             Sign In
         </button>
     </form>
+    
+    <!-- Mobile App Download Section -->
+    <div class="kt-card-content p-6 border-t border-gray-200">
+        <div class="text-center">
+            <p class="text-sm text-muted-foreground mb-3">
+                Download Rider Mobile App
+            </p>
+            <a href="{{ asset('downloads/NizamiFarms-Rider.apk') }}" 
+               class="kt-btn kt-btn-sm kt-btn-light flex items-center justify-center gap-2 w-full"
+               download>
+                <i class="ki-filled ki-android text-lg"></i>
+                <span>Download Android App (v1.1.0)</span>
+            </a>
+            <p class="text-xs text-muted-foreground mt-2">
+                For riders only
+            </p>
+        </div>
+    </div>
 </div>
 @endsection

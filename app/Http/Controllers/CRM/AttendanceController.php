@@ -417,12 +417,24 @@ class AttendanceController extends Controller
             // IMPORTANT: Only add records that have actual attendance data
             // Skip NULL attendance_date records (these come from leave request JOINs)
             if ($record->attendance_date !== null) {
+                // Determine status for all records
+                $status = null; // Default: let frontend determine from login/logout times
+                
+                // Check if this date is on leave
+                if (isset($byUser[$record->user_id]['leave_dates'][$record->attendance_date])) {
+                    $status = 'on_leave';
+                } elseif (!$record->login_time && !$record->logout_time) {
+                    // No attendance and no leave = absent
+                    $status = 'absent';
+                }
+                
                 $byUser[$record->user_id]['daily'][] = [
                     'attendance_date' => $record->attendance_date,
                     'login_time' => $record->login_time,
                     'logout_time' => $record->logout_time,
                     'shift_start' => $userShiftStart,
-                    'shift_end' => $userShiftEnd
+                    'shift_end' => $userShiftEnd,
+                    'status' => $status // ✅ Always add status field
                 ];
             }
         }
@@ -439,7 +451,7 @@ class AttendanceController extends Controller
                 $attendanceDates[$day['attendance_date']] = true;
             }
             
-            // Add absent day records for dates within the reporting period that have no attendance and no leave
+            // Add absent/leave day records for dates within the reporting period that have no attendance
             // IMPORTANT: Only add for WORKING DAYS (respects shift off days and public holidays)
             $currentDate = new \DateTime($startDate);
             $endDateObj = new \DateTime($effectiveEndDate);
@@ -447,20 +459,33 @@ class AttendanceController extends Controller
             while ($currentDate <= $endDateObj) {
                 $dateStr = $currentDate->format('Y-m-d');
                 
-                // Skip if attendance record exists or if on leave
-                if (!isset($attendanceDates[$dateStr]) && !isset($userData['leave_dates'][$dateStr])) {
-                    // CRITICAL: Only mark as absent if this is a WORKING DAY for this user
+                // Skip if attendance record exists
+                if (!isset($attendanceDates[$dateStr])) {
+                    // CRITICAL: Only add if this is a WORKING DAY for this user
                     // This respects shift schedule (e.g., Tuesday off) AND public holidays
                     if ($shiftService->isWorkingDay($userId, $dateStr)) {
-                        // This is a working day with no attendance = ABSENT
-                        $userData['daily'][] = [
-                            'attendance_date' => $dateStr,
-                            'login_time' => null,
-                            'logout_time' => null,
-                            'shift_start' => $userData['shift_start'],
-                            'shift_end' => $userData['shift_end'],
-                            'status' => 'absent' // Mark as absent for frontend rendering
-                        ];
+                        // Check if on leave
+                        if (isset($userData['leave_dates'][$dateStr])) {
+                            // This is a working day on leave = ON LEAVE
+                            $userData['daily'][] = [
+                                'attendance_date' => $dateStr,
+                                'login_time' => null,
+                                'logout_time' => null,
+                                'shift_start' => $userData['shift_start'],
+                                'shift_end' => $userData['shift_end'],
+                                'status' => 'on_leave' // ✅ Mark as on leave
+                            ];
+                        } else {
+                            // This is a working day with no attendance = ABSENT
+                            $userData['daily'][] = [
+                                'attendance_date' => $dateStr,
+                                'login_time' => null,
+                                'logout_time' => null,
+                                'shift_start' => $userData['shift_start'],
+                                'shift_end' => $userData['shift_end'],
+                                'status' => 'absent' // Mark as absent for frontend rendering
+                            ];
+                        }
                     }
                     // else: it's a day off or holiday, don't show in the report
                 }

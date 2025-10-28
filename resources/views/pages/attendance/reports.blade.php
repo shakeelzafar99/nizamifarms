@@ -512,16 +512,24 @@ function showDailyDetails(userId) {
     console.log('Original records:', employee.daily.length, '| After deduplication:', uniqueDaily.length);
     console.log('Rendering', uniqueDaily.length, 'unique daily records');
     
+    // DEBUG: Log Oct 27 specifically
+    const oct27 = uniqueDaily.find(d => d.attendance_date === '2025-10-27');
+    if (oct27) {
+      console.log('Oct 27 data:', oct27);
+      console.log('Oct 27 status field:', oct27.status);
+    }
+    
     body.innerHTML = uniqueDaily.map((day, index) => {
-      // Check if this is an absent day (marked by backend)
-      const isAbsent = day.status === 'absent' || (!day.login_time && !day.logout_time);
+      // Check if this is an absent or on leave day (marked by backend)
+      const isAbsent = day.status === 'absent' || (!day.login_time && !day.logout_time && day.status !== 'on_leave');
+      const isOnLeave = day.status === 'on_leave';
       
       const loginTime = day.login_time || '-';
       const logoutTime = day.logout_time || '-';
-      const hours = isAbsent ? '-' : calculateHours(day.login_time, day.logout_time);
-      const lateBy = isAbsent ? { duration: '-', isLate: false } : calculateLateBy(day.login_time, day.shift_start);
-      const overtime = isAbsent ? { duration: '-', hasOvertime: false } : calculateOvertime(day.logout_time, day.shift_end);
-      const status = isAbsent ? 'Absent' : getStatus(day.login_time, day.shift_start);
+      const hours = (isAbsent || isOnLeave) ? '-' : calculateHours(day.login_time, day.logout_time);
+      const lateBy = (isAbsent || isOnLeave) ? { duration: '-', isLate: false } : calculateLateBy(day.login_time, day.shift_start);
+      const overtime = (isAbsent || isOnLeave) ? { duration: '-', hasOvertime: false } : calculateOvertime(day.logout_time, day.shift_end);
+      const status = isOnLeave ? 'On Leave' : (isAbsent ? 'Absent' : getStatus(day.login_time, day.shift_start));
       
       // Format date nicely
       const date = new Date(day.attendance_date + 'T00:00:00');
@@ -529,18 +537,18 @@ function showDailyDetails(userId) {
       const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
       const rowBg = index % 2 === 0 ? '#f9fafb' : 'white';
-      const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : status === 'Absent' ? '#fef2f2' : '#f3f4f6';
-      const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : status === 'Absent' ? '#991b1b' : '#6b7280';
+      const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : status === 'Absent' ? '#fef2f2' : status === 'On Leave' ? '#dbeafe' : '#f3f4f6';
+      const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : status === 'Absent' ? '#991b1b' : status === 'On Leave' ? '#1e40af' : '#6b7280';
       
       return `
         <tr style="background: ${rowBg}; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
           <td style="padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #f3f4f6;">
-            <div style="font-weight: 500; color: ${isAbsent ? '#dc2626' : '#111827'};">${formattedDate}</div>
+            <div style="font-weight: 500; color: ${isOnLeave ? '#1e40af' : (isAbsent ? '#dc2626' : '#111827')};">${formattedDate}</div>
             <div style="font-size: 12px; color: #6b7280;">${dayName}</div>
           </td>
-          <td style="padding: 12px 16px; font-size: 14px; color: ${isAbsent ? '#9ca3af' : lateBy.isLate ? '#dc2626' : '#374151'}; font-weight: ${lateBy.isLate ? '600' : '400'}; border-bottom: 1px solid #f3f4f6;">${loginTime}</td>
-          <td style="padding: 12px 16px; font-size: 14px; color: ${isAbsent ? '#9ca3af' : '#374151'}; border-bottom: 1px solid #f3f4f6;">${logoutTime}</td>
-          <td style="padding: 12px 16px; font-size: 14px; font-weight: 600; text-align: center; color: ${isAbsent ? '#9ca3af' : '#111827'}; border-bottom: 1px solid #f3f4f6;">${hours}</td>
+          <td style="padding: 12px 16px; font-size: 14px; color: ${(isAbsent || isOnLeave) ? '#9ca3af' : lateBy.isLate ? '#dc2626' : '#374151'}; font-weight: ${lateBy.isLate ? '600' : '400'}; border-bottom: 1px solid #f3f4f6;">${loginTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; color: ${(isAbsent || isOnLeave) ? '#9ca3af' : '#374151'}; border-bottom: 1px solid #f3f4f6;">${logoutTime}</td>
+          <td style="padding: 12px 16px; font-size: 14px; font-weight: 600; text-align: center; color: ${(isAbsent || isOnLeave) ? '#9ca3af' : '#111827'}; border-bottom: 1px solid #f3f4f6;">${hours}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${lateBy.isLate ? '#dc2626' : '#9ca3af'}; font-weight: ${lateBy.isLate ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${lateBy.duration}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; color: ${overtime.hasOvertime ? '#16a34a' : '#9ca3af'}; font-weight: ${overtime.hasOvertime ? 'bold' : '400'}; border-bottom: 1px solid #f3f4f6;">${overtime.duration}</td>
           <td style="padding: 12px 16px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">

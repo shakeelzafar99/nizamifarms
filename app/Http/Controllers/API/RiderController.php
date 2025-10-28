@@ -1171,8 +1171,45 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('attendance_date');
 
+            // Get approved/pending leave requests for the month
+            $leaveRequests = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
+                ->whereIn('status', ['approved', 'pending'])
+                ->whereHas('category', function ($q) {
+                    $q->where('category_code', 'leave');
+                })
+                ->where(function ($q) use ($startDate, $effectiveEndDate) {
+                    $q->whereBetween('leave_start_date', [$startDate, $effectiveEndDate])
+                      ->orWhereBetween('leave_end_date', [$startDate, $effectiveEndDate])
+                      ->orWhere(function ($q2) use ($startDate, $effectiveEndDate) {
+                          $q2->where('leave_start_date', '<=', $startDate)
+                             ->where('leave_end_date', '>=', $effectiveEndDate);
+                      });
+                })
+                ->get();
+
+            // Build a set of dates that are on leave
+            $leaveDates = [];
+            foreach ($leaveRequests as $req) {
+                if ($req->leave_start_date && $req->leave_end_date) {
+                    $d = new \DateTime($req->leave_start_date);
+                    $dEnd = new \DateTime($req->leave_end_date);
+                    while ($d <= $dEnd) {
+                        $dateStr = $d->format('Y-m-d');
+                        if ($dateStr >= $startDate && $dateStr <= $effectiveEndDate) {
+                            $leaveDates[$dateStr] = true;
+                        }
+                        $d->modify('+1 day');
+                    }
+                }
+            }
+
             // Get user's shift utilities
             $shiftService = new \App\Services\ShiftResolutionService();
+            
+            // Get user's shift times
+            $userShift = $shiftService->getUserShift($user->id);
+            $shiftStart = $userShift['shift_start'] ?? '09:00:00';
+            $shiftEnd = $userShift['shift_end'] ?? '17:00:00';
 
             // Build calendar history of working days with attendance/absent
             $history = [];
@@ -1186,6 +1223,28 @@ class RiderController extends Controller
                 if ($isWorkingDay) {
                     if (isset($attendanceRecords[$dateStr])) {
                         $record = $attendanceRecords[$dateStr];
+                        
+                        // Determine detailed status: Check leave FIRST, then attendance
+                        $status = 'absent';
+                        $lateMinutes = 0;
+                        
+                        // ✅ FIRST: Check if this date is on leave (even if they have an attendance record)
+                        if (isset($leaveDates[$dateStr])) {
+                            $status = 'on_leave';
+                        } elseif ($record->login_time) {
+                            // Check if late
+                            $shiftStartTime = strtotime($dateStr . ' ' . $shiftStart);
+                            $loginTime = strtotime($dateStr . ' ' . $record->login_time);
+                            
+                            if ($loginTime > $shiftStartTime) {
+                                $lateMinutes = round(($loginTime - $shiftStartTime) / 60);
+                                $status = 'late';
+                            } else {
+                                $status = $record->logout_time ? 'completed' : 'in_progress';
+                            }
+                        }
+                        // else: status remains 'absent' (no login and not on leave)
+                        
                         $history[] = [
                             'id' => $record->id,
                             'date' => $record->attendance_date,
@@ -1194,10 +1253,14 @@ class RiderController extends Controller
                             'login_time_formatted' => $record->login_time ? date('h:i A', strtotime($record->login_time)) : null,
                             'logout_time' => $record->logout_time,
                             'logout_time_formatted' => $record->logout_time ? date('h:i A', strtotime($record->logout_time)) : null,
-                            'status' => $record->login_time ? ($record->logout_time ? 'completed' : 'in_progress') : 'absent',
+                            'status' => $status,
+                            'late_minutes' => $lateMinutes,
                             'notes' => $record->notes,
                         ];
                     } else {
+                        // No attendance record - check if on leave
+                        $status = isset($leaveDates[$dateStr]) ? 'on_leave' : 'absent';
+                        
                         $history[] = [
                             'id' => null,
                             'date' => $dateStr,
@@ -1206,7 +1269,8 @@ class RiderController extends Controller
                             'login_time_formatted' => null,
                             'logout_time' => null,
                             'logout_time_formatted' => null,
-                            'status' => 'absent',
+                            'status' => $status,
+                            'late_minutes' => 0,
                             'notes' => null,
                         ];
                     }
@@ -1452,8 +1516,17 @@ class RiderController extends Controller
 
             DB::beginTransaction();
 
-            // Create request
+            // Calculate leave days if it's a leave request
+            $leaveDays = null;
+            if (isset($validated['leave_start_date']) && isset($validated['leave_end_date'])) {
+                $start = \Carbon\Carbon::parse($validated['leave_start_date']);
+                $end = \Carbon\Carbon::parse($validated['leave_end_date']);
+                $leaveDays = $end->diffInDays($start) + 1;
+            }
+
+            // Create request - SAME AS WEBAPP
             $newRequest = \App\Models\Request\RequestModel::create([
+                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(), // Use model method like webapp
                 'category_id' => $category->id,
                 'requester_user_id' => $user->id,
                 'title' => $validated['title'],
@@ -1463,30 +1536,16 @@ class RiderController extends Controller
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
-                'priority' => 'normal',
+                'leave_days' => $leaveDays,
                 'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
+                'priority' => 'normal',
+                'requires_level_1' => $category->requiresLevel1(),
+                'requires_level_2' => $category->requiresLevel2(),
+                'level_1_status' => $category->requiresLevel1() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                'level_2_status' => $category->requiresLevel2() ? \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING : null,
+                'submitted_at' => now(),
                 'created_by' => $user->id,
             ]);
-
-            // Generate request number
-            $newRequest->request_number = 'REQ-' . str_pad($newRequest->id, 6, '0', STR_PAD_LEFT);
-            $newRequest->save();
-
-            // Set up approval requirements based on category config
-            if ($category->approvalConfig) {
-                $config = $category->approvalConfig;
-                $newRequest->requires_level_1 = $config->requires_level_1;
-                $newRequest->requires_level_2 = $config->requires_level_2;
-                
-                if ($config->requires_level_1) {
-                    $newRequest->level_1_status = \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING;
-                }
-                if ($config->requires_level_2) {
-                    $newRequest->level_2_status = \App\Models\Request\RequestModel::APPROVAL_STATUS_PENDING;
-                }
-                
-                $newRequest->save();
-            }
 
             DB::commit();
 
