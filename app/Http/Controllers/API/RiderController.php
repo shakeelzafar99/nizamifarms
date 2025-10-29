@@ -22,6 +22,12 @@ class RiderController extends Controller
             
             $query = DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                // ✅ Join with order status history to get actual delivery date
+                ->leftJoin('t_crm_order_status_history as osh', function($join) {
+                    $join->on('osh.order_id', '=', 'o.id')
+                         ->where('osh.status_code', '=', 'delivered')
+                         ->where('osh.is_current', '=', 1);
+                })
                 ->where('o.assigned_rider_user_id', $user->id)
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')
@@ -34,6 +40,9 @@ class RiderController extends Controller
                     'o.total_amount',
                     'o.order_date',
                     'o.delivery_date',
+                    'o.payment_method',
+                    // ✅ Use actual delivery date from status history, fallback to order's delivery_date
+                    DB::raw('COALESCE(DATE(osh.changed_at), o.delivery_date) as actual_delivery_date'),
                     DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
                     'c.phone as contact_no',
                     'c.address1 as address',
@@ -68,6 +77,10 @@ class RiderController extends Controller
                     $statusBadge = 'completed';
                 }
 
+                // Determine payment type
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                
                 return [
                     'id' => $order->id,
                     'order_number' => $order->order_number,
@@ -77,7 +90,10 @@ class RiderController extends Controller
                     'amount' => $order->total_amount,
                     'amount_formatted' => 'Rs. ' . number_format($order->total_amount, 0),
                     'order_date' => $order->order_date,
-                    'delivery_date' => $order->delivery_date,
+                    'delivery_date' => $order->actual_delivery_date, // ✅ Use actual delivery date from status history
+                    'payment_method' => $paymentMethod,
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'payment_label' => $isCash ? 'Cash' : 'Online',
                     'customer' => [
                         'name' => $order->customer_name,
                         'phone' => $order->contact_no,
@@ -282,11 +298,17 @@ class RiderController extends Controller
                     'payment_type' => $isCash ? 'cash' : 'online',
                     'payment_label' => $isCash ? 'Cash' : 'Online',
                     'customer' => [
+                        'id' => $order->customer->id ?? null,
                         'name' => $order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A',
                         'phone' => $order->customer->phone ?? '',
                         'email' => $order->customer->email ?? '',
                         'address' => $order->customer->address1 ?? '',
                         'city' => $order->customer->city ?? '',
+                        'verified_location' => ($order->customer && $order->customer->latitude && $order->customer->longitude) ? [
+                            'latitude' => (float)$order->customer->latitude,
+                            'longitude' => (float)$order->customer->longitude,
+                            'google_maps_url' => "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}",
+                        ] : null,
                     ],
                     'amounts' => [
                         'subtotal' => $order->subtotal_price,
@@ -316,6 +338,71 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load order details: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Set verified location for a customer
+     * Allows riders to save a precise GPS location for the customer's address
+     */
+    public function setCustomerVerifiedLocation(Request $request, $customerId)
+    {
+        try {
+            $validated = $request->validate([
+                'latitude' => 'required|numeric|between:-90,90',
+                'longitude' => 'required|numeric|between:-180,180',
+            ]);
+
+            $customer = \App\Models\CRM\CustomerModel::find($customerId);
+
+            if (!$customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer not found',
+                ], 404);
+            }
+
+            // Update customer's verified location
+            $customer->update([
+                'latitude' => $validated['latitude'],
+                'longitude' => $validated['longitude'],
+                'updated_by' => Auth::id(),
+            ]);
+
+            \Log::info('Customer verified location updated', [
+                'customer_id' => $customerId,
+                'latitude' => $validated['latitude'],
+                'longitude' => $validated['longitude'],
+                'updated_by' => Auth::user()->fullname,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Verified location saved successfully',
+                'customer' => [
+                    'id' => $customer->id,
+                    'latitude' => (float)$customer->latitude,
+                    'longitude' => (float)$customer->longitude,
+                    'google_maps_url' => "https://www.google.com/maps?q={$customer->latitude},{$customer->longitude}",
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid location data',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to set customer verified location', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save location: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -1046,6 +1133,7 @@ class RiderController extends Controller
 
     /**
      * Check in for today
+     * Optionally accepts meter picture
      */
     public function checkIn(Request $request)
     {
@@ -1053,6 +1141,11 @@ class RiderController extends Controller
             $user = Auth::user();
             $today = now()->format('Y-m-d');
             $currentTime = now()->format('H:i:s');
+
+            // Validate optional meter picture
+            $request->validate([
+                'meter_picture' => 'nullable|image|max:5120', // 5MB max
+            ]);
 
             // Check if already checked in today
             $existing = \DB::table('t_ops_attendance')
@@ -1064,33 +1157,51 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Already checked in today'], 400);
             }
 
+            // Store meter picture if provided
+            $picturePath = null;
+            if ($request->hasFile('meter_picture')) {
+                $picturePath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, 'checkin');
+            }
+
             if ($existing) {
                 // Update existing record
+                $updateData = [
+                    'login_time' => $currentTime,
+                    'updated_at' => now(),
+                ];
+                if ($picturePath) {
+                    $updateData['picture_start'] = $picturePath;
+                }
+                
                 \DB::table('t_ops_attendance')
                     ->where('id', $existing->id)
-                    ->update([
-                        'login_time' => $currentTime,
-                        'updated_at' => now(),
-                    ]);
+                    ->update($updateData);
             } else {
                 // Create new record
-                \DB::table('t_ops_attendance')->insert([
+                $insertData = [
                     'user_id' => $user->id,
                     'attendance_date' => $today,
                     'login_time' => $currentTime,
                     'created_at' => now(),
                     'updated_at' => now(),
-                ]);
+                ];
+                if ($picturePath) {
+                    $insertData['picture_start'] = $picturePath;
+                }
+                
+                \DB::table('t_ops_attendance')->insert($insertData);
             }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Checked in successfully at ' . date('h:i A', strtotime($currentTime)),
                 'login_time' => $currentTime,
+                'picture_url' => $picturePath ? asset('storage/' . $picturePath) : null,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check in', [
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             
             return response()->json(['success' => false, 'message' => 'Failed to check in: ' . $e->getMessage()], 500);
@@ -1098,7 +1209,105 @@ class RiderController extends Controller
     }
 
     /**
+     * Store meter picture to storage
+     */
+    private function storeMeterPicture($file, $userId, $type): string
+    {
+        $date = now();
+        $year = $date->format('Y');
+        $month = $date->format('m');
+        $filename = "user_{$userId}_{$date->format('Ymd_His')}_{$type}.jpg";
+        
+        $path = "attendance/meters/{$year}/{$month}/{$filename}";
+        
+        \Storage::disk('public')->put($path, file_get_contents($file));
+        
+        return $path;
+    }
+
+    /**
+     * Upload meter picture independently (after check-in/out)
+     */
+    public function uploadMeterPicture(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $today = now()->format('Y-m-d');
+
+            // Validate request
+            $request->validate([
+                'meter_picture' => 'required|image|max:5120', // 5MB max
+                'type' => 'required|in:start,end',
+            ]);
+
+            // Check if attendance record exists for today
+            $existing = \DB::table('t_ops_attendance')
+                ->where('user_id', $user->id)
+                ->whereDate('attendance_date', $today)
+                ->first();
+
+            if (!$existing) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No attendance record found for today. Please check in first.'
+                ], 400);
+            }
+
+            $type = $request->input('type');
+            
+            // Validate based on type
+            if ($type === 'start' && !$existing->login_time) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please check in first before uploading start meter picture.'
+                ], 400);
+            }
+
+            if ($type === 'end' && !$existing->logout_time) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please check out first before uploading end meter picture.'
+                ], 400);
+            }
+
+            // Store meter picture
+            $picturePath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, $type === 'start' ? 'checkin' : 'checkout');
+
+            // Update attendance record
+            $updateData = [
+                'updated_at' => now(),
+            ];
+            if ($type === 'start') {
+                $updateData['picture_start'] = $picturePath;
+            } else {
+                $updateData['picture_end'] = $picturePath;
+            }
+
+            \DB::table('t_ops_attendance')
+                ->where('id', $existing->id)
+                ->update($updateData);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Meter picture uploaded successfully',
+                'picture_url' => asset('storage/' . $picturePath),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to upload meter picture', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to upload meter picture: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Check out for today
+     * Optionally accepts meter picture
      */
     public function checkOut(Request $request)
     {
@@ -1106,6 +1315,11 @@ class RiderController extends Controller
             $user = Auth::user();
             $today = now()->format('Y-m-d');
             $currentTime = now()->format('H:i:s');
+
+            // Validate optional meter picture
+            $request->validate([
+                'meter_picture' => 'nullable|image|max:5120', // 5MB max
+            ]);
 
             // Check if checked in today
             $existing = \DB::table('t_ops_attendance')
@@ -1121,22 +1335,35 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Already checked out today'], 400);
             }
 
-            // Update with logout time
+            // Store meter picture if provided
+            $picturePath = null;
+            if ($request->hasFile('meter_picture')) {
+                $picturePath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, 'checkout');
+            }
+
+            // Update with logout time and picture
+            $updateData = [
+                'logout_time' => $currentTime,
+                'updated_at' => now(),
+            ];
+            if ($picturePath) {
+                $updateData['picture_end'] = $picturePath;
+            }
+
             \DB::table('t_ops_attendance')
                 ->where('id', $existing->id)
-                ->update([
-                    'logout_time' => $currentTime,
-                    'updated_at' => now(),
-                ]);
+                ->update($updateData);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
                 'logout_time' => $currentTime,
+                'picture_url' => $picturePath ? asset('storage/' . $picturePath) : null,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check out', [
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             
             return response()->json(['success' => false, 'message' => 'Failed to check out: ' . $e->getMessage()], 500);

@@ -78,7 +78,8 @@ class OrderModel extends BaseModel
 
     // Append computed attributes to JSON automatically (for frontend table)
     protected $appends = [
-        'rider_name'
+        'rider_name',
+        'delivery_date' // Actual delivery date from status history
     ];
 
     // Mutator to format order_date for MySQL
@@ -150,6 +151,39 @@ class OrderModel extends BaseModel
             return $name ?: null;
         }
         return null;
+    }
+
+    /**
+     * Get actual delivery date from status history (for mobile app grouping)
+     * Returns the date when the order was actually marked as delivered
+     */
+    public function getDeliveryDateAttribute(): ?string
+    {
+        // Only for delivered/completed orders
+        if (!in_array($this->order_status, ['delivered', 'completed'])) {
+            return null;
+        }
+
+        // Try to get from loaded relationship first
+        if ($this->relationLoaded('currentStatusHistory') && $this->currentStatusHistory) {
+            if ($this->currentStatusHistory->status_code === 'delivered' && $this->currentStatusHistory->changed_at) {
+                return date('Y-m-d', strtotime($this->currentStatusHistory->changed_at));
+            }
+        }
+
+        // Fallback: Query the database
+        $deliveryHistory = \DB::table('t_crm_order_status_history')
+            ->where('order_id', $this->id)
+            ->where('status_code', 'delivered')
+            ->where('is_current', 1)
+            ->value('changed_at');
+
+        if ($deliveryHistory) {
+            return date('Y-m-d', strtotime($deliveryHistory));
+        }
+
+        // Last fallback: use order_date
+        return $this->order_date ? date('Y-m-d', strtotime($this->order_date)) : null;
     }
 
     /**

@@ -94,6 +94,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
         Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
         
+        // Customer verified location
+        Route::post('/customers/{customerId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setCustomerVerifiedLocation']);
+        
         // Ledger & Settlements
         Route::get('/ledger', [\App\Http\Controllers\API\RiderController::class, 'getLedger']);
         Route::get('/ledger/outstanding-invoices', [\App\Http\Controllers\API\RiderController::class, 'getOutstandingInvoices']);
@@ -105,6 +108,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/attendance/today', [\App\Http\Controllers\API\RiderController::class, 'getTodayAttendance']);
         Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);
         Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
+        Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
         Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
         
         // Requests
