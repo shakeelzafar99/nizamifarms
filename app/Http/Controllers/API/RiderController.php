@@ -1724,6 +1724,15 @@ class RiderController extends Controller
                 ];
             });
 
+            // ⭐ SMART SYNC: Clear sync flags for rider's fetched requests
+            \DB::table('t_req_master')
+                ->where('requester_user_id', $user->id)
+                ->where('requester_sync_required', true)
+                ->update([
+                    'requester_sync_required' => false,
+                    'requester_last_sync_at' => now()
+                ]);
+
             return response()->json([
                 'success' => true,
                 'requests' => $requests,

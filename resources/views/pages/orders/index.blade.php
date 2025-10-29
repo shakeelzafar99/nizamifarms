@@ -722,6 +722,38 @@ input:focus, select:focus, button:focus {
 .create-order-btn:hover {
     background-color: #059669; /* darker emerald */
 }
+
+/* ⭐ SMART SYNC: Toast animations */
+@keyframes slideIn {
+    from {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
 </style>
 @endpush
 
@@ -3427,15 +3459,26 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                 const saveBtn = document.getElementById('quickRiderSaveBtn');
                 saveBtn.onclick = async function(){
                     const val = document.getElementById('quickRiderSelectStandalone').value;
+                    const selectedRiderName = val ? document.getElementById('quickRiderSelectStandalone').selectedOptions[0].text : 'Unassigned';
                     saveBtn.textContent = 'Assigning...'; saveBtn.disabled = true;
                     try {
                         const aRes = await fetch(`/orders/${orderId}/rider/assign`, { method:'POST', headers:{ 'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') }, body: JSON.stringify({ rider_user_id: val ? parseInt(val,10) : null }) });
                         const aJson = await aRes.json();
                         if (!aJson.success) throw new Error(aJson.message||'Failed');
+                        
+                        // ⭐ SMART SYNC: Update specific order row (NO HARD REFRESH)
+                        updateOrderRowRider(orderId, val ? parseInt(val,10) : null, selectedRiderName);
+                        
+                        // Show success toast
+                        showToast('✓ Rider assigned successfully', 'success');
+                        
+                        // Close modal
                         document.getElementById('quickRiderModal').remove();
-                        location.reload();
+                        
+                        // Refresh card counts
+                        if (window.refreshRiderCards) refreshRiderCards();
                     } catch(e) {
-                        alert('Assign rider failed');
+                        alert('Assign rider failed: ' + (e.message || 'Unknown error'));
                         saveBtn.textContent = 'Assign Rider'; saveBtn.disabled = false;
                     }
                 };
@@ -3443,6 +3486,109 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
         })();
     } catch(e) { console.warn('openQuickRiderAssign failed', e); }
 }
+
+// ⭐ SMART SYNC: Update specific order row (NO HARD REFRESH)
+function updateOrderRowRider(orderId, riderId, riderName) {
+    // Find the order row by data attribute
+    const row = document.querySelector(`tr[data-order-id="${orderId}"]`);
+    if (!row) {
+        console.log('Order row not found for ID:', orderId);
+        return;
+    }
+    
+    // Find the rider cell (usually has 'rider-cell' class or similar)
+    const riderCell = row.querySelector('.order-rider-cell');
+    if (!riderCell) {
+        console.log('Rider cell not found in order row');
+        return;
+    }
+    
+    // Update the rider name with "Pending Sync" indicator
+    if (riderId) {
+        riderCell.innerHTML = `
+            <div style="display:flex;align-items:center;gap:4px;">
+                <span>${riderName}</span>
+                <span class="sync-status-indicator" data-order-id="${orderId}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;">
+                    <svg style="width:10px;height:10px;animation:spin 1s linear infinite;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    Pending
+                </span>
+            </div>
+        `;
+    } else {
+        riderCell.innerHTML = '<span style="color:#9ca3af;">Unassigned</span>';
+    }
+    
+    // Highlight row briefly
+    row.style.background = '#dbeafe';
+    setTimeout(() => {
+        row.style.background = '';
+    }, 2000);
+}
+
+// Toast notification (non-intrusive)
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    const bgColor = type === 'success' ? '#10b981' : '#ef4444';
+    toast.style.cssText = `position:fixed;top:20px;right:20px;background:${bgColor};color:#fff;padding:12px 20px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:10000;font-size:14px;font-weight:500;animation:slideIn 0.3s ease-out;`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.animation = 'slideOut 0.3s ease-out';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// ⭐ SMART SYNC: Poll for sync status updates
+let syncPollingInterval = null;
+function startSyncStatusPolling() {
+    // Stop existing polling if any
+    if (syncPollingInterval) {
+        clearInterval(syncPollingInterval);
+    }
+    
+    // Poll every 5 seconds for recent assignments
+    syncPollingInterval = setInterval(async () => {
+        try {
+            const response = await fetch('/orders/sync-status?hours=1', {
+                headers: { 'Accept': 'application/json' }
+            });
+            const data = await response.json();
+            
+            if (data.success && data.orders) {
+                data.orders.forEach(order => {
+                    const indicator = document.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
+                    if (!indicator) return;
+                    
+                    if (order.sync_status === 'synced') {
+                        // Update to "Synced" with green checkmark
+                        indicator.style.background = '#d1fae5';
+                        indicator.style.color = '#065f46';
+                        indicator.innerHTML = `
+                            <svg style="width:10px;height:10px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            Synced
+                        `;
+                        
+                        // Remove indicator after 10 seconds
+                        setTimeout(() => {
+                            if (indicator.parentElement) {
+                                indicator.remove();
+                            }
+                        }, 10000);
+                    }
+                });
+            }
+        } catch (error) {
+            console.log('Sync status polling failed:', error);
+        }
+    }, 5000); // Poll every 5 seconds
+}
+
+// Start polling when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    startSyncStatusPolling();
+});
+
 // Load status timeline for edit order modal
 async function loadEditOrderTimeline(orderId) {
     try {
@@ -5928,6 +6074,7 @@ function renderTableBody() {
         try {
             const row = document.createElement('tr');
             row.className = 'hover:bg-gray-50 transition-colors duration-150 cursor-pointer';
+            row.setAttribute('data-order-id', order.id); // ⭐ SMART SYNC: For row updates
             
             // Make entire row clickable to open view order details
             row.onclick = function(e) {
@@ -5959,6 +6106,10 @@ function renderTableBody() {
                         td.className = 'px-6 py-4 whitespace-nowrap text-sm';
                         if (column.id === 'actions') {
                             td.className += ' sticky-actions';
+                        }
+                        // ⭐ SMART SYNC: Mark rider cell for updates
+                        if (column.id === 'rider') {
+                            td.className += ' order-rider-cell';
                         }
                         const cellContent = getCellContent(order, column.id);
                         td.innerHTML = cellContent;

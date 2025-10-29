@@ -56,6 +56,10 @@ class RequestApprovalController extends Controller
             );
 
             if ($success) {
+                // ⭐ SMART SYNC: Flag that requester needs to sync
+                $requestModel->requester_sync_required = true;
+                $requestModel->save();
+                
                 return response()->json([
                     'success' => true,
                     'message' => "Request approved at Level {$level}",
@@ -117,6 +121,10 @@ class RequestApprovalController extends Controller
             );
 
             if ($success) {
+                // ⭐ SMART SYNC: Flag that requester needs to sync
+                $requestModel->requester_sync_required = true;
+                $requestModel->save();
+                
                 return response()->json([
                     'success' => true,
                     'message' => "Request rejected at Level {$level}",

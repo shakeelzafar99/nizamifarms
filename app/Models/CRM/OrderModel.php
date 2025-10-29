@@ -538,12 +538,19 @@ class OrderModel extends BaseModel
                 DB::table('t_ops_order_rider_history')->insert($insertData);
 
                 // Update denormalized column on order
+                $orderUpdateData = [
+                    'assigned_rider_user_id' => $riderUserId,
+                    'updated_at' => Carbon::now()->format('Y-m-d H:i:s'),
+                ];
+                
+                // Add sync tracking columns if they exist (smart sync feature)
+                if (Schema::hasColumn('t_crm_prod_order', 'rider_sync_required')) {
+                    $orderUpdateData['rider_sync_required'] = true;
+                }
+                
                 DB::table('t_crm_prod_order')
                     ->where('id', $orderId)
-                    ->update([
-                        'assigned_rider_user_id' => $riderUserId,
-                        'updated_at' => Carbon::now()->format('Y-m-d H:i:s'),
-                    ]);
+                    ->update($orderUpdateData);
 
                 // Refresh current model instance
                 $this->setAttribute('assigned_rider_user_id', $riderUserId);

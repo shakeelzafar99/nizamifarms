@@ -1379,6 +1379,19 @@ class OrderController extends Controller
             // Get results (limit to 100 for performance)
             $orders = $query->orderBy('order_date', 'desc')->limit(100)->get();
 
+            // ⭐ SMART SYNC: Clear sync flags for rider's fetched orders
+            // This marks orders as synced when the mobile app fetches them
+            if ($source === 'other' && auth()->check()) {
+                $riderId = auth()->id();
+                \DB::table('t_crm_prod_order')
+                    ->where('assigned_rider_user_id', $riderId)
+                    ->where('rider_sync_required', true)
+                    ->update([
+                        'rider_sync_required' => false,
+                        'rider_last_sync_at' => now()
+                    ]);
+            }
+
             // Provide counts for Shopify tabs so the frontend can render badges correctly
             $shopifyAllCount = null;
             $shopifyApprovalsCount = null;
@@ -2073,5 +2086,69 @@ class OrderController extends Controller
             'balances_reversed' => $wasApproved,
             'reason' => $reason
         ]);
+    }
+
+    /**
+     * ⭐ SMART SYNC: Get sync status for recent orders
+     * Used by webapp to show "Synced" or "Pending" indicators
+     */
+    public function syncStatus(Request $request)
+    {
+        try {
+            // Get orders assigned in last hour (only recent ones for performance)
+            $hoursBack = $request->get('hours', 1); // Configurable, default 1 hour
+            
+            $recentOrders = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->where('o.assigned_rider_user_id', '!=', null)
+                ->where('o.updated_at', '>=', now()->subHours($hoursBack))
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.assigned_rider_user_id',
+                    'u.fullname as rider_name',
+                    'o.rider_sync_required',
+                    'o.rider_last_sync_at',
+                    'o.updated_at'
+                ])
+                ->orderBy('o.updated_at', 'desc')
+                ->get();
+            
+            $orders = $recentOrders->map(function($order) {
+                $lastSyncAt = $order->rider_last_sync_at;
+                $timeAgo = null;
+                
+                if ($lastSyncAt) {
+                    $syncTime = \Carbon\Carbon::parse($lastSyncAt);
+                    $timeAgo = $syncTime->diffForHumans();
+                }
+                
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'rider_id' => $order->assigned_rider_user_id,
+                    'rider_name' => $order->rider_name,
+                    'sync_required' => (bool)$order->rider_sync_required,
+                    'last_sync_at' => $lastSyncAt,
+                    'sync_status' => $order->rider_sync_required ? 'pending' : 'synced',
+                    'sync_time_ago' => $timeAgo
+                ];
+            });
+            
+            return response()->json([
+                'success' => true,
+                'orders' => $orders,
+                'timestamp' => now()->toIso8601String()
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get sync status', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get sync status: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
