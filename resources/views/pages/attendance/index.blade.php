@@ -544,11 +544,12 @@
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Orders</th>
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">1st Delivery</th>
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Last Delivery</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Meter Pics</th>
           </tr>
         </thead>
         <tbody id="employeeDetailsBody" style="background: white;">
           <tr>
-            <td colspan="10" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
+            <td colspan="11" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
           </tr>
         </tbody>
       </table>
@@ -565,6 +566,14 @@
       </button>
     </div>
 
+  </div>
+</div>
+
+<!-- Meter Picture Viewer Modal -->
+<div id="meterPictureModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 10001; background-color: rgba(0, 0, 0, 0.9); align-items: center; justify-content: center; padding: 1rem;" onclick="if(event.target === this) closeMeterPictureModal();">
+  <div style="position: relative; max-width: 90%; max-height: 90%; display: flex; flex-direction: column; align-items: center;" onclick="event.stopPropagation();">
+    <button onclick="closeMeterPictureModal()" style="position: absolute; top: -40px; right: 0; background: rgba(255, 255, 255, 0.2); color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 16px; font-weight: 600;">✕ Close</button>
+    <img id="meterPictureImage" src="" style="max-width: 100%; max-height: 90vh; border-radius: 8px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);" />
   </div>
 </div>
 
@@ -1681,7 +1690,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
     // Render table
     if (!records || records.length === 0) {
-      body.innerHTML = '<tr><td colspan="10" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
+      body.innerHTML = '<tr><td colspan="11" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
       return;
     }
     
@@ -1725,6 +1734,24 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const firstDelivery = day.first_delivery_time || '-';
       const lastDelivery = day.last_delivery_time || '-';
       
+      // Meter pictures
+      const hasPictureStart = day.picture_start && day.picture_start !== '-';
+      const hasPictureEnd = day.picture_end && day.picture_end !== '-';
+      const pictureStartUrl = hasPictureStart ? `/storage/${day.picture_start}` : null;
+      const pictureEndUrl = hasPictureEnd ? `/storage/${day.picture_end}` : null;
+      
+      let meterPicsHtml = '-';
+      if (hasPictureStart || hasPictureEnd) {
+        meterPicsHtml = '<div style="display: flex; gap: 4px; justify-content: center;">';
+        if (hasPictureStart) {
+          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureStartUrl}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
+        }
+        if (hasPictureEnd) {
+          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureEndUrl}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
+        }
+        meterPicsHtml += '</div>';
+      }
+      
       return `
         <tr style="background: ${rowBg};">
           <td style="padding: 12px 16px; font-size: 13px; color: #111827; border-bottom: 1px solid #e5e7eb;">
@@ -1746,6 +1773,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
           </td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${firstDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${firstDelivery}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${lastDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${lastDelivery}</td>
+          <td style="padding: 12px 16px; font-size: 13px; text-align: center; border-bottom: 1px solid #e5e7eb;">${meterPicsHtml}</td>
         </tr>
       `;
     }).join('');
@@ -1754,7 +1782,23 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
   } catch(e) {
     console.error('Error loading employee details:', e);
-    body.innerHTML = `<tr><td colspan="10" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="11" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+  }
+}
+
+function viewMeterPicture(imageUrl) {
+  const modal = document.getElementById('meterPictureModal');
+  const img = document.getElementById('meterPictureImage');
+  if (modal && img) {
+    img.src = imageUrl;
+    modal.style.display = 'flex';
+  }
+}
+
+function closeMeterPictureModal() {
+  const modal = document.getElementById('meterPictureModal');
+  if (modal) {
+    modal.style.display = 'none';
   }
 }
 

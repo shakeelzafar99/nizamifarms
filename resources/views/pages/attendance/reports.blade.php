@@ -275,6 +275,7 @@
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Late By</th>
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Overtime</th>
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Status</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Meter Pics</th>
             </tr>
           </thead>
           <tbody id="dailyDetailsBody" style="background: white;">
@@ -295,6 +296,14 @@
       </div>
 
     </div>
+</div>
+
+<!-- Meter Picture Viewer Modal -->
+<div id="meterPictureModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 100000; background-color: rgba(0, 0, 0, 0.9); align-items: center; justify-content: center; padding: 1rem;" onclick="if(event.target === this) closeMeterPictureModal();">
+  <div style="position: relative; max-width: 90%; max-height: 90%; display: flex; flex-direction: column; align-items: center;" onclick="event.stopPropagation();">
+    <button onclick="closeMeterPictureModal()" style="position: absolute; top: -40px; right: 0; background: rgba(255, 255, 255, 0.2); color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; font-size: 16px; font-weight: 600;">✕ Close</button>
+    <img id="meterPictureImage" src="" style="max-width: 100%; max-height: 90vh; border-radius: 8px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);" />
+  </div>
 </div>
 
 <script>
@@ -493,7 +502,7 @@ function showDailyDetails(userId) {
   document.getElementById('modalStatOTHours').textContent = `${otHours}h ${otMins}m`;
 
   if (!employee.daily || employee.daily.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
     console.warn('No daily data for employee');
   } else {
     // DEDUPLICATE: Remove duplicate dates (keep first occurrence)
@@ -540,6 +549,24 @@ function showDailyDetails(userId) {
       const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : status === 'Absent' ? '#fef2f2' : status === 'On Leave' ? '#dbeafe' : '#f3f4f6';
       const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : status === 'Absent' ? '#991b1b' : status === 'On Leave' ? '#1e40af' : '#6b7280';
       
+      // Meter pictures
+      const hasPictureStart = day.picture_start && day.picture_start !== '-';
+      const hasPictureEnd = day.picture_end && day.picture_end !== '-';
+      const pictureStartUrl = hasPictureStart ? `/storage/${day.picture_start}` : null;
+      const pictureEndUrl = hasPictureEnd ? `/storage/${day.picture_end}` : null;
+      
+      let meterPicsHtml = '-';
+      if (hasPictureStart || hasPictureEnd) {
+        meterPicsHtml = '<div style="display: flex; gap: 4px; justify-content: center;">';
+        if (hasPictureStart) {
+          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureStartUrl}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
+        }
+        if (hasPictureEnd) {
+          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureEndUrl}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
+        }
+        meterPicsHtml += '</div>';
+      }
+      
       return `
         <tr style="background: ${rowBg}; transition: background 0.2s;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background='${rowBg}'">
           <td style="padding: 12px 16px; font-size: 14px; border-bottom: 1px solid #f3f4f6;">
@@ -556,6 +583,7 @@ function showDailyDetails(userId) {
               ${status}
             </span>
           </td>
+          <td style="padding: 12px 16px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">${meterPicsHtml}</td>
         </tr>
       `;
     }).join('');
@@ -592,6 +620,22 @@ function closeDailyDetails() {
     modal.style.display = 'none';
     // Restore background scroll
     document.body.style.overflow = '';
+  }
+}
+
+function viewMeterPicture(imageUrl) {
+  const modal = document.getElementById('meterPictureModal');
+  const img = document.getElementById('meterPictureImage');
+  if (modal && img) {
+    img.src = imageUrl;
+    modal.style.display = 'flex';
+  }
+}
+
+function closeMeterPictureModal() {
+  const modal = document.getElementById('meterPictureModal');
+  if (modal) {
+    modal.style.display = 'none';
   }
 }
 

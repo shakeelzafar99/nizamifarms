@@ -1279,18 +1279,12 @@ class RiderController extends Controller
 
             $type = $request->input('type');
             
-            // Validate based on type
+            // Validate based on type - only check login for start picture
+            // End picture can be uploaded anytime after check-in (no need to check out first)
             if ($type === 'start' && !$existing->login_time) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Please check in first before uploading start meter picture.'
-                ], 400);
-            }
-
-            if ($type === 'end' && !$existing->logout_time) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Please check out first before uploading end meter picture.'
                 ], 400);
             }
 
@@ -1507,6 +1501,8 @@ class RiderController extends Controller
                             'status' => $status,
                             'late_minutes' => $lateMinutes,
                             'notes' => $record->notes,
+                            'picture_start' => $record->picture_start ? asset('storage/' . $record->picture_start) : null,
+                            'picture_end' => $record->picture_end ? asset('storage/' . $record->picture_end) : null,
                         ];
                     } else {
                         // No attendance record - check if on leave
