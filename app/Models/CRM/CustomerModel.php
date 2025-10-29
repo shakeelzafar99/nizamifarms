@@ -31,6 +31,7 @@ class CustomerModel extends BaseModel
         'country',
         'latitude',
         'longitude',
+        'verified_location_url',
         'external_customer_ids',
         'first_order_date',
         'last_order_date',

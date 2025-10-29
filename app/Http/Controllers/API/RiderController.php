@@ -304,10 +304,11 @@ class RiderController extends Controller
                         'email' => $order->customer->email ?? '',
                         'address' => $order->customer->address1 ?? '',
                         'city' => $order->customer->city ?? '',
-                        'verified_location' => ($order->customer && $order->customer->latitude && $order->customer->longitude) ? [
-                            'latitude' => (float)$order->customer->latitude,
-                            'longitude' => (float)$order->customer->longitude,
-                            'google_maps_url' => "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}",
+                        'verified_location' => ($order->customer && ($order->customer->verified_location_url || ($order->customer->latitude && $order->customer->longitude))) ? [
+                            'latitude' => $order->customer->latitude ? (float)$order->customer->latitude : null,
+                            'longitude' => $order->customer->longitude ? (float)$order->customer->longitude : null,
+                            'url' => $order->customer->verified_location_url ?? null,
+                            'google_maps_url' => $order->customer->verified_location_url ?: ($order->customer->latitude && $order->customer->longitude ? "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
                         ] : null,
                     ],
                     'amounts' => [
@@ -344,15 +345,24 @@ class RiderController extends Controller
 
     /**
      * Set verified location for a customer
-     * Allows riders to save a precise GPS location for the customer's address
+     * Accepts either coordinates OR Google Maps URL
      */
     public function setCustomerVerifiedLocation(Request $request, $customerId)
     {
         try {
             $validated = $request->validate([
-                'latitude' => 'required|numeric|between:-90,90',
-                'longitude' => 'required|numeric|between:-180,180',
+                'latitude' => 'nullable|numeric|between:-90,90',
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'url' => 'nullable|string|max:500',
             ]);
+
+            // Must provide either coordinates OR URL
+            if (empty($validated['latitude']) && empty($validated['longitude']) && empty($validated['url'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please provide either coordinates or a Google Maps URL'
+                ], 400);
+            }
 
             $customer = \App\Models\CRM\CustomerModel::find($customerId);
 
@@ -363,29 +373,37 @@ class RiderController extends Controller
                 ], 404);
             }
 
-            // Update customer's verified location
-            $customer->update([
-                'latitude' => $validated['latitude'],
-                'longitude' => $validated['longitude'],
-                'updated_by' => Auth::id(),
-            ]);
+            // Prepare update data
+            $updateData = ['updated_by' => Auth::id()];
+            
+            if (!empty($validated['url'])) {
+                // URL provided - store it
+                $updateData['verified_location_url'] = $validated['url'];
+                \Log::info('Setting verified location URL for customer', [
+                    'customer_id' => $customerId,
+                    'url' => $validated['url'],
+                    'updated_by' => Auth::user()->fullname,
+                ]);
+            }
+            
+            if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
+                // Coordinates provided - store them
+                $updateData['latitude'] = $validated['latitude'];
+                $updateData['longitude'] = $validated['longitude'];
+                \Log::info('Setting verified location coordinates for customer', [
+                    'customer_id' => $customerId,
+                    'latitude' => $validated['latitude'],
+                    'longitude' => $validated['longitude'],
+                    'updated_by' => Auth::user()->fullname,
+                ]);
+            }
 
-            \Log::info('Customer verified location updated', [
-                'customer_id' => $customerId,
-                'latitude' => $validated['latitude'],
-                'longitude' => $validated['longitude'],
-                'updated_by' => Auth::user()->fullname,
-            ]);
+            // Update customer
+            $customer->update($updateData);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Verified location saved successfully',
-                'customer' => [
-                    'id' => $customer->id,
-                    'latitude' => (float)$customer->latitude,
-                    'longitude' => (float)$customer->longitude,
-                    'google_maps_url' => "https://www.google.com/maps?q={$customer->latitude},{$customer->longitude}",
-                ],
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
