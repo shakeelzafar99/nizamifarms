@@ -3503,19 +3503,23 @@ function updateOrderRowRider(orderId, riderId, riderName) {
         return;
     }
     
-    // Update the rider name with "Pending Sync" indicator
+    // Update the rider - preserve button structure!
     if (riderId) {
+        // Create button with blue pill styling + pending indicator
+        const escapedName = String(riderName).replace(/'/g, "\\'");
         riderCell.innerHTML = `
-            <div style="display:flex;align-items:center;gap:4px;">
-                <span>${riderName}</span>
-                <span class="sync-status-indicator" data-order-id="${orderId}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;">
+            <button type="button" 
+                    onclick="event.stopPropagation(); openQuickRiderAssign(${orderId}, ${riderId}, '${escapedName}')" 
+                    class="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-300 text-xs font-medium hover:bg-blue-100 cursor-pointer transition" 
+                    title="Click to change rider">
+                ${riderName}<span class="sync-status-indicator" data-order-id="${orderId}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;margin-left:4px;">
                     <svg style="width:10px;height:10px;animation:spin 1s linear infinite;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                     Pending
                 </span>
-            </div>
+            </button>
         `;
     } else {
-        riderCell.innerHTML = '<span style="color:#9ca3af;">Unassigned</span>';
+        riderCell.innerHTML = '<button type="button" onclick="event.stopPropagation(); openQuickRiderAssign(' + orderId + ', null, \'Unassigned\')" class="inline-flex items-center px-2 py-1 rounded bg-gray-100 text-gray-700 text-xs hover:bg-gray-200 cursor-pointer transition" title="Click to assign rider">Unassigned</button>';
     }
     
     // Highlight row briefly
@@ -3547,41 +3551,81 @@ function startSyncStatusPolling() {
         clearInterval(syncPollingInterval);
     }
     
+    // Initial check immediately
+    checkSyncStatus();
+    
     // Poll every 5 seconds for recent assignments
-    syncPollingInterval = setInterval(async () => {
-        try {
-            const response = await fetch('/orders/sync-status?hours=1', {
-                headers: { 'Accept': 'application/json' }
-            });
-            const data = await response.json();
+    syncPollingInterval = setInterval(checkSyncStatus, 5000);
+}
+
+async function checkSyncStatus() {
+    try {
+        const response = await fetch('/orders/sync-status?hours=1', {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await response.json();
+        
+        console.log('🔄 Sync status check:', data); // Debug log
+        
+        if (data.success && data.orders) {
+            console.log(`📦 Found ${data.orders.length} orders to check`); // Debug
             
-            if (data.success && data.orders) {
-                data.orders.forEach(order => {
-                    const indicator = document.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
-                    if (!indicator) return;
-                    
-                    if (order.sync_status === 'synced') {
-                        // Update to "Synced" with green checkmark
-                        indicator.style.background = '#d1fae5';
-                        indicator.style.color = '#065f46';
-                        indicator.innerHTML = `
-                            <svg style="width:10px;height:10px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                            Synced
-                        `;
-                        
-                        // Remove indicator after 10 seconds
-                        setTimeout(() => {
-                            if (indicator.parentElement) {
-                                indicator.remove();
-                            }
-                        }, 10000);
+            data.orders.forEach(order => {
+                console.log(`Checking order ${order.id}: ${order.sync_status}`); // Debug
+                
+                const row = document.querySelector(`tr[data-order-id="${order.id}"]`);
+                if (!row) {
+                    console.log(`❌ Row not found for order ${order.id}`);
+                    return;
+                }
+                
+                const riderCell = row.querySelector('.order-rider-cell');
+                if (!riderCell) {
+                    console.log(`❌ Rider cell not found for order ${order.id}`);
+                    return;
+                }
+                
+                let indicator = riderCell.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
+                console.log(`Indicator for ${order.id}:`, indicator ? 'Found' : 'Not found');
+                
+                // If order needs sync but has no indicator, add one
+                if (!indicator && order.sync_status === 'pending') {
+                    console.log(`➕ Adding pending indicator for order ${order.id}`);
+                    const riderButton = riderCell.querySelector('button');
+                    if (riderButton) {
+                        // Don't overwrite - append instead
+                        const indicatorHtml = `<span class="sync-status-indicator" data-order-id="${order.id}" style="display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;margin-left:4px;">
+                            <svg style="width:10px;height:10px;animation:spin 1s linear infinite;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Pending
+                        </span>`;
+                        riderButton.insertAdjacentHTML('beforeend', indicatorHtml);
+                        indicator = riderCell.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
                     }
-                });
-            }
-        } catch (error) {
-            console.log('Sync status polling failed:', error);
+                }
+                
+                // Update existing indicator if order is now synced
+                if (indicator && order.sync_status === 'synced') {
+                    console.log(`✅ Updating to SYNCED for order ${order.id}`);
+                    indicator.style.background = '#d1fae5';
+                    indicator.style.color = '#065f46';
+                    indicator.innerHTML = `
+                        <svg style="width:10px;height:10px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        Synced
+                    `;
+                    
+                    // Remove indicator after 10 seconds - just remove the badge, don't touch the button
+                    setTimeout(() => {
+                        if (indicator && indicator.parentElement) {
+                            console.log(`🔄 Removing synced badge for order ${order.id}`);
+                            indicator.remove();
+                        }
+                    }, 10000);
+                }
+            });
         }
-    }, 5000); // Poll every 5 seconds
+    } catch (error) {
+        console.error('❌ Sync status polling error:', error);
+    }
 }
 
 // Start polling when page loads

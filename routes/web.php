@@ -67,6 +67,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
     Route::get('/orders', [OrderController::class, 'index']);
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
+    Route::get('/orders/sync-status', [OrderController::class, 'syncStatus'])->name('orders.sync-status'); // ⭐ SMART SYNC (must be before {id})
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
     Route::get('/orders/open-quantities', [OrderController::class, 'openQuantities'])->name('orders.open-quantities');
@@ -81,7 +82,6 @@ Route::middleware(['auth'])->group(function () {
     // Rider assignment APIs
     Route::post('/orders/{id}/rider/assign', [\App\Http\Controllers\CRM\OrderRiderController::class, 'assign'])->name('orders.rider.assign');
     Route::get('/orders/{id}/rider/timeline', [\App\Http\Controllers\CRM\OrderRiderController::class, 'timeline'])->name('orders.rider.timeline');
-    Route::get('/orders/sync-status', [OrderController::class, 'syncStatus'])->name('orders.sync-status'); // ⭐ SMART SYNC
     Route::get('/riders/active', [\App\Http\Controllers\CRM\RiderController::class, 'active'])->name('riders.active');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
