@@ -84,6 +84,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/logout', [AuthController::class, 'logout']);
     
     // Rider-specific routes
+    // App version check (no auth required - anyone can check)
+    Route::get('/app/version', [\App\Http\Controllers\API\AppController::class, 'getLatestVersion']);
+
     Route::prefix('rider')->group(function () {
         // Dashboard
         Route::get('/dashboard', [\App\Http\Controllers\API\RiderController::class, 'dashboard']);
