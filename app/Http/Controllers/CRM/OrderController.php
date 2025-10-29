@@ -177,12 +177,31 @@ class OrderController extends Controller
                 }
             }
             
+            // Get verified location from customer
+            $verifiedLocation = null;
+            if ($order->customer) {
+                if ($order->customer->verified_location_url || ($order->customer->latitude && $order->customer->longitude)) {
+                    $verifiedLocation = [
+                        'latitude' => $order->customer->latitude,
+                        'longitude' => $order->customer->longitude,
+                        'url' => $order->customer->verified_location_url,
+                        'google_maps_url' => $order->customer->verified_location_url ?: 
+                            ($order->customer->latitude && $order->customer->longitude ? 
+                                "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
+                        'saved_by' => $order->customer->verified_location_saved_by ? 
+                            \DB::table('t_sys_user')->where('id', $order->customer->verified_location_saved_by)->value('fullname') : null,
+                        'saved_at' => $order->customer->verified_location_saved_at,
+                    ];
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'order' => $order,
                 'lineItems' => $order->lineItems, // Explicitly include line items
                 'discounts' => $order->discounts, // Include discount details for frontend display (backward compat)
-                'delivery_location' => $deliveryLocation // Include delivery GPS location if available
+                'delivery_location' => $deliveryLocation, // Include delivery GPS location if available
+                'verified_location' => $verifiedLocation // Include customer's verified location
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -1458,11 +1477,70 @@ class OrderController extends Controller
                 })
                 ->count();
 
+            // Calculate verified/unverified address counts for all open orders
+            $allOpenVerifiedCount = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->where(function($q) {
+                    $q->whereNotNull('c.verified_location_url')
+                      ->orWhere(function($q2) {
+                          $q2->whereNotNull('c.latitude')
+                             ->whereNotNull('c.longitude');
+                      });
+                })
+                ->count();
+            
+            $allOpenUnverifiedCount = $totalOpenCount - $allOpenVerifiedCount;
+
+            // Calculate verified/unverified address counts for "out_for_delivery" status
+            $outForDeliveryTotal = \DB::table('t_crm_prod_order as o')
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->where(function($q) {
+                    $q->where('o.order_status', 'out_for_delivery')
+                      ->orWhere('o.order_status', 'out-for-delivery')
+                      ->orWhere('o.order_status', 'out for delivery');
+                })
+                ->count();
+            
+            $outForDeliveryVerifiedCount = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where(function($q){
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->where(function($q) {
+                    $q->where('o.order_status', 'out_for_delivery')
+                      ->orWhere('o.order_status', 'out-for-delivery')
+                      ->orWhere('o.order_status', 'out for delivery');
+                })
+                ->where(function($q) {
+                    $q->whereNotNull('c.verified_location_url')
+                      ->orWhere(function($q2) {
+                          $q2->whereNotNull('c.latitude')
+                             ->whereNotNull('c.longitude');
+                      });
+                })
+                ->count();
+            
+            $outForDeliveryUnverifiedCount = $outForDeliveryTotal - $outForDeliveryVerifiedCount;
+
             return response()->json([
                 'success' => true,
                 'status_counts' => $statusCounts,
                 'total_open_count' => $totalOpenCount,
                 'delivered_today' => $deliveredTodayCount,
+                'all_open_verified' => $allOpenVerifiedCount,
+                'all_open_unverified' => $allOpenUnverifiedCount,
+                'out_for_delivery_total' => $outForDeliveryTotal,
+                'out_for_delivery_verified' => $outForDeliveryVerifiedCount,
+                'out_for_delivery_unverified' => $outForDeliveryUnverifiedCount,
             ]);
 
         } catch (\Exception $e) {

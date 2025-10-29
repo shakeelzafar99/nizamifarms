@@ -70,11 +70,28 @@ class CustomerController extends Controller
                 $query->orderBy('order_date', 'desc')->limit(10);
             }])->findOrFail($id);
             
+            // Add verified location metadata
+            $verifiedLocation = null;
+            if ($customer->verified_location_url || ($customer->latitude && $customer->longitude)) {
+                $verifiedLocation = [
+                    'latitude' => $customer->latitude,
+                    'longitude' => $customer->longitude,
+                    'url' => $customer->verified_location_url,
+                    'google_maps_url' => $customer->verified_location_url ?: 
+                        ($customer->latitude && $customer->longitude ? 
+                            "https://www.google.com/maps?q={$customer->latitude},{$customer->longitude}" : null),
+                    'saved_by' => $customer->verified_location_saved_by ? 
+                        \DB::table('t_sys_user')->where('id', $customer->verified_location_saved_by)->value('fullname') : null,
+                    'saved_at' => $customer->verified_location_saved_at,
+                ];
+            }
+            
             // Always return JSON for now to maintain existing functionality
             // The existing viewCustomer function expects JSON response
             return response()->json([
                 'success' => true,
-                'customer' => $customer
+                'customer' => $customer,
+                'verified_location' => $verifiedLocation
             ]);
             
         } catch (\Exception $e) {
@@ -306,6 +323,81 @@ class CustomerController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error adding note: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    public function setVerifiedLocation(Request $request, $id)
+    {
+        try {
+            $validated = $request->validate([
+                'latitude' => 'nullable|numeric|between:-90,90',
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'url' => 'nullable|string|max:500',
+            ]);
+
+            // Must provide either coordinates OR URL
+            if (empty($validated['latitude']) && empty($validated['longitude']) && empty($validated['url'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please provide either coordinates or a Google Maps URL'
+                ], 400);
+            }
+
+            $customer = CustomerModel::findOrFail($id);
+
+            // Prepare update data
+            $updateData = [
+                'updated_by' => auth()->id(),
+                'verified_location_saved_by' => auth()->id(),
+                'verified_location_saved_at' => now(),
+            ];
+            
+            if (!empty($validated['url'])) {
+                // URL provided - store it
+                $updateData['verified_location_url'] = $validated['url'];
+                \Log::info('Setting verified location URL for customer (webapp)', [
+                    'customer_id' => $id,
+                    'url' => $validated['url'],
+                    'saved_by' => auth()->user()->fullname,
+                ]);
+            }
+            
+            if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
+                // Coordinates provided - store them
+                $updateData['latitude'] = $validated['latitude'];
+                $updateData['longitude'] = $validated['longitude'];
+                \Log::info('Setting verified location coordinates for customer (webapp)', [
+                    'customer_id' => $id,
+                    'latitude' => $validated['latitude'],
+                    'longitude' => $validated['longitude'],
+                    'saved_by' => auth()->user()->fullname,
+                ]);
+            }
+
+            // Update customer
+            $customer->update($updateData);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Verified location saved successfully',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid location data',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to set customer verified location (webapp)', [
+                'customer_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save location: ' . $e->getMessage(),
             ], 500);
         }
     }

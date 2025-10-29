@@ -309,6 +309,8 @@ class RiderController extends Controller
                             'longitude' => $order->customer->longitude ? (float)$order->customer->longitude : null,
                             'url' => $order->customer->verified_location_url ?? null,
                             'google_maps_url' => $order->customer->verified_location_url ?: ($order->customer->latitude && $order->customer->longitude ? "https://www.google.com/maps?q={$order->customer->latitude},{$order->customer->longitude}" : null),
+                            'saved_by' => $order->customer->verified_location_saved_by ? \DB::table('t_sys_user')->where('id', $order->customer->verified_location_saved_by)->value('fullname') : null,
+                            'saved_at' => $order->customer->verified_location_saved_at,
                         ] : null,
                     ],
                     'amounts' => [
@@ -374,7 +376,11 @@ class RiderController extends Controller
             }
 
             // Prepare update data
-            $updateData = ['updated_by' => Auth::id()];
+            $updateData = [
+                'updated_by' => Auth::id(),
+                'verified_location_saved_by' => Auth::id(),
+                'verified_location_saved_at' => now(),
+            ];
             
             if (!empty($validated['url'])) {
                 // URL provided - store it
@@ -382,7 +388,7 @@ class RiderController extends Controller
                 \Log::info('Setting verified location URL for customer', [
                     'customer_id' => $customerId,
                     'url' => $validated['url'],
-                    'updated_by' => Auth::user()->fullname,
+                    'saved_by' => Auth::user()->fullname,
                 ]);
             }
             
@@ -394,7 +400,7 @@ class RiderController extends Controller
                     'customer_id' => $customerId,
                     'latitude' => $validated['latitude'],
                     'longitude' => $validated['longitude'],
-                    'updated_by' => Auth::user()->fullname,
+                    'saved_by' => Auth::user()->fullname,
                 ]);
             }
 

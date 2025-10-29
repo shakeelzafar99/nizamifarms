@@ -120,7 +120,77 @@ window.viewCustomer = function(id) {
                         </div>
                     </div>
                 </div>
+            `;
+            
+            // Add Verified Location section
+            if (data.verified_location) {
+                html += `
+                <div style="margin-top: 24px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h4 style="font-weight: 600; color: #374151; margin: 0;">✅ Verified Location</h4>
+                        <button onclick="updateVerifiedLocation(${customer.id})" style="padding: 6px 12px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">
+                            <i class="fas fa-edit"></i> Update
+                        </button>
+                    </div>
+                    <div style="background-color: #f0fdf4; padding: 16px; border-radius: 8px; border: 1px solid #10b981;">
+                `;
                 
+                if (data.verified_location.url) {
+                    html += `
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #059669; text-transform: uppercase; font-weight: 500;">Google Maps Link</label>
+                            <p style="margin: 4px 0 0 0;">
+                                <a href="${data.verified_location.url}" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">
+                                    <i class="fas fa-external-link-alt"></i> Open in Google Maps
+                                </a>
+                            </p>
+                        </div>
+                    `;
+                } else if (data.verified_location.latitude && data.verified_location.longitude) {
+                    html += `
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #059669; text-transform: uppercase; font-weight: 500;">Coordinates</label>
+                            <p style="margin: 4px 0 0 0; font-family: monospace;">${data.verified_location.latitude}, ${data.verified_location.longitude}</p>
+                            <p style="margin: 4px 0 0 0;">
+                                <a href="${data.verified_location.google_maps_url}" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">
+                                    <i class="fas fa-external-link-alt"></i> Open in Google Maps
+                                </a>
+                            </p>
+                        </div>
+                    `;
+                }
+                
+                if (data.verified_location.saved_by) {
+                    html += `
+                        <div style="padding-top: 12px; border-top: 1px solid #bbf7d0;">
+                            <p style="margin: 0; font-size: 12px; color: #059669;">
+                                <i class="fas fa-user"></i> Saved by: <strong>${data.verified_location.saved_by}</strong>
+                            </p>
+                            <p style="margin: 4px 0 0 0; font-size: 12px; color: #059669;">
+                                <i class="fas fa-clock"></i> ${new Date(data.verified_location.saved_at).toLocaleString()}
+                            </p>
+                        </div>
+                    `;
+                }
+                
+                html += `
+                    </div>
+                </div>
+                `;
+            } else {
+                html += `
+                <div style="margin-top: 24px;">
+                    <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; border: 1px solid #3b82f6; text-align: center;">
+                        <p style="margin: 0 0 12px 0; color: #1e40af; font-weight: 500;">No verified location set</p>
+                        <button onclick="setVerifiedLocation(${customer.id})" style="padding: 8px 16px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                            <i class="fas fa-map-marker-alt"></i> Set Verified Location
+                        </button>
+                    </div>
+                </div>
+                `;
+            }
+            
+            html += `
                 <div style="margin-top: 24px;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Statistics</h4>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
@@ -2849,6 +2919,119 @@ addLineItem = function() {
         }
     }
 };
+
+// ============================================
+// Verified Location Functions
+// ============================================
+let currentCustomerId = null;
+
+function setVerifiedLocation(customerId) {
+    currentCustomerId = customerId;
+    document.getElementById('verifiedLocationUrl').value = '';
+    document.getElementById('verifiedLocationModal').style.display = 'block';
+}
+
+function updateVerifiedLocation(customerId) {
+    currentCustomerId = customerId;
+    document.getElementById('verifiedLocationUrl').value = '';
+    document.getElementById('verifiedLocationModal').style.display = 'block';
+}
+
+function closeVerifiedLocationModal() {
+    document.getElementById('verifiedLocationModal').style.display = 'none';
+    currentCustomerId = null;
+}
+
+function saveVerifiedLocation() {
+    const url = document.getElementById('verifiedLocationUrl').value.trim();
+    
+    if (!url) {
+        alert('Please enter a Google Maps URL');
+        return;
+    }
+    
+    // Show loading state
+    const saveBtn = event.target;
+    const originalText = saveBtn.innerHTML;
+    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    saveBtn.disabled = true;
+    
+    fetch(`/customers/${currentCustomerId}/set-verified-location`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({ url: url })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Verified location saved successfully!');
+            closeVerifiedLocationModal();
+            // Refresh customer view if currently viewing
+            if (document.getElementById('viewCustomerModal').style.display === 'block') {
+                viewCustomer(currentCustomerId);
+            }
+        } else {
+            alert('Error: ' + (data.message || 'Failed to save location'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to save location. Please try again.');
+    })
+    .finally(() => {
+        saveBtn.innerHTML = originalText;
+        saveBtn.disabled = false;
+    });
+}
+</script>
+
+<!-- Verified Location Modal -->
+<div id="verifiedLocationModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4);">
+    <div style="background-color: #fefefe; margin: 10% auto; padding: 0; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
+        <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 20px; font-weight: 600;">
+                    <i class="fas fa-map-marker-alt"></i> Set Verified Location
+                </h3>
+                <button onclick="closeVerifiedLocationModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+            </div>
+        </div>
+        <div style="padding: 24px;">
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; color: #374151;">
+                    <i class="fas fa-link"></i> Google Maps URL
+                </label>
+                <input type="text" id="verifiedLocationUrl" placeholder="https://maps.app.goo.gl/..." style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; box-sizing: border-box;">
+                <small style="display: block; margin-top: 8px; color: #6b7280;">
+                    Paste a Google Maps link (works with any format: short links, place URLs, etc.)
+                </small>
+            </div>
+            <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; border-left: 4px solid #3b82f6; margin-bottom: 20px;">
+                <p style="margin: 0 0 8px 0; font-weight: 600; color: #1e40af;">
+                    <i class="fas fa-info-circle"></i> How to get the link:
+                </p>
+                <ol style="margin: 0; padding-left: 20px; color: #1e40af;">
+                    <li>Open Google Maps</li>
+                    <li>Find the location</li>
+                    <li>Tap "Share" → Copy link</li>
+                    <li>Paste here</li>
+                </ol>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button onclick="closeVerifiedLocationModal()" style="flex: 1; padding: 12px; background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+                <button onclick="saveVerifiedLocation()" style="flex: 2; padding: 12px; background-color: #3b82f6; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                    <i class="fas fa-save"></i> Save Location
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 </script>
 
 @endsection

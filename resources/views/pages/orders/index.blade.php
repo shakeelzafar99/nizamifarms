@@ -1703,8 +1703,14 @@ function viewOrderDetails(orderId) {
                 order.discounts = data.discounts;
             }
             
+            // Attach verified_location to order if it's at root level
+            if (!order.verified_location && data.verified_location) {
+                order.verified_location = data.verified_location;
+            }
+            
             console.log('Order data:', order);
             console.log('Order discounts:', order.discounts);
+            console.log('Verified location:', order.verified_location);
             
             // Update modal header buttons based on order type
             updateViewModalButtons(order);
@@ -1755,6 +1761,52 @@ function viewOrderDetails(orderId) {
             html += '<p><strong>Customer:</strong> ' + customerDisplay + '</p>';
             html += '<p><strong>Address:</strong> ' + fullAddress + '</p>';
             html += '<p><strong>Phone:</strong> ' + (order.address_phone || order.customer_phone || 'N/A') + '</p>';
+            
+            // Add verified location if available
+            if (order.verified_location) {
+                html += '<div style="margin-top: 12px; padding: 10px; background-color: #f0fdf4; border-radius: 6px; border: 1px solid #10b981;">';
+                html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">';
+                html += '<strong style="color: #059669; font-size: 13px;">✅ Verified Location</strong>';
+                if (order.customer_id) {
+                    html += '<button onclick="updateVerifiedLocation(' + order.customer_id + ')" style="padding: 4px 8px; background-color: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 500;">Update</button>';
+                }
+                html += '</div>';
+                
+                if (order.verified_location.url) {
+                    html += '<p style="margin: 4px 0; font-size: 12px;">';
+                    html += '<a href="' + order.verified_location.url + '" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">';
+                    html += '<i class="fas fa-external-link-alt"></i> Open in Google Maps';
+                    html += '</a>';
+                    html += '</p>';
+                } else if (order.verified_location.latitude && order.verified_location.longitude) {
+                    html += '<p style="margin: 4px 0; font-size: 11px; font-family: monospace; color: #059669;">';
+                    html += order.verified_location.latitude + ', ' + order.verified_location.longitude;
+                    html += '</p>';
+                    html += '<p style="margin: 4px 0; font-size: 12px;">';
+                    html += '<a href="' + order.verified_location.google_maps_url + '" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">';
+                    html += '<i class="fas fa-external-link-alt"></i> Open in Google Maps';
+                    html += '</a>';
+                    html += '</p>';
+                }
+                
+                if (order.verified_location.saved_by) {
+                    html += '<p style="margin: 6px 0 0 0; padding-top: 6px; border-top: 1px solid #bbf7d0; font-size: 10px; color: #059669;">';
+                    html += '<i class="fas fa-user"></i> ' + order.verified_location.saved_by;
+                    if (order.verified_location.saved_at) {
+                        html += ' • ' + new Date(order.verified_location.saved_at).toLocaleString();
+                    }
+                    html += '</p>';
+                }
+                
+                html += '</div>';
+            } else if (order.customer_id) {
+                html += '<div style="margin-top: 12px; padding: 10px; background-color: #eff6ff; border-radius: 6px; border: 1px solid #3b82f6; text-align: center;">';
+                html += '<button onclick="setVerifiedLocation(' + order.customer_id + ')" style="padding: 6px 12px; background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer;">';
+                html += '<i class="fas fa-map-marker-alt"></i> Set Verified Location';
+                html += '</button>';
+                html += '</div>';
+            }
+            
             html += '</div>';
             html += '<div>';
             html += '<p><strong>Status:</strong> ' + (order.order_status || 'N/A') + '</p>';
@@ -2515,6 +2567,12 @@ function editOrderDetails(orderId) {
     .then(data => {
         if (data.success) {
             const order = data.order;
+            
+            // Attach verified_location to order if it's at root level
+            if (!order.verified_location && data.verified_location) {
+                order.verified_location = data.verified_location;
+            }
+            
             // Store order globally for ledger adjustment detection
             window.currentOrder = order;
             loadEditForm(order);
@@ -7279,7 +7337,15 @@ async function loadOpenOrdersStatusCards() {
         console.log('Status cards API response:', data); // Debug log
         
         if (data.success) {
-            renderStatusCards(data.status_counts, data.total_open_count, data.delivered_today || 0);
+            // Store verified/unverified counts globally for filtering
+            window.verifiedLocationCounts = {
+                all_open_verified: data.all_open_verified || 0,
+                all_open_unverified: data.all_open_unverified || 0,
+                out_for_delivery_verified: data.out_for_delivery_verified || 0,
+                out_for_delivery_unverified: data.out_for_delivery_unverified || 0
+            };
+            
+            renderStatusCards(data.status_counts, data.total_open_count, data.delivered_today || 0, window.verifiedLocationCounts);
         } else {
             console.error('Failed to load status counts:', data.message);
         }
@@ -7288,21 +7354,34 @@ async function loadOpenOrdersStatusCards() {
     }
 }
 // Render status cards with modern design
-function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0) {
-    console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount); // Debug log
+function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0, verifiedCounts = null) {
+    console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount, 'Verified counts:', verifiedCounts); // Debug log
     const container = document.getElementById('statusCardsContainer');
     if (!container) {
         console.log('Status cards container not found!'); // Debug log
         return;
     }
 
-    // Create "All Open" card first
+    // Create "All Open" card first with verified/unverified breakdown
     let cardsHtml = `
         <div class="status-card active" data-status="all" onclick="filterByStatus('all')">
             <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px]">
-                <div>
+                <div class="flex-1">
                     <div class="text-2xl font-bold text-blue-600">${totalOpenCount}</div>
                     <div class="text-sm font-medium text-gray-700">All Open</div>
+                    ${verifiedCounts ? `
+                        <div class="mt-2">
+                            <div class="text-xs text-gray-600 font-medium mb-1">Verified Location:</div>
+                            <div class="flex gap-2 text-xs">
+                                <span class="px-2 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'verified');" title="Click to filter verified addresses">
+                                    ✓ ${verifiedCounts.all_open_verified}
+                                </span>
+                                <span class="px-2 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'unverified');" title="Click to filter unverified addresses">
+                                    ✗ ${verifiedCounts.all_open_unverified}
+                                </span>
+                            </div>
+                        </div>
+                    ` : ''}
                 </div>
                 <div class="text-2xl">📋</div>
             </div>
@@ -7325,12 +7404,27 @@ function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0
     // Add individual status cards
     statusCounts.forEach(status => {
         const colorClass = getStatusColorClass(status.color_class);
+        const isOutForDelivery = status.status_code === 'out_for_delivery';
+        
         cardsHtml += `
             <div class="status-card" data-status="${status.status_code}" onclick="filterByStatus('${status.status_code}')">
                 <div class="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px] hover:border-${colorClass}-300">
-                    <div>
+                    <div class="flex-1">
                         <div class="text-2xl font-bold text-${colorClass}-600">${status.count}</div>
                         <div class="text-sm font-medium text-gray-700">${status.status_name}</div>
+                        ${isOutForDelivery && verifiedCounts ? `
+                            <div class="mt-2">
+                                <div class="text-xs text-gray-600 font-medium mb-1">Verified Location:</div>
+                                <div class="flex gap-2 text-xs">
+                                    <span class="px-2 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'verified');" title="Click to filter verified addresses">
+                                        ✓ ${verifiedCounts.out_for_delivery_verified}
+                                    </span>
+                                    <span class="px-2 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'unverified');" title="Click to filter unverified addresses">
+                                        ✗ ${verifiedCounts.out_for_delivery_unverified}
+                                    </span>
+                                </div>
+                            </div>
+                        ` : ''}
                     </div>
                     <div class="text-2xl">${status.icon}</div>
                 </div>
@@ -7405,6 +7499,78 @@ function filterByStatus(statusCode) {
         .finally(() => {
             if (tableContainer) tableContainer.classList.remove('opacity-60');
     });
+}
+
+// Filter orders by verified location status
+function filterByVerifiedLocation(statusCode, verificationType) {
+    console.log('Filtering by verified location:', statusCode, verificationType);
+    
+    // Show loading state
+    const tableContainer = document.querySelector('.orders-table-container');
+    if (tableContainer) tableContainer.classList.add('opacity-60');
+
+    // Build filter params
+    const params = new URLSearchParams({
+        source: 'other',
+        tab: 'open'
+    });
+    
+    // Add status filter if not 'all'
+    if (statusCode !== 'all') {
+        params.append('status', statusCode);
+    }
+
+    // Fetch orders
+    fetch(`/orders/filter?${params.toString()}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data && data.success) {
+                // Filter orders based on verified location
+                let filteredOrders = data.orders;
+                
+                if (verificationType === 'verified') {
+                    // Show only orders with verified location
+                    filteredOrders = filteredOrders.filter(order => {
+                        // Check if customer has verified location
+                        if (order.customer_id && window.ordersData) {
+                            const fullOrder = window.ordersData.find(o => o.id === order.id);
+                            if (fullOrder && fullOrder.customer) {
+                                return fullOrder.customer.verified_location_url || 
+                                       (fullOrder.customer.latitude && fullOrder.customer.longitude);
+                            }
+                        }
+                        return false;
+                    });
+                } else if (verificationType === 'unverified') {
+                    // Show only orders without verified location
+                    filteredOrders = filteredOrders.filter(order => {
+                        // Check if customer does NOT have verified location
+                        if (order.customer_id && window.ordersData) {
+                            const fullOrder = window.ordersData.find(o => o.id === order.id);
+                            if (fullOrder && fullOrder.customer) {
+                                return !fullOrder.customer.verified_location_url && 
+                                       !(fullOrder.customer.latitude && fullOrder.customer.longitude);
+                            }
+                        }
+                        return true; // If no customer data, assume unverified
+                    });
+                }
+                
+                rebuildTableWithOrders(filteredOrders, 'other', 'open');
+                // Update pagination for filtered results
+                updatePaginationForTab(filteredOrders, 'other', 'open');
+                
+                // Show toast message
+                const message = verificationType === 'verified' 
+                    ? `Showing ${filteredOrders.length} orders with verified addresses`
+                    : `Showing ${filteredOrders.length} orders without verified addresses`;
+                showToast('Filtered', message, 'info');
+            }
+        })
+        .catch(err => console.error('Failed to filter by verified location:', err))
+        .finally(() => {
+            if (tableContainer) tableContainer.classList.remove('opacity-60');
+        });
 }
 
 // Function to switch to Shopify Approvals from main orders page
@@ -8646,6 +8812,117 @@ function clearAllSelections() {
 document.addEventListener('DOMContentLoaded', function() {
     updateBulkActionBar();
 });
+
+// ============================================
+// Verified Location Functions (Reused from customers page)
+// ============================================
+let currentCustomerId = null;
+
+function setVerifiedLocation(customerId) {
+    currentCustomerId = customerId;
+    document.getElementById('verifiedLocationUrl').value = '';
+    document.getElementById('verifiedLocationModal').style.display = 'block';
+}
+
+function updateVerifiedLocation(customerId) {
+    currentCustomerId = customerId;
+    document.getElementById('verifiedLocationUrl').value = '';
+    document.getElementById('verifiedLocationModal').style.display = 'block';
+}
+
+function closeVerifiedLocationModal() {
+    document.getElementById('verifiedLocationModal').style.display = 'none';
+    currentCustomerId = null;
+}
+
+function saveVerifiedLocation() {
+    const url = document.getElementById('verifiedLocationUrl').value.trim();
+    
+    if (!url) {
+        alert('Please enter a Google Maps URL');
+        return;
+    }
+    
+    // Show loading state
+    const saveBtn = event.target;
+    const originalText = saveBtn.innerHTML;
+    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    saveBtn.disabled = true;
+    
+    fetch(`/customers/${currentCustomerId}/set-verified-location`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({ url: url })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Verified location saved successfully!');
+            closeVerifiedLocationModal();
+            // Refresh order view if currently viewing
+            if (currentOrderId && document.getElementById('viewOrderModal').style.display !== 'none') {
+                viewOrderDetails(currentOrderId);
+            }
+        } else {
+            alert('Error: ' + (data.message || 'Failed to save location'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to save location. Please try again.');
+    })
+    .finally(() => {
+        saveBtn.innerHTML = originalText;
+        saveBtn.disabled = false;
+    });
+}
 </script>
+
+<!-- Verified Location Modal (Reused from customers page) -->
+<div id="verifiedLocationModal" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4);">
+    <div style="background-color: #fefefe; margin: 10% auto; padding: 0; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
+        <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 20px; font-weight: 600;">
+                    <i class="fas fa-map-marker-alt"></i> Set Verified Location
+                </h3>
+                <button onclick="closeVerifiedLocationModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+            </div>
+        </div>
+        <div style="padding: 24px;">
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; color: #374151;">
+                    <i class="fas fa-link"></i> Google Maps URL
+                </label>
+                <input type="text" id="verifiedLocationUrl" placeholder="https://maps.app.goo.gl/..." style="width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; box-sizing: border-box;">
+                <small style="display: block; margin-top: 8px; color: #6b7280;">
+                    Paste a Google Maps link (works with any format: short links, place URLs, etc.)
+                </small>
+            </div>
+            <div style="background-color: #eff6ff; padding: 16px; border-radius: 8px; border-left: 4px solid #3b82f6; margin-bottom: 20px;">
+                <p style="margin: 0 0 8px 0; font-weight: 600; color: #1e40af;">
+                    <i class="fas fa-info-circle"></i> How to get the link:
+                </p>
+                <ol style="margin: 0; padding-left: 20px; color: #1e40af;">
+                    <li>Open Google Maps</li>
+                    <li>Find the location</li>
+                    <li>Tap "Share" → Copy link</li>
+                    <li>Paste here</li>
+                </ol>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button onclick="closeVerifiedLocationModal()" style="flex: 1; padding: 12px; background-color: #f3f4f6; color: #374151; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+                <button onclick="saveVerifiedLocation()" style="flex: 2; padding: 12px; background-color: #3b82f6; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                    <i class="fas fa-save"></i> Save Location
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 @endpush
