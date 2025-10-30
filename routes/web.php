@@ -244,6 +244,10 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/{id}/permissions', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'manage'])->name('roles.permissions.manage');
         Route::put('/{id}/permissions', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'update'])->name('roles.permissions.update');
         Route::post('/{id}/permissions/defaults', [\App\Http\Controllers\SysAdmin\RolePermissionController::class, 'setDefaults'])->name('roles.permissions.defaults');
+        
+        // Mobile App Permission management
+        Route::get('/{id}/mobile-permissions', [\App\Http\Controllers\SysAdmin\MobilePermissionController::class, 'index'])->name('roles.mobile-permissions');
+        Route::put('/{id}/mobile-permissions', [\App\Http\Controllers\SysAdmin\MobilePermissionController::class, 'update'])->name('roles.mobile-permissions.update');
     });
     
     // Request Management Routes

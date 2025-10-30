@@ -1737,8 +1737,11 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       // Meter pictures
       const hasPictureStart = day.picture_start && day.picture_start !== '-';
       const hasPictureEnd = day.picture_end && day.picture_end !== '-';
-      const pictureStartUrl = hasPictureStart ? `/storage/${day.picture_start}` : null;
-      const pictureEndUrl = hasPictureEnd ? `/storage/${day.picture_end}` : null;
+      // Auto-detect environment: use /storage/ for local, /app/storage/app/public/ for production
+      const isProduction = !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1');
+      const storagePrefix = isProduction ? '/app/storage/app/public/' : '/storage/';
+      const pictureStartUrl = hasPictureStart ? `${storagePrefix}${day.picture_start}` : null;
+      const pictureEndUrl = hasPictureEnd ? `${storagePrefix}${day.picture_end}` : null;
       
       let meterPicsHtml = '-';
       if (hasPictureStart || hasPictureEnd) {

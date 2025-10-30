@@ -288,4 +288,66 @@ class UserModel extends BaseModel
         }
         return false;
     }
+
+    /**
+     * Check if user has a specific mobile permission
+     * Checks across all roles the user has
+     */
+    public function hasMobilePermission(string $permissionCode): bool
+    {
+        foreach ($this->roles as $role) {
+            $hasPermission = $role->mobilePermissions()
+                ->where('permission_code', $permissionCode)
+                ->where('is_active', 1)
+                ->exists();
+            
+            if ($hasPermission) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get all mobile permissions for the user
+     * Returns array of permission codes
+     */
+    public function getMobilePermissions(): array
+    {
+        $permissions = [];
+        
+        \Log::info('Getting mobile permissions', [
+            'user_id' => $this->id,
+            'user_name' => $this->fullname,
+            'roles_loaded' => $this->relationLoaded('roles'),
+            'roles_count' => $this->roles->count()
+        ]);
+        
+        foreach ($this->roles as $role) {
+            \Log::info('Checking role', [
+                'role_id' => $role->id,
+                'role_name' => $role->urole_name,
+                'mobile_permissions_loaded' => $role->relationLoaded('mobilePermissions')
+            ]);
+            
+            $rolePermissions = $role->mobilePermissions()
+                ->where('is_active', 1)
+                ->pluck('permission_code')
+                ->toArray();
+            
+            \Log::info('Role permissions', [
+                'role_id' => $role->id,
+                'permissions' => $rolePermissions
+            ]);
+            
+            $permissions = array_merge($permissions, $rolePermissions);
+        }
+        
+        \Log::info('Final permissions', [
+            'user_id' => $this->id,
+            'permissions' => array_unique($permissions)
+        ]);
+        
+        return array_unique($permissions);
+    }
 }

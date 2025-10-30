@@ -825,10 +825,10 @@ function saveSalarySlip(status) {
         other_deductions_desc: document.getElementById('other-deductions-desc').value,
         
         // Attendance
-        working_days: parseInt(document.getElementById('working-days').textContent) || 0,
-        present_days: parseInt(document.getElementById('present-days').textContent) || 0,
-        leave_days: parseInt(document.getElementById('leave-days').textContent) || 0,
-        half_days: parseInt(document.getElementById('half-days').textContent) || 0,
+        working_days: parseInt(document.getElementById('working-days')?.textContent) || 0,
+        present_days: parseInt(document.getElementById('present-days')?.textContent) || 0,
+        leave_days: parseInt(document.getElementById('leave-days')?.textContent) || 0,
+        half_days: parseInt(document.getElementById('half-days')?.textContent) || 0,
         
         // Overrides
         late_deduction_overridden: overrides.late ? 1 : 0,

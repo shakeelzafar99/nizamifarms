@@ -91,7 +91,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Dashboard
         Route::get('/dashboard', [\App\Http\Controllers\API\RiderController::class, 'dashboard']);
         
-        // Orders - reusing existing filter endpoint
+        // Orders - reusing existing filter endpoint (enhanced with customer order count)
         Route::get('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'filter']);
         Route::get('/orders/{id}', [\App\Http\Controllers\API\RiderController::class, 'getOrderDetails']);
         Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
@@ -118,5 +118,23 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/requests/categories', [\App\Http\Controllers\API\RiderController::class, 'getRequestCategories']);
         Route::get('/requests', [\App\Http\Controllers\API\RiderController::class, 'getRequests']);
         Route::post('/requests', [\App\Http\Controllers\API\RiderController::class, 'createRequest']);
+        
+    // Salary
+    Route::get('/salary', [\App\Http\Controllers\API\RiderController::class, 'getSalaryInfo']);
+    Route::get('/salary/slips/{slipId}', [\App\Http\Controllers\API\RiderController::class, 'getSalarySlipDetails']);
+    
+    // Mobile Permissions
+    Route::get('/permissions', [\App\Http\Controllers\API\RiderController::class, 'getMobilePermissions']);
+    
+    // Store Mode - Open Orders
+    Route::get('/store/order-statuses', [\App\Http\Controllers\API\RiderController::class, 'getOrderStatuses']);
+    Route::get('/store/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrders']);
+    Route::get('/store/riders', [\App\Http\Controllers\API\RiderController::class, 'getActiveRiders']);
+    Route::post('/store/assign-rider', [\App\Http\Controllers\API\RiderController::class, 'assignRiderToOrder']);
+    Route::post('/store/update-status', [\App\Http\Controllers\API\RiderController::class, 'updateOrderStatus']);
+    Route::post('/store/update-packets', [\App\Http\Controllers\API\RiderController::class, 'updatePacketInfo']);
+    
+    // Store Mode - Open Order Quantities
+    Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);
     });
 });

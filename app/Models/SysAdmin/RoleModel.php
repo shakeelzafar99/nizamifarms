@@ -72,6 +72,19 @@ class RoleModel extends BaseModel
         return $this->hasMany(RoleApprovalLevelModel::class, 'role_id', 'id');
     }
 
+    /**
+     * Get mobile permissions for this role
+     */
+    public function mobilePermissions()
+    {
+        return $this->belongsToMany(
+            MobilePermissionModel::class,
+            't_sys_role_mobile_permission',
+            'role_id',
+            'mobile_permission_id'
+        );
+    }
+
 
     function List($data) //All record
     {

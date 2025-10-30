@@ -115,8 +115,14 @@
                                             </button>
                                             <a href="{{ route('roles.permissions.manage', $role->id) }}" 
                                                class="kt-btn kt-btn-sm kt-btn-icon kt-btn-info" 
-                                               title="Manage Permissions">
+                                               title="Manage Web Permissions">
                                                 <i class="ki-filled ki-setting-2"></i>
+                                            </a>
+                                            <a href="{{ route('roles.mobile-permissions', $role->id) }}" 
+                                               class="kt-btn kt-btn-sm kt-btn-icon kt-btn-purple" 
+                                               style="background-color: #9333ea; color: white;"
+                                               title="Manage Mobile App Permissions">
+                                                📱
                                             </a>
                                             @if($role->user_roles_count == 0)
                                             <form action="{{ route('roles.destroy', $role->id) }}" method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this role?')">

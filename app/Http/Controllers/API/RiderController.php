@@ -4,118 +4,16 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\CRM\OrderModel;
+use App\Models\CRM\OrderStatusHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Models\HR\SalarySlipModel;
+use App\Models\HR\EmployeeLoanModel;
+use App\Models\HR\EmployeeProfileModel;
 
 class RiderController extends Controller
 {
-    /**
-     * Get orders list for logged-in rider
-     * Filters: open (default), all, delivered
-     */
-    public function getOrders(Request $request)
-    {
-        try {
-            $user = Auth::user();
-            $filter = $request->input('filter', 'open'); // open, all, delivered
-            
-            $query = DB::table('t_crm_prod_order as o')
-                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-                // ✅ Join with order status history to get actual delivery date
-                ->leftJoin('t_crm_order_status_history as osh', function($join) {
-                    $join->on('osh.order_id', '=', 'o.id')
-                         ->where('osh.status_code', '=', 'delivered')
-                         ->where('osh.is_current', '=', 1);
-                })
-                ->where('o.assigned_rider_user_id', $user->id)
-                ->where(function($q) {
-                    $q->where('o.external_source', '!=', 'shopify')
-                      ->orWhereNull('o.external_source');
-                })
-                ->select([
-                    'o.id',
-                    'o.order_number',
-                    'o.order_status',
-                    'o.total_amount',
-                    'o.order_date',
-                    'o.delivery_date',
-                    'o.payment_method',
-                    // ✅ Use actual delivery date from status history, fallback to order's delivery_date
-                    DB::raw('COALESCE(DATE(osh.changed_at), o.delivery_date) as actual_delivery_date'),
-                    DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
-                    'c.phone as contact_no',
-                    'c.address1 as address',
-                    'c.city',
-                ])
-                ->orderBy('o.created_at', 'desc');
-
-            // Apply filter
-            if ($filter === 'open') {
-                $query->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
-            } elseif ($filter === 'delivered') {
-                $query->whereIn('o.order_status', ['delivered', 'completed']);
-            }
-
-            $orders = $query->get();
-
-            // Format orders for mobile
-            $formattedOrders = $orders->map(function($order) {
-                $status = $order->order_status;
-                
-                // Normalize status for display
-                $statusDisplay = str_replace(['_', '-'], ' ', $status);
-                $statusDisplay = ucwords($statusDisplay);
-                
-                // Status color/badge
-                $statusBadge = 'pending';
-                if (in_array($status, ['ready_for_delivery', 'ready-for-delivery'])) {
-                    $statusBadge = 'ready';
-                } elseif (in_array($status, ['out_for_delivery', 'out-for-delivery'])) {
-                    $statusBadge = 'out';
-                } elseif (in_array($status, ['delivered', 'completed'])) {
-                    $statusBadge = 'completed';
-                }
-
-                // Determine payment type
-                $paymentMethod = strtolower($order->payment_method ?? 'cash');
-                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
-                
-                return [
-                    'id' => $order->id,
-                    'order_number' => $order->order_number,
-                    'status' => $status,
-                    'status_display' => $statusDisplay,
-                    'status_badge' => $statusBadge,
-                    'amount' => $order->total_amount,
-                    'amount_formatted' => 'Rs. ' . number_format($order->total_amount, 0),
-                    'order_date' => $order->order_date,
-                    'delivery_date' => $order->actual_delivery_date, // ✅ Use actual delivery date from status history
-                    'payment_method' => $paymentMethod,
-                    'payment_type' => $isCash ? 'cash' : 'online',
-                    'payment_label' => $isCash ? 'Cash' : 'Online',
-                    'customer' => [
-                        'name' => $order->customer_name,
-                        'phone' => $order->contact_no,
-                        'address' => $order->address,
-                        'city' => $order->city,
-                    ],
-                ];
-            });
-
-            return response()->json([
-                'success' => true,
-                'data' => $formattedOrders,
-                'count' => $formattedOrders->count(),
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to load orders: ' . $e->getMessage(),
-            ], 500);
-        }
-    }
-
     /**
      * Get dashboard summary for logged-in rider
      * Returns: order counts, ledger balance, pending requests, attendance status
@@ -1220,7 +1118,7 @@ class RiderController extends Controller
                 'success' => true,
                 'message' => 'Checked in successfully at ' . date('h:i A', strtotime($currentTime)),
                 'login_time' => $currentTime,
-                'picture_url' => $picturePath ? asset('storage/' . $picturePath) : null,
+                'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check in', [
@@ -1247,6 +1145,21 @@ class RiderController extends Controller
         \Storage::disk('public')->put($path, file_get_contents($file));
         
         return $path;
+    }
+
+    /**
+     * Get meter picture URL (works for both local dev and production)
+     */
+    private function getMeterPictureUrl($picturePath): string
+    {
+        // Check if running locally (symlink works) or production (direct path needed)
+        if (app()->environment('local') || file_exists(public_path('storage'))) {
+            // Local dev: use standard Laravel storage path
+            return asset('storage/' . $picturePath);
+        } else {
+            // Production (StackCP): use direct path
+            return url('app/storage/app/public/' . $picturePath);
+        }
     }
 
     /**
@@ -1308,7 +1221,7 @@ class RiderController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Meter picture uploaded successfully',
-                'picture_url' => asset('storage/' . $picturePath),
+                'picture_url' => $this->getMeterPictureUrl($picturePath),
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to upload meter picture', [
@@ -1376,7 +1289,7 @@ class RiderController extends Controller
                 'success' => true,
                 'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
                 'logout_time' => $currentTime,
-                'picture_url' => $picturePath ? asset('storage/' . $picturePath) : null,
+                'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check out', [
@@ -1501,8 +1414,8 @@ class RiderController extends Controller
                             'status' => $status,
                             'late_minutes' => $lateMinutes,
                             'notes' => $record->notes,
-                            'picture_start' => $record->picture_start ? asset('storage/' . $record->picture_start) : null,
-                            'picture_end' => $record->picture_end ? asset('storage/' . $record->picture_end) : null,
+                            'picture_start' => $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null,
+                            'picture_end' => $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null,
                         ];
                     } else {
                         // No attendance record - check if on leave
@@ -1837,6 +1750,726 @@ class RiderController extends Controller
             ]);
             
             return response()->json(['success' => false, 'message' => 'Failed to create request: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get salary information for logged-in user
+     * Returns: basic salary, loan balance, pending advances, salary slips
+     */
+    public function getSalaryInfo(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Get employee profile
+            $profile = EmployeeProfileModel::where('user_id', $user->id)->first();
+            
+            if (!$profile) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Employee profile not found',
+                ], 404);
+            }
+
+            // Get basic salary information
+            $basicSalary = [
+                'base_salary' => (float) ($profile->base_salary ?? 0),
+                'ot_rate_per_hour' => (float) ($profile->ot_rate_per_hour ?? 0),
+                'employee_code' => $profile->employee_code,
+                'designation' => $profile->designation,
+                'department' => $profile->department,
+                'joining_date' => $profile->joining_date,
+            ];
+
+            // Calculate total outstanding loans (reusing webapp logic)
+            $activeLoans = EmployeeLoanModel::where('user_id', $user->id)
+                ->where('loan_status', 'active')
+                ->get();
+            
+            $totalLoanOutstanding = $activeLoans->sum('outstanding_balance');
+            
+            $loansData = $activeLoans->map(function($loan) {
+                return [
+                    'id' => $loan->id,
+                    'loan_number' => $loan->loan_number,
+                    'loan_type' => $loan->loan_type,
+                    'principal_amount' => (float) $loan->principal_amount,
+                    'monthly_installment' => (float) $loan->monthly_installment,
+                    'outstanding_balance' => (float) $loan->outstanding_balance,
+                    'loan_date' => $loan->loan_date,
+                    'description' => $loan->description,
+                ];
+            });
+
+            // Calculate unadjusted salary advances (reusing webapp logic)
+            $pendingAdvances = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
+                ->where('status', 'approved')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'salary_advance');
+                })
+                ->where(function($q) {
+                    // Only include advances not yet settled
+                    $q->whereNull('settlement_status')
+                      ->orWhere('settlement_status', '!=', 'settled');
+                })
+                ->with('category')
+                ->get();
+            
+            $totalPendingAdvances = $pendingAdvances->sum('amount');
+            
+            $advancesData = $pendingAdvances->map(function($advance) {
+                return [
+                    'id' => $advance->id,
+                    'request_number' => $advance->request_number,
+                    'amount' => (float) $advance->amount,
+                    'title' => $advance->title,
+                    'description' => $advance->description,
+                    'submitted_at' => $advance->submitted_at,
+                    'settlement_status' => $advance->settlement_status ?? 'pending',
+                ];
+            });
+
+            // Get salary slips (reusing webapp logic)
+            $salarySlips = SalarySlipModel::where('user_id', $user->id)
+                ->orderBy('salary_month', 'desc')
+                ->limit(12) // Last 12 months
+                ->get();
+            
+            $slipsData = $salarySlips->map(function($slip) {
+                return [
+                    'id' => $slip->id,
+                    'slip_number' => $slip->slip_number,
+                    'salary_month' => $slip->salary_month,
+                    'salary_month_formatted' => date('F Y', strtotime($slip->salary_month . '-01')),
+                    'gross_salary' => (float) $slip->gross_salary,
+                    'total_deductions' => (float) $slip->total_deductions,
+                    'net_salary' => (float) $slip->net_salary,
+                    'slip_status' => $slip->slip_status,
+                    'status_display' => ucfirst($slip->slip_status),
+                    'status_color' => $this->getSlipStatusColor($slip->slip_status),
+                    'has_manual_adjustments' => (bool) $slip->has_manual_adjustments,
+                    'created_at' => $slip->created_at->toIso8601String(),
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'basic_salary' => $basicSalary,
+                    'loans' => [
+                        'total_outstanding' => (float) $totalLoanOutstanding,
+                        'active_loans_count' => $activeLoans->count(),
+                        'loans' => $loansData,
+                    ],
+                    'advances' => [
+                        'total_pending' => (float) $totalPendingAdvances,
+                        'pending_count' => $pendingAdvances->count(),
+                        'advances' => $advancesData,
+                    ],
+                    'salary_slips' => [
+                        'total_count' => $salarySlips->count(),
+                        'slips' => $slipsData,
+                    ],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get salary info', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load salary information: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get detailed salary slip information
+     * Reuses webapp's getDetailedBreakdown() method
+     */
+    public function getSalarySlipDetails(Request $request, $slipId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Find slip and verify it belongs to the user
+            $slip = SalarySlipModel::where('id', $slipId)
+                ->where('user_id', $user->id)
+                ->with(['employee', 'approver', 'creator'])
+                ->first();
+            
+            if (!$slip) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Salary slip not found or you do not have permission to view it',
+                ], 404);
+            }
+
+            // ✅ Reuse webapp's getDetailedBreakdown() method
+            $detailedBreakdown = $slip->getDetailedBreakdown();
+
+            return response()->json([
+                'success' => true,
+                'slip' => $detailedBreakdown,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get salary slip details', [
+                'slip_id' => $slipId,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load salary slip details: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Helper: Get status color for salary slip
+     */
+    private function getSlipStatusColor($status)
+    {
+        switch ($status) {
+            case 'draft':
+                return '#9CA3AF'; // Gray
+            case 'approved':
+                return '#10B981'; // Green
+            case 'paid':
+                return '#3B82F6'; // Blue
+            case 'cancelled':
+                return '#EF4444'; // Red
+            default:
+                return '#6B7280'; // Default gray
+        }
+    }
+
+    /**
+     * Get mobile app permissions for the authenticated user
+     * Returns array of permission codes the user has access to
+     */
+    public function getMobilePermissions(Request $request)
+    {
+        try {
+            // Load user with roles and their mobile permissions
+            $user = Auth::user()->load(['roles.mobilePermissions']);
+            
+            // Get all mobile permissions for this user
+            $permissions = $user->getMobilePermissions();
+            
+            \Log::info('Mobile permissions fetched', [
+                'user_id' => $user->id,
+                'user_name' => $user->fullname,
+                'roles_count' => $user->roles->count(),
+                'permissions' => $permissions,
+                'has_store_mode' => in_array('access_store_mode', $permissions)
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'permissions' => $permissions,
+                'has_store_mode' => in_array('access_store_mode', $permissions)
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch mobile permissions', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch permissions',
+                'permissions' => [],
+                'has_store_mode' => false
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get available order statuses
+     */
+    public function getOrderStatuses(Request $request)
+    {
+        try {
+            $statuses = DB::table('t_crm_order_status_master')
+                ->where('is_active', 1)
+                ->orderBy('sequence_order')
+                ->get(['status_code', 'status_name', 'icon', 'color_class']);
+            
+            return response()->json([
+                'success' => true,
+                'statuses' => $statuses
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch order statuses', [
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch statuses',
+                'statuses' => []
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get open orders
+     * Reuses webapp logic from OrderController::index
+     */
+    public function getStoreOpenOrders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view open orders'
+                ], 403);
+            }
+            
+            // Get status filter if provided
+            $statusFilter = $request->get('status', null);
+            
+            // Build query - same logic as webapp OrderController::index with tab='open'
+            $query = OrderModel::with(['customer', 'lineItems', 'assignedRider'])
+                ->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+                })
+                ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+            
+            // Apply status filter if provided
+            if ($statusFilter) {
+                $query->where('order_status', $statusFilter);
+            }
+            
+            // Order by date
+            $orders = $query->orderBy('order_date', 'desc')->get();
+            
+            // Format for mobile
+            $formattedOrders = $orders->map(function($order) {
+                // Build customer name (same logic as webapp)
+                $customerName = $order->name ?? 'N/A';
+                if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
+                    $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+                }
+                if ($customerName === 'N/A' && $order->customer) {
+                    $customerName = $order->customer->name ?? 'Unknown';
+                }
+                
+                // Check if customer has verified location
+                $hasVerifiedLocation = false;
+                if ($order->customer) {
+                    $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
+                                        || !empty($order->customer->verified_location_url);
+                }
+                
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'order_date' => $order->order_date,
+                    'order_status' => $order->order_status,
+                    'total_price' => $order->total_price,
+                    'payment_method' => $order->payment_method,
+                    'expected_packets' => $order->expected_packets,
+                    'customer_name' => $customerName,
+                    'customer_phone' => $order->customer->phone ?? $order->address_phone ?? '',
+                    'customer_address' => $order->customer->address ?? $order->address_address ?? '',
+                    'customer_id' => $order->customer_id,
+                    'has_verified_location' => $hasVerifiedLocation,
+                    'assigned_rider' => $order->assignedRider ? [
+                        'id' => $order->assignedRider->id,
+                        'name' => $order->assignedRider->fullname,
+                    ] : null,
+                    'items_count' => $order->lineItems->count(),
+                    'items_summary' => $order->lineItems->map(function($item) {
+                        return $item->name . ' (x' . $item->quantity . ')';
+                    })->join(', '),
+                ];
+            });
+            
+            return response()->json([
+                'success' => true,
+                'orders' => $formattedOrders,
+                'total_count' => $formattedOrders->count()
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch store open orders', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch open orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get active riders for assignment
+     * Reuses webapp logic from RiderController::active
+     */
+    public function getActiveRiders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('assign_riders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to assign riders'
+                ], 403);
+            }
+            
+            // Same query as webapp CRM\RiderController::active
+            $riders = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+                ->where(function ($q) {
+                    $q->whereNull('p.user_id')->orWhere('p.active', 1);
+                })
+                ->where('u.is_active', 1)
+                ->orderBy('u.fullname')
+                ->get([
+                    'u.id',
+                    'u.fullname',
+                ]);
+            
+            return response()->json([
+                'success' => true,
+                'riders' => $riders
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch active riders', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch riders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Assign rider to order
+     */
+    public function assignRiderToOrder(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('assign_riders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to assign riders'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'order_id' => 'required|exists:t_crm_prod_order,id',
+                'rider_id' => 'required|exists:t_sys_user,id'
+            ]);
+            
+            $order = OrderModel::findOrFail($validated['order_id']);
+            $order->assigned_rider_user_id = $validated['rider_id'];
+            $order->save();
+            
+            // Get rider name for response
+            $rider = DB::table('t_sys_user')->where('id', $validated['rider_id'])->first();
+            
+            \Log::info('Rider assigned to order (Store Mode)', [
+                'order_id' => $order->id,
+                'rider_id' => $validated['rider_id'],
+                'assigned_by' => $user->id
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Rider assigned successfully',
+                'assigned_rider' => [
+                    'id' => $rider->id,
+                    'name' => $rider->fullname
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to assign rider', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to assign rider: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Update order status
+     */
+    public function updateOrderStatus(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('change_order_status')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to change order status'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'order_id' => 'required|exists:t_crm_prod_order,id',
+                'status' => 'required|string|exists:t_crm_order_status_master,status_code'
+            ]);
+            
+            $order = OrderModel::findOrFail($validated['order_id']);
+            $oldStatus = $order->order_status;
+            
+            // Use the same method as webapp (OrderModel::changeStatus)
+            $success = $order->changeStatus(
+                $validated['status'],
+                'Status changed via Store Mode',
+                $user->id
+            );
+            
+            if (!$success) {
+                throw new \Exception('Failed to change order status');
+            }
+            
+            \Log::info('Order status updated (Store Mode)', [
+                'order_id' => $order->id,
+                'old_status' => $oldStatus,
+                'new_status' => $validated['status'],
+                'updated_by' => $user->id
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order status updated successfully',
+                'new_status' => $validated['status']
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to update order status', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Update packet information
+     */
+    public function updatePacketInfo(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('enter_packet_info')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to enter packet information'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'order_id' => 'required|exists:t_crm_prod_order,id',
+                'expected_packets' => 'required|integer|min:0'
+            ]);
+            
+            $order = OrderModel::findOrFail($validated['order_id']);
+            
+            // Don't allow editing if already delivered
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot edit packet information for delivered orders'
+                ], 422);
+            }
+            
+            $order->expected_packets = $validated['expected_packets'];
+            $order->save();
+            
+            \Log::info('Packet info updated (Store Mode)', [
+                'order_id' => $order->id,
+                'expected_packets' => $validated['expected_packets'],
+                'updated_by' => $user->id
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Packet information updated successfully',
+                'expected_packets' => $validated['expected_packets']
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to update packet info', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update packet information: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get open order quantities with drill-down
+     * Reuses webapp logic from OrderController::openQuantitiesData
+     */
+    public function getOpenOrderQuantities(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_open_quantities')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view open order quantities'
+                ], 403);
+            }
+            
+            // Get parameters
+            $level = (int) $request->get('level', 0); // 0 = Category Level 1, 1 = Level 2, 2 = Level 3, 3 = Products
+            $filters = json_decode($request->get('filters', '{}'), true) ?: [];
+            
+            // Excluded statuses (same as webapp default)
+            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            // Build base query - same as webapp
+            $query = DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
+                    $join->where(function($q) {
+                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                          ->orWhereColumn('li.variant_id', 'pv.id')
+                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                          ->orWhereColumn('li.product_id', 'pv.id');
+                    });
+                })
+                ->leftJoin('t_crm_prod_product as p', function($join) {
+                    $join->where(function($q) {
+                        $q->whereColumn('pv.product_id', 'p.id')
+                          ->orWhereColumn('li.product_id', 'p.id');
+                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                })
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses);
+            
+            // Apply parent filters
+            foreach ($filters as $field => $value) {
+                if ($field === 'product_name') {
+                    $query->where('li.name', $value);
+                } elseif ($field === 'product_type') {
+                    $query->where(function($q) use ($value) {
+                        if ($value === 'Uncategorized') {
+                            $q->whereNull('p.product_type')->orWhere('p.product_type', '');
+                        } else {
+                            $q->where('p.product_type', $value);
+                        }
+                    });
+                } elseif (in_array($field, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+                    $query->where(function($q) use ($field, $value) {
+                        if ($value === 'Uncategorized') {
+                            $q->whereNull('p.' . $field)->orWhere('p.' . $field, '');
+                        } else {
+                            $q->where('p.' . $field, $value);
+                        }
+                    });
+                }
+            }
+            
+            // Determine grouping based on level
+            $hierarchy = ['product_type', 'attribute_1', 'attribute_2', 'product_name'];
+            $currentField = $hierarchy[$level] ?? 'product_name';
+            
+            if ($currentField === 'product_name') {
+                // Product level
+                $results = $query->select([
+                    'li.name as name',
+                    'li.product_id',
+                    DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('COUNT(DISTINCT o.id) as order_count')
+                ])
+                ->groupBy('li.name', 'li.product_id')
+                ->orderBy('quantity', 'desc')
+                ->get();
+            } else {
+                // Category level
+                $results = $query->select([
+                    DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as name"),
+                    DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    DB::raw('COUNT(DISTINCT li.product_id) as product_count')
+                ])
+                ->groupBy(DB::raw("COALESCE(p.{$currentField}, 'Uncategorized')"))
+                ->orderBy('quantity', 'desc')
+                ->get();
+            }
+            
+            // Format for mobile
+            $formattedResults = $results->map(function($item) use ($currentField) {
+                return [
+                    'name' => $item->name ?? 'Uncategorized',
+                    'quantity' => (float) $item->quantity,
+                    'order_count' => (int) $item->order_count,
+                    'product_count' => isset($item->product_count) ? (int) $item->product_count : null,
+                    'is_product' => $currentField === 'product_name'
+                ];
+            });
+            
+            return response()->json([
+                'success' => true,
+                'level' => $level,
+                'field' => $currentField,
+                'items' => $formattedResults,
+                'total_count' => $formattedResults->count()
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch open order quantities', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch quantities: ' . $e->getMessage()
+            ], 500);
         }
     }
 }

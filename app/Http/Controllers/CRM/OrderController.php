@@ -1379,6 +1379,37 @@ class OrderController extends Controller
             // Get results (limit to 100 for performance)
             $orders = $query->orderBy('order_date', 'desc')->limit(100)->get();
 
+            // ⭐ ENHANCEMENT: Add customer order counts for mobile app
+            // Get unique customer IDs from the fetched orders
+            $customerIds = $orders->pluck('customer_id')->unique()->filter();
+            $customerOrderCounts = [];
+            if ($customerIds->isNotEmpty()) {
+                $counts = \DB::table('t_crm_prod_order')
+                    ->select('customer_id', \DB::raw('COUNT(*) as order_count'))
+                    ->whereIn('customer_id', $customerIds)
+                    ->whereIn('order_status', ['delivered', 'completed']) // Only count completed orders
+                    ->groupBy('customer_id')
+                    ->get()
+                    ->keyBy('customer_id');
+                
+                foreach ($counts as $customerId => $count) {
+                    $customerOrderCounts[$customerId] = $count->order_count;
+                }
+            }
+
+            // Add customer order count to each order
+            $orders->transform(function($order) use ($customerOrderCounts) {
+                $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
+                $isNewCustomer = $orderCount <= 1; // 0 or 1 order means new customer
+                
+                // Add customer order count info to the order object
+                $order->customer_order_count = $orderCount;
+                $order->customer_is_new = $isNewCustomer;
+                $order->customer_badge = $isNewCustomer ? 'NEW' : "{$orderCount} orders";
+                
+                return $order;
+            });
+
             // ⭐ SMART SYNC: Clear sync flags for rider's fetched orders
             // This marks orders as synced when the mobile app fetches them
             if ($source === 'other' && auth()->check()) {

@@ -62,4 +62,34 @@ class User extends Authenticatable
         }
         return false;
     }
+
+    /**
+     * Check if user has a specific mobile permission
+     */
+    public function hasMobilePermission(string $permissionCode): bool
+    {
+        $permissions = $this->getMobilePermissions();
+        return in_array($permissionCode, $permissions);
+    }
+
+    /**
+     * Get all mobile permissions for this user across all their roles
+     */
+    public function getMobilePermissions(): array
+    {
+        $permissions = [];
+        
+        foreach ($this->roles as $role) {
+            // Get mobile permissions for this role
+            $rolePermissions = $role->mobilePermissions()
+                ->where('is_active', 1)
+                ->pluck('permission_code')
+                ->toArray();
+            
+            $permissions = array_merge($permissions, $rolePermissions);
+        }
+        
+        // Return unique permissions
+        return array_unique($permissions);
+    }
 }
