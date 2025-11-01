@@ -1737,20 +1737,18 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       // Meter pictures
       const hasPictureStart = day.picture_start && day.picture_start !== '-';
       const hasPictureEnd = day.picture_end && day.picture_end !== '-';
-      // Auto-detect environment: use /storage/ for local, /app/storage/app/public/ for production
-      const isProduction = !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1');
-      const storagePrefix = isProduction ? '/app/storage/app/public/' : '/storage/';
-      const pictureStartUrl = hasPictureStart ? `${storagePrefix}${day.picture_start}` : null;
-      const pictureEndUrl = hasPictureEnd ? `${storagePrefix}${day.picture_end}` : null;
+      // Build with /storage/ by default and fallback to proxy in viewer
+      const pictureStartPath = hasPictureStart ? day.picture_start : null;
+      const pictureEndPath = hasPictureEnd ? day.picture_end : null;
       
       let meterPicsHtml = '-';
       if (hasPictureStart || hasPictureEnd) {
         meterPicsHtml = '<div style="display: flex; gap: 4px; justify-content: center;">';
         if (hasPictureStart) {
-          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureStartUrl}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureStartPath}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
         }
         if (hasPictureEnd) {
-          meterPicsHtml += `<button onclick="viewMeterPicture('${pictureEndUrl}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureEndPath}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
         }
         meterPicsHtml += '</div>';
       }
@@ -1794,6 +1792,24 @@ function viewMeterPicture(imageUrl) {
   const img = document.getElementById('meterPictureImage');
   if (modal && img) {
     img.src = imageUrl;
+    modal.style.display = 'flex';
+  }
+}
+
+// Prefer /storage/ and fall back to /public-storage/
+function viewMeterPicturePath(relativePath) {
+  const primary = `/storage/${relativePath}`;
+  const fallback = `/public-storage/${relativePath}`;
+  const modal = document.getElementById('meterPictureModal');
+  const img = document.getElementById('meterPictureImage');
+  if (modal && img) {
+    img.onerror = function() {
+      // Switch to fallback once if primary fails
+      if (img.src !== window.location.origin + fallback) {
+        img.src = fallback;
+      }
+    };
+    img.src = primary;
     modal.style.display = 'flex';
   }
 }

@@ -1152,14 +1152,18 @@ class RiderController extends Controller
      */
     private function getMeterPictureUrl($picturePath): string
     {
-        // Check if running locally (symlink works) or production (direct path needed)
-        if (app()->environment('local') || file_exists(public_path('storage'))) {
-            // Local dev: use standard Laravel storage path
-            return asset('storage/' . $picturePath);
-        } else {
-            // Production (StackCP): use direct path
-            return url('app/storage/app/public/' . $picturePath);
-        }
+        // Always route through our storage proxy (works in prod + local)
+        // Build absolute URL using the current request host to support mobile devices
+        $base = request()->getSchemeAndHttpHost();
+        $url = rtrim($base, '/') . '/public-storage/' . ltrim($picturePath, '/');
+        
+        \Log::info('getMeterPictureUrl', [
+            'input' => $picturePath,
+            'base' => $base,
+            'output' => $url,
+        ]);
+        
+        return $url;
     }
 
     /**

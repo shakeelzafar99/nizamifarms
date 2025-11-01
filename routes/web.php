@@ -13,6 +13,9 @@ Route::get('/', function () {
     return redirect('/auth/login');
 });
 
+// Serve files from storage/app/public without symlink (no auth required)
+Route::get('/public-storage/{path}', [\App\Http\Controllers\FileController::class, 'publicStorage'])->where('path', '.*');
+
 Route::group([
     'prefix' => 'auth'
 ], function ($router) {
