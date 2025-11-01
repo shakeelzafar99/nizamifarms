@@ -866,15 +866,18 @@ function showTransactionModal(transaction) {
     
     if (transaction.bill_image && transaction.bill_image !== '' && transaction.bill_image !== null) {
         console.log('Displaying bill image:', transaction.bill_image); // DEBUG
+        // Try /storage/ first, fallback to /public-storage/ if it fails
+        const primaryUrl = `/storage/${transaction.bill_image}`;
+        const fallbackUrl = `/public-storage/${transaction.bill_image}`;
         html += `
             <div style="margin-top: 20px;">
                 <label style="display: block; font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">📎 Bill Image</label>
                 <div style="border: 2px solid #e5e7eb; border-radius: 8px; padding: 8px; background: #f9fafb;">
-                    <img src="/storage/${transaction.bill_image}" 
+                    <img src="${primaryUrl}" 
                          alt="Bill Image" 
                          style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 4px; cursor: pointer;"
-                         onclick="window.open('/storage/${transaction.bill_image}', '_blank')"
-                         onerror="console.error('Failed to load image:', '/storage/${transaction.bill_image}'); this.parentElement.innerHTML = '<p style=\\'color: #ef4444; text-align: center;\\'>Failed to load image</p>';">
+                         onclick="window.open(this.src, '_blank')"
+                         onerror="if (this.src !== '${fallbackUrl}') { this.src = '${fallbackUrl}'; } else { console.error('Failed to load image'); this.parentElement.innerHTML = '<p style=\\'color: #ef4444; text-align: center;\\'>Failed to load image</p>'; }">
                     <p style="text-align: center; font-size: 11px; color: #6b7280; margin-top: 4px;">Click image to view full size</p>
                 </div>
             </div>
