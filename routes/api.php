@@ -139,5 +139,10 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Line Item Status Management (mobile app only - uses token auth)
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);
+    
+    // Expense Management (Store Mode)
+    Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
+    Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
+    Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
     });
 });

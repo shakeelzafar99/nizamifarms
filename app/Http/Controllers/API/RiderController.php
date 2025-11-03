@@ -115,6 +115,7 @@ class RiderController extends Controller
             $order = \App\Models\CRM\OrderModel::with([
                 'customer',
                 'lineItems',
+                'discounts',
                 'statusHistory' => function($q) {
                     $q->orderBy('changed_at', 'desc');
                 }
@@ -188,6 +189,14 @@ class RiderController extends Controller
                 }
             }
 
+            // Format discounts (for invoice calculation)
+            $discounts = $order->discounts ? $order->discounts->map(function($discount) {
+                return [
+                    'discount_amount' => $discount->discount_amount,
+                    'discount_type' => $discount->discount_type,
+                ];
+            })->toArray() : [];
+
             // Generate invoice URLs
             $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
             $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
@@ -207,10 +216,14 @@ class RiderController extends Controller
                     'customer' => [
                         'id' => $order->customer->id ?? null,
                         'name' => $order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A',
-                        'phone' => $order->customer->phone ?? '',
+                        'phone' => $order->customer->phone_original ?? $order->customer->phone ?? '',
                         'email' => $order->customer->email ?? '',
                         'address' => $order->customer->address1 ?? '',
+                        'address1' => $order->customer->address1 ?? '',
+                        'address2' => $order->customer->address2 ?? '',
                         'city' => $order->customer->city ?? '',
+                        'province' => $order->customer->province ?? '',
+                        'postal_code' => $order->customer->postal_code ?? '',
                         'verified_location' => ($order->customer && ($order->customer->verified_location_url || ($order->customer->latitude && $order->customer->longitude))) ? [
                             'latitude' => $order->customer->latitude ? (float)$order->customer->latitude : null,
                             'longitude' => $order->customer->longitude ? (float)$order->customer->longitude : null,
@@ -230,6 +243,10 @@ class RiderController extends Controller
                         'shipping_formatted' => 'Rs. ' . number_format($order->shipping_total, 0),
                         'total_formatted' => 'Rs. ' . number_format($order->total_price, 0),
                     ],
+                    'shipping_total' => $order->shipping_total ?? 0,
+                    'tip_amount' => $order->tip_amount ?? 0,
+                    'total_price' => $order->total_price,
+                    'discounts' => $discounts,
                     'notes' => $order->note,
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
@@ -2063,7 +2080,7 @@ class RiderController extends Controller
             $statusFilter = $request->get('status', null);
             
             // Build query - same logic as webapp OrderController::index with tab='open'
-            $query = OrderModel::with(['customer', 'lineItems', 'assignedRider'])
+            $query = OrderModel::with(['customer', 'lineItems', 'assignedRider', 'discounts'])
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
                       ->orWhereNull('external_source');
@@ -2113,8 +2130,13 @@ class RiderController extends Controller
                     'payment_method' => $order->payment_method,
                     'expected_packets' => $order->expected_packets,
                     'customer_name' => $customerName,
-                    'customer_phone' => $order->customer->phone ?? $order->address_phone ?? '',
-                    'customer_address' => $order->customer->address ?? $order->address_address ?? '',
+                    'customer_phone' => $order->customer->phone_original ?? $order->customer->phone ?? $order->address_phone ?? '',
+                    'customer_address' => $order->customer->address1 ?? $order->address_address ?? '',
+                    'customer_address1' => $order->customer->address1 ?? '',
+                    'customer_address2' => $order->customer->address2 ?? '',
+                    'customer_city' => $order->customer->city ?? '',
+                    'customer_province' => $order->customer->province ?? '',
+                    'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
                     'has_verified_location' => $hasVerifiedLocation,
                     'assigned_rider' => $order->assignedRider ? [
@@ -2133,11 +2155,20 @@ class RiderController extends Controller
                             'quantity' => $item->quantity,
                             'unit_price' => $item->unit_price,
                             'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
+                            'line_total' => $item->line_total, // Add line_total for invoice calculations
                             'total' => $item->line_total,
                             'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
                             'preparation_status' => $item->preparation_status,
                         ];
                     }),
+                    'shipping_total' => $order->shipping_total ?? 0,
+                    'tip_amount' => $order->tip_amount ?? 0,
+                    'discounts' => $order->discounts ? $order->discounts->map(function($discount) {
+                        return [
+                            'discount_amount' => $discount->discount_amount,
+                            'discount_type' => $discount->discount_type,
+                        ];
+                    })->toArray() : [],
                     'preparation_summary' => [
                         'preparing_count' => $preparingCount,
                         'total_items' => $totalItems,
@@ -2615,6 +2646,332 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update line items: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get expense management data for mobile
+     * Includes: expenses, pending approvals, KPIs, top categories
+     */
+    public function getExpenses(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view expenses'
+                ], 403);
+            }
+            
+            // Get filter parameters
+            $month = $request->input('month'); // Format: YYYY-MM
+            $category = $request->input('category');
+            $settlementStatus = $request->input('settlement_status');
+            
+            // Build base query for expenses and salary advances
+            $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+                })
+                ->whereNotNull('ledger_transaction_id')
+                ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
+                ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
+            
+            // Apply date filter only if month is provided
+            if ($month) {
+                $dateFrom = $month . '-01';
+                $dateTo = date('Y-m-t', strtotime($dateFrom)); // Last day of month
+                $expensesQuery->whereBetween('created_at', [$dateFrom . ' 00:00:00', $dateTo . ' 23:59:59']);
+            }
+            
+            // Apply category filter
+            if ($category) {
+                if (strtolower($category) === 'salary') {
+                    $expensesQuery->whereRaw('1 = 0'); // Exclude all (salary comes from slips)
+                } else {
+                    $expensesQuery->where(function($q) use ($category) {
+                        $q->whereRaw('LOWER(expense_category) = ?', [strtolower($category)])
+                          ->orWhere(function($q2) use ($category) {
+                              if (strtolower($category) === 'salary advance') {
+                                  $q2->whereNull('expense_category')
+                                     ->orWhere('expense_category', '')
+                                     ->whereHas('category', function($q3) {
+                                         $q3->where('category_code', 'salary_advance');
+                                     });
+                              }
+                          });
+                    });
+                }
+            }
+            
+            // Apply settlement status filter
+            if ($settlementStatus) {
+                $expensesQuery->where('settlement_status', $settlementStatus);
+            }
+            
+            $allExpenses = $expensesQuery->orderBy('created_at', 'desc')->get();
+            
+            // Get salary slips
+            $salarySlipsQuery = SalarySlipModel::with(['employee'])
+                ->whereIn('slip_status', ['approved', 'paid'])
+                ->whereNotNull('ledger_transaction_id');
+            
+            // Apply date filter to salary slips if month is provided
+            if ($month) {
+                $dateFrom = $month . '-01';
+                $dateTo = date('Y-m-t', strtotime($dateFrom));
+                $salarySlipsQuery->whereBetween('created_at', [$dateFrom . ' 00:00:00', $dateTo . ' 23:59:59']);
+            }
+            
+            $includeSalarySlips = !$category || strtolower($category) === 'salary';
+            $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
+            $totalSalaryExpenses = $salarySlips->sum('net_salary');
+            
+            // Transform salary slips for display
+            $salarySlipsForDisplay = $salarySlips->map(function($slip) {
+                return [
+                    'id' => 'SALARY-' . $slip->id,
+                    'type' => 'salary',
+                    'request_number' => $slip->slip_number ?? ('SLIP-' . $slip->id),
+                    'date' => $slip->created_at->format('Y-m-d'),
+                    'employee' => $slip->employee ? $slip->employee->fullname : 'Unknown',
+                    'category' => 'Salary',
+                    'amount' => $slip->net_salary,
+                    'payment_source' => 'Expense Fund',
+                    'settlement_status' => 'not_applicable',
+                    'status' => $slip->slip_status
+                ];
+            });
+            
+            // Transform expenses for display
+            $expensesForDisplay = $allExpenses->map(function($expense) {
+                return [
+                    'id' => $expense->id,
+                    'type' => 'expense',
+                    'request_number' => $expense->request_number,
+                    'date' => $expense->created_at->format('Y-m-d'),
+                    'employee' => $expense->requester ? $expense->requester->fullname : 'Unknown',
+                    'category' => $expense->expense_category ?? ($expense->category ? $expense->category->category_name : 'Uncategorized'),
+                    'amount' => $expense->amount,
+                    'payment_source' => $expense->paymentSourceAccount ? $expense->paymentSourceAccount->account_name : 'Unknown',
+                    'settlement_status' => $expense->settlement_status,
+                    'status' => $expense->status,
+                    'settled_at' => $expense->settled_at ? $expense->settled_at->format('Y-m-d H:i') : null,
+                    'settled_by' => $expense->settledBy ? $expense->settledBy->fullname : null
+                ];
+            });
+            
+            // Merge and sort
+            $allExpensesForDisplay = $expensesForDisplay->concat($salarySlipsForDisplay)->sortByDesc('date')->values();
+            
+            // Calculate KPIs
+            $totalExpenses = $allExpenses->sum('amount') + $totalSalaryExpenses;
+            $needsSettlement = $allExpenses->filter(fn($exp) => $exp->settlement_status === 'pending')->sum('amount');
+            $settled = $allExpenses->filter(fn($exp) => $exp->settlement_status === 'settled')->sum('amount');
+            
+            // Get expense fund balance
+            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
+                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            
+            // Get pending approvals (real-time, not filtered by month)
+            $pendingApprovals = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+                })
+                ->where('status', \App\Models\Request\RequestModel::STATUS_PENDING)
+                ->with(['requester', 'paymentSourceAccount', 'category'])
+                ->orderBy('created_at', 'asc')
+                ->get();
+            
+            // Transform pending approvals
+            $pendingApprovalsForDisplay = $pendingApprovals->map(function($request) {
+                return [
+                    'id' => $request->id,
+                    'request_number' => $request->request_number,
+                    'date' => $request->created_at->format('Y-m-d'),
+                    'employee' => $request->requester ? $request->requester->fullname : 'Unknown',
+                    'category' => $request->expense_category ?? ($request->category ? $request->category->category_name : 'Uncategorized'),
+                    'amount' => $request->amount,
+                    'payment_source' => $request->paymentSourceAccount ? $request->paymentSourceAccount->account_name : 'Unknown',
+                    'status' => $request->status
+                ];
+            });
+            
+            // Calculate top 5 expense categories
+            $expensesByCategory = [];
+            foreach ($allExpenses as $expense) {
+                $cat = $expense->expense_category;
+                if (empty($cat) && $expense->category && $expense->category->category_code === 'salary_advance') {
+                    $cat = 'Salary Advance';
+                } elseif (empty($cat)) {
+                    $cat = 'Uncategorized';
+                }
+                if (!isset($expensesByCategory[$cat])) {
+                    $expensesByCategory[$cat] = 0;
+                }
+                $expensesByCategory[$cat] += $expense->amount;
+            }
+            
+            if ($totalSalaryExpenses > 0) {
+                if (!isset($expensesByCategory['Salary'])) {
+                    $expensesByCategory['Salary'] = 0;
+                }
+                $expensesByCategory['Salary'] += $totalSalaryExpenses;
+            }
+            
+            arsort($expensesByCategory);
+            $topCategories = array_slice($expensesByCategory, 0, 5, true);
+            
+            // Get all unique categories for filter
+            $categoriesFromExpenses = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+                })
+                ->whereNotNull('ledger_transaction_id')
+                ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
+                ->whereNotNull('expense_category')
+                ->where('expense_category', '!=', '')
+                ->distinct()
+                ->pluck('expense_category');
+            
+            $categories = $categoriesFromExpenses
+                ->merge(['Salary', 'Salary Advance'])
+                ->unique()
+                ->sort()
+                ->values();
+            
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'expenses' => $allExpensesForDisplay,
+                    'pending_approvals' => $pendingApprovalsForDisplay,
+                    'kpis' => [
+                        'total_expenses' => $totalExpenses,
+                        'needs_settlement' => $needsSettlement,
+                        'settled' => $settled,
+                        'fund_balance' => $expenseFund ? $expenseFund->current_balance : 0,
+                        'pending_approvals' => $pendingApprovals->sum('amount'),
+                        'pending_approvals_count' => $pendingApprovals->count(),
+                        'top_categories' => $topCategories
+                    ],
+                    'categories' => $categories,
+                    'current_month' => $month ?: now()->format('Y-m')
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get expenses', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load expenses: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Approve a pending expense request
+     */
+    public function approveExpense(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('approve_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to approve expenses'
+                ], 403);
+            }
+            
+            $expenseRequest = \App\Models\Request\RequestModel::findOrFail($id);
+            
+            // Determine which level to approve at (same logic as web app)
+            // Check if user has Level 1 or Level 2 approval rights
+            $approvalLevel = null;
+            if (\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1)) {
+                $approvalLevel = 1;
+            } elseif (\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2)) {
+                $approvalLevel = 2;
+            }
+            
+            if (!$approvalLevel) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have approval rights for this request'
+                ], 403);
+            }
+            
+            // Use the existing approval controller logic
+            $approvalController = new \App\Http\Controllers\Request\RequestApprovalController();
+            $approvalRequest = new Request([
+                'level' => $approvalLevel,
+                'comments' => $request->input('notes', ''),
+                'payment_source_account_id' => $request->input('payment_source_account_id', null)
+            ]);
+            
+            $response = $approvalController->approve($approvalRequest, $id);
+            $responseData = $response->getData(true);
+            
+            return response()->json($responseData, $response->status());
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to approve expense', [
+                'expense_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to approve expense: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Settle an expense
+     */
+    public function settleExpense(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('settle_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to settle expenses'
+                ], 403);
+            }
+            
+            // Use the existing expense management controller logic
+            $expenseController = new \App\Http\Controllers\FIN\ExpenseManagementController(
+                app(\App\Services\FIN\ExpenseSettlementService::class)
+            );
+            
+            $response = $expenseController->settle($request, $id);
+            $responseData = $response->getData(true);
+            
+            return response()->json($responseData, $response->status());
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to settle expense', [
+                'expense_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to settle expense: ' . $e->getMessage()
             ], 500);
         }
     }
