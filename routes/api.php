@@ -136,5 +136,8 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Store Mode - Open Order Quantities
     Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);
+    
+    // Line Item Status Management (mobile app only - uses token auth)
+    Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);
     });
 });

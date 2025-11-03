@@ -1849,16 +1849,46 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             html += '</div>';
             html += '</div>';
-            // Line Items (read-only)
+            // Line Items with preparation status (only for open orders, not Shopify)
             var items = (order.line_items && Array.isArray(order.line_items)) ? order.line_items : [];
+            var isOpenOrder = !['delivered', 'completed', 'cancelled', 'refunded'].includes(order.order_status);
+            var isShopifyOrder = order.external_source === 'shopify';
+            var showPreparationControls = isOpenOrder && !isShopifyOrder;
+            
             html += '<div style="padding: 20px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 0 0 20px 0;">';
-            html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Line Items</h3>';
+            html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">';
+            html += '<h3 style="margin: 0; color: #111827;">Line Items</h3>';
+            
+            // Only show preparation controls for open non-Shopify orders
+            if (showPreparationControls) {
+                html += '<div style="display: flex; gap: 8px; align-items: center;">';
+                html += '<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #6b7280; cursor: pointer;">';
+                html += '<input type="checkbox" id="selectAllLineItems" style="cursor: pointer;" onchange="toggleSelectAllLineItems()">';
+                html += '<span>Select All</span>';
+                html += '</label>';
+                html += '<button onclick="markSelectedAsPreparing()" style="padding: 6px 12px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background=\'#059669\'" onmouseout="this.style.background=\'#10b981\'">Mark as Preparing</button>';
+                html += '<button onclick="clearSelectedPreparingStatus()" style="padding: 6px 12px; background: #6b7280; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background=\'#4b5563\'" onmouseout="this.style.background=\'#6b7280\'">Clear Status</button>';
+                html += '</div>';
+            }
+            
+            html += '</div>';
             if (items.length > 0) {
                 html += '<div style="overflow-x: auto;">';
-                html += '<table style="width: 100%; border-collapse: collapse;">';
-                html += '<thead><tr>' +
-                        '<th style="text-align:left; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Item</th>' +
-                        '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Qty</th>' +
+                html += '<table id="lineItemsTable" style="width: 100%; border-collapse: collapse;">';
+                html += '<thead><tr>';
+                
+                // Only show Select and Status columns for open non-Shopify orders
+                if (showPreparationControls) {
+                    html += '<th style="text-align:center; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px; width: 40px;">Select</th>';
+                }
+                
+                html += '<th style="text-align:left; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Item</th>';
+                
+                if (showPreparationControls) {
+                    html += '<th style="text-align:center; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px; width: 100px;">Status</th>';
+                }
+                
+                html += '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Qty</th>' +
                         '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Unit</th>' +
                         '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Total</th>' +
                         '</tr></thead>';
@@ -1878,12 +1908,31 @@ function viewOrderDetails(orderId) {
                     if (!isFinite(unit)) unit = 0;
                     if (!isFinite(lineTotal)) lineTotal = 0;
                     itemsSubtotal += lineTotal;
-                    html += '<tr>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + name + '</td>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
-                    '</tr>';
+                    
+                    html += '<tr>';
+                    
+                    // Only show checkbox for open non-Shopify orders
+                    if (showPreparationControls) {
+                        html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align: center;"><input type="checkbox" class="lineItemCheckbox" data-item-id="' + (it.id || '') + '" style="cursor: pointer;"></td>';
+                    }
+                    
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + name + '</td>';
+                    
+                    // Only show status badge for open non-Shopify orders
+                    if (showPreparationControls) {
+                        var statusBadge = '';
+                        if (it.preparation_status === 'preparing') {
+                            statusBadge = '<span style="display: inline-block; padding: 4px 8px; background: #d1fae5; color: #065f46; border-radius: 4px; font-size: 11px; font-weight: 600;">Preparing</span>';
+                        } else {
+                            statusBadge = '<span style="display: inline-block; padding: 4px 8px; background: #f3f4f6; color: #6b7280; border-radius: 4px; font-size: 11px; font-weight: 600;">Not Started</span>';
+                        }
+                        html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align: center;">' + statusBadge + '</td>';
+                    }
+                    
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
+                            '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
+                            '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
+                        '</tr>';
                 }
                 html += '</tbody>';
                 html += '<tfoot>';
@@ -2039,6 +2088,148 @@ function viewOrderDetails(orderId) {
         `;
     });
 }
+
+// Line Item Status Management Functions
+function toggleSelectAllLineItems() {
+    const selectAll = document.getElementById('selectAllLineItems');
+    const checkboxes = document.querySelectorAll('.lineItemCheckbox');
+    checkboxes.forEach(cb => {
+        cb.checked = selectAll.checked;
+    });
+}
+
+function getSelectedLineItemIds() {
+    const checkboxes = document.querySelectorAll('.lineItemCheckbox:checked');
+    const ids = [];
+    checkboxes.forEach(cb => {
+        const itemId = cb.getAttribute('data-item-id');
+        if (itemId) {
+            ids.push(parseInt(itemId));
+        }
+    });
+    return ids;
+}
+
+function markSelectedAsPreparing() {
+    const selectedIds = getSelectedLineItemIds();
+    if (selectedIds.length === 0) {
+        alert('Please select at least one line item');
+        return;
+    }
+    
+    if (!currentOrderId) {
+        alert('Order ID not found');
+        return;
+    }
+    
+    // Show loading state
+    const button = event.target;
+    const originalText = button.innerHTML;
+    button.innerHTML = '⏳ Updating...';
+    button.disabled = true;
+    
+    // Call API to update status
+    fetch(`/orders/${currentOrderId}/line-items/bulk-update-status`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            line_item_ids: selectedIds,
+            preparation_status: 'preparing'
+        })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => {
+                throw new Error(err.message || `HTTP error! status: ${response.status}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            alert(`Updated ${data.updated_count} item(s) to Preparing status`);
+            // Reload order details to show updated status
+            viewOrderDetails(currentOrderId);
+        } else {
+            alert('Failed to update: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error updating line items:', error);
+        alert('Failed to update line items: ' + error.message);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+function clearSelectedPreparingStatus() {
+    const selectedIds = getSelectedLineItemIds();
+    if (selectedIds.length === 0) {
+        alert('Please select at least one line item');
+        return;
+    }
+    
+    if (!currentOrderId) {
+        alert('Order ID not found');
+        return;
+    }
+    
+    // Show loading state
+    const button = event.target;
+    const originalText = button.innerHTML;
+    button.innerHTML = '⏳ Updating...';
+    button.disabled = true;
+    
+    // Call API to clear status
+    fetch(`/orders/${currentOrderId}/line-items/bulk-update-status`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            line_item_ids: selectedIds,
+            preparation_status: null
+        })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => {
+                throw new Error(err.message || `HTTP error! status: ${response.status}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            alert(`Cleared status for ${data.updated_count} item(s)`);
+            // Reload order details to show updated status
+            viewOrderDetails(currentOrderId);
+        } else {
+            alert('Failed to update: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error updating line items:', error);
+        alert('Failed to update line items: ' + error.message);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
 // View Invoice
 let currentOrderId = null;
 

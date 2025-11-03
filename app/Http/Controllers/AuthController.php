@@ -93,7 +93,7 @@ class AuthController extends Controller
         $userLog->save();
 
         if ($request->expectsJson()) {
-            return $this->respondWithToken($token, $user);
+            return $this->respondWithToken($token, $user, $credentials['password']);
         }
 
         // Laravel web session auth (only needed if using session-based auth)
@@ -164,10 +164,11 @@ class AuthController extends Controller
      *
      * @param  string $token
      * @param  \App\Models\User $user
+     * @param  string|null $password
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    protected function respondWithToken($token, $user = null)
+    protected function respondWithToken($token, $user = null, $password = null)
     {
         $expirationTime = Carbon::now()->addMinutes(60);
         
@@ -176,7 +177,17 @@ class AuthController extends Controller
             $user = Auth::user();
         }
         
-        return response()->json([
+        // Load user roles with mobile permissions for permission check
+        $user->load(['roles.mobilePermissions']);
+        
+        // Get mobile permissions
+        $mobilePermissions = $user->getMobilePermissions();
+        $hasStoreAccess = in_array('access_store_mode', $mobilePermissions);
+        
+        // Determine default view: 'store' if user has store access, otherwise 'rider'
+        $defaultView = $hasStoreAccess ? 'store' : 'rider';
+        
+        $response = [
             'isError' => false,
             'access_token' => $token, // Mobile app expects this key
             'authToken' => $token, // Keep for backward compatibility with webapp
@@ -188,8 +199,18 @@ class AuthController extends Controller
                 'fullname' => $user->fullname,
                 'email' => $user->email,
                 'user_type' => $user->user_type,
-            ]
-        ]);
+            ],
+            'mobile_permissions' => $mobilePermissions, // All mobile permissions
+            'has_store_access' => $hasStoreAccess, // Quick check for store access
+            'default_view' => $defaultView, // Default starting view for mobile app
+        ];
+        
+        // Add password to response if provided (for mobile app to store securely)
+        if ($password !== null) {
+            $response['password'] = $password;
+        }
+        
+        return response()->json($response);
     }
 
     /**

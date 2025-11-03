@@ -259,15 +259,30 @@ class OrderController extends Controller
         // Increase execution time for image generation
         set_time_limit(120);
         
-        // Create HTML content for image generation using the exact web invoice (PDF-friendly tweaks)
-        $html = view('pages.orders.invoice', ['order' => $order, 'isPdf' => true])->render();
+        \Log::info('Generating invoice image', [
+            'order_id' => $order->id,
+            'filename' => $filename
+        ]);
+        
+        // Use the dedicated invoice-image template
+        $html = view('pages.orders.invoice-image', ['order' => $order])->render();
         
         // Try to use Puppeteer or wkhtmltoimage if available
         $imagePath = $this->createInvoiceImage($html, $filename);
         
         if ($imagePath && file_exists($imagePath)) {
+            $fileSize = filesize($imagePath);
+            \Log::info('Invoice image generated successfully', [
+                'path' => $imagePath,
+                'size' => $fileSize
+            ]);
             return response()->download($imagePath, $filename . '.png')->deleteFileAfterSend(true);
         }
+        
+        \Log::error('Invoice image generation failed', [
+            'order_id' => $order->id,
+            'filename' => $filename
+        ]);
         
         // Fallback: Return HTML view with auto-download instructions
         return view('pages.orders.invoice-print', compact('order', 'filename'))
@@ -285,6 +300,7 @@ class OrderController extends Controller
         $imagePath = $tempDir . '/' . $filename . '.png';
         
         file_put_contents($htmlPath, $html);
+        \Log::info('HTML file created', ['path' => $htmlPath]);
         
         // Try different methods to generate image
         $wkhtmltoimage = env('WKHTMLTOIMAGE_BIN', 'wkhtmltoimage');
@@ -299,10 +315,18 @@ class OrderController extends Controller
             "$chromeBin --headless --disable-gpu --window-size=800,1200 --screenshot=\"{$imagePath}\" \"{$htmlPath}\"",
         ];
         
-        foreach ($methods as $command) {
+        foreach ($methods as $methodIndex => $command) {
+            \Log::info("Trying image generation method " . ($methodIndex + 1), ['command' => $command]);
             exec($command . ' 2>&1', $output, $returnCode);
+            \Log::info("Method " . ($methodIndex + 1) . " result", [
+                'return_code' => $returnCode,
+                'output' => implode("\n", $output),
+                'file_exists' => file_exists($imagePath)
+            ]);
+            
             if ($returnCode === 0 && file_exists($imagePath)) {
                 unlink($htmlPath); // Clean up HTML file
+                \Log::info('Image generation successful', ['method' => $methodIndex + 1]);
                 return $imagePath;
             }
         }
@@ -312,6 +336,7 @@ class OrderController extends Controller
             unlink($htmlPath);
         }
         
+        \Log::error('All image generation methods failed');
         return null;
     }
     
@@ -331,7 +356,7 @@ class OrderController extends Controller
 
                 // Fallback: use dompdf with print-optimized template
                 try {
-                    $pdf = \PDF::loadView('pages.orders.invoice', ['order' => $order, 'filename' => $filename, 'isPdf' => true])
+                    $pdf = \PDF::loadView('pages.orders.invoice-pdf', ['order' => $order, 'filename' => $filename, 'isPdf' => true])
                         ->setOptions([
                             'isHtml5ParserEnabled' => true,
                             'isRemoteEnabled' => true,
@@ -370,7 +395,7 @@ class OrderController extends Controller
     {
         try {
             // Use the exact same web invoice view for pixel-perfect output
-            $html = view('pages.orders.invoice', ['order' => $order, 'isPdf' => true])->render();
+            $html = view('pages.orders.invoice-pdf', ['order' => $order, 'isPdf' => true])->render();
             
             $tempDir = storage_path('app/temp');
             if (!file_exists($tempDir)) {
@@ -385,7 +410,7 @@ class OrderController extends Controller
             // Try wkhtmltopdf command (binary can be overridden via .env)
             $wkhtmltopdf = env('WKHTMLTOPDF_BIN', 'wkhtmltopdf');
             $wkhtmltopdf = escapeshellarg($wkhtmltopdf);
-            $command = "$wkhtmltopdf --page-size A4 --margin-top 0.5in --margin-bottom 0.5in --margin-left 0.5in --margin-right 0.5in --dpi 300 --zoom 1.0 --disable-smart-shrinking --enable-local-file-access --print-media-type --background --encoding UTF-8 \"{$htmlPath}\" \"{$pdfPath}\"";
+            $command = "$wkhtmltopdf --page-size A4 --margin-top 14mm --margin-right 20mm --margin-bottom 16mm --margin-left 16mm --dpi 96 --zoom 1.0 --disable-smart-shrinking --enable-local-file-access --print-media-type --no-outline --encoding UTF-8 \"{$htmlPath}\" \"{$pdfPath}\"";
             exec($command . ' 2>&1', $output, $returnCode);
             \Log::info('wkhtmltopdf command executed with return code: ' . $returnCode . ', output: ' . implode("\n", $output));
             
@@ -1275,6 +1300,12 @@ class OrderController extends Controller
      */
     private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'])
     {
+        if (!in_array('lineItems', $withRelations, true)) {
+            $withRelations[] = 'lineItems';
+        }
+        if (!in_array('lineItems.variant', $withRelations, true)) {
+            $withRelations[] = 'lineItems.variant';
+        }
         // First try to find in Shopify orders table
         // Shopify orders are temporary (before conversion) so they don't have assignedRider
         $shopifyRelations = array_diff($withRelations, ['assignedRider']); // Remove assignedRider for Shopify
@@ -2179,6 +2210,92 @@ class OrderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to get sync status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Bulk update line item preparation status (Web route version)
+     * POST /orders/{orderId}/line-items/bulk-update-status
+     */
+    public function bulkUpdateLineItemStatus(Request $request, $orderId)
+    {
+        try {
+            // Validate request
+            $request->validate([
+                'line_item_ids' => 'required|array',
+                'line_item_ids.*' => 'required|integer',
+                'preparation_status' => 'nullable|in:preparing',
+            ]);
+            
+            $lineItemIds = $request->input('line_item_ids');
+            $preparationStatus = $request->input('preparation_status');
+            
+            // If preparation_status is empty string or null, set to null
+            if (empty($preparationStatus)) {
+                $preparationStatus = null;
+            }
+            
+            // Only allow updates for regular orders (not Shopify)
+            $order = OrderModel::with('lineItems')->find($orderId);
+            
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found or not eligible for preparation status updates'
+                ], 404);
+            }
+            
+            // Check if order is open (not delivered/completed/cancelled)
+            $closedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            if (in_array($order->order_status, $closedStatuses)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot update preparation status for closed orders'
+                ], 400);
+            }
+            
+            // Update line items
+            $updated = 0;
+            foreach ($lineItemIds as $lineItemId) {
+                $lineItem = $order->lineItems->where('id', $lineItemId)->first();
+                if ($lineItem) {
+                    $lineItem->preparation_status = $preparationStatus;
+                    $lineItem->updated_by = auth()->id();
+                    $lineItem->save();
+                    $updated++;
+                }
+            }
+            
+            // Get updated counts
+            $totalItems = $order->lineItems->count();
+            $preparingCount = $order->lineItems->where('preparation_status', 'preparing')->count();
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Updated {$updated} line item(s)",
+                'updated_count' => $updated,
+                'preparing_count' => $preparingCount,
+                'total_items' => $totalItems,
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to bulk update line item status', [
+                'order_id' => $orderId,
+                'user_id' => auth()->id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update line items: ' . $e->getMessage()
             ], 500);
         }
     }

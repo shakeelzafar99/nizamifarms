@@ -47,6 +47,11 @@ Route::prefix('webhook/appsheet')->group(function () {
     Route::post('/rider-assignment', [AppSheetController::class, 'riderAssignment']);
 });
 
+// Invoice PDF route - accessible by both web (session) and mobile (token) auth
+Route::middleware(['auth:sanctum,web'])->group(function () {
+    Route::get('/orders/{id}/invoice/pdf', [OrderController::class, 'invoicePdf'])->name('orders.invoice.pdf');
+});
+
 Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index']);
     Route::get('/dashboard/kpis', [DashboardController::class, 'getKPIs']);
@@ -78,9 +83,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');
-    Route::get('/orders/{id}/invoice/pdf', [OrderController::class, 'invoicePdf'])->name('orders.invoice.pdf');
     Route::put('/orders/{id}', [OrderController::class, 'update'])->name('orders.update');
     Route::post('/orders', [OrderController::class, 'store'])->name('orders.store');
+    Route::post('/orders/{orderId}/line-items/bulk-update-status', [OrderController::class, 'bulkUpdateLineItemStatus'])->name('orders.line-items.bulk-update-status');
 
     // Rider assignment APIs
     Route::post('/orders/{id}/rider/assign', [\App\Http\Controllers\CRM\OrderRiderController::class, 'assign'])->name('orders.rider.assign');
@@ -227,6 +232,7 @@ Route::middleware(['auth'])->group(function () {
     // User Management Routes
     Route::prefix('users')->group(function () {
         Route::get('/', [\App\Http\Controllers\SysAdmin\UserController::class, 'index'])->name('users.index');
+        Route::get('/check-email', [\App\Http\Controllers\SysAdmin\UserController::class, 'checkEmail'])->name('users.check-email');
         Route::post('/bulk', [\App\Http\Controllers\SysAdmin\UserController::class, 'bulkStore'])->name('users.bulk');
         Route::post('/{id}/create-cash-account', [\App\Http\Controllers\SysAdmin\UserController::class, 'createCashAccount'])->name('users.create-cash-account');
         Route::get('/{id}', [\App\Http\Controllers\SysAdmin\UserController::class, 'show'])->name('users.show');

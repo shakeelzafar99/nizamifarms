@@ -146,8 +146,13 @@ class RiderController extends Controller
                     'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
                     'total' => $item->line_total,
                     'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                    'preparation_status' => $item->preparation_status,
                 ];
             });
+            
+            // Calculate preparation summary
+            $totalItems = $lineItems->count();
+            $preparingCount = $lineItems->where('preparation_status', 'preparing')->count();
 
             // Format status history
             $statusHistory = $order->statusHistory->map(function($history) {
@@ -182,6 +187,10 @@ class RiderController extends Controller
                     ];
                 }
             }
+
+            // Generate invoice URLs
+            $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
+            $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
 
             return response()->json([
                 'success' => true,
@@ -225,7 +234,15 @@ class RiderController extends Controller
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
                     'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
+                    'invoice' => [
+                        'image_url' => $invoiceImageUrl,  // URL to download invoice as PNG image
+                        'pdf_url' => $invoicePdfUrl,      // URL to download invoice as PDF
+                    ],
                     'line_items' => $lineItems,
+                    'preparation_summary' => [
+                        'preparing_count' => $preparingCount,
+                        'total_items' => $totalItems,
+                    ],
                     'status_history' => $statusHistory,
                 ],
             ]);
@@ -2079,6 +2096,14 @@ class RiderController extends Controller
                                         || !empty($order->customer->verified_location_url);
                 }
                 
+                // Generate invoice URLs
+                $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
+                $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
+                
+                // Calculate preparation summary
+                $totalItems = $order->lineItems->count();
+                $preparingCount = $order->lineItems->where('preparation_status', 'preparing')->count();
+                
                 return [
                     'id' => $order->id,
                     'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
@@ -2096,10 +2121,31 @@ class RiderController extends Controller
                         'id' => $order->assignedRider->id,
                         'name' => $order->assignedRider->fullname,
                     ] : null,
-                    'items_count' => $order->lineItems->count(),
+                    'items_count' => $totalItems,
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
                     })->join(', '),
+                    'line_items' => $order->lineItems->map(function($item) {
+                        return [
+                            'id' => $item->id,
+                            'product_name' => $item->name ?? 'N/A',
+                            'variant_name' => $item->sku ?? '',
+                            'quantity' => $item->quantity,
+                            'unit_price' => $item->unit_price,
+                            'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
+                            'total' => $item->line_total,
+                            'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                            'preparation_status' => $item->preparation_status,
+                        ];
+                    }),
+                    'preparation_summary' => [
+                        'preparing_count' => $preparingCount,
+                        'total_items' => $totalItems,
+                    ],
+                    'invoice' => [
+                        'image_url' => $invoiceImageUrl,  // URL to download invoice as PNG image
+                        'pdf_url' => $invoicePdfUrl,      // URL to download invoice as PDF
+                    ],
                 ];
             });
             
@@ -2473,6 +2519,102 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch quantities: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Bulk update line item preparation status
+     * POST /api/rider/orders/{orderId}/line-items/bulk-update-status
+     */
+    public function bulkUpdateLineItemStatus(Request $request, $orderId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Validate request
+            $request->validate([
+                'line_item_ids' => 'required|array',
+                'line_item_ids.*' => 'required|integer',
+                'preparation_status' => 'nullable|in:preparing',
+            ]);
+            
+            $lineItemIds = $request->input('line_item_ids');
+            $preparationStatus = $request->input('preparation_status');
+            
+            // If preparation_status is empty string or null, set to null
+            if (empty($preparationStatus)) {
+                $preparationStatus = null;
+            }
+            
+            // Check if user has permission to update orders
+            if (!$user->hasMobilePermission('view_open_orders') && !$user->hasMobilePermission('mark_order_delivered')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to update line items'
+                ], 403);
+            }
+            
+            // Only allow updates for regular orders (not Shopify)
+            $order = \App\Models\CRM\OrderModel::with('lineItems')->find($orderId);
+            
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found or not eligible for preparation status updates'
+                ], 404);
+            }
+            
+            // Check if order is open (not delivered/completed/cancelled)
+            $closedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            if (in_array($order->order_status, $closedStatuses)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot update preparation status for closed orders'
+                ], 400);
+            }
+            
+            // Update line items
+            $updated = 0;
+            foreach ($lineItemIds as $lineItemId) {
+                $lineItem = $order->lineItems->where('id', $lineItemId)->first();
+                if ($lineItem) {
+                    $lineItem->preparation_status = $preparationStatus;
+                    $lineItem->updated_by = $user->id;
+                    $lineItem->save();
+                    $updated++;
+                }
+            }
+            
+            // Get updated counts
+            $totalItems = $order->lineItems->count();
+            $preparingCount = $order->lineItems->where('preparation_status', 'preparing')->count();
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Updated {$updated} line item(s)",
+                'updated_count' => $updated,
+                'preparing_count' => $preparingCount,
+                'total_items' => $totalItems,
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to bulk update line item status', [
+                'order_id' => $orderId,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update line items: ' . $e->getMessage()
             ], 500);
         }
     }

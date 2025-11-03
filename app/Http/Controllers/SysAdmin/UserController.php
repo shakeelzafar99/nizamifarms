@@ -207,6 +207,30 @@ class UserController extends Controller
         return $email;
     }
 
+    /**
+     * Check if email is available
+     * GET /users/check-email?email=test@example.com
+     */
+    public function checkEmail(Request $request)
+    {
+        $email = $request->query('email');
+        
+        if (!$email) {
+            return response()->json([
+                'available' => false,
+                'message' => 'Email parameter is required'
+            ], 400);
+        }
+        
+        // Check if email exists
+        $exists = UserModel::where('email', $email)->exists();
+        
+        return response()->json([
+            'available' => !$exists,
+            'email' => $email
+        ]);
+    }
+
     public function store(Request $request)
     {
         $request->validate([

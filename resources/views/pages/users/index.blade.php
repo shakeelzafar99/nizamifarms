@@ -219,10 +219,14 @@
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Full Name *</label>
                         <input type="text" name="fullname" id="fullname" required 
+                               onblur="autoFillEmail()"
                                style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                     </div>
                     <div>
-                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Email *</label>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">
+                            Email * 
+                            <span id="emailCheckStatus" style="font-size: 12px; font-weight: normal;"></span>
+                        </label>
                         <input type="email" name="email" id="email" required 
                                style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                     </div>
@@ -619,6 +623,89 @@ function openAddUserModal() {
 
 function closeModal(modalId) {
     document.getElementById(modalId).style.display = 'none';
+}
+
+// Auto-fill email from fullname
+async function autoFillEmail() {
+    const fullnameInput = document.getElementById('fullname');
+    const emailInput = document.getElementById('email');
+    const statusSpan = document.getElementById('emailCheckStatus');
+    
+    // Only auto-fill if email is empty (don't override manual edits)
+    if (emailInput.value.trim() !== '') {
+        return;
+    }
+    
+    const fullname = fullnameInput.value.trim();
+    if (!fullname) {
+        return;
+    }
+    
+    // Generate email from fullname (same logic as backend)
+    let baseEmail = fullname.toLowerCase();
+    
+    // Remove special characters and replace spaces with dots
+    baseEmail = baseEmail.replace(/[^a-z0-9\s]/g, '');
+    baseEmail = baseEmail.replace(/\s+/g, '.');
+    baseEmail = baseEmail.trim();
+    
+    if (!baseEmail) {
+        return;
+    }
+    
+    // Try to find an available email
+    let emailToTry = baseEmail + '@nizamifarms.com';
+    let suffix = 1;
+    let isAvailable = false;
+    
+    statusSpan.textContent = '⏳ Checking...';
+    statusSpan.style.color = '#6b7280';
+    
+    // Check if email exists (try up to 10 times with increments)
+    while (!isAvailable && suffix <= 10) {
+        try {
+            const response = await fetch(`/users/check-email?email=${encodeURIComponent(emailToTry)}`, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (data.available) {
+                isAvailable = true;
+                emailInput.value = emailToTry;
+                statusSpan.textContent = '✓ Available';
+                statusSpan.style.color = '#10b981';
+                
+                // Clear status after 2 seconds
+                setTimeout(() => {
+                    statusSpan.textContent = '';
+                }, 2000);
+            } else {
+                // Try next suffix
+                emailToTry = baseEmail + suffix + '@nizamifarms.com';
+                suffix++;
+            }
+        } catch (error) {
+            console.error('Error checking email:', error);
+            statusSpan.textContent = '⚠ Error checking';
+            statusSpan.style.color = '#ef4444';
+            
+            // Fallback: just use the base email
+            emailInput.value = baseEmail + '@nizamifarms.com';
+            break;
+        }
+    }
+    
+    if (!isAvailable && suffix > 10) {
+        // Couldn't find available email after 10 tries
+        statusSpan.textContent = '⚠ Please enter manually';
+        statusSpan.style.color = '#f59e0b';
+        emailInput.value = baseEmail + '@nizamifarms.com';
+    }
 }
 
 // Bulk Import Functions

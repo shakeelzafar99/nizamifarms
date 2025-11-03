@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Invoice</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -12,7 +13,7 @@
         }
         
         body {
-            font-family: 'Times New Roman', serif;
+            font-family: 'Poppins', 'Arial', sans-serif;
             background-color: #ffffff;
             padding: 0;
             margin: 0;
@@ -32,12 +33,13 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px 30px;
-            border-bottom: 2px solid #e2e8f0;
+            padding: 30px 40px 20px 40px;
+            border-bottom: 1px solid #e5e7eb;
+            min-height: 160px;
         }
         
         .logo-section {
-            flex: 1;
+            flex: 0 0 auto;
             display: flex;
             align-items: center;
         }
@@ -49,157 +51,208 @@
         }
         
         .logo img {
-            height: 80px;
+            height: 160px;
             width: auto;
             object-fit: contain;
-            transform: scale(1.4);
-            transform-origin: left center;
         }
         
         .company-details {
-            flex: 1;
+            flex: 0 0 auto;
             text-align: right;
             font-size: 12px;
-            line-height: 1.4;
-            color: #4a5568;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
+            line-height: 1.8;
+            color: #6b7280;
         }
         
         .company-details div {
-            margin-bottom: 3px;
+            margin-bottom: 2px;
         }
         
         .company-details strong {
-            color: #2d3748;
-            font-weight: bold;
+            color: #111827;
+            font-weight: 600;
         }
         
         /* Invoice Title */
         .invoice-title {
             text-align: center;
-            padding: 15px 30px;
-            border-bottom: 1px solid #e2e8f0;
+            padding: 20px 40px;
         }
         
         .invoice-title h2 {
-            font-size: 32px;
-            font-weight: bold;
-            color: #2d3748;
+            font-size: 36px;
+            font-weight: 700;
+            color: #111827;
             margin: 0;
-            font-family: 'Times New Roman', serif;
+            letter-spacing: 2px;
         }
         
         /* Invoice Info Section */
         .invoice-info {
-            padding: 25px 30px;
+            padding: 20px 40px;
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
+            gap: 40px;
         }
         
-        .customer-section, .order-section {
+        .customer-section {
             flex: 1;
         }
         
-        .customer-section h3, .order-section h3 {
-            font-size: 16px;
-            font-weight: bold;
-            color: #2d3748;
+        .order-section {
+            flex: 0 0 auto;
+            min-width: 280px;
+        }
+        
+        .customer-section h3 {
+            font-size: 13px;
+            font-weight: 700;
+            color: #111827;
             margin-bottom: 12px;
-            font-family: 'Times New Roman', serif;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
         
-        .customer-details, .order-details {
-            font-size: 14px;
-            line-height: 1.6;
-            color: #4a5568;
-            font-family: 'Times New Roman', serif;
+        .customer-details {
+            font-size: 13px;
+            line-height: 1.4;
+            color: #374151;
         }
         
-        .customer-details div, .order-details div {
-            margin-bottom: 6px;
+        .customer-details div {
+            margin-bottom: 2px;
         }
         
         .customer-name {
-            font-weight: bold;
-            color: #2d3748;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 6px;
         }
         
-        .order-section {
-            text-align: right;
+        /* Order Details Box */
+        .order-box {
+            border: 2px solid #e5e7eb;
+            padding: 0;
+            background-color: #ffffff;
+        }
+        
+        .order-box-header {
+            display: flex;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .order-box-header-item {
+            flex: 1;
+            padding: 10px 15px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: #111827;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background-color: #f9fafb;
+        }
+        
+        .order-box-header-item:first-child {
+            border-right: 1px solid #e5e7eb;
+        }
+        
+        .order-box-content {
+            display: flex;
+        }
+        
+        .order-box-content-item {
+            flex: 1;
+            padding: 12px 15px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: #111827;
+        }
+        
+        .order-box-content-item:first-child {
+            border-right: 1px solid #e5e7eb;
         }
         
         /* Products Table */
         .products-table {
-            width: calc(100% - 60px);
-            margin: 0 30px 30px 30px;
+            width: calc(100% - 80px);
+            margin: 20px 40px;
             border-collapse: collapse;
+            border: 1px solid #e5e7eb;
         }
         
         .products-table thead {
-            background-color: #2d3748;
+            background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
             color: white;
         }
         
         .products-table th {
-            padding: 15px 12px;
+            padding: 14px 12px;
             text-align: left;
-            font-size: 13px;
-            font-weight: bold;
+            font-size: 11px;
+            font-weight: 700;
             text-transform: uppercase;
-            font-family: 'Times New Roman', serif;
+            letter-spacing: 0.8px;
         }
         
-        .products-table th:nth-child(2),
-        .products-table th:nth-child(3) {
+        .products-table th.text-center {
             text-align: center;
         }
         
-        .products-table th:last-child {
+        .products-table th.text-right {
             text-align: right;
         }
         
         .products-table tbody tr {
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid #e5e7eb;
         }
         
-        .products-table tbody tr:nth-child(even) {
-            background-color: #f7fafc;
+        .products-table tbody tr:last-child {
+            border-bottom: none;
         }
         
         .products-table td {
-            padding: 15px 12px;
-            font-size: 14px;
-            color: #4a5568;
-            font-family: 'Times New Roman', serif;
+            padding: 14px 12px;
+            font-size: 13px;
+            color: #374151;
+            vertical-align: top;
         }
         
-        .products-table td:nth-child(2),
-        .products-table td:nth-child(3) {
+        .products-table td.text-center {
             text-align: center;
         }
         
-        .products-table td:last-child {
+        .products-table td.text-right {
             text-align: right;
-            font-weight: bold;
         }
         
         .product-name {
-            font-weight: bold;
-            color: #2d3748;
+            font-weight: 600;
+            color: #111827;
             margin-bottom: 4px;
+            font-size: 13px;
         }
         
         .product-sku {
-            font-size: 12px;
-            color: #718096;
+            font-size: 11px;
+            color: #9ca3af;
+        }
+        
+        /* Total Item Number Row */
+        .total-items-row {
+            padding: 15px 40px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #111827;
+            border-top: 1px solid #e5e7eb;
         }
         
         /* Totals Section */
         .totals-section {
-            padding: 0 30px 30px 30px;
+            padding: 20px 40px 30px 40px;
         }
         
         .totals-table {
@@ -207,59 +260,71 @@
             max-width: 350px;
             margin-left: auto;
             border-collapse: collapse;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .totals-table tr {
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .totals-table tr:last-child {
+            border-bottom: none;
         }
         
         .totals-table td {
-            padding: 10px 20px;
-            font-size: 15px;
-            font-family: 'Times New Roman', serif;
+            padding: 12px 20px;
+            font-size: 13px;
         }
         
         .totals-table .label {
             text-align: right;
-            font-weight: bold;
-            color: #4a5568;
-            border-right: 1px solid #e2e8f0;
+            font-weight: 700;
+            color: #111827;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            font-size: 12px;
         }
         
         .totals-table .amount {
             text-align: right;
-            color: #2d3748;
-            font-weight: bold;
+            color: #111827;
+            font-weight: 600;
+            width: 140px;
         }
         
         .totals-table .total-row {
-            border-top: 3px solid #2d3748;
-            background-color: #f7fafc;
+            background-color: #f9fafb;
         }
         
         .totals-table .total-row .label,
         .totals-table .total-row .amount {
-            font-size: 18px;
-            font-weight: bold;
-            color: #2d3748;
+            font-size: 15px;
+            font-weight: 700;
+            color: #111827;
+            padding: 15px 20px;
         }
         
         /* Footer */
         .footer {
-            background-color: #f7fafc;
-            padding: 25px 30px;
+            background-color: #f9fafb;
+            padding: 25px 40px;
             text-align: center;
-            border-top: 1px solid #e2e8f0;
+            border-top: 1px solid #e5e7eb;
+            margin-top: 20px;
         }
         
         .footer-message {
-            font-size: 15px;
-            color: #4a5568;
-            margin-bottom: 12px;
-            font-family: 'Times New Roman', serif;
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 10px;
+            font-weight: 500;
+            font-style: italic;
         }
         
         .footer-contact {
-            font-size: 13px;
-            color: #718096;
-            line-height: 1.5;
-            font-family: 'Times New Roman', serif;
+            font-size: 12px;
+            color: #6b7280;
+            line-height: 1.6;
         }
     </style>
 </head>
@@ -291,8 +356,8 @@
                         <img src="{{ $logoDataUri }}" alt="Nizami Farms">
                     @else
                         <div style="text-align: center; padding: 10px;">
-                            <div style="color: #059669; font-size: 20px; font-weight: bold; margin-bottom: 4px; font-family: 'Times New Roman', serif;">NIZAMI FARMS</div>
-                            <div style="color: #6b7280; font-size: 12px; font-family: 'Times New Roman', serif;">Where quality meat's expectation</div>
+                            <div style="color: #059669; font-size: 18px; font-weight: bold; margin-bottom: 4px;">NIZAMI FARMS</div>
+                            <div style="color: #6b7280; font-size: 11px;">Where quality meat's expectation</div>
                         </div>
                     @endif
                 </div>
@@ -315,7 +380,7 @@
         <!-- Invoice Information -->
         <div class="invoice-info">
             <div class="customer-section">
-                <h3>Bill To:</h3>
+                <h3>Customer Details</h3>
                 <div class="customer-details">
                     <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
                     @if($order->customer && $order->customer->address1)
@@ -334,11 +399,15 @@
                 </div>
             </div>
             <div class="order-section">
-                <h3>&nbsp;</h3>
-                <div class="order-details">
-                    <div><strong>Invoice Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
-                    <div><strong>Order Number:</strong> {{ $order->order_number }}</div>
-                    <div><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('F j, Y') }}</div>
+                <div class="order-box">
+                    <div class="order-box-header">
+                        <div class="order-box-header-item">Order No</div>
+                        <div class="order-box-header-item">Order Date</div>
+                    </div>
+                    <div class="order-box-content">
+                        <div class="order-box-content-item">{{ $order->order_number }}</div>
+                        <div class="order-box-content-item">{{ \Carbon\Carbon::parse($order->order_date)->format('Y/m/d') }}</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -347,10 +416,11 @@
         <table class="products-table">
             <thead>
                 <tr>
-                    <th>Product</th>
-                    <th>Quantity</th>
-                    <th>Price</th>
-                    <th>Total</th>
+                    <th style="width: 40%;">Title</th>
+                    <th style="width: 15%;">SKU</th>
+                    <th class="text-center" style="width: 12%;">Qty</th>
+                    <th class="text-center" style="width: 15%;">Unit Price</th>
+                    <th class="text-right" style="width: 18%;">Total</th>
                 </tr>
             </thead>
             <tbody>
@@ -358,40 +428,83 @@
                 <tr>
                     <td>
                         <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
-                        @if($item->sku)
-                            <div class="product-sku">SKU: {{ $item->sku }}</div>
+                    </td>
+                    <td>
+                        @php 
+                            $skuValue = trim((string)($item->sku ?? ''));
+                            if ($skuValue === '' && !empty($item->variant_id)) {
+                                $variant = \App\Models\CRM\ProductVariantModel::find($item->variant_id);
+                                if ($variant) {
+                                    $skuValue = trim((string)($variant->sku ?? ''));
+                                }
+                            }
+                            if ($skuValue === '' && !empty($item->name)) {
+                                $product = \App\Models\CRM\ProductModel::where('title', 'LIKE', '%' . $item->name . '%')->first();
+                                if ($product) {
+                                    $variant = $product->variants()->first();
+                                    if ($variant) {
+                                        $skuValue = trim((string)($variant->sku ?? ''));
+                                    }
+                                }
+                            }
+                        @endphp
+                        @if($skuValue !== '')
+                            <span class="product-sku">{{ $skuValue }}</span>
+                        @else
+                            <span class="product-sku">-</span>
                         @endif
                     </td>
-                    <td>{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
-                    <td>Rs.{{ number_format($item->unit_price, 0) }}</td>
-                    <td>Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                    <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
+                    <td class="text-center">Rs {{ number_format($item->unit_price, 0) }}</td>
+                    <td class="text-right" style="font-weight: 600;">Rs {{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
                 </tr>
                 @endforeach
             </tbody>
         </table>
         
+        <!-- Total Item Number -->
+        <div class="total-items-row">
+            <strong>TOTAL ITEM NUMBER:</strong> {{ $order->lineItems->count() }}
+        </div>
+        
         <!-- Totals -->
         <div class="totals-section">
             <table class="totals-table">
+                @php
+                    $discountBreakdown = $order->getDiscountBreakdown();
+                    $totalDiscounts = $discountBreakdown->sum('discount_amount');
+                    $subtotal = $order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); });
+                @endphp
+                
+                @if($totalDiscounts > 0)
                 <tr>
-                    <td class="label">Subtotal:</td>
-                    <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
-                </tr>
-                @if($order->discount_total && $order->discount_total > 0)
-                <tr>
-                    <td class="label">Discount:</td>
-                    <td class="amount">-Rs.{{ number_format($order->discount_total, 0) }}</td>
+                    <td class="label">Discount</td>
+                    <td class="amount">- Rs {{ number_format($totalDiscounts, 0) }}</td>
                 </tr>
                 @endif
+                
+                <tr>
+                    <td class="label">Sub Total</td>
+                    <td class="amount">Rs {{ number_format($subtotal, 0) }}</td>
+                </tr>
+                
                 @if($order->shipping_total && $order->shipping_total > 0)
                 <tr>
-                    <td class="label">Shipping:</td>
-                    <td class="amount">Rs.{{ number_format($order->shipping_total, 0) }}</td>
+                    <td class="label">Shipping</td>
+                    <td class="amount">Rs {{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
                 @endif
+                
+                @if(isset($order->tip_amount) && $order->tip_amount > 0)
+                <tr>
+                    <td class="label">Tip</td>
+                    <td class="amount">Rs {{ number_format($order->tip_amount, 0) }}</td>
+                </tr>
+                @endif
+                
                 <tr class="total-row">
-                    <td class="label">Total:</td>
-                    <td class="amount">Rs.{{ number_format($order->total_price, 0) }}</td>
+                    <td class="label">Total</td>
+                    <td class="amount">Rs {{ number_format($order->total_price, 0) }}</td>
                 </tr>
             </table>
         </div>

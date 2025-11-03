@@ -422,7 +422,7 @@
                     <td>
                         <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
                         @if($item->sku)
-                            <div class="product-sku">SKU: {{ $item->sku }}</div>
+                            <div class="product-sku">SKU: {{ trim((string)($item->display_sku ?? $item->sku)) }}</div>
                         @endif
                     </td>
                     <td>{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>

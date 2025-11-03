@@ -29,6 +29,7 @@ class OrderLineItemModel extends BaseModel
         'discount_amount',
         'tax_amount',
         'line_total',
+        'preparation_status',
         'created_by',
         'updated_by'
     ];
@@ -46,6 +47,35 @@ class OrderLineItemModel extends BaseModel
     public function order(): BelongsTo
     {
         return $this->belongsTo(OrderModel::class, 'order_id');
+    }
+
+    public function variant(): BelongsTo
+    {
+        return $this->belongsTo(ProductVariantModel::class, 'variant_id');
+    }
+
+    public function getDisplaySkuAttribute(): string
+    {
+        $sku = trim((string)($this->sku ?? ''));
+        if ($sku !== '') {
+            return $sku;
+        }
+
+        if ($this->relationLoaded('variant') && $this->variant) {
+            $variantSku = trim((string)($this->variant->sku ?? ''));
+            if ($variantSku !== '') {
+                return $variantSku;
+            }
+        }
+
+        if ($this->variant_id) {
+            $variantSku = trim((string)(ProductVariantModel::where('id', $this->variant_id)->value('sku') ?? ''));
+            if ($variantSku !== '') {
+                return $variantSku;
+            }
+        }
+
+        return '';
     }
 
     // Helper methods
