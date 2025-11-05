@@ -937,7 +937,7 @@ function renderTable(data, summary) {
             return `
                 <tr>
                     <td>
-                        <a href="/orders/${item.order_id}" class="text-blue-600 hover:text-blue-800 font-semibold">
+                        <a href="/orders/${item.order_id}/invoice" class="text-blue-600 hover:text-blue-800 font-semibold">
                             ${escapeHtml(item.group_name)}
                         </a>
                     </td>
@@ -954,7 +954,7 @@ function renderTable(data, summary) {
                         ${item.order_date ? new Date(item.order_date).toLocaleDateString() : '-'}
                     </td>
                     <td class="text-right">
-                        <a href="/orders/${item.order_id}" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
+                        <a href="/orders/${item.order_id}/invoice" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
                             View Order
                         </a>
                     </td>

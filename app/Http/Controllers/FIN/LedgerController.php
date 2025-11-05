@@ -78,13 +78,18 @@ class LedgerController extends Controller
                                 ->orderBy('account_name', 'asc')
                                 ->get();
 
-        // Get transaction types
+        // Get transaction types (all types from LedgerModel)
         $transactionTypes = [
             LedgerModel::TYPE_INVOICE => 'Invoice',
             LedgerModel::TYPE_EMPLOYEE_DEPOSIT => 'Employee Deposit',
             LedgerModel::TYPE_EXPENSE => 'Expense',
             LedgerModel::TYPE_VENDOR_PURCHASE => 'Vendor Purchase',
             LedgerModel::TYPE_VENDOR_PAYMENT => 'Vendor Payment',
+            LedgerModel::TYPE_SALARY_ADVANCE => 'Salary Advance',
+            LedgerModel::TYPE_SALARY_PAYMENT => 'Salary Payment',
+            LedgerModel::TYPE_REIMBURSEMENT_ACCRUAL => 'Reimbursement Accrual',
+            LedgerModel::TYPE_REIMBURSEMENT_PAYMENT => 'Reimbursement Payment',
+            LedgerModel::TYPE_SETTLEMENT => 'Expense Settlement',
             LedgerModel::TYPE_TRANSFER => 'Account Transfer',
             LedgerModel::TYPE_ADJUSTMENT => 'Adjustment',
             LedgerModel::TYPE_OPENING_BALANCE => 'Opening Balance',

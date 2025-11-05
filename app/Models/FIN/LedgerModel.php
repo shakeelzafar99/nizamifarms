@@ -64,6 +64,7 @@ class LedgerModel extends BaseModel
     const TYPE_REIMBURSEMENT_ACCRUAL = 'reimbursement_accrual';
     const TYPE_REIMBURSEMENT_PAYMENT = 'reimbursement_payment';
     const TYPE_SALARY_ADVANCE = 'salary_advance';
+    const TYPE_SALARY_PAYMENT = 'salary_payment';
     const TYPE_TRANSFER = 'transfer';
     const TYPE_ADJUSTMENT = 'adjustment';
     const TYPE_OPENING_BALANCE = 'opening_balance';

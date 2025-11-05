@@ -64,8 +64,13 @@ class OrderController extends Controller
                       ->orWhereNull('external_source');
                 });
             
-            // Permission-based filtering: users without view_all_orders see only their assigned orders
-            if (!$canViewAllOrders) {
+            // Detect if request is from mobile API (rider mode)
+            $isMobileRequest = $request->is('api/rider/*');
+            
+            // Permission-based filtering:
+            // - Mobile requests (rider mode): ALWAYS filter to assigned orders only, even for admins
+            // - Web requests: users without view_all_orders see only their assigned orders
+            if ($isMobileRequest || !$canViewAllOrders) {
                 $query->where('assigned_rider_user_id', auth()->id());
             }
             
@@ -821,20 +826,20 @@ class OrderController extends Controller
             
             // Handle customer selection/population
             $customerId = $validated['customer_id'];
-            if (!$customerId && $validated['customer_phone']) {
+            if (!$customerId && !empty($validated['customer_phone'])) {
                 // Don't create customer here - let storeOrderFromApi handle it to avoid double counting
                 // Just populate address fields for the order
-                $validated['address_first_name'] = $validated['customer_first_name'];
-                $validated['address_last_name'] = $validated['customer_last_name'];
-                $validated['address_company'] = $validated['customer_company'];
-                $validated['address_email'] = $validated['contact_email'];
-                $validated['address_phone'] = $validated['customer_phone'];
-                $validated['address_line1'] = $validated['customer_address1'];
-                $validated['address_line2'] = $validated['customer_address2'];
-                $validated['address_city'] = $validated['customer_city'];
-                $validated['address_province'] = $validated['customer_province'];
-                $validated['address_postal_code'] = $validated['customer_postal_code'];
-                $validated['address_country'] = $validated['customer_country'] ?: 'Pakistan';
+                $validated['address_first_name'] = $validated['customer_first_name'] ?? null;
+                $validated['address_last_name'] = $validated['customer_last_name'] ?? null;
+                $validated['address_company'] = $validated['customer_company'] ?? null;
+                $validated['address_email'] = $validated['contact_email'] ?? null;
+                $validated['address_phone'] = $validated['customer_phone'] ?? null;
+                $validated['address_line1'] = $validated['customer_address1'] ?? null;
+                $validated['address_line2'] = $validated['customer_address2'] ?? null;
+                $validated['address_city'] = $validated['customer_city'] ?? null;
+                $validated['address_province'] = $validated['customer_province'] ?? null;
+                $validated['address_postal_code'] = $validated['customer_postal_code'] ?? null;
+                $validated['address_country'] = $validated['customer_country'] ?? 'Pakistan';
             } elseif ($customerId) {
                 // Load existing customer and populate address fields
                 $customer = \App\Models\CRM\CustomerModel::find($customerId);
@@ -1362,8 +1367,13 @@ class OrderController extends Controller
                           ->orWhereNull('external_source');
                     });
                 
-                // Filter by assigned rider if user doesn't have view_all_orders permission
-                if (!$canViewAllOrders) {
+                // Detect if request is from mobile API (rider mode)
+                $isMobileRequest = $request->is('api/rider/*');
+                
+                // Permission-based filtering:
+                // - Mobile requests (rider mode): ALWAYS filter to assigned orders only, even for admins
+                // - Web requests: users without view_all_orders see only their assigned orders
+                if ($isMobileRequest || !$canViewAllOrders) {
                     $query->where('assigned_rider_user_id', auth()->id());
                 }
                 

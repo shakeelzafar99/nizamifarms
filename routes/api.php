@@ -100,6 +100,9 @@ Route::middleware('auth:sanctum')->group(function () {
         // Customer verified location
         Route::post('/customers/{customerId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setCustomerVerifiedLocation']);
         
+        // Quick verify location from address (Store Mode)
+        Route::post('/store/orders/{orderId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setVerifiedLocationFromAddress']);
+        
         // Ledger & Settlements
         Route::get('/ledger', [\App\Http\Controllers\API\RiderController::class, 'getLedger']);
         Route::get('/ledger/outstanding-invoices', [\App\Http\Controllers\API\RiderController::class, 'getOutstandingInvoices']);

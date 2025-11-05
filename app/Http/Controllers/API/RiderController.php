@@ -364,6 +364,74 @@ class RiderController extends Controller
     }
 
     /**
+     * Quick verify location from address (for Store Mode)
+     * Geocodes the address and saves it as verified location
+     */
+    public function setVerifiedLocationFromAddress(Request $request, $orderId)
+    {
+        try {
+            $validated = $request->validate([
+                'customer_id' => 'required|integer',
+                'address' => 'required|string',
+            ]);
+
+            $customer = \App\Models\CRM\CustomerModel::find($validated['customer_id']);
+
+            if (!$customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer not found',
+                ], 404);
+            }
+
+            // Create Google Maps search URL from address
+            $googleMapsUrl = 'https://www.google.com/maps/search/?api=1&query=' . urlencode($validated['address']);
+
+            // Prepare update data
+            $updateData = [
+                'updated_by' => Auth::id(),
+                'verified_location_saved_by' => Auth::id(),
+                'verified_location_saved_at' => now(),
+                'verified_location_url' => $googleMapsUrl,
+            ];
+
+            // Update customer
+            $customer->update($updateData);
+
+            \Log::info('Quick verified location from address', [
+                'order_id' => $orderId,
+                'customer_id' => $validated['customer_id'],
+                'address' => $validated['address'],
+                'url' => $googleMapsUrl,
+                'saved_by' => Auth::user()->fullname,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Verified location saved successfully',
+                'verified_location_url' => $googleMapsUrl,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid data',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to quick verify location from address', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save location: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Mark an order as delivered
      * Riders can only mark their own assigned orders as delivered
      */

@@ -775,10 +775,10 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
             <div class="company-details" style="flex:1; text-align:right; align-self:flex-start; margin-top:0;">
                 <div><strong>NTN: A02148-1</strong></div>
                 <div>F-12, Rehman Arcade</div>
-                <div>Azizpura Market, G-6/1</div>
+                <div>Aabpara Market, G-6/1</div>
                 <div>Islamabad</div>
                 <div>www.nizamifarms.com</div>
-                <div>Ph: 0333-5300605</div>
+                <div>Ph: 0333-5300905</div>
             </div>
         </div>
         
@@ -815,7 +815,7 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                         <div class="invoice-block" style="text-align: right;">
                             <h5 class="title">Order Summary</h5>
                             <p><strong>Order No:</strong> {{ $order->order_number }}</p>
-                            <p><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('Y/m/d') }}</p>
+                            <p><strong>Order Date:</strong> {{ \Carbon\Carbon::parse($order->order_date)->format('j F Y') }}</p>
                         </div>
                     </td>
                 </tr>
@@ -850,7 +850,7 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                     </div>
                     <div class="order-box-content">
                         <div class="order-box-content-item">{{ $order->order_number }}</div>
-                        <div class="order-box-content-item">{{ \Carbon\Carbon::parse($order->order_date)->format('Y/m/d') }}</div>
+                        <div class="order-box-content-item">{{ \Carbon\Carbon::parse($order->order_date)->format('j F Y') }}</div>
                     </div>
                 </div>
             </div>
@@ -861,8 +861,7 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
         <table class="products-table">
             <thead>
                 <tr>
-                    <th style="width: 40%;">Title</th>
-                    <th style="width: 15%;">SKU</th>
+                    <th style="width: 55%;">PRODUCTS</th>
                     <th class="text-center" style="width: 12%;">Qty</th>
                     <th class="text-center" style="width: 15%;">Unit Price</th>
                     <th class="text-right" style="width: 18%;">Total</th>
@@ -873,31 +872,6 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                 <tr>
                     <td>
                         <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
-                    </td>
-                    <td>
-                        @php 
-                            $skuValue = trim((string)($item->sku ?? ''));
-                            if ($skuValue === '' && !empty($item->variant_id)) {
-                                $variant = \App\Models\CRM\ProductVariantModel::find($item->variant_id);
-                                if ($variant) {
-                                    $skuValue = trim((string)($variant->sku ?? ''));
-                                }
-                            }
-                            if ($skuValue === '' && !empty($item->name)) {
-                                $product = \App\Models\CRM\ProductModel::where('title', 'LIKE', '%' . $item->name . '%')->first();
-                                if ($product) {
-                                    $variant = $product->variants()->first();
-                                    if ($variant) {
-                                        $skuValue = trim((string)($variant->sku ?? ''));
-                                    }
-                                }
-                            }
-                        @endphp
-                        @if($skuValue !== '')
-                            <span class="product-sku">{{ $skuValue }}</span>
-                        @else
-                            <span class="product-sku">-</span>
-                        @endif
                     </td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
                     <td class="text-center">Rs {{ number_format($item->unit_price, 0) }}</td>
@@ -961,7 +935,7 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                 You have trusted us to serve you the best meat in town, thank you!
             </div>
             <div class="footer-contact">
-                Follow us on Facebook & Instagram: @nizamifarms, in case of complaints, please contact: 0333-5300605 or write to<br>
+                Follow us on Facebook & Instagram: @nizamifarms, in case of complaints, please contact: 0333-5300905 or write to<br>
                 us at: support@nizamifarms.com
             </div>
         </div>

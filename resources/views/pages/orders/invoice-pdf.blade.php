@@ -291,10 +291,10 @@
                 <td class="company">
                     <div><strong>NTN:</strong> A02148-1</div>
                     <div>F-12, Rehman Arcade</div>
-                    <div>Azizpura Market, G-6/1</div>
+                    <div>Aabpara Market, G-6/1</div>
                     <div>Islamabad</div>
                     <div>www.nizamifarms.com</div>
-                    <div>Ph: 0333-5300605</div>
+                    <div>Ph: 0333-5300905</div>
                 </td>
             </tr>
         </table>
@@ -331,7 +331,7 @@
                         </div>
                         <div class="order-box-body">
                             <td>{{ $order->order_number }}</td>
-                            <td>{{ \Carbon\Carbon::parse($order->order_date)->format('Y/m/d') }}</td>
+                            <td>{{ \Carbon\Carbon::parse($order->order_date)->format('j F Y') }}</td>
                         </div>
                     </div>
                 </td>
@@ -342,8 +342,7 @@
         <table class="items">
             <thead>
                 <tr>
-                    <th style="width: 40%">Title</th>
-                    <th style="width: 15%">SKU</th>
+                    <th style="width: 55%">PRODUCTS</th>
                     <th class="center" style="width: 10%">Qty</th>
                     <th class="center" style="width: 15%">Unit Price</th>
                     <th class="right" style="width: 20%">Total</th>
@@ -351,20 +350,8 @@
             </thead>
             <tbody>
                 @foreach($order->lineItems as $item)
-                @php 
-                    $skuValue = trim((string)($item->sku ?? ''));
-                    if ($skuValue === '' && !empty($item->variant_id)) {
-                        $variant = \App\Models\CRM\ProductVariantModel::find($item->variant_id);
-                        if ($variant) { $skuValue = trim((string)($variant->sku ?? '')); }
-                    }
-                    if ($skuValue === '' && !empty($item->name)) {
-                        $product = \App\Models\CRM\ProductModel::where('title', 'LIKE', '%' . $item->name . '%')->first();
-                        if ($product) { $variant = $product->variants()->first(); if ($variant) { $skuValue = trim((string)($variant->sku ?? '')); } }
-                    }
-                @endphp
                 <tr>
                     <td>{{ $item->name ?: 'N/A' }}</td>
-                    <td>{{ $skuValue !== '' ? $skuValue : '-' }}</td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
                     <td class="text-center">Rs&nbsp;{{ number_format($item->unit_price, 0) }}</td>
                     <td class="text-right">Rs&nbsp;{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
@@ -412,7 +399,7 @@
 
         <div class="footer">
             <p>You have trusted us to serve you the best meat in town, thank you!</p>
-            <p>Follow us on Facebook &amp; Instagram: @nizamifarms • Complaints: 0333-5300605 • support@nizamifarms.com</p>
+            <p>Follow us on Facebook &amp; Instagram: @nizamifarms • Complaints: 0333-5300905 • support@nizamifarms.com</p>
         </div>
     </div>
 </body>
