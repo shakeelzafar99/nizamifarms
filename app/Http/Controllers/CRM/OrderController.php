@@ -588,6 +588,22 @@ class OrderController extends Controller
             }
             
             // ================================================================
+            // CAPTURE OLD PAYMENT METHOD (Before Order Update)
+            // ================================================================
+            // IMPORTANT: Capture the old payment method BEFORE updating the order
+            // This is needed to detect if payment method changed
+            $oldPaymentMethod = $order->payment_method;
+            
+            // ================================================================
+            // UPDATE ORDER FIRST (Before Payment Method Change)
+            // ================================================================
+            // IMPORTANT: Update the order with new amounts BEFORE handling payment method change
+            // This ensures that when a new ledger entry is created, it uses the NEW amount
+            // not the old amount. This fixes the bug where changing both amount and payment
+            // method would result in the new ledger entry having the old amount.
+            $order->update($validated);
+            
+            // ================================================================
             // PAYMENT METHOD CHANGE DETECTION (After Delivery)
             // ================================================================
             // Check if payment method changed for a delivered order with ledger entry
@@ -595,7 +611,6 @@ class OrderController extends Controller
             $paymentMethodChangeMessage = null;
             
             if ($order->ledger_transaction_id && !$isWebhookUpdate) {
-                $oldPaymentMethod = $order->payment_method;
                 $newPaymentMethod = $validated['payment_method'] ?? $oldPaymentMethod;
                 
                 // Check if payment method actually changed
@@ -649,9 +664,6 @@ class OrderController extends Controller
                     }
                 }
             }
-            
-            // Update order
-            $order->update($validated);
             
             // Update line items using existing API method
             if (isset($validated['items'])) {

@@ -2523,10 +2523,6 @@ class RiderController extends Controller
                 ->first();
             $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
             
-            // Remove 'orders' from hierarchy if present (mobile doesn't drill down to individual orders)
-            $hierarchy = array_filter($hierarchy, function($h) { return $h !== 'orders'; });
-            $hierarchy = array_values($hierarchy); // Re-index
-            
             // Build base query - same as webapp
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
@@ -2550,7 +2546,13 @@ class RiderController extends Controller
                 })
                 ->whereNotIn('o.order_status', $excludedStatuses);
             
-            // Apply parent filters
+            // Apply parent filters - but only filter on fields where we have product data
+            \Log::debug('Open Quantities Mobile - Filters:', [
+                'level' => $level,
+                'current_field' => $hierarchy[$level] ?? 'unknown',
+                'filters' => $filters
+            ]);
+            
             foreach ($filters as $field => $value) {
                 if ($field === 'product_name') {
                     $query->where('li.name', $value);
@@ -2570,13 +2572,37 @@ class RiderController extends Controller
                             $q->where('p.' . $field, $value);
                         }
                     });
+                } else {
+                    // Fallback for any other field (same as web app)
+                    $query->where('p.' . $field, $value);
                 }
             }
+            
+            \Log::debug('Open Quantities Mobile - Query SQL:', [
+                'sql' => $query->toSql(),
+                'bindings' => $query->getBindings()
+            ]);
             
             // Determine grouping based on level (use hierarchy from settings)
             $currentField = $hierarchy[$level] ?? 'product_name';
             
-            if ($currentField === 'product_name') {
+            if ($currentField === 'orders') {
+                // Orders level - show individual orders
+                $results = $query->select([
+                    'o.id as order_id',
+                    'o.order_number',
+                    DB::raw("CONCAT('Order #', o.order_number, ' - ', COALESCE(o.name, CONCAT(o.address_first_name, ' ', o.address_last_name))) as name"),
+                    'o.order_status as status',
+                    DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                    DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                    DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity')
+                ])
+                ->groupBy('o.id', 'o.order_number', 'o.name', 'o.address_first_name', 'o.address_last_name', 'o.order_status')
+                ->orderBy('o.order_number', 'desc')
+                ->get();
+            } elseif ($currentField === 'product_name') {
                 // Product level
                 $results = $query->select([
                     'li.name as name',
@@ -2633,19 +2659,33 @@ class RiderController extends Controller
                 }
             }
             
-            // Format for mobile
+            \Log::debug('Open Quantities Mobile - Results:', [
+                'count' => $results->count(),
+                'first_item' => $results->first()
+            ]);
+            
+            // Format for mobile - keep it simple and light
             $formattedResults = $results->map(function($item) use ($currentField) {
-                return [
+                $result = [
                     'name' => $item->name ?? 'Uncategorized',
-                    'quantity' => (float) $item->quantity,
+                    'quantity' => (float) ($item->quantity ?? 0),
                     'lean_quantity' => (float) ($item->lean_quantity ?? 0),
                     'non_lean_quantity' => (float) ($item->non_lean_quantity ?? 0),
                     'processing_quantity' => (float) ($item->processing_quantity ?? 0),
                     'prepared_quantity' => (float) ($item->prepared_quantity ?? 0),
-                    'order_count' => (int) $item->order_count,
-                    'product_count' => isset($item->product_count) ? (int) $item->product_count : null,
-                    'is_product' => $currentField === 'product_name'
                 ];
+                
+                // Add order-specific fields
+                if ($currentField === 'orders') {
+                    $result['order_id'] = $item->order_id ?? null;
+                    $result['order_number'] = $item->order_number ?? null;
+                    $result['status'] = $item->status ?? 'new';
+                } else {
+                    $result['order_count'] = (int) ($item->order_count ?? 0);
+                    $result['product_count'] = isset($item->product_count) ? (int) $item->product_count : null;
+                }
+                
+                return $result;
             });
             
             return response()->json([
