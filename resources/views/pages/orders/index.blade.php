@@ -1866,7 +1866,7 @@ function viewOrderDetails(orderId) {
                 html += '<input type="checkbox" id="selectAllLineItems" style="cursor: pointer;" onchange="toggleSelectAllLineItems()">';
                 html += '<span>Select All</span>';
                 html += '</label>';
-                html += '<button onclick="markSelectedAsPreparing()" style="padding: 6px 12px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background=\'#059669\'" onmouseout="this.style.background=\'#10b981\'">Mark as Preparing</button>';
+                html += '<button onclick="markSelectedAsPreparing()" style="padding: 6px 12px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background=\'#059669\'" onmouseout="this.style.background=\'#10b981\'">Mark as Prepared</button>';
                 html += '<button onclick="clearSelectedPreparingStatus()" style="padding: 6px 12px; background: #6b7280; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background=\'#4b5563\'" onmouseout="this.style.background=\'#6b7280\'">Clear Status</button>';
                 html += '</div>';
             }
@@ -1922,7 +1922,7 @@ function viewOrderDetails(orderId) {
                     if (showPreparationControls) {
                         var statusBadge = '';
                         if (it.preparation_status === 'preparing') {
-                            statusBadge = '<span style="display: inline-block; padding: 4px 8px; background: #d1fae5; color: #065f46; border-radius: 4px; font-size: 11px; font-weight: 600;">Preparing</span>';
+                            statusBadge = '<span style="display: inline-block; padding: 4px 8px; background: #d1fae5; color: #065f46; border-radius: 4px; font-size: 11px; font-weight: 600;">Prepared</span>';
                         } else {
                             statusBadge = '<span style="display: inline-block; padding: 4px 8px; background: #f3f4f6; color: #6b7280; border-radius: 4px; font-size: 11px; font-weight: 600;">Not Started</span>';
                         }
@@ -2153,7 +2153,7 @@ function markSelectedAsPreparing() {
     })
     .then(data => {
         if (data.success) {
-            alert(`Updated ${data.updated_count} item(s) to Preparing status`);
+            alert(`Updated ${data.updated_count} item(s) to Prepared status`);
             // Reload order details to show updated status
             viewOrderDetails(currentOrderId);
         } else {

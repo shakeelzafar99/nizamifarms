@@ -88,6 +88,7 @@ Route::middleware(['auth'])->group(function () {
     Route::put('/orders/{id}', [OrderController::class, 'update'])->name('orders.update');
     Route::post('/orders', [OrderController::class, 'store'])->name('orders.store');
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [OrderController::class, 'bulkUpdateLineItemStatus'])->name('orders.line-items.bulk-update-status');
+    Route::post('/orders/bulk-mark-prepared', [OrderController::class, 'bulkMarkOrdersAsPrepared'])->name('orders.bulk-mark-prepared');
 
     // Rider assignment APIs
     Route::post('/orders/{id}/rider/assign', [\App\Http\Controllers\CRM\OrderRiderController::class, 'assign'])->name('orders.rider.assign');

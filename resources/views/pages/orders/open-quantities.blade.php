@@ -883,10 +883,91 @@ function updateUIPermissions() {
     }
 }
 
+// ⭐ AUTO-REFRESH: Poll for data updates every 5 seconds (same as Open Orders)
+let autoRefreshInterval = null;
+
+function startAutoRefresh() {
+    // Stop existing polling if any
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+    }
+    
+    // Poll every 5 seconds for updates (matches Open Orders behavior)
+    autoRefreshInterval = setInterval(() => {
+        // Silent refresh - no loading spinner
+        const params = new URLSearchParams();
+        params.append('level', window.openQtyState.currentLevel);
+        
+        // Add parent filters
+        Object.entries(window.openQtyState.filters).forEach(([key, value]) => {
+            params.append('filters[' + key + ']', value);
+        });
+        
+        // Silently fetch and update if there are changes
+        fetch(`/orders/open-quantities/data?${params}`, {
+            headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data) {
+                // Only update if data has changed (compare counts)
+                const currentCount = document.querySelectorAll('#table-body tr').length;
+                const newCount = data.data.length;
+                
+                if (currentCount !== newCount || hasDataChanged(data.data)) {
+                    renderTable(data.data, data.summary);
+                    renderSummaryCards(data.summary);
+                    console.log('🔄 Auto-refreshed Open Quantities data');
+                }
+            }
+        })
+        .catch(error => {
+            // Silent fail during background refresh
+            console.log('Auto-refresh error (non-critical):', error.message);
+        });
+    }, 5000); // 5 seconds - same as Open Orders
+    
+    console.log('✅ Auto-refresh started (polls every 5 seconds)');
+}
+
+function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        console.log('⏸️ Auto-refresh stopped');
+    }
+}
+
+// Helper function to detect if data has actually changed
+function hasDataChanged(newData) {
+    const currentRows = document.querySelectorAll('#table-body tr');
+    if (currentRows.length !== newData.length) return true;
+    
+    // Simple check: compare total quantities of first few items
+    for (let i = 0; i < Math.min(3, newData.length); i++) {
+        const row = currentRows[i];
+        const item = newData[i];
+        const currentQty = row ? parseFloat(row.querySelector('[class*="total_quantity"]')?.textContent?.replace(/,/g, '') || 0) : 0;
+        const newQty = parseFloat(item.total_quantity || 0);
+        
+        if (Math.abs(currentQty - newQty) > 0.01) {
+            return true; // Quantity changed
+        }
+    }
+    
+    return false; // No significant changes detected
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     // Load settings from API (not localStorage)
     loadGlobalSettings();
+    
+    // Start auto-refresh polling (same as Open Orders)
+    startAutoRefresh();
     
     // Setup search debouncing
     let searchTimeout;
@@ -970,7 +1051,39 @@ function renderTable(data, summary) {
     
     // Update table headers based on level
     if (isOrdersLevel) {
+        // Show bulk action controls for orders level
+        const bulkControlsHtml = `
+            <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; padding: 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 14px; color: #374151; cursor: pointer; font-weight: 500;">
+                    <input type="checkbox" id="selectAllOrders" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="toggleSelectAllOrders()">
+                    <span>Select All</span>
+                </label>
+                <div style="border-left: 2px solid #d1d5db; height: 24px;"></div>
+                <button onclick="markSelectedOrdersAsPrepared()" style="padding: 8px 16px; background: #10b981; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" onmouseover="this.style.background='#059669'; this.style.transform='translateY(-1px)'" onmouseout="this.style.background='#10b981'; this.style.transform='translateY(0)'">
+                    ✓ Mark as Prepared
+                </button>
+                <button onclick="clearSelectedOrdersStatus()" style="padding: 8px 16px; background: #6b7280; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" onmouseover="this.style.background='#4b5563'; this.style.transform='translateY(-1px)'" onmouseout="this.style.background='#6b7280'; this.style.transform='translateY(0)'">
+                    ✗ Clear Status
+                </button>
+                <span id="selectedOrdersCount" style="margin-left: auto; font-size: 13px; color: #6b7280; font-weight: 500;"></span>
+            </div>
+        `;
+        
+        // Insert bulk controls before the table
+        const tableWrapper = table.closest('.table-wrapper') || table.parentElement;
+        let bulkControlsDiv = document.getElementById('bulk-order-controls');
+        if (!bulkControlsDiv) {
+            bulkControlsDiv = document.createElement('div');
+            bulkControlsDiv.id = 'bulk-order-controls';
+            tableWrapper.insertBefore(bulkControlsDiv, table);
+        }
+        bulkControlsDiv.innerHTML = bulkControlsHtml;
+        bulkControlsDiv.style.display = 'block'; // Ensure it's visible
+        
         thead.innerHTML = `
+            <th style="width: 40px; text-align: center;">
+                <input type="checkbox" id="selectAllOrdersHeader" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="toggleSelectAllOrders()">
+            </th>
             <th>Order Number</th>
             <th>Customer Name</th>
             <th>Status</th>
@@ -990,6 +1103,13 @@ function renderTable(data, summary) {
             <th class="text-right">Action</th>
         `;
     } else {
+        // Hide bulk controls for non-orders levels
+        const bulkControlsDiv = document.getElementById('bulk-order-controls');
+        if (bulkControlsDiv) {
+            bulkControlsDiv.innerHTML = '';
+            bulkControlsDiv.style.display = 'none';
+        }
+        
         thead.innerHTML = `
             <th>Category</th>
             <th class="text-right" style="min-width: 100px;">
@@ -1021,6 +1141,10 @@ function renderTable(data, summary) {
             const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
             const processingQty = parseFloat(item.processing_quantity || 0);
             const preparingQty = parseFloat(item.preparing_quantity || 0);
+            const lineItemCount = parseFloat(item.line_item_count || 0);
+            
+            // Check if all items in this order are already prepared
+            const isFullyPrepared = lineItemCount > 0 && preparingQty === totalQty;
             
             // Calculate lean/non-lean for processing and preparing
             // Note: Backend would ideally calculate these, but we can estimate from ratios
@@ -1032,6 +1156,12 @@ function renderTable(data, summary) {
             
             return `
                 <tr>
+                    <td style="text-align: center;">
+                        ${isFullyPrepared ? 
+                            '<span style="color: #10b981; font-size: 18px;" title="All items prepared">✓</span>' :
+                            `<input type="checkbox" class="orderCheckbox" data-order-id="${item.order_id}" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="updateSelectedOrdersCount()">`
+                        }
+                    </td>
                     <td>
                         <span class="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer" onclick="viewOrderDetails(${item.order_id})" title="Click to view order details">
                             ${escapeHtml(item.group_name)}
@@ -1071,9 +1201,12 @@ function renderTable(data, summary) {
                         ${item.order_date ? new Date(item.order_date).toLocaleDateString() : '-'}
                     </td>
                     <td class="text-right">
-                        <button onclick="viewOrderDetails(${item.order_id})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
-                            View Order
-                        </button>
+                        ${isFullyPrepared ? 
+                            '<span style="display: inline-flex; align-items: center; padding: 6px 12px; background: #d1fae5; color: #065f46; border-radius: 6px; font-size: 12px; font-weight: 600;"><span style="margin-right: 4px;">✓</span> All Prepared</span>' :
+                            `<button onclick="viewOrderDetails(${item.order_id})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
+                                View Order
+                            </button>`
+                        }
                     </td>
                 </tr>
             `;
@@ -1647,6 +1780,197 @@ function getStatusChip(status) {
     const displayStatus = (status || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     
     return `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colorClass}">${displayStatus}</span>`;
+}
+
+// ==================== BULK ORDER OPERATIONS ====================
+
+// Toggle select all orders
+function toggleSelectAllOrders() {
+    const selectAll = document.getElementById('selectAllOrders') || document.getElementById('selectAllOrdersHeader');
+    const checkboxes = document.querySelectorAll('.orderCheckbox');
+    const isChecked = selectAll.checked;
+    
+    checkboxes.forEach(cb => {
+        cb.checked = isChecked;
+    });
+    
+    // Sync both checkboxes
+    if (document.getElementById('selectAllOrders')) {
+        document.getElementById('selectAllOrders').checked = isChecked;
+    }
+    if (document.getElementById('selectAllOrdersHeader')) {
+        document.getElementById('selectAllOrdersHeader').checked = isChecked;
+    }
+    
+    updateSelectedOrdersCount();
+}
+
+// Update selected orders count display
+function updateSelectedOrdersCount() {
+    const checkboxes = document.querySelectorAll('.orderCheckbox:checked');
+    const count = checkboxes.length;
+    const countDisplay = document.getElementById('selectedOrdersCount');
+    
+    if (countDisplay) {
+        if (count > 0) {
+            countDisplay.textContent = `${count} order${count !== 1 ? 's' : ''} selected`;
+            countDisplay.style.color = '#10b981';
+            countDisplay.style.fontWeight = '600';
+        } else {
+            countDisplay.textContent = '';
+        }
+    }
+    
+    // Update "select all" checkbox state
+    const totalCheckboxes = document.querySelectorAll('.orderCheckbox').length;
+    const selectAllCheckboxes = [
+        document.getElementById('selectAllOrders'),
+        document.getElementById('selectAllOrdersHeader')
+    ].filter(Boolean);
+    
+    selectAllCheckboxes.forEach(cb => {
+        cb.checked = count === totalCheckboxes && count > 0;
+        cb.indeterminate = count > 0 && count < totalCheckboxes;
+    });
+}
+
+// Get selected order IDs
+function getSelectedOrderIds() {
+    const checkboxes = document.querySelectorAll('.orderCheckbox:checked');
+    const ids = [];
+    checkboxes.forEach(cb => {
+        const orderId = cb.getAttribute('data-order-id');
+        if (orderId) {
+            ids.push(parseInt(orderId));
+        }
+    });
+    return ids;
+}
+
+// Mark selected orders as prepared (marks all line items in those orders)
+function markSelectedOrdersAsPrepared() {
+    const selectedIds = getSelectedOrderIds();
+    if (selectedIds.length === 0) {
+        alert('Please select at least one order');
+        return;
+    }
+    
+    if (!confirm(`Mark all items in ${selectedIds.length} order(s) as prepared?`)) {
+        return;
+    }
+    
+    // Show loading state
+    const button = event.target;
+    const originalText = button.innerHTML;
+    button.innerHTML = '⏳ Updating...';
+    button.disabled = true;
+    
+    // Call API to bulk update (we'll update all line items for selected orders)
+    fetch('/orders/bulk-mark-prepared', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            order_ids: selectedIds,
+            preparation_status: 'preparing'
+        })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => {
+                throw new Error(err.message || `HTTP error! status: ${response.status}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            alert(`Updated ${data.total_updated} item(s) in ${data.orders_updated} order(s) to Prepared status`);
+            // Reload data to show updated status
+            loadData();
+            // Clear selections
+            document.querySelectorAll('.orderCheckbox').forEach(cb => cb.checked = false);
+            updateSelectedOrdersCount();
+        } else {
+            alert('Failed to update: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error updating orders:', error);
+        alert('Error updating orders: ' + error.message);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+// Clear selected orders preparation status
+function clearSelectedOrdersStatus() {
+    const selectedIds = getSelectedOrderIds();
+    if (selectedIds.length === 0) {
+        alert('Please select at least one order');
+        return;
+    }
+    
+    if (!confirm(`Clear preparation status for all items in ${selectedIds.length} order(s)?`)) {
+        return;
+    }
+    
+    // Show loading state
+    const button = event.target;
+    const originalText = button.innerHTML;
+    button.innerHTML = '⏳ Clearing...';
+    button.disabled = true;
+    
+    // Call API to bulk clear status
+    fetch('/orders/bulk-mark-prepared', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+            order_ids: selectedIds,
+            preparation_status: null
+        })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => {
+                throw new Error(err.message || `HTTP error! status: ${response.status}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            alert(`Cleared status for ${data.total_updated} item(s) in ${data.orders_updated} order(s)`);
+            // Reload data to show updated status
+            loadData();
+            // Clear selections
+            document.querySelectorAll('.orderCheckbox').forEach(cb => cb.checked = false);
+            updateSelectedOrdersCount();
+        } else {
+            alert('Failed to clear status: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error clearing status:', error);
+        alert('Error clearing status: ' + error.message);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
 }
 
 // ==================== STATUS SETTINGS FUNCTIONS ====================

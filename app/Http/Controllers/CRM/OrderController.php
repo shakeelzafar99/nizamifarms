@@ -1864,9 +1864,13 @@ class OrderController extends Controller
                 })
                 ->whereNotIn('o.order_status', $excludedStatuses);
 
-            // Apply date filter if specified
+            // Apply date filter: Default to last 20 days for performance
+            // Can be overridden by passing a different date_range parameter
             if ($dateRange > 0) {
                 $query->where('o.order_date', '>=', Carbon::now()->subDays($dateRange));
+            } else {
+                // Default: Only show orders from last 20 days to improve performance
+                $query->where('o.order_date', '>=', Carbon::now()->subDays(20));
             }
 
             // Apply parent filters from breadcrumb navigation
@@ -2366,6 +2370,108 @@ class OrderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update line items: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Bulk mark line items as prepared for multiple orders
+     * POST /orders/bulk-mark-prepared
+     */
+    public function bulkMarkOrdersAsPrepared(Request $request)
+    {
+        try {
+            \Log::info('Bulk mark prepared - Request received', [
+                'user_id' => auth()->id(),
+                'user' => auth()->user() ? auth()->user()->email : 'not authenticated',
+                'order_ids' => $request->input('order_ids'),
+                'preparation_status' => $request->input('preparation_status'),
+            ]);
+            
+            // Validate request
+            $request->validate([
+                'order_ids' => 'required|array',
+                'order_ids.*' => 'required|integer',
+                'preparation_status' => 'nullable|in:preparing',
+            ]);
+            
+            $orderIds = $request->input('order_ids');
+            $preparationStatus = $request->input('preparation_status');
+            
+            // If preparation_status is empty string or null, set to null
+            if (empty($preparationStatus)) {
+                $preparationStatus = null;
+            }
+            
+            $totalUpdated = 0;
+            $ordersUpdated = 0;
+            
+            // Process each order
+            foreach ($orderIds as $orderId) {
+                $order = OrderModel::with('lineItems')->find($orderId);
+                
+                if (!$order) {
+                    continue; // Skip invalid orders
+                }
+                
+                // Check if order is open (not delivered/completed/cancelled)
+                $closedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+                if (in_array($order->order_status, $closedStatuses)) {
+                    continue; // Skip closed orders
+                }
+                
+                // Check if order is from Shopify (skip Shopify orders)
+                if ($order->external_source === 'shopify') {
+                    continue;
+                }
+                
+                // Update all line items for this order
+                $updatedInOrder = 0;
+                foreach ($order->lineItems as $lineItem) {
+                    $lineItem->preparation_status = $preparationStatus;
+                    // Only set updated_by if user is authenticated
+                    if (auth()->id()) {
+                        $lineItem->updated_by = auth()->id();
+                    }
+                    $lineItem->save();
+                    $updatedInOrder++;
+                }
+                
+                if ($updatedInOrder > 0) {
+                    $totalUpdated += $updatedInOrder;
+                    $ordersUpdated++;
+                }
+            }
+            
+            \Log::info('Bulk mark prepared - Success', [
+                'user_id' => auth()->id(),
+                'total_updated' => $totalUpdated,
+                'orders_updated' => $ordersUpdated,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Updated {$totalUpdated} line item(s) in {$ordersUpdated} order(s)",
+                'total_updated' => $totalUpdated,
+                'orders_updated' => $ordersUpdated,
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to bulk mark orders as prepared', [
+                'user_id' => auth()->id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update orders: ' . $e->getMessage()
             ], 500);
         }
     }

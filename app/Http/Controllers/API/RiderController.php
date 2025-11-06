@@ -2544,7 +2544,9 @@ class RiderController extends Controller
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
                 })
-                ->whereNotIn('o.order_status', $excludedStatuses);
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                // Default: Only show orders from last 20 days for performance
+                ->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(20));
             
             // Apply parent filters - but only filter on fields where we have product data
             \Log::debug('Open Quantities Mobile - Filters:', [

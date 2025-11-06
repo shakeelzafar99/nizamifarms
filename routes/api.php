@@ -142,6 +142,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Line Item Status Management (mobile app only - uses token auth)
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);
+    Route::post('/orders/bulk-mark-prepared', [\App\Http\Controllers\CRM\OrderController::class, 'bulkMarkOrdersAsPrepared']);
     
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
