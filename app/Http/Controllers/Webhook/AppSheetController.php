@@ -548,24 +548,40 @@ class AppSheetController extends Controller
             $payload = $request->all();
 
             // Accept multiple input shapes from AppSheet
-            // - Preferred: Customer Email holds the short order number directly
-            // - Fallbacks: order_id or "Order ID" then +1000 as per prior rule
+            // - Preferred: Order Number field (may have comma formatting)
+            // - Fallbacks: Customer Email, order_id, or "Order ID"
             $flag = isset($payload['flag']) ? (int) $payload['flag'] : null;
-            $customerEmailAsOrderNumber = $payload['Customer Email'] ?? null;
+            
+            // Try multiple field names for order number
+            $orderNumberRaw = $payload['Order Number'] 
+                ?? $payload['order_number'] 
+                ?? $payload['order number'] 
+                ?? $payload['Customer Email'] 
+                ?? null;
+            
             $orderIdRaw = $payload['order_id'] ?? ($payload['Order ID'] ?? null);
 
-            if ($flag === null || ($customerEmailAsOrderNumber === null && $orderIdRaw === null)) {
+            if ($flag === null || ($orderNumberRaw === null && $orderIdRaw === null)) {
                 \Log::warning('AppSheet flag update missing required fields', ['payload' => $payload]);
                 return response()->json([
                     'success' => false,
-                    'message' => 'Missing required fields: provide either Customer Email (order number) OR order_id / Order ID, and flag'
+                    'message' => 'Missing required fields: provide Order Number OR order_id / Order ID, and flag'
                 ], 400);
             }
 
             // Determine the Shopify order_number to lookup
-            if ($customerEmailAsOrderNumber !== null && trim((string)$customerEmailAsOrderNumber) !== '') {
-                // If Customer Email is numeric, add 1000 as per requirement; otherwise use as-is
-                $raw = trim((string)$customerEmailAsOrderNumber);
+            if ($orderNumberRaw !== null && trim((string)$orderNumberRaw) !== '') {
+                $raw = trim((string)$orderNumberRaw);
+                
+                // CRITICAL: Remove comma formatting (e.g., "14,481" -> "14481")
+                $raw = str_replace(',', '', $raw);
+                
+                \Log::info('AppSheet flag update: order number after comma removal', [
+                    'original' => $orderNumberRaw,
+                    'cleaned' => $raw
+                ]);
+                
+                // If numeric, add 1000 as per requirement; otherwise use as-is
                 if (ctype_digit($raw)) {
                     $shopifyOrderNumber = (string) (((int) $raw) + 1000);
                 } else {
@@ -577,11 +593,18 @@ class AppSheetController extends Controller
                 $shopifyOrderNumber = (string) ($baseOrderId + 1000);
             }
 
+            \Log::info('AppSheet flag update: computed shopify order number', [
+                'original_payload_order_number' => $orderNumberRaw,
+                'original_payload_order_id' => $orderIdRaw,
+                'computed_shopify_order_number' => $shopifyOrderNumber
+            ]);
+
             // Find the Shopify order by order_number
             $shopifyOrder = \App\Models\CRM\ShopifyOrderModel::where('order_number', $shopifyOrderNumber)->first();
             if (!$shopifyOrder) {
                 \Log::error('AppSheet flag update - Shopify order not found', [
-                    'computed_order_number' => $shopifyOrderNumber,
+                    'original_order_number_from_appsheet' => $orderNumberRaw,
+                    'computed_shopify_order_number' => $shopifyOrderNumber,
                     'payload' => $payload
                 ]);
                 return response()->json([

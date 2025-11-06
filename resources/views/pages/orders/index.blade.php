@@ -2988,9 +2988,10 @@ function loadEditForm(order) {
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
                             </div>
                             <div>
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked</span></label>
                                 <input type="number" step="0.01" name="items[${index}][unit_price]" value="${item.unit_price || item.price || 0}" 
-                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed;" 
+                                       readonly title="Price is set from product catalog and cannot be edited" onchange="updateLineTotal(${index})">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>

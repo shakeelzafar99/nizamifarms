@@ -28,10 +28,6 @@
         
         <!-- Enhanced Action Buttons -->
         <div class="products-toolbar flex flex-wrap items-center gap-2">
-            <a href="{{ route('products.create') }}" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md">
-                <i class="ki-filled ki-plus text-white text-sm"></i>
-                <span class="hidden sm:inline">Create</span>
-            </a>
             <button onclick="openColumnSettings()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
                 <i class="ki-filled ki-setting-2 text-gray-500 text-sm"></i>
                 <span class="hidden md:inline">Columns</span>
@@ -44,7 +40,6 @@
                 <i class="ki-filled ki-price-tag text-gray-500 text-sm"></i>
                 <span class="hidden md:inline">Prices</span>
             </button>
-            <!-- Import Products button removed: use Administration → Operations → Import Products -->
         </div>
     </div>
 </div>
@@ -57,27 +52,32 @@
             <!-- Enhanced Filter Section -->
             <div class="bg-gradient-to-r from-gray-50 to-white px-6 py-4">
                     <form method="GET" id="productSearchForm">
-                        <!-- Search Bar Row -->
-                        <div class="flex items-center gap-4 mb-4">
-                            <div class="search-input flex-1 relative">
+                        <!-- Search Bar Row with Create Button -->
+                        <div class="flex items-center gap-3 mb-4">
+                            <div class="search-input relative" style="flex: 1 1 0%; max-width: 100%;">
                                 <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                                     <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                     </svg>
                                 </div>
-                        <input type="text" name="search" value="{{ request('search') }}" 
+                                <input type="text" name="search" value="{{ request('search') }}" 
                                        placeholder="Search products, SKUs, vendors..." 
                                        class="w-full pl-12 pr-4 py-3 rounded-xl transition-all duration-200 text-gray-900 placeholder-gray-500"
-                               id="productSearchInput"
-                               autocomplete="off">
+                                       id="productSearchInput"
+                                       autocomplete="off">
                             </div>
                             <button type="submit" onclick="event.preventDefault(); performSearch();" 
-                                    class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md">
+                                    class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md whitespace-nowrap">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                 </svg>
                                 Search
                             </button>
+                            <a href="{{ route('products.create') }}" 
+                               class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md whitespace-nowrap">
+                                <i class="ki-filled ki-plus text-white"></i>
+                                Create Product
+                            </a>
                         </div>
                         
                         <!-- Filter Pills Row -->
@@ -703,19 +703,45 @@ const availableColumns = {
     'price_range': { label: 'Price Range', width: 'w-[110px]', order: 10, cssClass: 'col-price' },
     'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
     'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
-    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 13, cssClass: 'col-sync' },
-    'actions': { label: 'Actions', width: 'w-[105px]', order: 14, fixed: true, cssClass: 'col-actions' }
+    'is_lean': { label: 'Lean', width: 'w-[75px]', order: 13, cssClass: 'col-lean' },
+    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 14, cssClass: 'col-sync' },
+    'actions': { label: 'Actions', width: 'w-[105px]', order: 15, fixed: true, cssClass: 'col-actions' }
 };
 
 // Default visible columns
-const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'last_synced_at', 'actions'];
+const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'last_synced_at', 'actions'];
+const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
 
-// Load column settings from localStorage
+// Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || JSON.stringify(defaultColumns));
 let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || JSON.stringify(allColumns));
+
+// Migrate: Add new columns to existing saved preferences if they don't exist
+// This ensures users with saved preferences see new columns like 'is_lean'
+allColumns.forEach(col => {
+    if (!columnOrder.includes(col)) {
+        // Insert new column before 'actions' (which is always last)
+        const actionsIndex = columnOrder.indexOf('actions');
+        if (actionsIndex !== -1) {
+            columnOrder.splice(actionsIndex, 0, col);
+        } else {
+            columnOrder.push(col);
+        }
+    }
+});
+
+// Add new columns to visible columns if they're in defaultColumns but not in saved preferences
+defaultColumns.forEach(col => {
+    if (!visibleColumns.includes(col) && col !== 'actions') {
+        visibleColumns.push(col);
+    }
+});
+
+// Save migrated preferences
+localStorage.setItem('products_visible_columns', JSON.stringify(visibleColumns));
+localStorage.setItem('products_column_order', JSON.stringify(columnOrder));
 
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -1029,6 +1055,16 @@ function getCellContent(columnKey, product) {
             const inventory = product.total_inventory || 0;
             const inventoryPillClass = inventory > 10 ? 'pill success' : inventory > 0 ? 'pill warn' : 'pill neutral';
             return `<span class="${inventoryPillClass}">${inventory}</span>`;
+            
+        case 'is_lean':
+            if (product.is_lean === 1 || product.is_lean === '1' || product.is_lean === true) {
+                return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold bg-green-50 text-green-700 border border-green-200">
+                    <i class="ki-filled ki-check-circle text-green-600 text-xs mr-1"></i>Lean
+                </span>`;
+            }
+            return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">
+                No
+            </span>`;
             
         case 'last_synced_at':
             if (product.last_synced_at) {
@@ -1546,6 +1582,14 @@ function renderProductDetails(product) {
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Type:</span>
                             <span style="color: #111827; font-size: 14px;">${product.product_type || '-'}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Lean Product:</span>
+                            <span>
+                                ${product.is_lean === 1 || product.is_lean === '1' || product.is_lean === true ? 
+                                    '<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold bg-green-50 text-green-700 border border-green-200"><i class="ki-filled ki-check-circle text-green-600 text-xs mr-1"></i>Yes</span>' : 
+                                    '<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200">No</span>'}
+                            </span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Category Level 1:</span>

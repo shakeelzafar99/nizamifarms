@@ -757,20 +757,39 @@
     </div>
 </div>
 
+<!-- View Order Modal -->
+<div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <!-- Modal Header -->
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Order Details</h3>
+            <button onclick="closeModal('viewOrderModal')" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280; padding: 5px;">&times;</button>
+        </div>
+        
+        <!-- Modal Body -->
+        <div id="viewOrderContent" style="padding: 20px;">
+            <!-- Content will be loaded here -->
+        </div>
+    </div>
+</div>
+
 @endsection
 
 @push('demo1_js')
 <script>
 // Global state management
 window.openQtyState = {
-    hierarchy: ['product_type', 'product_name', 'orders'], // Will be loaded from localStorage
+    hierarchy: ['product_type', 'product_name', 'orders'], // Will be loaded from API
     currentLevel: 0,
     breadcrumbs: [],
     filters: {},
     dateRange: 0, // 0 = all time (open orders only)
     cachedData: new Map(),
-    excludedStatuses: [] // Will be loaded from localStorage
+    excludedStatuses: [] // Will be loaded from API
 };
+
+// Permission flag - set after loading settings
+window.canEditSettings = false;
 
 // Default hierarchy
 window.defaultHierarchy = ['product_type', 'product_name', 'orders'];
@@ -791,41 +810,83 @@ window.allOrderStatuses = [
 // Default excluded statuses (closed orders)
 window.defaultExcludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
 
+// Load global settings from API
+async function loadGlobalSettings() {
+    try {
+        const response = await fetch('/orders/open-quantities/settings', {
+            headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Load global settings
+            window.openQtyState.hierarchy = data.settings.hierarchy_levels || window.defaultHierarchy;
+            window.openQtyState.excludedStatuses = data.settings.excluded_statuses || window.defaultExcludedStatuses;
+            window.canEditSettings = data.can_edit || false;
+            
+            console.log('Global settings loaded:', {
+                hierarchy: window.openQtyState.hierarchy,
+                excludedStatuses: window.openQtyState.excludedStatuses,
+                canEdit: window.canEditSettings
+            });
+            
+            // Update UI based on permissions
+            updateUIPermissions();
+            updateStatusFilterIndicator();
+            updateHierarchyDisplay();
+            loadData();
+        } else {
+            console.error('Failed to load settings:', data.message);
+            // Fall back to defaults
+            window.openQtyState.hierarchy = [...window.defaultHierarchy];
+            window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
+            updateStatusFilterIndicator();
+            updateHierarchyDisplay();
+            loadData();
+        }
+    } catch (error) {
+        console.error('Error loading global settings:', error);
+        // Fall back to defaults
+        window.openQtyState.hierarchy = [...window.defaultHierarchy];
+        window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
+        updateStatusFilterIndicator();
+        updateHierarchyDisplay();
+        loadData();
+    }
+}
+
+// Update UI permissions based on user role
+function updateUIPermissions() {
+    if (!window.canEditSettings) {
+        // Disable hierarchy editing
+        const addLevelBtn = document.querySelector('.add-level-btn');
+        if (addLevelBtn) {
+            addLevelBtn.style.opacity = '0.5';
+            addLevelBtn.style.cursor = 'not-allowed';
+            addLevelBtn.title = 'Only Taimur role can modify hierarchy levels';
+        }
+        
+        // Disable status settings
+        const settingsBtn = document.querySelector('button[onclick="openStatusSettings()"]');
+        if (settingsBtn) {
+            settingsBtn.disabled = false; // Keep it enabled for viewing
+            settingsBtn.title = 'View status filters (only Taimur role can modify)';
+        }
+        
+        console.log('UI permissions: Read-only mode (non-Taimur user)');
+    } else {
+        console.log('UI permissions: Edit mode (Taimur role)');
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
-    // Load excluded statuses from localStorage
-    const savedStatuses = localStorage.getItem('openQtyExcludedStatuses');
-    if (savedStatuses) {
-        try {
-            window.openQtyState.excludedStatuses = JSON.parse(savedStatuses);
-        } catch (e) {
-            window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
-        }
-    } else {
-        window.openQtyState.excludedStatuses = [...window.defaultExcludedStatuses];
-    }
-    
-    // Load hierarchy from localStorage
-    const savedHierarchy = localStorage.getItem('openQtyHierarchy');
-    if (savedHierarchy) {
-        try {
-            const parsed = JSON.parse(savedHierarchy);
-            // Validate that it's an array and contains 'orders' at the end
-            if (Array.isArray(parsed) && parsed.length >= 2 && parsed[parsed.length - 1] === 'orders') {
-                window.openQtyState.hierarchy = parsed;
-            } else {
-                window.openQtyState.hierarchy = [...window.defaultHierarchy];
-            }
-        } catch (e) {
-            window.openQtyState.hierarchy = [...window.defaultHierarchy];
-        }
-    } else {
-        window.openQtyState.hierarchy = [...window.defaultHierarchy];
-    }
-    
-    updateStatusFilterIndicator();
-    updateHierarchyDisplay();
-    loadData();
+    // Load settings from API (not localStorage)
+    loadGlobalSettings();
     
     // Setup search debouncing
     let searchTimeout;
@@ -842,12 +903,12 @@ async function loadData() {
     try {
         showLoading();
         
+        // Note: hierarchy and excluded_statuses are now read from database by backend
+        // We only send level and filters
         const params = new URLSearchParams({
-            hierarchy: JSON.stringify(window.openQtyState.hierarchy),
             level: window.openQtyState.currentLevel,
             filters: JSON.stringify(window.openQtyState.filters),
-            date_range: window.openQtyState.dateRange,
-            excluded_statuses: JSON.stringify(window.openQtyState.excludedStatuses)
+            date_range: window.openQtyState.dateRange
         });
 
         const response = await fetch(`/orders/open-quantities/data?${params}`, {
@@ -913,15 +974,36 @@ function renderTable(data, summary) {
             <th>Order Number</th>
             <th>Customer Name</th>
             <th>Status</th>
-            <th class="text-right">Quantity</th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Quantity</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Processing</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Prepared</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
             <th class="text-right">Date</th>
             <th class="text-right">Action</th>
         `;
     } else {
         thead.innerHTML = `
             <th>Category</th>
-            <th class="text-right">Quantity</th>
-            <th class="text-right">% of Total</th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Quantity</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Processing</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
+            <th class="text-right" style="min-width: 100px;">
+                <div>Prepared</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            </th>
             <th class="text-right">Orders</th>
             <th class="text-right">Action</th>
         `;
@@ -934,12 +1016,26 @@ function renderTable(data, summary) {
                 ? escapeHtml(item.customer_full_name.trim()) 
                 : '<span class="text-gray-400 italic">No customer</span>';
             
+            const totalQty = parseFloat(item.total_quantity || 0);
+            const leanQty = parseFloat(item.lean_quantity || 0);
+            const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
+            const processingQty = parseFloat(item.processing_quantity || 0);
+            const preparingQty = parseFloat(item.preparing_quantity || 0);
+            
+            // Calculate lean/non-lean for processing and preparing
+            // Note: Backend would ideally calculate these, but we can estimate from ratios
+            const leanRatio = totalQty > 0 ? leanQty / totalQty : 0;
+            const procLean = Math.round(processingQty * leanRatio);
+            const procNonLean = processingQty - procLean;
+            const prepLean = Math.round(preparingQty * leanRatio);
+            const prepNonLean = preparingQty - prepLean;
+            
             return `
                 <tr>
                     <td>
-                        <a href="/orders/${item.order_id}/invoice" class="text-blue-600 hover:text-blue-800 font-semibold">
+                        <span class="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer" onclick="viewOrderDetails(${item.order_id})" title="Click to view order details">
                             ${escapeHtml(item.group_name)}
-                        </a>
+                        </span>
                     </td>
                     <td>
                         ${customerName}
@@ -948,22 +1044,54 @@ function renderTable(data, summary) {
                         ${getStatusChip(item.order_status)}
                     </td>
                     <td class="text-right">
-                        <strong>${parseFloat(item.total_quantity).toLocaleString()}</strong>
+                        <div style="font-size: 16px; font-weight: 700; color: #111827; margin-bottom: 2px;">${totalQty.toLocaleString()}</div>
+                        <div style="font-size: 11px;">
+                            <span style="color: #059669; font-weight: 600;">${leanQty.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626; font-weight: 600;">${nonLeanQty.toLocaleString()}</span>
+                        </div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 2px;">${processingQty.toLocaleString()}</div>
+                        <div style="font-size: 10px;">
+                            <span style="color: #059669;">${procLean.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626;">${procNonLean.toLocaleString()}</span>
+                        </div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 14px; font-weight: 600; color: #065f46; margin-bottom: 2px;">${preparingQty.toLocaleString()}</div>
+                        <div style="font-size: 10px;">
+                            <span style="color: #059669;">${prepLean.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626;">${prepNonLean.toLocaleString()}</span>
+                        </div>
                     </td>
                     <td class="text-right">
                         ${item.order_date ? new Date(item.order_date).toLocaleDateString() : '-'}
                     </td>
                     <td class="text-right">
-                        <a href="/orders/${item.order_id}/invoice" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
+                        <button onclick="viewOrderDetails(${item.order_id})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
                             View Order
-                        </a>
+                        </button>
                     </td>
                 </tr>
             `;
         } else {
             // Category levels: show drill-down
-            const qtyLevel = item.percentage > 30 ? 'high' : item.percentage > 10 ? 'medium' : 'low';
             const canDrillDown = summary.has_next_level && item.group_name;
+            const totalQty = parseFloat(item.total_quantity || 0);
+            const leanQty = parseFloat(item.lean_quantity || 0);
+            const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
+            const processingQty = parseFloat(item.processing_quantity || 0);
+            const preparingQty = parseFloat(item.preparing_quantity || 0);
+            
+            // Calculate lean/non-lean ratios for processing and preparing
+            const leanRatio = totalQty > 0 ? leanQty / totalQty : 0;
+            const procLean = Math.round(processingQty * leanRatio);
+            const procNonLean = processingQty - procLean;
+            const prepLean = Math.round(preparingQty * leanRatio);
+            const prepNonLean = preparingQty - prepLean;
             
             return `
                 <tr>
@@ -977,15 +1105,28 @@ function renderTable(data, summary) {
                         }
                     </td>
                     <td class="text-right">
-                        <span class="qty-badge ${qtyLevel}">
-                            ${parseFloat(item.total_quantity).toLocaleString()}
-                        </span>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${item.percentage}%"></div>
+                        <div style="font-size: 18px; font-weight: 700; color: #111827; margin-bottom: 3px;">${totalQty.toLocaleString()}</div>
+                        <div style="font-size: 11px;">
+                            <span style="color: #059669; font-weight: 600;">${leanQty.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626; font-weight: 600;">${nonLeanQty.toLocaleString()}</span>
                         </div>
                     </td>
                     <td class="text-right">
-                        <strong>${item.percentage}%</strong>
+                        <div style="font-size: 15px; font-weight: 600; color: #1e40af; margin-bottom: 2px;">${processingQty.toLocaleString()}</div>
+                        <div style="font-size: 10px;">
+                            <span style="color: #059669;">${procLean.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626;">${procNonLean.toLocaleString()}</span>
+                        </div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 15px; font-weight: 600; color: #065f46; margin-bottom: 2px;">${preparingQty.toLocaleString()}</div>
+                        <div style="font-size: 10px;">
+                            <span style="color: #059669;">${prepLean.toLocaleString()}</span>
+                            <span style="color: #9ca3af;"> / </span>
+                            <span style="color: #dc2626;">${prepNonLean.toLocaleString()}</span>
+                        </div>
                     </td>
                     <td class="text-right">
                         ${item.order_count ? item.order_count.toLocaleString() : '-'}
@@ -1100,18 +1241,52 @@ function resetFilters() {
     loadData();
 }
 
-// Reset hierarchy
-// Save hierarchy to localStorage
-function saveHierarchy() {
+// Save hierarchy to database (global setting - Taimur role only)
+async function saveHierarchy() {
+    if (!window.canEditSettings) {
+        alert('Only Taimur role can modify these settings.');
+        return false;
+    }
+    
     try {
-        localStorage.setItem('openQtyHierarchy', JSON.stringify(window.openQtyState.hierarchy));
-        console.log('Hierarchy saved:', window.openQtyState.hierarchy);
+        const response = await fetch('/orders/open-quantities/settings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify({
+                hierarchy_levels: window.openQtyState.hierarchy
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            console.log('Hierarchy saved successfully:', window.openQtyState.hierarchy);
+            // Show subtle success message
+            showToast('Settings saved successfully for all users!', 'success');
+            return true;
+        } else {
+            console.error('Failed to save hierarchy:', data.message);
+            alert('Failed to save settings: ' + data.message);
+            return false;
+        }
     } catch (e) {
         console.error('Failed to save hierarchy:', e);
+        alert('Error saving settings. Please try again.');
+        return false;
     }
 }
 
 function resetHierarchy() {
+    if (!window.canEditSettings) {
+        alert('Only Taimur role can modify these settings.');
+        return;
+    }
+    
     window.openQtyState.hierarchy = [...window.defaultHierarchy];
     window.openQtyState.currentLevel = 0;
     window.openQtyState.breadcrumbs = [];
@@ -1119,6 +1294,27 @@ function resetHierarchy() {
     saveHierarchy();
     updateHierarchyDisplay();
     loadData();
+}
+
+// Simple toast notification
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === 'success' ? '#10b981' : '#3b82f6'};
+        color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        font-size: 14px;
+        font-weight: 500;
+    `;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
 }
 
 
@@ -1217,8 +1413,14 @@ document.addEventListener('click', function(event) {
     }
 });
 
-// Add hierarchy level
+// Add hierarchy level (Taimur role only)
 function addHierarchyLevel(field) {
+    if (!window.canEditSettings) {
+        alert('Only Taimur role can modify hierarchy levels.');
+        document.getElementById('add-level-dropdown').style.display = 'none';
+        return;
+    }
+    
     if (!window.openQtyState.hierarchy.includes(field)) {
         // Insert before 'orders' (always last)
         const withoutOrders = window.openQtyState.hierarchy.filter(f => f !== 'orders');
@@ -1236,8 +1438,13 @@ function addHierarchyLevel(field) {
     }
 }
 
-// Remove hierarchy level
+// Remove hierarchy level (Taimur role only)
 function removeHierarchyLevel(index) {
+    if (!window.canEditSettings) {
+        alert('Only Taimur role can modify hierarchy levels.');
+        return;
+    }
+    
     if (window.openQtyState.hierarchy.length > 2) {
         window.openQtyState.hierarchy.splice(index, 1);
         
@@ -1256,8 +1463,14 @@ function removeHierarchyLevel(index) {
 
 let draggedIndex = null;
 
-// Handle drag start
+// Handle drag start (Taimur role only)
 function handleDragStart(event) {
+    if (!window.canEditSettings) {
+        event.preventDefault();
+        alert('Only Taimur role can reorder hierarchy levels.');
+        return;
+    }
+    
     draggedIndex = parseInt(event.target.dataset.index);
     event.target.classList.add('dragging');
     event.dataTransfer.effectAllowed = 'move';
@@ -1504,8 +1717,14 @@ function resetStatusDefaults() {
     populateStatusCheckboxes();
 }
 
-// Save status settings
-function saveStatusSettings() {
+// Save status settings (Taimur role only)
+async function saveStatusSettings() {
+    if (!window.canEditSettings) {
+        alert('Only Taimur role can modify these settings.');
+        closeStatusSettings();
+        return;
+    }
+    
     const checkboxes = document.querySelectorAll('.status-checkbox');
     const excluded = [];
     
@@ -1515,22 +1734,46 @@ function saveStatusSettings() {
         }
     });
     
-    // Save to state and localStorage
-    window.openQtyState.excludedStatuses = excluded;
-    localStorage.setItem('openQtyExcludedStatuses', JSON.stringify(excluded));
-    
-    // Update indicator
-    updateStatusFilterIndicator();
-    
-    // Close modal
-    closeStatusSettings();
-    
-    // Reload data
-    window.openQtyState.cachedData.clear();
-    loadData();
-    
-    // Show success message
-    console.log('Status filter settings saved:', excluded);
+    try {
+        const response = await fetch('/orders/open-quantities/settings', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify({
+                excluded_statuses: excluded
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Save to state
+            window.openQtyState.excludedStatuses = excluded;
+            
+            // Update indicator
+            updateStatusFilterIndicator();
+            
+            // Close modal
+            closeStatusSettings();
+            
+            // Reload data
+            window.openQtyState.cachedData.clear();
+            loadData();
+            
+            // Show success message
+            showToast('Status filters saved successfully for all users!', 'success');
+            console.log('Status filter settings saved:', excluded);
+        } else {
+            alert('Failed to save status filters: ' + data.message);
+        }
+    } catch (error) {
+        console.error('Error saving status filters:', error);
+        alert('Error saving status filters. Please try again.');
+    }
 }
 
 // Update status filter indicator
@@ -1551,6 +1794,339 @@ function updateStatusFilterIndicator() {
         // Default filter
         indicator.style.display = 'none';
     }
+}
+
+// ==================== ORDER DETAILS MODAL FUNCTIONS ====================
+
+// Close modal function
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Format date helper
+function formatDate(dateString) {
+    if (!dateString) return '';
+    try {
+        let cleanDate = dateString;
+        
+        if (dateString.includes('T')) {
+            const [datePart, timePart] = dateString.split('T');
+            const [year, month, day] = datePart.split('-');
+            const timeOnly = timePart.split('.')[0];
+            const [hour, minute] = timeOnly.split(':');
+            
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const monthName = monthNames[parseInt(month, 10) - 1];
+            cleanDate = day + ' ' + monthName + ' ' + year + ', ' + hour + ':' + minute;
+        } else if (dateString.includes(' ')) {
+            const [datePart, timePart] = dateString.split(' ');
+            const [year, month, day] = datePart.split('-');
+            const [hour, minute] = timePart.split(':');
+            
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const monthName = monthNames[parseInt(month, 10) - 1];
+            
+            cleanDate = day + ' ' + monthName + ' ' + year + ', ' + hour + ':' + minute;
+        }
+        
+        return cleanDate;
+    } catch (error) {
+        console.error('Date parsing error:', error, 'for date:', dateString);
+        return dateString;
+    }
+}
+
+// Format currency helper
+function formatCurrency(amount, currency = 'PKR') {
+    const num = isNaN(parseFloat(amount)) ? 0 : parseFloat(amount);
+    return currency + ' ' + num.toFixed(2);
+}
+
+// Normalize payment method for display
+function normalizePaymentMethodDisplay(paymentMethod) {
+    if (!paymentMethod) return 'Cash';
+    
+    const method = paymentMethod.toLowerCase().trim();
+    
+    const displayMap = {
+        'cash': 'Cash',
+        'cash_on_delivery': 'Cash on Delivery',
+        'cod': 'Cash on Delivery',
+        'bank_transfer': 'Bank Transfer',
+        'direct_bank_transfer': 'Bank Transfer',
+        'bacs': 'Bank Transfer',
+        'card': 'Card Payment',
+        'credit_card': 'Card Payment',
+        'debit_card': 'Card Payment',
+        'online': 'Online Payment',
+        'online_payment': 'Online Payment',
+        'paypal': 'Online Payment',
+        'stripe': 'Online Payment',
+        'razorpay': 'Online Payment'
+    };
+    
+    if (!displayMap[method]) {
+        if (method.includes('bank') || method.includes('transfer')) {
+            return 'Bank Transfer';
+        } else if (method.includes('cash') || method.includes('cod')) {
+            return 'Cash';
+        } else if (method.includes('card') || method.includes('visa') || method.includes('master')) {
+            return 'Card Payment';
+        } else if (method.includes('online') || method.includes('paypal') || method.includes('stripe')) {
+            return 'Online Payment';
+        }
+    }
+    
+    return displayMap[method] || 'Cash';
+}
+
+// View Order Details (simplified - view only, no edit capabilities)
+function viewOrderDetails(orderId) {
+    console.log('View order details clicked for order:', orderId);
+    const modal = document.getElementById('viewOrderModal');
+    const content = document.getElementById('viewOrderContent');
+    
+    // Show loading
+    content.innerHTML = '<div style="text-align: center; padding: 40px;"><div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #e5e7eb; border-top: 3px solid #2563eb; border-radius: 50%; animation: spin 1s linear infinite;"></div></div>';
+    modal.style.display = 'block';
+    
+    // Fetch order details via AJAX
+    fetch('/orders/' + orderId, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const order = data.order;
+            
+            // Attach discounts to order if they're at root level
+            if (!order.discounts && data.discounts) {
+                order.discounts = data.discounts;
+            }
+            
+            // Attach verified_location to order if it's at root level
+            if (!order.verified_location && data.verified_location) {
+                order.verified_location = data.verified_location;
+            }
+            
+            // Build HTML
+            let html = '<div>';
+            
+            // Invoice Header
+            html += '<div style="display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px;">';
+            html += '<div>';
+            html += '<h2 style="font-size: 24px; font-weight: bold; color: #111827; margin: 0;">Invoice #' + (order.order_number || order.id) + '</h2>';
+            html += '<p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ' + formatDate(order.order_date) + '</p>';
+            html += '</div>';
+            html += '<div style="text-align: right;">';
+            const sourceStyle = order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;';
+            html += '<span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ' + sourceStyle + '">';
+            html += (order.external_source || 'manual').toUpperCase();
+            html += '</span>';
+            html += '<p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">' + formatCurrency(order.total_price, order.currency) + '</p>';
+            html += '</div>';
+            html += '</div>';
+            
+            // Order Details Section
+            html += '<div style="padding: 20px; background-color: #f9fafb; border-radius: 8px; margin: 20px 0;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Order Details</h3>';
+            html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
+            html += '<div>';
+            
+            // Build customer name
+            var customerName = order.name || 'N/A';
+            if ((!order.name || order.name === 'N/A') && (order.address_first_name || order.address_last_name)) {
+                customerName = ((order.address_first_name || '') + ' ' + (order.address_last_name || '')).trim();
+            }
+            
+            // Build address
+            var addressParts = [];
+            if (order.address_line1) addressParts.push(order.address_line1);
+            if (order.address_line2) addressParts.push(order.address_line2);
+            if (order.address_city) addressParts.push(order.address_city);
+            if (order.address_province) addressParts.push(order.address_province);
+            var fullAddress = addressParts.length > 0 ? addressParts.join(', ') : 'N/A';
+            
+            html += '<p><strong>Customer:</strong> ' + escapeHtml(customerName) + '</p>';
+            html += '<p><strong>Address:</strong> ' + escapeHtml(fullAddress) + '</p>';
+            html += '<p><strong>Phone:</strong> ' + escapeHtml(order.address_phone || order.customer_phone || 'N/A') + '</p>';
+            
+            // Verified location if available
+            if (order.verified_location) {
+                html += '<div style="margin-top: 12px; padding: 10px; background-color: #f0fdf4; border-radius: 6px; border: 1px solid #10b981;">';
+                html += '<strong style="color: #059669; font-size: 13px;">✅ Verified Location</strong>';
+                if (order.verified_location.url) {
+                    html += '<p style="margin: 4px 0; font-size: 12px;">';
+                    html += '<a href="' + order.verified_location.url + '" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">';
+                    html += '📍 Open in Google Maps';
+                    html += '</a>';
+                    html += '</p>';
+                } else if (order.verified_location.latitude && order.verified_location.longitude) {
+                    html += '<p style="margin: 4px 0; font-size: 11px; font-family: monospace; color: #059669;">';
+                    html += order.verified_location.latitude + ', ' + order.verified_location.longitude;
+                    html += '</p>';
+                    if (order.verified_location.google_maps_url) {
+                        html += '<p style="margin: 4px 0; font-size: 12px;">';
+                        html += '<a href="' + order.verified_location.google_maps_url + '" target="_blank" style="color: #3b82f6; text-decoration: none; font-weight: 500;">';
+                        html += '📍 Open in Google Maps';
+                        html += '</a>';
+                        html += '</p>';
+                    }
+                }
+                html += '</div>';
+            }
+            
+            html += '</div>';
+            html += '<div>';
+            html += '<p><strong>Status:</strong> ' + escapeHtml(order.order_status || 'N/A') + '</p>';
+            html += '<p><strong>Payment Method:</strong> ' + normalizePaymentMethodDisplay(order.payment_method) + '</p>';
+            html += '<p><strong>Total:</strong> ' + formatCurrency(order.total_price, order.currency) + '</p>';
+            html += '<p><strong>Items:</strong> ' + (order.line_items ? order.line_items.length : 0) + '</p>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            
+            // Line Items Section
+            var items = (order.line_items && Array.isArray(order.line_items)) ? order.line_items : [];
+            html += '<div style="padding: 20px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 0 0 20px 0;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #111827;">Line Items</h3>';
+            
+            if (items.length > 0) {
+                html += '<div style="overflow-x: auto;">';
+                html += '<table style="width: 100%; border-collapse: collapse;">';
+                html += '<thead><tr>';
+                html += '<th style="text-align:left; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Item</th>';
+                html += '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Qty</th>';
+                html += '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Unit</th>';
+                html += '<th style="text-align:right; padding: 8px; border-bottom: 1px solid #e5e7eb; color:#6b7280; font-size:12px;">Total</th>';
+                html += '</tr></thead>';
+                html += '<tbody>';
+                var itemsSubtotal = 0;
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i] || {};
+                    var name = (it.name || it.title || 'Item');
+                    var qty = parseFloat(it.quantity || 0);
+                    var unit = parseFloat((it.unit_price != null ? it.unit_price : (it.price != null ? it.price : 0)));
+                    var lineTotal = parseFloat(it.line_total || 0);
+                    if (!lineTotal || lineTotal === 0) {
+                        lineTotal = qty * unit;
+                    }
+                    if (!isFinite(qty)) qty = 0;
+                    if (!isFinite(unit)) unit = 0;
+                    if (!isFinite(lineTotal)) lineTotal = 0;
+                    itemsSubtotal += lineTotal;
+                    
+                    html += '<tr>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + escapeHtml(name) + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>';
+                    html += '</tr>';
+                }
+                html += '</tbody>';
+                html += '<tfoot>';
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Subtotal</td><td style="padding: 8px; text-align:right; font-weight:600;">' + formatCurrency(itemsSubtotal, order.currency) + '</td></tr>';
+                
+                // Show discount breakdown if available
+                if (order.discounts && order.discounts.length > 0) {
+                    order.discounts.forEach(function(discount) {
+                        html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">' + escapeHtml(discount.discount_title) + '</td><td style="padding: 8px; text-align:right;">-' + formatCurrency(discount.discount_amount, order.currency) + '</td></tr>';
+                    });
+                } else if (order.discount_total) {
+                    const discountLabel = order.coupon_code ? 'Discount (' + escapeHtml(order.coupon_code) + ')' : 'Discount';
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">' + discountLabel + '</td><td style="padding: 8px; text-align:right;">-' + formatCurrency(order.discount_total, order.currency) + '</td></tr>';
+                }
+                
+                if (order.shipping_total) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Shipping</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.shipping_total, order.currency) + '</td></tr>';
+                }
+                if (order.tip_amount && order.tip_amount > 0) {
+                    html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#6b7280;">Tip</td><td style="padding: 8px; text-align:right;">' + formatCurrency(order.tip_amount, order.currency) + '</td></tr>';
+                }
+                html += '<tr><td></td><td></td><td style="padding: 8px; text-align:right; color:#111827; font-weight:700;">Total</td><td style="padding: 8px; text-align:right; font-weight:700;">' + formatCurrency(order.total_price, order.currency) + '</td></tr>';
+                html += '</tfoot>';
+                html += '</table>';
+                html += '</div>';
+            } else {
+                html += '<div style="text-align:center; color:#6b7280; padding: 10px 0;">No line items</div>';
+            }
+            html += '</div>';
+
+            // Order Notes Section (if notes exist)
+            if (order.note && order.note.trim() !== '') {
+                html += '<div style="padding: 20px; background-color: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; margin: 20px 0 0 0;">';
+                html += '<h3 style="margin: 0 0 12px 0; color: #111827; font-size: 16px;">Order Notes</h3>';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px; border-left: 4px solid #3b82f6;">';
+                html += '<p style="margin: 0; color: #374151; line-height: 1.5; white-space: pre-wrap;">' + escapeHtml(order.note) + '</p>';
+                html += '</div>';
+                html += '</div>';
+            }
+
+            // Packet Tracking Section (if packet data exists)
+            if (order.expected_packets || order.actual_packets) {
+                html += '<div style="padding: 20px; background-color: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; margin: 20px 0 0 0;">';
+                html += '<h3 style="margin: 0 0 12px 0; color: #92400e; font-size: 16px; display: flex; align-items: center; gap: 8px;"><span>📦</span> Packet Tracking</h3>';
+                html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px;">';
+                html += '<div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Expected Packets (Manager)</div>';
+                html += '<div style="font-size: 24px; font-weight: 700; color: #111827;">' + (order.expected_packets || '-') + '</div>';
+                html += '</div>';
+                html += '<div style="background-color: white; padding: 12px; border-radius: 6px;">';
+                html += '<div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Actual Packets Delivered (Rider)</div>';
+                html += '<div style="font-size: 24px; font-weight: 700; color: #111827;">' + (order.actual_packets || '-') + '</div>';
+                if (order.expected_packets && order.actual_packets) {
+                    if (order.expected_packets != order.actual_packets) {
+                        html += '<div style="margin-top: 8px; padding: 6px 10px; background-color: #fee2e2; color: #dc2626; border-radius: 4px; font-size: 12px; font-weight: 600;">⚠️ Mismatch Detected</div>';
+                    } else {
+                        html += '<div style="margin-top: 8px; padding: 6px 10px; background-color: #d1fae5; color: #059669; border-radius: 4px; font-size: 12px; font-weight: 600;">✅ Verified</div>';
+                    }
+                }
+                html += '</div>';
+                html += '</div>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+            
+            content.innerHTML = html;
+        } else {
+            content.innerHTML = `
+                <div class="text-center py-8">
+                    <div class="text-red-600 mb-4">
+                        <svg class="mx-auto h-12 w-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-medium text-gray-900 mb-2">Error Loading Order</h3>
+                    <p class="text-gray-500">Unable to load order details</p>
+                </div>
+            `;
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching order details:', error);
+        content.innerHTML = `
+            <div class="text-center py-8">
+                <div class="text-red-600 mb-4">
+                    <svg class="mx-auto h-12 w-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-medium text-gray-900 mb-2">Network Error</h3>
+                <p class="text-gray-500">Unable to connect to server. Please try again.</p>
+            </div>
+        `;
+    });
 }
 </script>
 @endpush

@@ -32,6 +32,8 @@ class ProductModel extends BaseModel
         'compare_at_price',
         'total_inventory',
         'track_inventory',
+        'is_lean',
+        'is_lean_override',
         'seo_title',
         'seo_description',
         'featured_image',

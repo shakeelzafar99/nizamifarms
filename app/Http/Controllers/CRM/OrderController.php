@@ -1785,10 +1785,13 @@ class OrderController extends Controller
                 ], 403);
             }
             
-            // Decode JSON parameters
-            $hierarchy = json_decode($request->get('hierarchy', '["product_type", "product_name"]'), true);
+            // Get hierarchy from global settings (not from request)
+            $hierarchySetting = \DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'hierarchy_levels')
+                ->first();
+            $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'];
             if (!is_array($hierarchy)) {
-                $hierarchy = ['product_type', 'product_name'];
+                $hierarchy = ['product_type', 'product_name', 'orders'];
             }
             
             $level = (int) $request->get('level', 0); // Current drill-down level
@@ -1800,8 +1803,11 @@ class OrderController extends Controller
             
             $dateRange = $request->get('date_range', 0); // Days to look back (0 = all time)
 
-            // Excluded order statuses (from user preferences or default to closed statuses)
-            $excludedStatuses = json_decode($request->get('excluded_statuses', '["delivered", "completed", "cancelled", "refunded"]'), true);
+            // Get excluded statuses from global settings (not from request)
+            $statusSetting = \DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'excluded_statuses')
+                ->first();
+            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
             if (!is_array($excludedStatuses)) {
                 $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             }
@@ -1903,6 +1909,10 @@ class OrderController extends Controller
                             TRIM(CONCAT(COALESCE(o.address_first_name, ""), " ", COALESCE(o.address_last_name, "")))
                         ) as customer_full_name'),
                         \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                        \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                        \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                        \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
                         \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
                     ])
                     ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
@@ -1912,6 +1922,10 @@ class OrderController extends Controller
                     'li.name as group_name',
                     'li.product_id',
                     \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                    \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                    \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                    \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
                     \DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
                 ])
@@ -1921,6 +1935,10 @@ class OrderController extends Controller
                 $query->select([
                     \DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as group_name"),
                     \DB::raw('SUM(li.quantity) as total_quantity'),
+                    \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                    \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                    \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                    \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
                     \DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     \DB::raw('COUNT(DISTINCT CASE WHEN li.product_id IS NOT NULL THEN li.product_id END) as product_count'),
                     \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
@@ -1940,6 +1958,42 @@ class OrderController extends Controller
             $results = $query
                 ->orderByDesc('total_quantity')
                 ->get();
+            
+            // Apply priority-based sorting for attribute levels
+            if (in_array($currentField, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+                $attributeKey = (int)str_replace('attribute_', '', $currentField);
+                $priorityMap = $this->getAttributePriorityMap($attributeKey);
+                
+                Log::debug('Priority Sorting Debug:', [
+                    'current_field' => $currentField,
+                    'attribute_key' => $attributeKey,
+                    'priority_map' => $priorityMap,
+                    'results_before_sort' => $results->pluck('group_name')->toArray()
+                ]);
+                
+                if (!empty($priorityMap)) {
+                    $results = $results->sort(function($a, $b) use ($priorityMap) {
+                        $groupA = $a->group_name ?? '';
+                        $groupB = $b->group_name ?? '';
+                        
+                        // Get priorities (higher number = higher priority = show first)
+                        $priorityA = $priorityMap[$groupA] ?? 0;
+                        $priorityB = $priorityMap[$groupB] ?? 0;
+                        
+                        // Sort descending by priority (higher priority first)
+                        if ($priorityA != $priorityB) {
+                            return $priorityB - $priorityA;
+                        }
+                        
+                        // If same priority, sort by quantity (already ordered before)
+                        return ($b->total_quantity ?? 0) - ($a->total_quantity ?? 0);
+                    })->values(); // Reset keys
+                    
+                    Log::debug('Priority Sorting Result:', [
+                        'results_after_sort' => $results->pluck('group_name')->toArray()
+                    ]);
+                }
+            }
             
             // Get sample line item data to understand the join
             $sampleLineItems = \DB::table('t_crm_prod_order_line_item as li')
@@ -1969,12 +2023,6 @@ class OrderController extends Controller
                     $q->where('order_date', '>=', Carbon::now()->subDays($dateRange));
                 })
                 ->count();
-
-            // Add percentage to each result
-            $results = $results->map(function($item) use ($totalQuantity) {
-                $item->percentage = $totalQuantity > 0 ? round(($item->total_quantity / $totalQuantity) * 100, 1) : 0;
-                return $item;
-            });
 
             // Check if we can drill down further
             $hasNextLevel = isset($hierarchy[$level + 1]);
@@ -2307,6 +2355,208 @@ class OrderController extends Controller
                 'success' => false,
                 'message' => 'Failed to update line items: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Get global open quantities settings
+     * Returns hierarchy levels and status filters that apply to all users
+     */
+    public function getOpenQuantitiesSettings(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            if (!$user->hasPermission('view_open_quantities')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view settings.'
+                ], 403);
+            }
+
+            // Fetch settings from database
+            $hierarchySetting = \DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'hierarchy_levels')
+                ->first();
+            
+            $statusSetting = \DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'excluded_statuses')
+                ->first();
+
+            // Check if user has Taimur role (by role name, not ID)
+            $canEditSettings = $user->roles()
+                ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+                ->exists();
+
+            return response()->json([
+                'success' => true,
+                'settings' => [
+                    'hierarchy_levels' => $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'],
+                    'excluded_statuses' => $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded']
+                ],
+                'can_edit' => $canEditSettings,
+                'updated_at' => $hierarchySetting ? $hierarchySetting->updated_at : null,
+                'updated_by' => $hierarchySetting ? $hierarchySetting->updated_by_user_id : null
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to get open quantities settings: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve settings: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Save global open quantities settings
+     * Only users with Taimur role can save settings
+     */
+    public function saveOpenQuantitiesSettings(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            
+            // Check permission
+            if (!$user->hasPermission('view_open_quantities')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to manage settings.'
+                ], 403);
+            }
+
+            // Check if user has Taimur role (by role name, not ID)
+            $hasTaimurRole = $user->roles()
+                ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+                ->exists();
+            if (!$hasTaimurRole) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only Taimur role can modify these settings.'
+                ], 403);
+            }
+
+            $hierarchyLevels = $request->input('hierarchy_levels');
+            $excludedStatuses = $request->input('excluded_statuses');
+
+            // Validate hierarchy levels
+            if ($hierarchyLevels) {
+                if (!is_array($hierarchyLevels)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Hierarchy levels must be an array.'
+                    ], 400);
+                }
+
+                // Must end with 'orders'
+                if (end($hierarchyLevels) !== 'orders') {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Hierarchy levels must end with "orders".'
+                    ], 400);
+                }
+
+                // Update or insert hierarchy setting
+                \DB::table('t_crm_open_quantities_settings')
+                    ->updateOrInsert(
+                        ['setting_key' => 'hierarchy_levels'],
+                        [
+                            'setting_value' => json_encode($hierarchyLevels),
+                            'setting_type' => 'hierarchy',
+                            'updated_by_user_id' => $user->id,
+                            'updated_at' => now()
+                        ]
+                    );
+            }
+
+            // Validate excluded statuses
+            if ($excludedStatuses) {
+                if (!is_array($excludedStatuses)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Excluded statuses must be an array.'
+                    ], 400);
+                }
+
+                // Update or insert status setting
+                \DB::table('t_crm_open_quantities_settings')
+                    ->updateOrInsert(
+                        ['setting_key' => 'excluded_statuses'],
+                        [
+                            'setting_value' => json_encode($excludedStatuses),
+                            'setting_type' => 'status_filter',
+                            'updated_by_user_id' => $user->id,
+                            'updated_at' => now()
+                        ]
+                    );
+            }
+
+            Log::info('Open quantities settings updated by user: ' . $user->fullname, [
+                'user_id' => $user->id,
+                'hierarchy_levels' => $hierarchyLevels,
+                'excluded_statuses' => $excludedStatuses
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Settings saved successfully.',
+                'settings' => [
+                    'hierarchy_levels' => $hierarchyLevels,
+                    'excluded_statuses' => $excludedStatuses
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to save open quantities settings: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save settings: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get priority map for attribute categories
+     * Reads rules from attribute_auto_rules.json and creates a map of category name => priority
+     * If multiple rules have the same category, uses the HIGHEST priority
+     */
+    private function getAttributePriorityMap(int $attributeKey): array
+    {
+        try {
+            $filePath = storage_path('app/private/attribute_auto_rules.json');
+            
+            if (!file_exists($filePath)) {
+                Log::warning('Attribute rules file not found', ['path' => $filePath]);
+                return [];
+            }
+            
+            $json = file_get_contents($filePath);
+            $allRules = json_decode($json, true) ?: [];
+            $rules = $allRules[(string)$attributeKey] ?? [];
+            
+            $priorityMap = [];
+            foreach ($rules as $rule) {
+                $group = trim((string)($rule['group'] ?? ''));
+                $priority = (int)($rule['priority'] ?? 0);
+                
+                if ($group !== '') {
+                    // Keep the HIGHEST priority for each category
+                    if (!isset($priorityMap[$group]) || $priority > $priorityMap[$group]) {
+                        $priorityMap[$group] = $priority;
+                    }
+                }
+            }
+            
+            Log::debug('Loaded priority map for attribute ' . $attributeKey, [
+                'priority_map' => $priorityMap,
+                'total_rules' => count($rules)
+            ]);
+            
+            return $priorityMap;
+        } catch (\Exception $e) {
+            \Log::error('Failed to read attribute priority map: ' . $e->getMessage());
+            return [];
         }
     }
 }

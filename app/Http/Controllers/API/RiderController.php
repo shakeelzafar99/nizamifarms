@@ -2509,11 +2509,23 @@ class RiderController extends Controller
             }
             
             // Get parameters
-            $level = (int) $request->get('level', 0); // 0 = Category Level 1, 1 = Level 2, 2 = Level 3, 3 = Products
+            $level = (int) $request->get('level', 0);
             $filters = json_decode($request->get('filters', '{}'), true) ?: [];
             
-            // Excluded statuses (same as webapp default)
-            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            // Get global settings from database (same as web app)
+            $hierarchySetting = DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'hierarchy_levels')
+                ->first();
+            $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name'];
+            
+            $statusSetting = DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'excluded_statuses')
+                ->first();
+            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            // Remove 'orders' from hierarchy if present (mobile doesn't drill down to individual orders)
+            $hierarchy = array_filter($hierarchy, function($h) { return $h !== 'orders'; });
+            $hierarchy = array_values($hierarchy); // Re-index
             
             // Build base query - same as webapp
             $query = DB::table('t_crm_prod_order_line_item as li')
@@ -2561,8 +2573,7 @@ class RiderController extends Controller
                 }
             }
             
-            // Determine grouping based on level
-            $hierarchy = ['product_type', 'attribute_1', 'attribute_2', 'product_name'];
+            // Determine grouping based on level (use hierarchy from settings)
             $currentField = $hierarchy[$level] ?? 'product_name';
             
             if ($currentField === 'product_name') {
@@ -2571,6 +2582,10 @@ class RiderController extends Controller
                     'li.name as name',
                     'li.product_id',
                     DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                    DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                    DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity'),
                     DB::raw('COUNT(DISTINCT o.id) as order_count')
                 ])
                 ->groupBy('li.name', 'li.product_id')
@@ -2581,12 +2596,41 @@ class RiderController extends Controller
                 $results = $query->select([
                     DB::raw("COALESCE(p.{$currentField}, 'Uncategorized') as name"),
                     DB::raw('SUM(li.quantity) as quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
+                    DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
+                    DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
+                    DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity'),
                     DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     DB::raw('COUNT(DISTINCT li.product_id) as product_count')
                 ])
                 ->groupBy(DB::raw("COALESCE(p.{$currentField}, 'Uncategorized')"))
                 ->orderBy('quantity', 'desc')
                 ->get();
+                
+                // Apply priority-based sorting for attribute levels
+                if (in_array($currentField, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+                    $attributeKey = (int)str_replace('attribute_', '', $currentField);
+                    $priorityMap = $this->getAttributePriorityMap($attributeKey);
+                    
+                    if (!empty($priorityMap)) {
+                        $results = $results->sort(function($a, $b) use ($priorityMap) {
+                            $nameA = $a->name ?? '';
+                            $nameB = $b->name ?? '';
+                            
+                            // Get priorities (higher number = higher priority = show first)
+                            $priorityA = $priorityMap[$nameA] ?? 0;
+                            $priorityB = $priorityMap[$nameB] ?? 0;
+                            
+                            // Sort descending by priority (higher priority first)
+                            if ($priorityA != $priorityB) {
+                                return $priorityB - $priorityA;
+                            }
+                            
+                            // If same priority, sort by quantity
+                            return ($b->quantity ?? 0) - ($a->quantity ?? 0);
+                        })->values(); // Reset keys
+                    }
+                }
             }
             
             // Format for mobile
@@ -2594,6 +2638,10 @@ class RiderController extends Controller
                 return [
                     'name' => $item->name ?? 'Uncategorized',
                     'quantity' => (float) $item->quantity,
+                    'lean_quantity' => (float) ($item->lean_quantity ?? 0),
+                    'non_lean_quantity' => (float) ($item->non_lean_quantity ?? 0),
+                    'processing_quantity' => (float) ($item->processing_quantity ?? 0),
+                    'prepared_quantity' => (float) ($item->prepared_quantity ?? 0),
                     'order_count' => (int) $item->order_count,
                     'product_count' => isset($item->product_count) ? (int) $item->product_count : null,
                     'is_product' => $currentField === 'product_name'
@@ -2605,7 +2653,11 @@ class RiderController extends Controller
                 'level' => $level,
                 'field' => $currentField,
                 'items' => $formattedResults,
-                'total_count' => $formattedResults->count()
+                'total_count' => $formattedResults->count(),
+                'settings' => [
+                    'hierarchy' => $hierarchy,
+                    'excluded_statuses' => $excludedStatuses
+                ]
             ]);
             
         } catch (\Exception $e) {
@@ -3041,6 +3093,44 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to settle expense: ' . $e->getMessage()
             ], 500);
+        }
+    }
+    
+    /**
+     * Get priority map for attribute categories
+     * Reads rules from attribute_auto_rules.json and creates a map of category name => priority
+     * If multiple rules have the same category, uses the HIGHEST priority
+     */
+    private function getAttributePriorityMap(int $attributeKey): array
+    {
+        try {
+            $filePath = storage_path('app/private/attribute_auto_rules.json');
+            
+            if (!file_exists($filePath)) {
+                return [];
+            }
+            
+            $json = file_get_contents($filePath);
+            $allRules = json_decode($json, true) ?: [];
+            $rules = $allRules[(string)$attributeKey] ?? [];
+            
+            $priorityMap = [];
+            foreach ($rules as $rule) {
+                $group = trim((string)($rule['group'] ?? ''));
+                $priority = (int)($rule['priority'] ?? 0);
+                
+                if ($group !== '') {
+                    // Keep the HIGHEST priority for each category
+                    if (!isset($priorityMap[$group]) || $priority > $priorityMap[$group]) {
+                        $priorityMap[$group] = $priority;
+                    }
+                }
+            }
+            
+            return $priorityMap;
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to read attribute priority map: ' . $e->getMessage());
+            return [];
         }
     }
 }

@@ -80,6 +80,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
     Route::get('/orders/open-quantities', [OrderController::class, 'openQuantities'])->name('orders.open-quantities');
     Route::get('/orders/open-quantities/data', [OrderController::class, 'openQuantitiesData'])->name('orders.open-quantities.data');
+    Route::get('/orders/open-quantities/settings', [OrderController::class, 'getOpenQuantitiesSettings'])->name('orders.open-quantities.settings.get');
+    Route::post('/orders/open-quantities/settings', [OrderController::class, 'saveOpenQuantitiesSettings'])->name('orders.open-quantities.settings.save');
     Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
     Route::get('/orders/{id}/invoice', [OrderController::class, 'invoice'])->name('orders.invoice');
     Route::get('/orders/{id}/edit-tab', [OrderController::class, 'editTab'])->name('orders.edit.tab');
@@ -199,6 +201,8 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products/attributes/save-rules', [\App\Http\Controllers\CRM\ProductController::class, 'saveAutoRules'])->name('products.attributes.save_rules');
     Route::post('/products/attributes/coverage', [\App\Http\Controllers\CRM\ProductController::class, 'getCoverageSummary'])->name('products.attributes.coverage');
     Route::post('/products/attributes/apply-saved', [\App\Http\Controllers\CRM\ProductController::class, 'applySavedRules'])->name('products.attributes.apply_saved');
+    Route::post('/products/attributes/rename-category', [\App\Http\Controllers\CRM\ProductController::class, 'renameCategory'])->name('products.attributes.rename_category');
+    Route::post('/products/check-sku', [\App\Http\Controllers\CRM\ProductController::class, 'checkSku'])->name('products.check_sku');
     Route::get('/products/create', [\App\Http\Controllers\CRM\ProductController::class, 'create'])->name('products.create');
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');

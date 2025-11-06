@@ -37,6 +37,31 @@
 </div>
 
 <div class="container-fixed">
+    <!-- Error Alert Banner -->
+    @if ($errors->any() || session('error'))
+    <div style="background: #fef2f2; border: 2px solid #dc2626; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);">
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+            <div style="background: #dc2626; color: white; width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0;">
+                ❌
+            </div>
+            <div style="flex: 1;">
+                <h4 style="color: #991b1b; font-size: 18px; font-weight: 700; margin: 0 0 12px 0;">Unable to Update Product</h4>
+                <ul style="color: #991b1b; font-size: 14px; line-height: 1.6; margin: 0; padding-left: 20px;">
+                    @if(session('error'))
+                        <li style="margin-bottom: 6px;"><strong>{{ session('error') }}</strong></li>
+                    @endif
+                    @foreach ($errors->all() as $error)
+                        <li style="margin-bottom: 6px;">{{ $error }}</li>
+                    @endforeach
+                </ul>
+            </div>
+            <button type="button" onclick="this.parentElement.parentElement.remove()" style="background: none; border: none; color: #991b1b; font-size: 24px; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: background 0.15s;">
+                ✕
+            </button>
+        </div>
+    </div>
+    @endif
+    
     <form action="{{ route('products.update', $product->id) }}" method="POST">
         @csrf
         @method('PUT')
@@ -89,6 +114,7 @@
                 <!-- Settings Checkboxes -->
                 <div class="flex items-center gap-8 mt-5 p-4 bg-gray-50 rounded-lg">
                     <label class="checkbox flex items-center gap-2">
+                        <input type="hidden" name="track_inventory" value="0">
                         <input type="checkbox" name="track_inventory" value="1" 
                                {{ old('track_inventory', $product->track_inventory) ? 'checked' : '' }}>
                         <span class="checkbox-indicator"></span>
@@ -96,6 +122,15 @@
                     </label>
                     
                     <label class="checkbox flex items-center gap-2">
+                        <input type="hidden" name="is_lean" value="0">
+                        <input type="checkbox" name="is_lean" value="1" 
+                               {{ old('is_lean', $product->is_lean) ? 'checked' : '' }}>
+                        <span class="checkbox-indicator"></span>
+                        <span class="text-sm font-medium">🥩 Lean Product</span>
+                    </label>
+                    
+                    <label class="checkbox flex items-center gap-2">
+                        <input type="hidden" name="is_active" value="0">
                         <input type="checkbox" name="is_active" value="1" 
                                {{ old('is_active', $product->is_active) ? 'checked' : '' }}>
                         <span class="checkbox-indicator"></span>
@@ -105,40 +140,127 @@
             </div>
         </div>
 
-        <!-- Additional Information - Collapsible -->
+        <!-- Categorization & Organization Card -->
+        <div class="card mb-5">
+            <div class="card-header">
+                <h3 class="card-title text-lg font-semibold flex items-center gap-2">
+                    🏷️ Categorization & Organization
+                </h3>
+                <div class="text-xs text-gray-500">Help customers find your product</div>
+            </div>
+            
+            <div class="card-body">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    <!-- Vendor -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">🏪 Vendor/Brand</label>
+                        <select name="vendor_select" id="vendor_select" class="form-select" onchange="handleSelectChange('vendor')">
+                            <option value="">-- Select Vendor --</option>
+                            @foreach($vendors as $vendor)
+                                <option value="{{ $vendor }}" {{ old('vendor', $product->vendor) == $vendor ? 'selected' : '' }}>{{ $vendor }}</option>
+                            @endforeach
+                            <option value="__custom__">✏️ Add New Vendor...</option>
+                        </select>
+                        <input type="text" name="vendor" id="vendor_input" class="form-control mt-2" 
+                               value="{{ old('vendor', $product->vendor) }}" 
+                               placeholder="Enter new vendor name"
+                               style="display: none;">
+                        @error('vendor')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+
+                    <!-- Product Type / Category -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📂 Product Type/Category</label>
+                        <select name="product_type_select" id="product_type_select" class="form-select" onchange="handleSelectChange('product_type')">
+                            <option value="">-- Select Category --</option>
+                            @foreach($productTypes as $type)
+                                <option value="{{ $type }}" {{ old('product_type', $product->product_type) == $type ? 'selected' : '' }}>{{ $type }}</option>
+                            @endforeach
+                            <option value="__custom__">✏️ Add New Category...</option>
+                        </select>
+                        <input type="text" name="product_type" id="product_type_input" class="form-control mt-2" 
+                               value="{{ old('product_type', $product->product_type) }}" 
+                               placeholder="Enter new category name"
+                               style="display: none;">
+                        @error('product_type')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <!-- Attribute 1 (Category Level 1) -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📌 {{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
+                        <select name="attribute_1_select" id="attribute_1_select" class="form-select" onchange="handleSelectChange('attribute_1')">
+                            <option value="">-- Select --</option>
+                            @foreach($attribute1s as $attr)
+                                <option value="{{ $attr }}" {{ old('attribute_1', $product->attribute_1) == $attr ? 'selected' : '' }}>{{ $attr }}</option>
+                            @endforeach
+                            <option value="__custom__">✏️ Add New...</option>
+                        </select>
+                        <input type="text" name="attribute_1" id="attribute_1_input" class="form-control mt-2" 
+                               value="{{ old('attribute_1', $product->attribute_1) }}" 
+                               placeholder="Enter new value"
+                               style="display: none;">
+                        @error('attribute_1')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <!-- Attribute 2 (Category Level 2) -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📌 {{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
+                        <select name="attribute_2_select" id="attribute_2_select" class="form-select" onchange="handleSelectChange('attribute_2')">
+                            <option value="">-- Select --</option>
+                            @foreach($attribute2s as $attr)
+                                <option value="{{ $attr }}" {{ old('attribute_2', $product->attribute_2) == $attr ? 'selected' : '' }}>{{ $attr }}</option>
+                            @endforeach
+                            <option value="__custom__">✏️ Add New...</option>
+                        </select>
+                        <input type="text" name="attribute_2" id="attribute_2_input" class="form-control mt-2" 
+                               value="{{ old('attribute_2', $product->attribute_2) }}" 
+                               placeholder="Enter new value"
+                               style="display: none;">
+                        @error('attribute_2')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <!-- Attribute 3 (Category Level 3) -->
+                    <div class="flex flex-col gap-2">
+                        <label class="form-label text-sm font-medium">📌 {{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
+                        <select name="attribute_3_select" id="attribute_3_select" class="form-select" onchange="handleSelectChange('attribute_3')">
+                            <option value="">-- Select --</option>
+                            @foreach($attribute3s as $attr)
+                                <option value="{{ $attr }}" {{ old('attribute_3', $product->attribute_3) == $attr ? 'selected' : '' }}>{{ $attr }}</option>
+                            @endforeach
+                            <option value="__custom__">✏️ Add New...</option>
+                        </select>
+                        <input type="text" name="attribute_3" id="attribute_3_input" class="form-control mt-2" 
+                               value="{{ old('attribute_3', $product->attribute_3) }}" 
+                               placeholder="Enter new value"
+                               style="display: none;">
+                        @error('attribute_3')
+                            <span class="form-hint text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SEO & Advanced (Collapsible) -->
         <div class="card mb-5">
             <div class="card-header cursor-pointer" onclick="toggleSection('additionalInfo')">
                 <h3 class="card-title text-lg font-semibold flex items-center gap-2">
                     <span id="additionalInfoIcon">▶️</span>
-                    ⚙️ Additional Information
+                    🔍 SEO & Advanced Settings
                     <span class="text-xs text-gray-500 ml-2">(Optional - Click to expand)</span>
                 </h3>
             </div>
             
             <div id="additionalInfo" class="card-body" style="display: none;">
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                    <!-- Vendor -->
-                    <div class="flex flex-col gap-2">
-                        <label class="form-label text-sm font-medium">🏪 Vendor/Brand</label>
-                        <input type="text" name="vendor" class="form-control" 
-                               value="{{ old('vendor', $product->vendor) }}" 
-                               placeholder="e.g., Nike, Apple, Local Supplier">
-                        @error('vendor')
-                            <span class="form-hint text-danger">{{ $message }}</span>
-                        @enderror
-                    </div>
-
-                    <!-- Product Type -->
-                    <div class="flex flex-col gap-2">
-                        <label class="form-label text-sm font-medium">📂 Product Category</label>
-                        <input type="text" name="product_type" class="form-control" 
-                               value="{{ old('product_type', $product->product_type) }}" 
-                               placeholder="e.g., Electronics, Clothing, Food">
-                        @error('product_type')
-                            <span class="form-hint text-danger">{{ $message }}</span>
-                        @enderror
-                    </div>
-                </div>
 
                 <!-- Tags -->
                 <div class="flex flex-col gap-2 mt-5">
@@ -418,5 +540,59 @@ function removeVariant(button) {
     const variantRow = button.closest('.variant-row');
     variantRow.remove();
 }
+
+// Handle dropdown selection change
+function handleSelectChange(fieldName) {
+    const selectElement = document.getElementById(fieldName + '_select');
+    const inputElement = document.getElementById(fieldName + '_input');
+    
+    if (selectElement.value === '__custom__') {
+        // Show input field, hide select
+        selectElement.style.display = 'none';
+        inputElement.style.display = 'block';
+        inputElement.focus();
+        
+        // Add a button to go back to select
+        if (!inputElement.nextElementSibling || !inputElement.nextElementSibling.classList.contains('back-to-select-btn')) {
+            const backBtn = document.createElement('button');
+            backBtn.type = 'button';
+            backBtn.className = 'back-to-select-btn kt-btn kt-btn-sm kt-btn-light mt-2';
+            backBtn.textContent = '← Back to List';
+            backBtn.onclick = function() {
+                selectElement.style.display = 'block';
+                inputElement.style.display = 'none';
+                inputElement.value = '';
+                selectElement.value = '';
+                backBtn.remove();
+            };
+            inputElement.parentNode.insertBefore(backBtn, inputElement.nextSibling);
+        }
+    } else if (selectElement.value !== '') {
+        // Copy selected value to the actual input field
+        inputElement.value = selectElement.value;
+    } else {
+        // Clear the input if nothing selected
+        inputElement.value = '';
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize: If there's a value that doesn't match any option, show custom input
+    ['vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3'].forEach(fieldName => {
+        const selectElement = document.getElementById(fieldName + '_select');
+        const inputElement = document.getElementById(fieldName + '_input');
+        
+        if (inputElement && inputElement.value && selectElement) {
+            const optionExists = Array.from(selectElement.options).some(option => option.value === inputElement.value);
+            if (!optionExists && inputElement.value !== '') {
+                // Value exists but not in dropdown, show custom input
+                selectElement.value = '__custom__';
+                selectElement.style.display = 'none';
+                inputElement.style.display = 'block';
+            }
+        }
+    });
+});
 </script>
 @endsection

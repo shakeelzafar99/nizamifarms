@@ -325,6 +325,49 @@
     font-weight: 500;
 }
 
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateX(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.category-row {
+    cursor: pointer;
+}
+
+.category-row:hover {
+    background: #f0f4ff !important;
+}
+
+.rules-detail-row {
+    background: #f9fafb !important;
+}
+
+.rules-detail-row td {
+    padding: 8px 12px !important;
+}
+
+.rule-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    font-size: 12px;
+}
+
+.rule-item:last-child {
+    margin-bottom: 0;
+}
+
 .info-banner {
     background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
     border: 2px solid #fbbf24;
@@ -377,6 +420,11 @@
             </div>
         </div>
 
+        <!-- Stats Grid - Moved to Top -->
+        <div class="stats-grid" id="statsCardsContainer" style="margin-bottom: 20px;">
+            <!-- Will be populated by JavaScript -->
+        </div>
+
         <!-- Main Rules Section -->
         <div class="section-card">
             <div class="section-header">
@@ -397,131 +445,133 @@
                     </select>
                 </div>
 
+                <!-- Permission Notice -->
+                @if(!($canEditPriorities ?? false))
+                <div style="background: #fef3c7; border: 1px solid #f59e0b; color: #92400e; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+                    <i class="ki-filled ki-information-2" style="font-size: 20px; color: #f59e0b;"></i>
+                    <div style="flex: 1;">
+                        <strong style="display: block; margin-bottom: 4px;">View Only Mode</strong>
+                        <span style="font-size: 13px;">Only users with the <strong>Taimur</strong> role can add rules, edit categories, or change priority sequence. You can view current categories and their rules.</span>
+                    </div>
+                </div>
+                @endif
+
                 <!-- Add New Rule Form -->
-                <div class="form-grid form-grid-cols-4">
+                <div class="form-grid form-grid-cols-4" id="addRuleForm">
                     <div class="input-group">
                         <label class="input-label">
                             <i class="ki-filled ki-search-list text-blue-600"></i>
                             Search Word in Product Name
                         </label>
-                        <input type="text" class="input-field" id="newRuleMatch" placeholder="e.g., chicken, mutton, beef">
+                        <input type="text" class="input-field" id="newRuleMatch" placeholder="e.g., chicken, mutton, beef" {{ !($canEditPriorities ?? false) ? 'disabled' : '' }}>
                     </div>
                     <div class="input-group">
                         <label class="input-label">
                             <i class="ki-filled ki-tag text-green-600"></i>
                             Category to Assign
                         </label>
-                        <input type="text" class="input-field" id="newRuleGroup" placeholder="e.g., Chicken, Mutton, Beef">
+                        <select class="input-field" id="newRuleGroupSelect" onchange="handleCategorySelectChange()" {{ !($canEditPriorities ?? false) ? 'disabled' : '' }}>
+                            <option value="">-- Select or Add New --</option>
+                            @foreach(($existingCategories[(string)$activeKey] ?? []) as $category)
+                                <option value="{{ $category }}">{{ $category }}</option>
+                            @endforeach
+                            <option value="__ADD_NEW__">✏️ Add New...</option>
+                        </select>
+                        <input type="text" class="input-field" id="newRuleGroupInput" placeholder="Enter new category name" style="display: none; margin-top: 6px;" {{ !($canEditPriorities ?? false) ? 'disabled' : '' }}>
+                        <button type="button" class="btn btn-sm btn-light" id="backToSelectBtn" onclick="backToCategorySelect()" style="display: none; margin-top: 6px; font-size: 12px;" {{ !($canEditPriorities ?? false) ? 'disabled' : '' }}>
+                            <i class="ki-filled ki-arrow-left"></i> Back to List
+                        </button>
                     </div>
                     <div class="input-group">
                         <label class="input-label">
                             <i class="ki-filled ki-sort text-orange-600"></i>
                             Priority
                         </label>
-                        <input type="number" class="input-field" id="newRulePriority" value="0" min="0">
+                        <input type="number" class="input-field" id="newRulePriority" value="0" min="0" {{ !($canEditPriorities ?? false) ? 'disabled' : '' }}>
                     </div>
-                    <button class="btn-add-rule" type="button" onclick="addRuleFromForm()">
+                    <button class="btn-add-rule" type="button" onclick="addRuleFromForm()" {{ !($canEditPriorities ?? false) ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : '' }}>
                         <i class="ki-filled ki-plus-circle"></i>
                         Add Rule
                     </button>
                 </div>
 
-                <!-- Rules Table -->
+                <!-- Apply Button - Moved Above Table -->
+                <div style="margin-top: 20px; display: flex; justify-content: center;">
+                    <button class="btn-apply" type="button" onclick="applySavedRulesUI()">
+                        <i class="ki-filled ki-check-circle"></i>
+                        Apply Rules to All Products
+                    </button>
+                </div>
+
+                <!-- Categories Table (Consolidated View) -->
                 <div style="margin-top: 20px;">
-                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
-                        <i class="ki-filled ki-row-vertical text-gray-600" style="font-size: 14px;"></i>
-                        <span style="font-size: 12px; color: #6b7280; font-weight: 500;">Your Rules (drag to reorder - top rules have highest priority)</span>
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <i class="ki-filled ki-category text-gray-600" style="font-size: 14px;"></i>
+                            <span style="font-size: 13px; color: #6b7280; font-weight: 600;">Categories & Rules (drag categories to reorder)</span>
+                        </div>
+                        <div id="addRuleSuccess" style="display: none; background: #d1fae5; color: #065f46; padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 600; animation: slideIn 0.3s ease-out;">
+                            ✅ <span id="addRuleSuccessText"></span>
+                        </div>
                     </div>
                     <div class="rules-table-container">
-                        <table class="rules-table" id="rulesTable">
+                        <table class="rules-table" id="categoriesTable">
                             <thead>
                                 <tr>
                                     <th style="width:40px;"></th>
-                                    <th>Search Word</th>
-                                    <th>Category</th>
+                                    <th style="width:40px;"></th>
+                                    <th>Category Name</th>
                                     <th style="width:100px;">Priority</th>
-                                    <th style="width:120px;">Actions</th>
+                                    <th style="width:100px;">Rules</th>
+                                    <th style="width:120px;">Products</th>
+                                    <th style="width:180px;">Actions</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
                         </table>
                     </div>
                 </div>
-
-                <!-- Apply Button -->
-                <div style="margin-top: 16px; display: flex; justify-content: center;">
-                    <button class="btn-apply" type="button" onclick="applySavedRulesUI()">
-                        <i class="ki-filled ki-check-circle"></i>
-                        Apply Rules to All Products
-                    </button>
-                </div>
             </div>
         </div>
 
-        <!-- Statistics Section -->
+        <!-- Top Categories Summary Section -->
         <div class="section-card">
             <div class="section-header">
                 <i class="ki-filled ki-chart-line text-2xl"></i>
-                <h2>Categorization Statistics</h2>
+                <h2>Top Categories (Top 20)</h2>
             </div>
             <div class="section-body">
-                <!-- Stats Grid -->
-                <div class="stats-grid" id="statsCardsContainer">
-                    <!-- Will be populated by JavaScript -->
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
+                    <button class="kt-btn kt-btn-primary kt-btn-sm" type="button" onclick="refreshCoverageSummary()">
+                        <i class="ki-filled ki-arrows-circle"></i>
+                        Refresh Statistics
+                    </button>
                 </div>
 
-                <!-- Coverage Details -->
-                <div class="coverage-details" id="coverageDetailsContainer">
-                    <h4>
-                        <i class="ki-filled ki-information-2"></i>
-                        Rule Performance
-                    </h4>
-                    <div id="coverageContent" style="min-height: 60px;">
-                        <div style="text-align: center; padding: 20px; color: #64748b;">
-                            <i class="ki-filled ki-arrows-circle" style="font-size: 32px; margin-bottom: 12px; display: block;"></i>
-                            <p style="margin: 0; font-size: 14px; font-weight: 500;">Click "Refresh" below to see how your rules are performing</p>
+                <div class="assignments-table-container">
+                    @if(($assignStats ?? collect())->isEmpty())
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📦</div>
+                            <div class="empty-state-text">No categories assigned yet</div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Current Assignments Table -->
-                <div style="margin-top: 20px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                        <h3 style="font-size: 15px; font-weight: 600; color: #111827; margin: 0; display: flex; align-items: center; gap: 6px;">
-                            <i class="ki-filled ki-element-11 text-purple-600"></i>
-                            Top Categories (Top 20)
-                        </h3>
-                        <button class="kt-btn kt-btn-primary kt-btn-sm" type="button" onclick="refreshCoverageSummary()">
-                            <i class="ki-filled ki-arrows-circle"></i>
-                            Refresh
-                        </button>
-                    </div>
-
-                    <div class="assignments-table-container">
-                        @if(($assignStats ?? collect())->isEmpty())
-                            <div class="empty-state">
-                                <div class="empty-state-icon">📦</div>
-                                <div class="empty-state-text">No categories assigned yet</div>
-                            </div>
-                        @else
-                            <table class="assignments-table">
-                                <thead>
-                                    <tr>
-                                        <th>Category Name</th>
-                                        <th style="width: 120px; text-align: right;">Products</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                @foreach($assignStats as $row)
-                                    <tr>
-                                        <td><strong>{{ $row->value }}</strong></td>
-                                        <td style="text-align: right; font-weight: 600; color: #667eea;">{{ $row->cnt }}</td>
-                                    </tr>
-                                @endforeach
-                                </tbody>
-                            </table>
-                        @endif
-                    </div>
+                    @else
+                        <table class="assignments-table">
+                            <thead>
+                                <tr>
+                                    <th>Category Name</th>
+                                    <th style="width: 120px; text-align: right;">Products</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            @foreach($assignStats as $row)
+                                <tr>
+                                    <td><strong>{{ $row->value }}</strong></td>
+                                    <td style="text-align: right; font-weight: 600; color: #667eea;">{{ $row->cnt }}</td>
+                                </tr>
+                            @endforeach
+                            </tbody>
+                        </table>
+                    @endif
                 </div>
             </div>
         </div>
@@ -578,6 +628,81 @@
 </div>
 
 <script>
+// Store existing categories for dropdown
+const existingCategoriesData = @json($existingCategories);
+
+// Store permission flag for editing priorities
+const canEditPriorities = @json($canEditPriorities ?? false);
+
+// Handle category dropdown selection
+function handleCategorySelectChange() {
+    const select = document.getElementById('newRuleGroupSelect');
+    const input = document.getElementById('newRuleGroupInput');
+    const backBtn = document.getElementById('backToSelectBtn');
+    
+    if (select.value === '__ADD_NEW__') {
+        select.style.display = 'none';
+        input.style.display = 'block';
+        backBtn.style.display = 'block';
+        input.focus();
+    }
+}
+
+function backToCategorySelect() {
+    const select = document.getElementById('newRuleGroupSelect');
+    const input = document.getElementById('newRuleGroupInput');
+    const backBtn = document.getElementById('backToSelectBtn');
+    
+    select.style.display = 'block';
+    input.style.display = 'none';
+    backBtn.style.display = 'none';
+    select.value = '';
+    input.value = '';
+}
+
+// Get category value from either select or input
+function getCategoryValue() {
+    const select = document.getElementById('newRuleGroupSelect');
+    const input = document.getElementById('newRuleGroupInput');
+    
+    if (input.style.display !== 'none' && input.value.trim()) {
+        return input.value.trim();
+    }
+    return select.value && select.value !== '__ADD_NEW__' ? select.value : '';
+}
+
+// Update category dropdown when level changes
+function updateCategoryDropdown() {
+    const level = document.getElementById('rulesAttribute').value;
+    const select = document.getElementById('newRuleGroupSelect');
+    const input = document.getElementById('newRuleGroupInput');
+    const backBtn = document.getElementById('backToSelectBtn');
+    
+    // Reset to select mode
+    select.style.display = 'block';
+    input.style.display = 'none';
+    backBtn.style.display = 'none';
+    select.value = '';
+    input.value = '';
+    
+    // Rebuild options
+    const categories = existingCategoriesData[level] || [];
+    select.innerHTML = '<option value="">-- Select or Add New --</option>';
+    categories.forEach(cat => {
+        const option = document.createElement('option');
+        option.value = cat;
+        option.textContent = cat;
+        select.appendChild(option);
+    });
+    const addNewOption = document.createElement('option');
+    addNewOption.value = '__ADD_NEW__';
+    addNewOption.textContent = '✏️ Add New...';
+    select.appendChild(addNewOption);
+}
+
+// Store rule match counts globally
+let ruleMatchCounts = {};
+
 // Build product IDs from picker + optional CSV fallback
 function getSelectedProductIds(){
     const hidden = document.getElementById('pickerHidden').value;
@@ -611,30 +736,70 @@ rulesState[@json($activeKey)] = @json($activeRules);
 function onChangeLevel(){ 
     // When level changes, we need to fetch rules for that level from server
     const level = document.getElementById('rulesAttribute').value;
+    updateCategoryDropdown(); // Update the dropdown options
     if (!rulesState[level] || rulesState[level].length === 0) {
         // Load rules for this level from server
         window.location.href = '{{ route('products.attributes') }}?level=' + level;
     } else {
-        renderRulesTable(); 
+        renderCategoriesTable(); 
     }
 }
 async function addRuleFromForm(){
+    if (!canEditPriorities) {
+        alert('You do not have permission to add rules. Only users with the Taimur role can manage category priorities.');
+        return;
+    }
+    
     const level = document.getElementById('rulesAttribute').value;
     const match = (document.getElementById('newRuleMatch').value || '').trim();
-    const group = (document.getElementById('newRuleGroup').value || '').trim();
-    const priority = parseInt(document.getElementById('newRulePriority').value || '0', 10) || 0;
+    const group = getCategoryValue(); // Use the new function to get category from either select or input
+    let priority = parseInt(document.getElementById('newRulePriority').value || '0', 10) || 0;
     if (!match || !group) { alert('Please enter both Product Name to Search and Category Name.'); return; }
     
-    // Add to state
+    // Smart priority assignment
     rulesState[level] = rulesState[level] || [];
+    
+    // Check if this category already exists
+    const existingCategoryRules = rulesState[level].filter(r => r.group === group);
+    
+    if (existingCategoryRules.length > 0) {
+        // Category exists - use its existing priority or the highest priority in that category
+        const categoryPriority = Math.max(...existingCategoryRules.map(r => r.priority || 0));
+        priority = categoryPriority || priority; // Use existing category priority
+    } else {
+        // New category - assign priority based on current sequence
+        // If user entered 0, assign it based on position
+        if (priority === 0) {
+            // Get all unique categories and their priorities
+            const categories = {};
+            rulesState[level].forEach(r => {
+                if (!categories[r.group]) {
+                    categories[r.group] = r.priority || 0;
+                } else if ((r.priority || 0) > categories[r.group]) {
+                    categories[r.group] = r.priority || 0;
+                }
+            });
+            
+            const totalCategories = Object.keys(categories).length;
+            const basePriority = Math.max(100, totalCategories * 10);
+            // New category gets lowest priority (will be at bottom)
+            priority = Math.max(0, basePriority - (totalCategories * 10) - 10);
+        }
+    }
+    
+    // Add to state
     rulesState[level].push({ match, group, priority });
     
     // Clear inputs
     document.getElementById('newRuleMatch').value='';
-    document.getElementById('newRuleGroup').value='';
+    document.getElementById('newRulePriority').value='0'; // Reset priority input
+    backToCategorySelect(); // Reset the category input
+    
+    // Show success notification
+    showAddRuleSuccess(match, group, priority);
     
     // Render table
-    renderRulesTable();
+    renderCategoriesTable();
     
     // Automatically save rules
     await saveRulesInternal(level);
@@ -642,10 +807,24 @@ async function addRuleFromForm(){
     // Automatically refresh coverage
     await refreshCoverageSummary();
 }
+
+// Show success notification when rule is added
+function showAddRuleSuccess(match, group, priority) {
+    const successDiv = document.getElementById('addRuleSuccess');
+    const successText = document.getElementById('addRuleSuccessText');
+    
+    successText.textContent = `Rule "${match}" added to category "${group}" (Priority: ${priority})`;
+    successDiv.style.display = 'block';
+    
+    // Hide after 4 seconds
+    setTimeout(() => {
+        successDiv.style.display = 'none';
+    }, 4000);
+}
 // Internal function to save rules (used by both manual save and auto-save)
 async function saveRulesInternal(level){
-    const rows = Array.from(document.querySelectorAll('#rulesTable tbody tr'));
-    const rules = rows.map((tr, idx) => ({ match: tr.dataset.match, group: tr.dataset.group, priority: rows.length - idx }));
+    // Save the current rules state (don't read from DOM as categories are dynamic)
+    const rules = rulesState[level] || [];
     
     try {
         const response = await fetch('{{ route('products.attributes.save_rules') }}', { 
@@ -659,8 +838,7 @@ async function saveRulesInternal(level){
         });
         
         const data = await response.json();
-        rulesState[level] = rules; 
-        renderRulesTable();
+        renderCategoriesTable();
         return data;
     } catch(error) {
         console.error('Error saving rules:', error);
@@ -715,43 +893,276 @@ async function removeRule(idx){
     // Automatically refresh coverage
     await refreshCoverageSummary();
 }
-function renderRulesTable(){
+// New consolidated categories view
+function renderCategoriesTable(){
     const level = document.getElementById('rulesAttribute').value;
-    const tbody = document.querySelector('#rulesTable tbody');
+    const tbody = document.querySelector('#categoriesTable tbody');
     tbody.innerHTML = '';
     
     const rules = rulesState[level] || [];
     
     if (rules.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9ca3af;"><div style="font-size: 48px; margin-bottom: 12px;">📝</div><div style="font-size: 14px; font-weight: 500;">No rules added yet. Create your first rule above!</div></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9ca3af;"><div style="font-size: 48px; margin-bottom: 12px;">📝</div><div style="font-size: 14px; font-weight: 500;">No rules added yet. Create your first rule above!</div></td></tr>';
         return;
     }
     
-    rules.forEach((r, i) => {
+    // Group rules by category
+    const categories = {};
+    rules.forEach((r, originalIndex) => {
+        if (!categories[r.group]) {
+            categories[r.group] = {
+                name: r.group,
+                priority: r.priority || 0,
+                rules: [],
+                expanded: false
+            };
+        }
+        // Keep the highest priority for the category
+        if ((r.priority || 0) > categories[r.group].priority) {
+            categories[r.group].priority = r.priority || 0;
+        }
+        categories[r.group].rules.push({ match: r.match, priority: r.priority || 0, originalIndex });
+    });
+    
+    // Convert to array and sort by priority (descending)
+    const categoriesArray = Object.values(categories).sort((a, b) => b.priority - a.priority);
+    
+    // Render each category
+    categoriesArray.forEach((category, catIndex) => {
+        // Get total product count for this category
+        let totalProducts = 0;
+        category.rules.forEach(rule => {
+            const ruleKey = `${rule.match}|||${category.name}`;
+            totalProducts += ruleMatchCounts[ruleKey] || 0;
+        });
+        
+        const productCountDisplay = totalProducts > 0 ? 
+            `<span style="color: #10b981; font-weight: 700;">${totalProducts}</span>` : 
+            '<span style="color: #9ca3af;">0</span>';
+        
+        // Main category row
         const tr = document.createElement('tr');
-        tr.draggable = true; 
-        tr.dataset.index = i; 
-        tr.dataset.match = r.match; 
-        tr.dataset.group = r.group;
+        tr.className = 'category-row';
+        tr.draggable = canEditPriorities; // Only draggable if user has permission
+        tr.dataset.categoryIndex = catIndex;
+        tr.dataset.categoryName = category.name;
+        tr.dataset.categoryPriority = category.priority;
+        
+        // Conditionally render Edit/Remove buttons
+        const actionButtons = canEditPriorities ? `
+            <button type="button" style="background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-right: 8px;" 
+                onmouseover="this.style.background='#bfdbfe'" 
+                onmouseout="this.style.background='#dbeafe'"
+                onclick="editCategoryName('${escapeHtml(category.name).replace(/'/g, "\\'")}')">
+                <i class="ki-filled ki-pencil"></i> Edit
+            </button>
+            <button type="button" class="btn-remove" onclick="deleteCategory('${escapeHtml(category.name).replace(/'/g, "\\'")}')">
+                <i class="ki-filled ki-trash"></i> Remove
+            </button>
+        ` : `
+            <span style="color: #9ca3af; font-size: 12px; font-style: italic;">View Only</span>
+        `;
+        
         tr.innerHTML = `
             <td style="text-align: center;">
-                <span class="drag-handle">⋮⋮</span>
+                <span class="drag-handle" style="${canEditPriorities ? 'cursor: grab;' : 'cursor: not-allowed; opacity: 0.5;'}" title="${canEditPriorities ? 'Drag to reorder' : 'Only Taimur role can reorder'}">${canEditPriorities ? '⋮⋮' : '🔒'}</span>
             </td>
-            <td><strong>${escapeHtml(r.match)}</strong></td>
-            <td>${escapeHtml(r.group)}</td>
-            <td style="text-align: center;">${r.priority||0}</td>
             <td style="text-align: center;">
-                <button type="button" class="btn-remove" onclick="removeRule(${i})">
-                    <i class="ki-filled ki-trash"></i> Remove
-                </button>
+                <span onclick="toggleCategoryExpand('${escapeHtml(category.name)}', this)" 
+                      style="cursor: pointer; font-size: 20px; transition: transform 0.2s; display: inline-block;"
+                      title="Click to ${category.expanded ? 'collapse' : 'expand'} rules">
+                    ${category.expanded ? '▼' : '▶'}
+                </span>
+            </td>
+            <td><strong style="font-size: 14px;">${escapeHtml(category.name)}</strong></td>
+            <td style="text-align: center;"><span style="background: #dbeafe; color: #1e40af; padding: 4px 12px; border-radius: 6px; font-weight: 600;">${category.priority}</span></td>
+            <td style="text-align: center;"><span style="color: #6b7280; font-size: 12px;">${category.rules.length} rule${category.rules.length !== 1 ? 's' : ''}</span></td>
+            <td style="text-align: center;">${productCountDisplay}</td>
+            <td style="text-align: center;">
+                ${actionButtons}
             </td>
         `;
-        tr.addEventListener('dragstart', onDragStart);
-        tr.addEventListener('dragover', onDragOver);
-        tr.addEventListener('drop', onDrop);
+        
+        if (canEditPriorities) {
+            tr.addEventListener('dragstart', onCategoryDragStart);
+            tr.addEventListener('dragover', onDragOver);
+            tr.addEventListener('drop', onCategoryDrop);
+        }
         tbody.appendChild(tr);
+        
+        // Rules detail row (initially hidden)
+        if (category.expanded) {
+            const detailTr = document.createElement('tr');
+            detailTr.className = 'rules-detail-row';
+            detailTr.id = `rules-detail-${escapeHtml(category.name)}`;
+            detailTr.innerHTML = `
+                <td colspan="7" style="padding: 16px 50px;">
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
+                        <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">SEARCH WORDS FOR THIS CATEGORY:</div>
+                        ${category.rules.map((rule, ruleIdx) => `
+                            <div class="rule-item">
+                                <span style="flex: 1;"><strong>"${escapeHtml(rule.match)}"</strong></span>
+                                <span style="color: #9ca3af; font-size: 11px;">Priority: ${rule.priority}</span>
+                                <button type="button" 
+                                    onclick="removeRuleFromCategory('${escapeHtml(category.name)}', ${rule.originalIndex})" 
+                                    style="background: #fee2e2; color: #dc2626; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">
+                                    Remove
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(detailTr);
+        }
     });
 }
+
+// Toggle expand/collapse for category rules
+function toggleCategoryExpand(categoryName, element) {
+    const level = document.getElementById('rulesAttribute').value;
+    const rules = rulesState[level] || [];
+    
+    // Find if detail row exists
+    const detailRow = document.getElementById(`rules-detail-${categoryName}`);
+    const arrow = element;
+    
+    if (detailRow) {
+        // Collapse
+        detailRow.remove();
+        arrow.textContent = '▶';
+        arrow.title = 'Click to expand rules';
+    } else {
+        // Expand
+        const categoryRules = rules.filter(r => r.group === categoryName);
+        const categoryRow = arrow.closest('tr');
+        const newRow = document.createElement('tr');
+        newRow.className = 'rules-detail-row';
+        newRow.id = `rules-detail-${categoryName}`;
+        newRow.innerHTML = `
+            <td colspan="7" style="padding: 16px 50px;">
+                <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
+                    <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">SEARCH WORDS FOR THIS CATEGORY:</div>
+                    ${categoryRules.map((rule, ruleIdx) => {
+                        const originalIndex = rules.findIndex(r => r.match === rule.match && r.group === rule.group);
+                        return `
+                            <div class="rule-item">
+                                <span style="flex: 1;"><strong>"${escapeHtml(rule.match)}"</strong></span>
+                                <span style="color: #9ca3af; font-size: 11px;">Priority: ${rule.priority || 0}</span>
+                                <button type="button" 
+                                    onclick="removeRuleFromCategory('${escapeHtml(categoryName)}', ${originalIndex})" 
+                                    style="background: #fee2e2; color: #dc2626; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">
+                                    Remove
+                                </button>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </td>
+        `;
+        categoryRow.after(newRow);
+        arrow.textContent = '▼';
+        arrow.title = 'Click to collapse rules';
+    }
+}
+
+// Backward compatibility - keep this for old function calls
+function renderRulesTable() {
+    renderCategoriesTable();
+}
+
+// Remove a specific rule from a category
+async function removeRuleFromCategory(categoryName, ruleIndex) {
+    if (!confirm(`Remove this search word from "${categoryName}"?`)) return;
+    
+    const level = document.getElementById('rulesAttribute').value;
+    rulesState[level].splice(ruleIndex, 1);
+    
+    renderCategoriesTable();
+    await saveRulesInternal(level);
+    await refreshCoverageSummary();
+}
+
+// Delete entire category (all its rules)
+async function deleteCategory(categoryName) {
+    if (!canEditPriorities) {
+        alert('You do not have permission to delete categories. Only users with the Taimur role can manage category priorities.');
+        return;
+    }
+    
+    const level = document.getElementById('rulesAttribute').value;
+    const rules = rulesState[level] || [];
+    const count = rules.filter(r => r.group === categoryName).length;
+    
+    if (!confirm(`Delete category "${categoryName}" and all its ${count} rule(s)?`)) return;
+    
+    rulesState[level] = rules.filter(r => r.group !== categoryName);
+    
+    renderCategoriesTable();
+    await saveRulesInternal(level);
+    await refreshCoverageSummary();
+}
+
+// Category drag and drop
+let dragCategoryIndex = null;
+function onCategoryDragStart(e){ 
+    dragCategoryIndex = parseInt(e.currentTarget.dataset.categoryIndex,10); 
+}
+
+async function onCategoryDrop(e){
+    e.preventDefault();
+    const level = document.getElementById('rulesAttribute').value;
+    const targetCategoryIndex = parseInt(e.currentTarget.dataset.categoryIndex,10);
+    
+    if (dragCategoryIndex === null || targetCategoryIndex === dragCategoryIndex) return;
+    
+    // Get current categories sorted by priority
+    const rules = rulesState[level] || [];
+    const categories = {};
+    rules.forEach(r => {
+        if (!categories[r.group]) {
+            categories[r.group] = { name: r.group, priority: r.priority || 0 };
+        }
+        if ((r.priority || 0) > categories[r.group].priority) {
+            categories[r.group].priority = r.priority || 0;
+        }
+    });
+    
+    const categoriesArray = Object.values(categories).sort((a, b) => b.priority - a.priority);
+    
+    // Move the dragged category to the target position
+    const [draggedCategory] = categoriesArray.splice(dragCategoryIndex, 1);
+    categoriesArray.splice(targetCategoryIndex, 0, draggedCategory);
+    
+    // Reassign priorities sequentially based on new order
+    // Start from a high number and decrement (higher priority = higher number)
+    const totalCategories = categoriesArray.length;
+    const basePriority = Math.max(100, totalCategories * 10); // Ensure we have a good starting point
+    
+    categoriesArray.forEach((category, index) => {
+        const newPriority = basePriority - (index * 10); // Decrement by 10 for each position
+        
+        // Update all rules in this category with the new sequential priority
+        rulesState[level].forEach(rule => {
+            if (rule.group === category.name) {
+                rule.priority = newPriority;
+            }
+        });
+    });
+    
+    dragCategoryIndex = null;
+    
+    console.log('Categories reordered with new priorities:', categoriesArray.map((c, i) => ({
+        name: c.name,
+        priority: basePriority - (i * 10)
+    })));
+    
+    renderCategoriesTable();
+    await saveRulesInternal(level);
+    await refreshCoverageSummary();
+}
+
+// Old drag and drop functions (kept for compatibility)
 let dragIndex = null;
 function onDragStart(e){ dragIndex = parseInt(e.currentTarget.dataset.index,10); }
 function onDragOver(e){ e.preventDefault(); }
@@ -868,12 +1279,10 @@ let uncategorizedProductsData = [];
 
 async function refreshCoverageSummary() {
     const level = parseInt(document.getElementById('rulesAttribute').value, 10);
-    const contentDiv = document.getElementById('coverageContent');
     const statsContainer = document.getElementById('statsCardsContainer');
     
     // Show loading state
-    contentDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #64748b;"><i class="ki-filled ki-arrows-circle" style="font-size: 24px; display: block; margin-bottom: 8px; animation: spin 1s linear infinite;"></i><p style="margin: 0; font-size: 13px;">Loading statistics...</p></div>';
-    statsContainer.innerHTML = '';
+    statsContainer.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 20px; color: #64748b;"><i class="ki-filled ki-arrows-circle" style="font-size: 24px; display: block; margin: 0 auto 8px; animation: spin 1s linear infinite;"></i><p style="margin: 0; font-size: 13px;">Loading statistics...</p></div>';
     
     try {
         const res = await fetch('{{ route('products.attributes.coverage') }}', { 
@@ -894,6 +1303,13 @@ async function refreshCoverageSummary() {
         
         if (data.success && typeof data.summary !== 'undefined') {
             uncategorizedProductsData = data.uncategorized_sample || [];
+            
+            // Store rule match counts for use in the table
+            ruleMatchCounts = {};
+            data.summary.forEach(rule => {
+                const ruleKey = `${rule.match}|||${rule.group}`;
+                ruleMatchCounts[ruleKey] = rule.matching_products || 0;
+            });
             
             // Render Stats Cards
             const coverage = data.total_products > 0 ? ((data.categorized_products / data.total_products) * 100).toFixed(1) : 0;
@@ -921,31 +1337,16 @@ async function refreshCoverageSummary() {
                 </div>
             `;
             
-            // Render Rule Performance Details
-            let html = '';
-            if (data.summary.length > 0) {
-                data.summary.forEach(rule => {
-                    html += `
-                        <div class="rule-match-item">
-                            <div class="rule-match-text">
-                                <strong>"${escapeHtml(rule.match)}"</strong> → ${escapeHtml(rule.group)}
-                            </div>
-                            <div class="rule-match-count">${rule.matching_products} products</div>
-                        </div>
-                    `;
-                });
-            } else {
-                html = '<div style="text-align: center; padding: 20px; color: #64748b;"><div style="font-size: 32px; margin-bottom: 8px;">📝</div><p style="margin: 0; font-size: 14px;">No rules defined yet</p></div>';
-            }
-            contentDiv.innerHTML = html;
+            // Re-render the rules table to show updated product counts
+            renderRulesTable();
         } else {
             const errorMsg = data.message || 'Invalid response format';
             console.error('Coverage API error:', data);
-            contentDiv.innerHTML = `<div style="text-align: center; padding: 20px; color: #ef4444;"><i class="ki-filled ki-information" style="font-size: 32px; display: block; margin-bottom: 8px;"></i><p style="margin: 0; font-size: 13px;">Error: ${errorMsg}</p></div>`;
+            statsContainer.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 20px; color: #ef4444;"><i class="ki-filled ki-information" style="font-size: 32px; display: block; margin: 0 auto 8px;"></i><p style="margin: 0; font-size: 13px;">Error: ${errorMsg}</p></div>`;
         }
     } catch (error) {
         console.error('Coverage refresh failed:', error);
-        contentDiv.innerHTML = `<div style="text-align: center; padding: 20px; color: #ef4444;"><i class="ki-filled ki-information" style="font-size: 32px; display: block; margin-bottom: 8px;"></i><p style="margin: 0; font-size: 13px;">Error: ${error.message}</p></div>`;
+        statsContainer.innerHTML = `<div style="grid-column: 1/-1; text-align: center; padding: 20px; color: #ef4444;"><i class="ki-filled ki-information" style="font-size: 32px; display: block; margin: 0 auto 8px;"></i><p style="margin: 0; font-size: 13px;">Error: ${error.message}</p></div>`;
     }
 }
 
@@ -1055,9 +1456,76 @@ function renderRulesList(){
     // Rules are now shown in the draggable table only
     renderRulesTable();
 }
+// Edit category name function
+async function editCategoryName(oldName) {
+    if (!canEditPriorities) {
+        alert('You do not have permission to edit categories. Only users with the Taimur role can manage category priorities.');
+        return;
+    }
+    
+    const level = parseInt(document.getElementById('rulesAttribute').value, 10);
+    
+    const newName = prompt(`Edit category name:\n\nCurrent: ${oldName}\n\nThis will rename the category for ALL products and rules that use it.`, oldName);
+    
+    if (!newName || newName === oldName) {
+        return; // User cancelled or entered same name
+    }
+    
+    if (newName.trim() === '') {
+        alert('Category name cannot be empty');
+        return;
+    }
+    
+    // Confirm the action
+    if (!confirm(`Are you sure you want to rename "${oldName}" to "${newName}"?\n\nThis will update all products and rules that use this category.`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('{{ route('products.attributes.rename_category') }}', {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                attribute_key: level,
+                old_name: oldName,
+                new_name: newName.trim()
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert(`✅ ${data.message}`);
+            
+            // Update local rules state
+            const rules = rulesState[level] || [];
+            rules.forEach(rule => {
+                if (rule.group === oldName) {
+                    rule.group = newName.trim();
+                }
+            });
+            
+            // Re-render table and refresh coverage
+            renderRulesTable();
+            await refreshCoverageSummary();
+            
+            // Reload page to refresh category dropdown and top categories table
+            window.location.reload();
+        } else {
+            alert(`❌ ${data.message || 'Failed to rename category'}`);
+        }
+    } catch (error) {
+        console.error('Error renaming category:', error);
+        alert('❌ An error occurred while renaming the category');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-    renderRulesList();
-    renderRulesTable();
+    renderCategoriesTable();
     // Auto-refresh coverage summary on page load
     refreshCoverageSummary();
 });

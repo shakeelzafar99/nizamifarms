@@ -41,7 +41,46 @@ class ProductController extends Controller
             ->orderByDesc('cnt')
             ->limit(20)
             ->get();
-        return view('pages.products.attributes', compact('labels', 'activeKey', 'activeRules', 'assignStats'));
+        
+        // Get existing categories for the dropdown (for all levels)
+        $existingCategories = [
+            '1' => \DB::table('t_crm_prod_product')
+                ->select('attribute_1 as value')
+                ->whereNotNull('attribute_1')
+                ->where('attribute_1', '!=', '')
+                ->groupBy('attribute_1')
+                ->orderBy('attribute_1')
+                ->pluck('value')
+                ->toArray(),
+            '2' => \DB::table('t_crm_prod_product')
+                ->select('attribute_2 as value')
+                ->whereNotNull('attribute_2')
+                ->where('attribute_2', '!=', '')
+                ->groupBy('attribute_2')
+                ->orderBy('attribute_2')
+                ->pluck('value')
+                ->toArray(),
+            '3' => \DB::table('t_crm_prod_product')
+                ->select('attribute_3 as value')
+                ->whereNotNull('attribute_3')
+                ->where('attribute_3', '!=', '')
+                ->groupBy('attribute_3')
+                ->orderBy('attribute_3')
+                ->pluck('value')
+                ->toArray(),
+        ];
+        
+        // Check if user has permission to edit priorities (Taimur role only)
+        $user = auth()->user();
+        $canEditPriorities = false;
+        if ($user) {
+            // Check if user has Taimur role (by role name, not ID)
+            $canEditPriorities = $user->roles()
+                ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+                ->exists();
+        }
+        
+        return view('pages.products.attributes', compact('labels', 'activeKey', 'activeRules', 'assignStats', 'existingCategories', 'canEditPriorities'));
     }
 
     public function saveAttributeLabels(Request $request)
@@ -278,8 +317,10 @@ class ProductController extends Controller
             $group = trim((string)($rule['group'] ?? ''));
             if ($needle === '' || $group === '') continue;
             
+            // Count products that are ACTUALLY assigned to this category
+            // (not just products that match the search word)
             $count = \DB::table('t_crm_prod_product')
-                ->where('title', 'LIKE', '%'.$needle.'%')
+                ->where($column, '=', $group)
                 ->count();
             
             $summary[] = [
@@ -364,8 +405,10 @@ class ProductController extends Controller
                 $group = trim((string)($rule['group'] ?? ''));
                 if ($needle === '' || $group === '') continue;
                 
+                // Count products that are ACTUALLY assigned to this category
+                // (not just products that match the search word)
                 $count = \DB::table('t_crm_prod_product')
-                    ->where('title', 'LIKE', '%'.$needle.'%')
+                    ->where($column, '=', $group)
                     ->count();
                 
                 $summary[] = [
@@ -1370,7 +1413,139 @@ class ProductController extends Controller
      */
     public function create()
     {
-        return view('pages.products.create');
+        // Get distinct values for dropdowns (same as index page filters)
+        $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort()->values();
+        $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort()->values();
+        $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort()->values();
+        $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort()->values();
+        $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort()->values();
+        
+        // Get attribute labels
+        $attributeLabels = [
+            '1' => 'Category Level 1',
+            '2' => 'Category Level 2',
+            '3' => 'Category Level 3'
+        ];
+        
+        return view('pages.products.create', compact(
+            'productTypes',
+            'vendors',
+            'attribute1s',
+            'attribute2s',
+            'attribute3s',
+            'attributeLabels'
+        ));
+    }
+
+    /**
+     * Rename a category and update all products and rules
+     */
+    public function renameCategory(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attribute_key' => 'required|in:1,2,3',
+                'old_name' => 'required|string',
+                'new_name' => 'required|string|max:255'
+            ]);
+            
+            $attributeKey = $validated['attribute_key'];
+            $oldName = trim($validated['old_name']);
+            $newName = trim($validated['new_name']);
+            $column = 'attribute_' . $attributeKey;
+            
+            if ($oldName === $newName) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'New name must be different from old name'
+                ]);
+            }
+            
+            // Check if new name already exists for other products
+            $existingCount = \DB::table('t_crm_prod_product')
+                ->where($column, $newName)
+                ->count();
+            
+            if ($existingCount > 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Category '{$newName}' already exists. This will merge {$existingCount} existing products with the renamed category."
+                ]);
+            }
+            
+            \DB::beginTransaction();
+            
+            try {
+                // Update all products with old category name to new category name
+                $updatedCount = \DB::table('t_crm_prod_product')
+                    ->where($column, $oldName)
+                    ->update([
+                        $column => $newName,
+                        'updated_at' => now()
+                    ]);
+                
+                // Update rules in the JSON file
+                $allRules = $this->readAttributeAutoRules();
+                $rules = $allRules[(string)$attributeKey] ?? [];
+                
+                foreach ($rules as &$rule) {
+                    if (isset($rule['group']) && $rule['group'] === $oldName) {
+                        $rule['group'] = $newName;
+                    }
+                }
+                
+                $allRules[(string)$attributeKey] = $rules;
+                $this->writeAttributeAutoRules($allRules);
+                
+                \DB::commit();
+                
+                return response()->json([
+                    'success' => true,
+                    'message' => "Category renamed successfully. {$updatedCount} products updated.",
+                    'products_updated' => $updatedCount
+                ]);
+                
+            } catch (\Exception $e) {
+                \DB::rollBack();
+                throw $e;
+            }
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to rename category: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to rename category: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Check if SKU already exists (AJAX endpoint)
+     */
+    public function checkSku(Request $request)
+    {
+        $sku = trim($request->input('sku', ''));
+        $variantId = $request->input('variant_id'); // For edit mode, exclude current variant
+        
+        if (empty($sku)) {
+            return response()->json(['exists' => false]);
+        }
+        
+        $query = \App\Models\CRM\ProductVariantModel::where('sku', $sku);
+        
+        if ($variantId) {
+            $query->where('id', '!=', $variantId);
+        }
+        
+        $exists = $query->exists();
+        
+        return response()->json([
+            'exists' => $exists,
+            'message' => $exists ? "SKU '{$sku}' is already used by another product" : "SKU is available"
+        ]);
     }
 
     /**
@@ -1384,12 +1559,16 @@ class ProductController extends Controller
                 'description' => 'nullable|string',
                 'vendor' => 'nullable|string|max:100',
                 'product_type' => 'nullable|string|max:100',
+                'attribute_1' => 'nullable|string|max:100',
+                'attribute_2' => 'nullable|string|max:100',
+                'attribute_3' => 'nullable|string|max:100',
                 'status' => 'required|in:active,draft,archived',
                 'tags' => 'nullable|string',
                 'seo_title' => 'nullable|string|max:255',
                 'seo_description' => 'nullable|string|max:500',
-                'track_inventory' => 'boolean',
-                'is_active' => 'boolean',
+                'track_inventory' => 'nullable|boolean',
+                'is_lean' => 'nullable|boolean',
+                'is_active' => 'nullable|boolean',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -1403,6 +1582,18 @@ class ProductController extends Controller
                 'variants.*.weight_unit' => 'nullable|string|in:g,kg,oz,lb',
                 'variants.*.barcode' => 'nullable|string|max:100',
             ]);
+            
+            // Check for duplicate SKUs
+            foreach ($validated['variants'] as $index => $variant) {
+                if (!empty($variant['sku'])) {
+                    $existingSku = \App\Models\CRM\ProductVariantModel::where('sku', $variant['sku'])->first();
+                    if ($existingSku) {
+                        return back()->withInput()
+                            ->withErrors(['variants.' . $index . '.sku' => "SKU '{$variant['sku']}' already exists in the system. Please use a unique SKU."])
+                            ->with('error', "Duplicate SKU found: {$variant['sku']}");
+                    }
+                }
+            }
 
             // Format data to match API structure
             $productData = $this->formatManualProductData($validated);
@@ -1439,7 +1630,30 @@ class ProductController extends Controller
     {
         try {
             $product = ProductModel::with('variants')->findOrFail($id);
-            return view('pages.products.edit', compact('product'));
+            
+            // Get distinct values for dropdowns (same as create page)
+            $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort()->values();
+            $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort()->values();
+            $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort()->values();
+            $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort()->values();
+            $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort()->values();
+            
+            // Get attribute labels
+            $attributeLabels = [
+                '1' => 'Category Level 1',
+                '2' => 'Category Level 2',
+                '3' => 'Category Level 3'
+            ];
+            
+            return view('pages.products.edit', compact(
+                'product',
+                'productTypes',
+                'vendors',
+                'attribute1s',
+                'attribute2s',
+                'attribute3s',
+                'attributeLabels'
+            ));
         } catch (\Exception $e) {
             Log::error('Error fetching product for edit: ' . $e->getMessage());
             return redirect()->route('products.index')
@@ -1462,12 +1676,16 @@ class ProductController extends Controller
                 'description' => 'nullable|string',
                 'vendor' => 'nullable|string|max:100',
                 'product_type' => 'nullable|string|max:100',
+                'attribute_1' => 'nullable|string|max:100',
+                'attribute_2' => 'nullable|string|max:100',
+                'attribute_3' => 'nullable|string|max:100',
                 'status' => 'required|in:active,draft,archived',
                 'tags' => 'nullable|string',
                 'seo_title' => 'nullable|string|max:255',
                 'seo_description' => 'nullable|string|max:500',
-                'track_inventory' => 'boolean',
-                'is_active' => 'boolean',
+                'track_inventory' => 'nullable|boolean',
+                'is_lean' => 'nullable|boolean',
+                'is_active' => 'nullable|boolean',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -1482,6 +1700,25 @@ class ProductController extends Controller
                 'variants.*.weight_unit' => 'nullable|string|in:g,kg,oz,lb',
                 'variants.*.barcode' => 'nullable|string|max:100',
             ]);
+            
+            // Check for duplicate SKUs (excluding current product's variants)
+            foreach ($validated['variants'] as $index => $variant) {
+                if (!empty($variant['sku'])) {
+                    $skuQuery = \App\Models\CRM\ProductVariantModel::where('sku', $variant['sku']);
+                    
+                    // Exclude current variant if it's being updated
+                    if (isset($variant['id'])) {
+                        $skuQuery->where('id', '!=', $variant['id']);
+                    }
+                    
+                    $existingSku = $skuQuery->first();
+                    if ($existingSku) {
+                        return back()->withInput()
+                            ->withErrors(['variants.' . $index . '.sku' => "SKU '{$variant['sku']}' already exists in another product. Please use a unique SKU."])
+                            ->with('error', "Duplicate SKU found: {$variant['sku']}");
+                    }
+                }
+            }
 
             // Format data to match API structure
             $productData = $this->formatManualProductData($validated);
@@ -1572,6 +1809,9 @@ class ProductController extends Controller
             'description' => $validated['description'] ?? null,
             'vendor' => $validated['vendor'] ?? null,
             'product_type' => $validated['product_type'] ?? null,
+            'attribute_1' => $validated['attribute_1'] ?? null,
+            'attribute_2' => $validated['attribute_2'] ?? null,
+            'attribute_3' => $validated['attribute_3'] ?? null,
             'status' => $validated['status'],
             'published_at' => $validated['status'] === 'active' ? now() : null,
             
@@ -1581,7 +1821,8 @@ class ProductController extends Controller
             
             // Inventory
             'total_inventory' => $totalInventory,
-            'track_inventory' => $validated['track_inventory'] ?? true,
+            'track_inventory' => filter_var($validated['track_inventory'] ?? true, FILTER_VALIDATE_BOOLEAN),
+            'is_lean' => filter_var($validated['is_lean'] ?? false, FILTER_VALIDATE_BOOLEAN),
             
             // SEO
             'seo_title' => $validated['seo_title'] ?? null,
@@ -1602,7 +1843,7 @@ class ProductController extends Controller
             'shopify_updated_at' => null,
             
             // Activity
-            'is_active' => $validated['is_active'] ?? true,
+            'is_active' => filter_var($validated['is_active'] ?? true, FILTER_VALIDATE_BOOLEAN),
             
             // Variants
             'variants' => $variants
