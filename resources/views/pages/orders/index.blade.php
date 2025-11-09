@@ -3721,6 +3721,182 @@ function updateOrderRowRider(orderId, riderId, riderName) {
     }, 2000);
 }
 
+// ============================================
+// PAYMENT METHOD QUICK CHANGE
+// ============================================
+function openQuickPaymentMethodChange(orderId, currentMethod) {
+    try {
+        let modal = document.getElementById('quickPaymentMethodModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'quickPaymentMethodModal';
+            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
+            modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:520px;padding:16px;border:1px solid #e5e7eb;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                    <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Change Payment Method</h3>
+                    <button onclick="document.getElementById('quickPaymentMethodModal').remove()" style="background:none;border:0;font-size:24px;color:#6b7280;cursor:pointer;line-height:1;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:background 0.15s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">&times;</button>
+                </div>
+                <div style="display:flex;gap:16px;">
+                    <div style="flex:1;display:flex;flex-direction:column;gap:12px;">
+                        <div style="padding:8px;background:#f3f4f6;border-radius:6px;border:1px solid #e5e7eb;">
+                            <div style="font-size:12px;color:#6b7280;margin-bottom:2px;">Current Method</div>
+                            <div id="quickPaymentMethodCurrent" style="font-size:14px;font-weight:500;color:#111827;"></div>
+                        </div>
+                        <select id="quickPaymentMethodSelect" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;">
+                            <option value="cash">Cash</option>
+                            <option value="online">Online</option>
+                        </select>
+                        <textarea id="quickPaymentMethodNotes" placeholder="Reason for change (optional)" style="width:100%;min-height:70px;padding:8px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+                        <div style="display:flex;gap:8px;justify-content:flex-end;">
+                            <button onclick="document.getElementById('quickPaymentMethodModal').remove()" style="padding:8px 12px;border:1px solid #d1d5db;background:#fff;border-radius:6px;cursor:pointer;">Cancel</button>
+                            <button id="quickPaymentMethodSaveBtn" style="padding:8px 12px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:500;">Update Method</button>
+                        </div>
+                    </div>
+                    <div style="flex:1;border-left:1px solid #e5e7eb;padding-left:16px;">
+                        <h4 style="margin:0 0 8px 0;font-size:14px;font-weight:600;color:#374151;">Change History</h4>
+                        <div id="quickPaymentMethodTimeline" style="max-height:160px;overflow-y:auto;">
+                            <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading history...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+            document.body.appendChild(modal);
+        }
+        
+        // Normalize current method for display
+        const normalizedCurrent = (currentMethod || 'cash').toLowerCase().trim();
+        let displayCurrent = 'Cash';
+        if (normalizedCurrent.includes('online') || normalizedCurrent.includes('bank') || normalizedCurrent.includes('card')) {
+            displayCurrent = 'Online';
+        }
+        
+        // Set current method display
+        document.getElementById('quickPaymentMethodCurrent').textContent = displayCurrent;
+        
+        // Set select value
+        const selectEl = document.getElementById('quickPaymentMethodSelect');
+        selectEl.value = displayCurrent.toLowerCase();
+        
+        // Load timeline
+        loadQuickPaymentMethodTimeline(orderId);
+        
+        // Setup save button
+        const btn = document.getElementById('quickPaymentMethodSaveBtn');
+        btn.onclick = async function() {
+            const newMethod = document.getElementById('quickPaymentMethodSelect').value;
+            const notes = document.getElementById('quickPaymentMethodNotes').value;
+            
+            btn.textContent = 'Updating...';
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch('/orders/api/change-payment-method', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                    },
+                    body: JSON.stringify({
+                        order_id: orderId,
+                        payment_method: newMethod,
+                        notes: notes
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast('Payment method updated successfully', 'success');
+                    document.getElementById('quickPaymentMethodModal').remove();
+                    
+                    // Update the order row
+                    updateOrderRowPaymentMethod(orderId, newMethod);
+                    
+                    // Optionally reload data
+                    if (typeof loadData === 'function') {
+                        loadData();
+                    }
+                } else {
+                    showToast(data.message || 'Failed to update payment method', 'error');
+                    btn.textContent = 'Update Method';
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Error updating payment method:', error);
+                showToast('Error updating payment method', 'error');
+                btn.textContent = 'Update Method';
+                btn.disabled = false;
+            }
+        };
+    } catch (error) {
+        console.error('Error opening payment method modal:', error);
+    }
+}
+
+async function loadQuickPaymentMethodTimeline(orderId) {
+    try {
+        const response = await fetch(`/orders/${orderId}/payment-method/timeline`, {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await response.json();
+        const timeline = document.getElementById('quickPaymentMethodTimeline');
+        
+        if (data.success && data.data && data.data.length > 0) {
+            timeline.innerHTML = data.data.slice(0, 5).map(h => {
+                const d = new Date(h.changed_at);
+                const s = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                return `<div style="padding:8px;border-bottom:1px solid #f3f4f6;">
+                    <div style="font-size:12px;font-weight:500;color:#111827;">${h.old_method || 'N/A'} → ${h.new_method}</div>
+                    <div style="font-size:11px;color:#6b7280;margin-top:2px;">${s}</div>
+                    ${h.notes ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;font-style:italic;">${h.notes}</div>` : ''}
+                </div>`;
+            }).join('');
+        } else {
+            timeline.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">No history available</div>';
+        }
+    } catch (error) {
+        console.error('Error loading payment method timeline:', error);
+        document.getElementById('quickPaymentMethodTimeline').innerHTML = '<div style="text-align:center;color:#ef4444;font-size:13px;padding:20px;">Failed to load history</div>';
+    }
+}
+
+function updateOrderRowPaymentMethod(orderId, newMethod) {
+    const row = document.querySelector(`tr[data-order-id="${orderId}"]`);
+    if (!row) {
+        console.log('Order row not found for ID:', orderId);
+        return;
+    }
+    
+    // Find the payment method cell
+    const pmCell = row.querySelector('.order-payment-method-cell');
+    if (!pmCell) {
+        console.log('Payment method cell not found in order row');
+        return;
+    }
+    
+    // Determine styling based on method
+    let displayText = 'Cash';
+    let bgClass = 'bg-green-50';
+    let borderClass = 'border-green-300';
+    let textClass = 'text-green-800';
+    
+    if (newMethod.toLowerCase().includes('online')) {
+        displayText = 'Online';
+        bgClass = 'bg-purple-50';
+        borderClass = 'border-purple-300';
+        textClass = 'text-purple-800';
+    }
+    
+    pmCell.innerHTML = `<button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${orderId}, '${newMethod}')" class="inline-flex items-center px-2 py-1 rounded ${bgClass} ${borderClass} border ${textClass} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText}</button>`;
+    
+    // Highlight row briefly
+    row.style.background = '#dbeafe';
+    setTimeout(() => {
+        row.style.background = '';
+    }, 2000);
+}
+
 // Toast notification (non-intrusive)
 function showToast(message, type = 'success') {
     const toast = document.createElement('div');
@@ -6147,7 +6323,22 @@ function getCellContent_DEPRECATED(order, columnId) {
             
         // Payment & Other Info
         case 'payment_method':
-            return order.payment_method || '';
+            const paymentMethod = order.payment_method || 'cash';
+            const normalizedMethod = paymentMethod.toLowerCase().trim();
+            
+            // Determine display text and styling
+            let displayText = 'Cash';
+            let pmConfig = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
+            
+            if (normalizedMethod.includes('online') || normalizedMethod.includes('bank') || normalizedMethod.includes('card')) {
+                displayText = 'Online';
+                pmConfig = { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-800' };
+            } else if (normalizedMethod.includes('cash') || normalizedMethod.includes('cod')) {
+                displayText = 'Cash';
+                pmConfig = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
+            }
+            
+            return `<div class="order-payment-method-cell"><button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${order.id}, '${paymentMethod}')" class="inline-flex items-center px-2 py-1 rounded ${pmConfig.bg} ${pmConfig.border} border ${pmConfig.text} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText}</button></div>`;
         case 'coupon_code':
             return order.coupon_code || '';
         case 'note':
@@ -6528,7 +6719,22 @@ function getCellContent(order, columnId) {
             
         // Payment & Other Info
         case 'payment_method':
-            return order.payment_method || '';
+            const paymentMethod2 = order.payment_method || 'cash';
+            const normalizedMethod2 = paymentMethod2.toLowerCase().trim();
+            
+            // Determine display text and styling
+            let displayText2 = 'Cash';
+            let pmConfig2 = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
+            
+            if (normalizedMethod2.includes('online') || normalizedMethod2.includes('bank') || normalizedMethod2.includes('card')) {
+                displayText2 = 'Online';
+                pmConfig2 = { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-800' };
+            } else if (normalizedMethod2.includes('cash') || normalizedMethod2.includes('cod')) {
+                displayText2 = 'Cash';
+                pmConfig2 = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
+            }
+            
+            return `<div class="order-payment-method-cell"><button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${order.id}, '${paymentMethod2}')" class="inline-flex items-center px-2 py-1 rounded ${pmConfig2.bg} ${pmConfig2.border} border ${pmConfig2.text} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText2}</button></div>`;
         case 'coupon_code':
             return order.coupon_code || '';
         case 'note':

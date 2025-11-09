@@ -132,6 +132,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Store Mode - Open Orders
     Route::get('/store/order-statuses', [\App\Http\Controllers\API\RiderController::class, 'getOrderStatuses']);
     Route::get('/store/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrders']);
+    Route::get('/store/open-orders-light', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrdersLight']); // Lightweight for list
+    Route::get('/store/open-orders/{id}/details', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrderDetails']); // Full details when expanded
     Route::get('/store/riders', [\App\Http\Controllers\API\RiderController::class, 'getActiveRiders']);
     Route::post('/store/assign-rider', [\App\Http\Controllers\API\RiderController::class, 'assignRiderToOrder']);
     Route::post('/store/update-status', [\App\Http\Controllers\API\RiderController::class, 'updateOrderStatus']);
@@ -143,6 +145,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Line Item Status Management (mobile app only - uses token auth)
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);
     Route::post('/orders/bulk-mark-prepared', [\App\Http\Controllers\CRM\OrderController::class, 'bulkMarkOrdersAsPrepared']);
+    
+    // Shopify Order Actions (Store Mode - uses token auth)
+    Route::post('/orders/{id}/convert', [\App\Http\Controllers\CRM\OrderController::class, 'convertOrder']);
+    Route::post('/orders/{id}/ignore', [\App\Http\Controllers\CRM\OrderController::class, 'ignoreOrder']);
     
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);

@@ -115,6 +115,79 @@
                 </div>
             </div>
 
+            <!-- Settlement Invoice Details (if this is a settlement) -->
+            @if($transaction->settlement_metadata && isset($transaction->settlement_metadata['invoice_ids']) && is_array($transaction->settlement_metadata['invoice_ids']))
+            @php
+                $invoiceIds = $transaction->settlement_metadata['invoice_ids'];
+                $invoices = \App\Models\FIN\LedgerModel::whereIn('id', $invoiceIds)
+                    ->with('order')
+                    ->orderBy('transaction_date', 'asc')
+                    ->get();
+            @endphp
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-3">
+                    <svg class="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+                        <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+                    </svg>
+                    <h3 class="text-sm font-semibold text-blue-900">📦 Invoices Included in Settlement</h3>
+                    <span class="ml-auto px-2 py-1 bg-blue-200 text-blue-900 text-xs font-bold rounded-full">{{ $invoices->count() }} invoice(s)</span>
+                </div>
+                <div class="bg-white border border-blue-200 rounded-lg overflow-hidden">
+                    <table class="min-w-full divide-y divide-blue-200">
+                        <thead class="bg-blue-100">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">#</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">Invoice/Order #</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">Date</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-blue-900">Amount</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-blue-900">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-blue-100">
+                            @foreach($invoices as $index => $invoice)
+                            <tr class="hover:bg-blue-50">
+                                <td class="px-3 py-2 text-xs text-gray-600">{{ $index + 1 }}</td>
+                                <td class="px-3 py-2 text-sm font-medium text-gray-900">
+                                    @if($invoice->order)
+                                        <a href="{{ route('orders.show', $invoice->order->id) }}" class="text-blue-600 hover:text-blue-800 hover:underline">
+                                            {{ $invoice->order->order_number }}
+                                        </a>
+                                    @else
+                                        Invoice #{{ $invoice->id }}
+                                    @endif
+                                </td>
+                                <td class="px-3 py-2 text-xs text-gray-600">{{ \Carbon\Carbon::parse($invoice->transaction_date)->format('M j, Y') }}</td>
+                                <td class="px-3 py-2 text-sm text-right font-medium text-gray-900">Rs. {{ number_format($invoice->amount, 2) }}</td>
+                                <td class="px-3 py-2 text-xs text-right">
+                                    @if($invoice->settlement_status === 'settled')
+                                        <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-full font-semibold">✓ Settled</span>
+                                    @elseif($invoice->settled_amount > 0)
+                                        <span class="inline-flex items-center px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full font-semibold">⚡ Partial</span>
+                                    @else
+                                        <span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-full font-semibold">○ Open</span>
+                                    @endif
+                                </td>
+                            </tr>
+                            @endforeach
+                        </tbody>
+                        <tfoot class="bg-blue-100">
+                            <tr>
+                                <td colspan="3" class="px-3 py-2 text-sm font-semibold text-blue-900">Total</td>
+                                <td class="px-3 py-2 text-sm text-right font-bold text-blue-900">Rs. {{ number_format($invoices->sum('amount'), 2) }}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                @if($transaction->settlement_metadata['total_outstanding'] ?? false)
+                <div class="mt-3 text-xs text-blue-800">
+                    <span class="font-medium">Total Outstanding at Settlement:</span> Rs. {{ number_format($transaction->settlement_metadata['total_outstanding'], 2) }}
+                </div>
+                @endif
+            </div>
+            @endif
+
             <!-- Approval Details (if approved/rejected) -->
             @if($transaction->approval_status !== 'pending')
             <div class="border-t border-gray-200 pt-4 mt-4">

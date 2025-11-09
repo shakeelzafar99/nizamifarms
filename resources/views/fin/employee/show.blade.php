@@ -2380,7 +2380,7 @@ function renderShortCashInvoicesTable() {
                        class="rounded border-gray-300 text-orange-600 focus:ring-orange-500">
             </td>
             <td class="px-3 py-2 text-sm text-gray-900">${invoice.order_number || 'Invoice #' + invoice.id}</td>
-            <td class="px-3 py-2 text-sm text-gray-600">${invoice.date}</td>
+            <td class="px-3 py-2 text-sm text-gray-600">${invoice.transaction_date}</td>
             <td class="px-3 py-2 text-sm text-gray-900 text-right font-medium">Rs. ${parseFloat(invoice.outstanding_amount).toFixed(2)}</td>
         `;
         tbody.appendChild(row);
@@ -3449,6 +3449,68 @@ function showApprovalModal(transaction) {
     const modal = document.getElementById('approvalDetailsModal');
     const content = document.getElementById('approvalDetailsContent');
     
+    // Build invoices table if available
+    let invoicesHtml = '';
+    if (transaction.invoices && transaction.invoices.length > 0) {
+        invoicesHtml = `
+            <div class="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-3">
+                    <svg class="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+                        <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+                    </svg>
+                    <h3 class="text-sm font-bold text-blue-900">📦 Invoices Included in Settlement</h3>
+                    <span class="ml-auto px-2 py-1 bg-blue-200 text-blue-900 text-xs font-bold rounded-full">${transaction.invoices.length} invoice(s)</span>
+                </div>
+                <div class="bg-white border border-blue-200 rounded-lg overflow-hidden">
+                    <table class="min-w-full divide-y divide-blue-200">
+                        <thead class="bg-blue-100">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">#</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">Invoice/Order #</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-blue-900">Date</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-blue-900">Amount</th>
+                                <th class="px-3 py-2 text-right text-xs font-semibold text-blue-900">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-blue-100">
+                            ${transaction.invoices.map((invoice, index) => `
+                                <tr class="hover:bg-blue-50">
+                                    <td class="px-3 py-2 text-xs text-gray-600">${index + 1}</td>
+                                    <td class="px-3 py-2 text-sm font-medium text-gray-900">
+                                        ${invoice.order_id ? `<a href="/orders/${invoice.order_id}" target="_blank" class="text-blue-600 hover:text-blue-800 hover:underline">${invoice.order_number}</a>` : invoice.order_number}
+                                    </td>
+                                    <td class="px-3 py-2 text-xs text-gray-600">${invoice.date}</td>
+                                    <td class="px-3 py-2 text-sm text-right font-medium text-gray-900">Rs. ${parseFloat(invoice.amount).toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+                                    <td class="px-3 py-2 text-xs text-right">
+                                        ${invoice.settlement_status === 'settled' 
+                                            ? '<span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-full font-semibold">✓ Settled</span>'
+                                            : invoice.settled_amount > 0
+                                                ? '<span class="inline-flex items-center px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full font-semibold">⚡ Partial</span>'
+                                                : '<span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-full font-semibold">○ Open</span>'
+                                        }
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                        <tfoot class="bg-blue-100">
+                            <tr>
+                                <td colspan="3" class="px-3 py-2 text-sm font-semibold text-blue-900">Total</td>
+                                <td class="px-3 py-2 text-sm text-right font-bold text-blue-900">Rs. ${transaction.invoices.reduce((sum, inv) => sum + parseFloat(inv.amount), 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                ${transaction.total_outstanding ? `
+                    <div class="mt-3 text-xs text-blue-800">
+                        <span class="font-medium">Total Outstanding at Settlement:</span> Rs. ${parseFloat(transaction.total_outstanding).toLocaleString('en-US', {minimumFractionDigits: 2})}
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+    
     // Format approval details (no header, it's in the modal structure now)
     let html = `
         <div class="space-y-4">
@@ -3482,6 +3544,7 @@ function showApprovalModal(transaction) {
                     <p class="text-base text-gray-900">${transaction.description}</p>
                 </div>
             </div>
+            ${invoicesHtml}
         </div>
     `;
     

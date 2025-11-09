@@ -94,6 +94,10 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/{id}/rider/assign', [\App\Http\Controllers\CRM\OrderRiderController::class, 'assign'])->name('orders.rider.assign');
     Route::get('/orders/{id}/rider/timeline', [\App\Http\Controllers\CRM\OrderRiderController::class, 'timeline'])->name('orders.rider.timeline');
     Route::get('/riders/active', [\App\Http\Controllers\CRM\RiderController::class, 'active'])->name('riders.active');
+    
+    // Payment method APIs
+    Route::post('/orders/api/change-payment-method', [OrderController::class, 'changePaymentMethod'])->name('orders.api.change-payment-method');
+    Route::get('/orders/{id}/payment-method/timeline', [OrderController::class, 'getPaymentMethodTimeline'])->name('orders.payment-method.timeline');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
     
@@ -402,6 +406,14 @@ Route::middleware(['auth'])->group(function () {
                 Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'approve'])->name('approve');
                 Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'reject'])->name('reject');
             });
+            
+           // Ledger Audit Routes (for detecting and fixing ledger integrity issues)
+           Route::prefix('audit')->name('audit.')->group(function () {
+               Route::get('/report', [\App\Http\Controllers\FIN\LedgerAuditController::class, 'getAuditReport'])->name('report');
+               Route::post('/fix-missing-invoices', [\App\Http\Controllers\FIN\LedgerAuditController::class, 'fixMissingInvoices'])->name('fix-missing-invoices');
+               Route::post('/fix-missing-expenses', [\App\Http\Controllers\FIN\LedgerAuditController::class, 'fixMissingExpenses'])->name('fix-missing-expenses');
+               Route::post('/fix-incomplete-settlements', [\App\Http\Controllers\FIN\LedgerAuditController::class, 'fixIncompleteSettlements'])->name('fix-incomplete-settlements');
+           });
         });
         
         // Expense Management & Settlement Routes

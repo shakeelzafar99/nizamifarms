@@ -440,8 +440,8 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Fetch order
-            $order = \App\Models\CRM\OrderModel::find($id);
+            // Fetch order WITH customer relationship eagerly loaded for ledger posting
+            $order = \App\Models\CRM\OrderModel::with('customer')->find($id);
 
             if (!$order) {
                 return response()->json([
@@ -2165,14 +2165,15 @@ class RiderController extends Controller
             
             // Format for mobile
             $formattedOrders = $orders->map(function($order) {
-                // Build customer name (same logic as webapp)
-                $customerName = $order->name ?? 'N/A';
-                if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
-                    $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
-                }
-                if ($customerName === 'N/A' && $order->customer) {
-                    $customerName = $order->customer->name ?? 'Unknown';
-                }
+            // Build customer name (same logic as webapp)
+            $customerName = $order->name ?? 'N/A';
+            if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
+                $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+            }
+            if ($customerName === 'N/A' && $order->customer) {
+                // Customer table has first_name and last_name, not name
+                $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: 'Unknown';
+            }
                 
                 // Check if customer has verified location
                 $hasVerifiedLocation = false;
@@ -2263,6 +2264,248 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch open orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get open orders (lightweight for list view)
+     * Returns minimal data for fast loading, use getStoreOpenOrderDetails for full data
+     */
+    public function getStoreOpenOrdersLight(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view open orders'
+                ], 403);
+            }
+            
+            // Get status filter if provided
+            $statusFilter = $request->get('status', null);
+            
+            // Build optimized query - load line items for immediate "mark prepared" functionality
+            // Note: Not using select() to avoid column name issues - optimization is in relationships
+            $query = OrderModel::with(['customer' => function($q) {
+                    $q->select('id', 'first_name', 'last_name', 'latitude', 'longitude', 'verified_location_url');
+                }])
+                ->with(['assignedRider' => function($q) {
+                    $q->select('id', 'fullname');
+                }])
+                ->with(['lineItems' => function($q) {
+                    // Load essential line item fields for marking prepared
+                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status');
+                }])
+                ->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')
+                      ->orWhereNull('external_source');
+                })
+                ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+            
+            // Apply status filter if provided
+            if ($statusFilter) {
+                $query->where('order_status', $statusFilter);
+            }
+            
+            // Order by date
+            $orders = $query->orderBy('order_date', 'desc')->get();
+            
+            // Get preparation summaries in single query (avoid N+1)
+            $prepSummaries = \DB::table('t_crm_prod_order_line_item')
+                ->whereIn('order_id', $orders->pluck('id'))
+                ->groupBy('order_id')
+                ->selectRaw('order_id, COUNT(*) as total, SUM(CASE WHEN preparation_status = "preparing" THEN 1 ELSE 0 END) as preparing')
+                ->get()
+                ->keyBy('order_id');
+            
+            // Format for mobile (lightweight)
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries) {
+                // Build customer name
+                $customerName = $order->name ?? 'N/A';
+                if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
+                    $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+                }
+                if ($customerName === 'N/A' && $order->customer) {
+                    // Customer table has first_name and last_name, not name
+                    $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: 'Unknown';
+                }
+                
+                // Check verified location
+                $hasVerifiedLocation = false;
+                if ($order->customer) {
+                    $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
+                                        || !empty($order->customer->verified_location_url);
+                }
+                
+                // Get preparation summary from pre-fetched data
+                $prepSummary = $prepSummaries[$order->id] ?? null;
+                
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'order_date' => $order->order_date,
+                    'order_status' => $order->order_status,
+                    'total_price' => $order->total_price,
+                    'customer_name' => $customerName,
+                    // Eager address/phone for immediate display on list
+                    'customer_address' => trim(implode(', ', array_filter([
+                        $order->address_line1,
+                        $order->address_line2,
+                        $order->address_city,
+                        $order->address_province
+                    ]))),
+                    'customer_phone' => $order->address_phone ?? ($order->customer->phone_original ?? null),
+                    'assigned_rider_id' => $order->assigned_rider_user_id,
+                    'assigned_rider' => $order->assignedRider ? [
+                        'id' => $order->assignedRider->id,
+                        'name' => $order->assignedRider->fullname,
+                    ] : null,
+                    'preparation_summary' => [
+                        'preparing_count' => $prepSummary->preparing ?? 0,
+                        'total_items' => $prepSummary->total ?? 0,
+                    ],
+                    'has_verified_location' => $hasVerifiedLocation,
+                    'external_source' => $order->external_source,
+                    'line_items' => $order->lineItems->map(function($item) {
+                        return [
+                            'id' => $item->id,
+                            'product_name' => $item->name ?? 'N/A',
+                            'variant_name' => $item->sku ?? '',
+                            'quantity' => $item->quantity,
+                            'unit_price' => $item->unit_price,
+                            'line_total' => $item->line_total,
+                            'preparation_status' => $item->preparation_status,
+                        ];
+                    }),
+                ];
+            });
+            
+            return response()->json([
+                'success' => true,
+                'orders' => $formattedOrders,
+                'total_count' => $formattedOrders->count()
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch store open orders (light)', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch open orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Get full order details (for expanded view)
+     */
+    public function getStoreOpenOrderDetails($orderId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view open orders'
+                ], 403);
+            }
+            
+            // Get full order with all relationships
+            $order = OrderModel::with(['customer', 'lineItems', 'assignedRider', 'discounts'])
+                ->findOrFail($orderId);
+            
+            // Build customer name
+            $customerName = $order->name ?? 'N/A';
+            if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
+                $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+            }
+            if ($customerName === 'N/A' && $order->customer) {
+                $customerName = $order->customer->name ?? 'Unknown';
+            }
+            
+            // Check verified location
+            $hasVerifiedLocation = false;
+            if ($order->customer) {
+                $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
+                                    || !empty($order->customer->verified_location_url);
+            }
+            
+            // Generate invoice URLs
+            $invoiceImageUrl = route('orders.invoice.pdf', ['id' => $order->id, 'download_image' => 1]);
+            $invoicePdfUrl = route('orders.invoice.pdf', ['id' => $order->id, 'force_pdf' => 1]);
+            
+            return response()->json([
+                'success' => true,
+                'order' => [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'order_date' => $order->order_date,
+                    'order_status' => $order->order_status,
+                    'total_price' => $order->total_price,
+                    'payment_method' => $order->payment_method,
+                    'expected_packets' => $order->expected_packets,
+                    'customer_name' => $customerName,
+                    'customer_phone' => $order->customer->phone_original ?? $order->customer->phone ?? $order->address_phone ?? '',
+                    'customer_address' => $order->customer->address1 ?? $order->address_address ?? '',
+                    'customer_address1' => $order->customer->address1 ?? '',
+                    'customer_address2' => $order->customer->address2 ?? '',
+                    'customer_city' => $order->customer->city ?? '',
+                    'customer_province' => $order->customer->province ?? '',
+                    'customer_postal_code' => $order->customer->postal_code ?? '',
+                    'customer_id' => $order->customer_id,
+                    'has_verified_location' => $hasVerifiedLocation,
+                    'items_count' => $order->lineItems->count(),
+                    'items_summary' => $order->lineItems->map(function($item) {
+                        return $item->name . ' (x' . $item->quantity . ')';
+                    })->join(', '),
+                    'line_items' => $order->lineItems->map(function($item) {
+                        return [
+                            'id' => $item->id,
+                            'product_name' => $item->name ?? 'N/A',
+                            'variant_name' => $item->sku ?? '',
+                            'quantity' => $item->quantity,
+                            'unit_price' => $item->unit_price,
+                            'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
+                            'line_total' => $item->line_total,
+                            'total' => $item->line_total,
+                            'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                            'preparation_status' => $item->preparation_status,
+                        ];
+                    }),
+                    'shipping_total' => $order->shipping_total ?? 0,
+                    'tip_amount' => $order->tip_amount ?? 0,
+                    'discounts' => $order->discounts ? $order->discounts->map(function($discount) {
+                        return [
+                            'discount_amount' => $discount->discount_amount,
+                            'discount_type' => $discount->discount_type,
+                        ];
+                    })->toArray() : [],
+                    'invoice' => [
+                        'image_url' => $invoiceImageUrl,
+                        'pdf_url' => $invoicePdfUrl,
+                    ],
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch order details', [
+                'user_id' => Auth::id(),
+                'order_id' => $orderId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch order details: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -2558,6 +2801,25 @@ class RiderController extends Controller
             foreach ($filters as $field => $value) {
                 if ($field === 'product_name') {
                     $query->where('li.name', $value);
+                } elseif ($field === 'product_ids') {
+                    // CSV or array
+                    if (is_string($value)) {
+                        $ids = array_filter(array_map('intval', explode(',', $value)));
+                    } else {
+                        $ids = array_map('intval', (array)$value);
+                    }
+                    if (!empty($ids)) {
+                        $query->where(function($q) use ($ids) {
+                            $q->whereIn('li.product_id', $ids)
+                              ->orWhereIn('p.id', $ids);
+                        });
+                    }
+                } elseif ($field === 'product_id') {
+                    // Keep consistency between product level and orders level filtering
+                    $query->where(function($q) use ($value) {
+                        $q->where('li.product_id', $value)
+                          ->orWhere('p.id', $value);
+                    });
                 } elseif ($field === 'product_type') {
                     $query->where(function($q) use ($value) {
                         if ($value === 'Uncategorized') {
@@ -2608,7 +2870,7 @@ class RiderController extends Controller
                 // Product level
                 $results = $query->select([
                     'li.name as name',
-                    'li.product_id',
+                    DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
                     DB::raw('SUM(li.quantity) as quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
@@ -2616,7 +2878,7 @@ class RiderController extends Controller
                     DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity'),
                     DB::raw('COUNT(DISTINCT o.id) as order_count')
                 ])
-                ->groupBy('li.name', 'li.product_id')
+                ->groupBy('li.name')
                 ->orderBy('quantity', 'desc')
                 ->get();
             } else {
@@ -2685,6 +2947,9 @@ class RiderController extends Controller
                 } else {
                     $result['order_count'] = (int) ($item->order_count ?? 0);
                     $result['product_count'] = isset($item->product_count) ? (int) $item->product_count : null;
+                    if ($currentField === 'product_name') {
+                        $result['product_id'] = $item->product_id ?? null;
+                    }
                 }
                 
                 return $result;

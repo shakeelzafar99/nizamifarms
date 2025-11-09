@@ -392,7 +392,7 @@ class EmployeeCashController extends Controller
 
         // Get ledger transactions
         $ledger = $ledgerQuery
-            ->with(['fromAccount', 'toAccount'])
+            ->with(['fromAccount', 'toAccount', 'order.customer'])
             ->orderBy('transaction_date', 'desc')
             ->orderBy('created_at', 'desc')
             ->paginate(50);

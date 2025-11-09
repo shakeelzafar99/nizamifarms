@@ -37,6 +37,11 @@ class LedgerPostingService
             if ($order->order_status !== 'delivered') {
                 return ['success' => false, 'message' => 'Order must be delivered to post to ledger'];
             }
+            
+            // Load customer relationship if not already loaded
+            if (!$order->relationLoaded('customer')) {
+                $order->load('customer');
+            }
 
             DB::beginTransaction();
 
@@ -87,11 +92,38 @@ class LedgerPostingService
                 throw new \Exception("Destination account not found");
             }
 
+            // Build description with customer name
+            // Use SAME priority as web app for customer name
+            $customerName = 'Unknown Customer';
+            
+            // PRIORITY 1: order.name field (customer name from address)
+            if (!empty($order->name) && trim($order->name)) {
+                $customerName = trim($order->name);
+            }
+            // PRIORITY 2: customer relationship
+            elseif ($order->customer) {
+                if (!empty($order->customer->full_name) && trim($order->customer->full_name)) {
+                    $customerName = trim($order->customer->full_name);
+                } elseif (!empty($order->customer->name) && trim($order->customer->name)) {
+                    $customerName = trim($order->customer->name);
+                }
+            }
+            // PRIORITY 3: Fallback to address fields
+            else {
+                $firstName = trim($order->address_first_name ?? '');
+                $lastName = trim($order->address_last_name ?? '');
+                if ($firstName || $lastName) {
+                    $customerName = trim("{$firstName} {$lastName}");
+                }
+            }
+            
+            $description = "Invoice #{$order->order_number} - Delivered ({$customerName})";
+            
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => now(),
                 'transaction_type' => LedgerModel::TYPE_INVOICE,
-                'description' => "Invoice #{$order->order_number} - Delivered",
+                'description' => $description,
                 'from_account_id' => $salesAccount->id,
                 'to_account_id' => $toAccount->id,
                 'amount' => $order->total_price,

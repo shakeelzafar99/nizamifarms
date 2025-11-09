@@ -1877,6 +1877,26 @@ class OrderController extends Controller
             foreach ($filters as $field => $value) {
                 if ($field === 'product_name') {
                     $query->where('li.name', $value);
+                } elseif ($field === 'product_ids') {
+                    // Accept CSV or JSON array of ids
+                    if (is_string($value)) {
+                        $ids = array_filter(array_map('intval', explode(',', $value)));
+                    } else {
+                        $ids = array_map('intval', (array)$value);
+                    }
+                    if (!empty($ids)) {
+                        $query->where(function($q) use ($ids) {
+                            $q->whereIn('li.product_id', $ids)
+                              ->orWhereIn('p.id', $ids);
+                        });
+                    }
+                } elseif ($field === 'product_id') {
+                    // Ensure product filter is consistent between levels:
+                    // Some line items may have product_id set, others only join via p.id
+                    $query->where(function($q) use ($value) {
+                        $q->where('li.product_id', $value)
+                          ->orWhere('p.id', $value);
+                    });
                 } elseif ($field === 'product_type') {
                     $query->where(function($q) use ($value) {
                         if ($value === 'Uncategorized') {
@@ -1934,9 +1954,11 @@ class OrderController extends Controller
                     ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
                     ->orderBy('o.order_date', 'desc');
             } elseif ($currentField === 'product_name') {
+                // Group strictly by product name to merge duplicate products with same title
+                // Also return the set of product_ids that share this name so drill-down can filter correctly
                 $query->select([
                     'li.name as group_name',
-                    'li.product_id',
+                    \DB::raw('GROUP_CONCAT(DISTINCT COALESCE(li.product_id, p.id)) as product_ids'),
                     \DB::raw('SUM(li.quantity) as total_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
@@ -1945,7 +1967,7 @@ class OrderController extends Controller
                     \DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
                 ])
-                ->groupBy('li.name', 'li.product_id');
+                ->groupBy('li.name');
             } else {
                 // Use COALESCE to handle null fields by showing as 'Uncategorized'
                 $query->select([
@@ -2393,10 +2415,24 @@ class OrderController extends Controller
                 'order_ids' => 'required|array',
                 'order_ids.*' => 'required|integer',
                 'preparation_status' => 'nullable|in:preparing',
+                'product_ids' => 'sometimes', // CSV string or array; optional
+                'product_name' => 'sometimes|string|nullable'
             ]);
             
             $orderIds = $request->input('order_ids');
             $preparationStatus = $request->input('preparation_status');
+            $productIdsInput = $request->input('product_ids');
+            $productNameFilter = $request->input('product_name');
+            
+            // Normalize product ids (accept CSV string or array)
+            $productIds = [];
+            if (!empty($productIdsInput)) {
+                if (is_string($productIdsInput)) {
+                    $productIds = array_filter(array_map('intval', explode(',', $productIdsInput)));
+                } elseif (is_array($productIdsInput)) {
+                    $productIds = array_filter(array_map('intval', $productIdsInput));
+                }
+            }
             
             // If preparation_status is empty string or null, set to null
             if (empty($preparationStatus)) {
@@ -2425,11 +2461,20 @@ class OrderController extends Controller
                     continue;
                 }
                 
-                // Update all line items for this order
+                // Determine which line items to update:
+                $lineItemsQuery = $order->lineItems()->newQuery();
+                if (!empty($productIds)) {
+                    $lineItemsQuery->whereIn('product_id', $productIds)->orWhereIn('product_id', array_filter($productIds));
+                }
+                if (!empty($productNameFilter)) {
+                    $lineItemsQuery->orWhere('name', $productNameFilter);
+                }
+                // If no product filter was provided, update all
+                $lineItemsToUpdate = (!empty($productIds) || !empty($productNameFilter)) ? $lineItemsQuery->get() : $order->lineItems;
+
                 $updatedInOrder = 0;
-                foreach ($order->lineItems as $lineItem) {
+                foreach ($lineItemsToUpdate as $lineItem) {
                     $lineItem->preparation_status = $preparationStatus;
-                    // Only set updated_by if user is authenticated
                     if (auth()->id()) {
                         $lineItem->updated_by = auth()->id();
                     }
@@ -2675,6 +2720,80 @@ class OrderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Failed to read attribute priority map: ' . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * Change payment method for an order
+     */
+    public function changePaymentMethod(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'order_id' => 'required|integer|exists:t_crm_prod_order,id',
+                'payment_method' => 'required|string|in:cash,online',
+                'notes' => 'nullable|string|max:500'
+            ]);
+
+            $order = OrderModel::findOrFail($validated['order_id']);
+            $oldMethod = $order->payment_method;
+            $newMethod = $validated['payment_method'];
+
+            // Map to existing system values (reuse web app conventions)
+            // - Cash → cash_on_delivery
+            // - Online → online
+            $mappedMethod = $newMethod === 'cash' ? 'cash_on_delivery' : 'online';
+
+            // Update order payment method only (no history table dependency)
+            $order->payment_method = $mappedMethod;
+            $order->save();
+
+            \Log::info('Payment method changed', [
+                'order_id' => $order->id,
+                'old_method' => $oldMethod,
+                'new_method' => $mappedMethod,
+                'user_id' => auth()->id()
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment method updated successfully',
+                'order' => $order
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to change payment method: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update payment method: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get payment method change timeline for an order
+     */
+    public function getPaymentMethodTimeline($orderId)
+    {
+        try {
+            $history = \DB::table('t_crm_order_payment_method_history')
+                ->where('order_id', $orderId)
+                ->orderBy('changed_at', 'desc')
+                ->limit(10)
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $history
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get payment method timeline: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load timeline',
+                'data' => []
+            ]);
         }
     }
 }

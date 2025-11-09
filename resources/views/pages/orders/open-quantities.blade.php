@@ -1230,7 +1230,7 @@ function renderTable(data, summary) {
                 <tr>
                     <td>
                         ${canDrillDown ? 
-                            `<span class="drill-btn" onclick="drillDown('${escapeHtml(item.group_name)}')">
+                            `<span class="drill-btn" onclick="drillDown('${escapeHtml(item.group_name)}', ${item.product_ids ? '`' + (String(item.product_ids)).replace(/`/g,'\\`') + '`' : (item.product_id !== undefined ? (item.product_id ?? 'null') : 'null')})">
                                 <span class="icon">▶</span>
                                 <strong>${escapeHtml(item.group_name || 'Unknown')}</strong>
                             </span>` :
@@ -1266,7 +1266,7 @@ function renderTable(data, summary) {
                     </td>
                     <td class="text-right">
                         ${canDrillDown ? 
-                            `<button onclick="drillDown('${escapeHtml(item.group_name)}')" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
+                            `<button onclick="drillDown('${escapeHtml(item.group_name)}', ${item.product_ids ? '`' + (String(item.product_ids)).replace(/`/g,'\\`') + '`' : (item.product_id !== undefined ? (item.product_id ?? 'null') : 'null')})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
                                 View Details
                             </button>` :
                             '<span class="text-gray-400">—</span>'
@@ -1279,18 +1279,27 @@ function renderTable(data, summary) {
 }
 
 // Drill down to next level
-function drillDown(groupName) {
+function drillDown(groupName, productIdsOrSingle = null) {
     const currentField = window.openQtyState.hierarchy[window.openQtyState.currentLevel];
     
     // Add to breadcrumbs
     window.openQtyState.breadcrumbs.push({
         field: currentField,
         value: groupName,
-        label: groupName
+        label: groupName,
+        product_id: Array.isArray(productIdsOrSingle) ? null : productIdsOrSingle,
+        product_ids: Array.isArray(productIdsOrSingle) ? productIdsOrSingle : (typeof productIdsOrSingle === 'string' && productIdsOrSingle.includes(',') ? productIdsOrSingle.split(',').map(id => parseInt(id)) : null)
     });
     
     // Update filters
     window.openQtyState.filters[currentField] = groupName;
+    // If we're drilling down from product level, also carry product_ids to keep filters consistent
+    if (currentField === 'product_name') {
+        const ids = (Array.isArray(productIdsOrSingle) ? productIdsOrSingle : (typeof productIdsOrSingle === 'string' ? productIdsOrSingle.split(',').map(id => parseInt(id)) : (productIdsOrSingle ? [productIdsOrSingle] : [])));
+        if (ids && ids.length > 0) {
+            window.openQtyState.filters['product_ids'] = ids.join(',');
+        }
+    }
     
     // Move to next level
     window.openQtyState.currentLevel++;
@@ -1311,6 +1320,13 @@ function navigateBreadcrumb(level) {
     window.openQtyState.filters = {};
     window.openQtyState.breadcrumbs.forEach(bc => {
         window.openQtyState.filters[bc.field] = bc.value;
+        if (bc.field === 'product_name') {
+            if (bc.product_ids && bc.product_ids.length > 0) {
+                window.openQtyState.filters['product_ids'] = bc.product_ids.join(',');
+            } else if (bc.product_id) {
+                window.openQtyState.filters['product_id'] = bc.product_id;
+            }
+        }
     });
     
     // Update level

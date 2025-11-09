@@ -985,6 +985,11 @@ class OrderModel extends BaseModel
                 // 4. If status changed to 'delivered', post invoice to ledger
                 if ($statusCode === 'delivered') {
                     try {
+                        // Ensure customer relationship is loaded for ledger description
+                        if (!$this->relationLoaded('customer')) {
+                            $this->load('customer');
+                        }
+                        
                         $ledgerService = new \App\Services\FIN\LedgerPostingService();
                         $result = $ledgerService->postInvoiceFromOrder($this);
                         

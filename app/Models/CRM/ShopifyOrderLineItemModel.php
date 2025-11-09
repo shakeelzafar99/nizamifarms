@@ -32,9 +32,46 @@ class ShopifyOrderLineItemModel extends BaseModel
         'updated_by',
     ];
 
+    /**
+     * The accessors to append to the model's array form for mobile app compatibility
+     */
+    protected $appends = ['product_name', 'title', 'unit_price_formatted', 'total_formatted'];
+
     public function variant(): BelongsTo
     {
         return $this->belongsTo(ProductVariantModel::class, 'variant_id');
+    }
+
+    /**
+     * Accessor for product_name (mobile app expects this field)
+     */
+    public function getProductNameAttribute(): ?string
+    {
+        return $this->name;
+    }
+
+    /**
+     * Accessor for title (alternative field name for product name)
+     */
+    public function getTitleAttribute(): ?string
+    {
+        return $this->name;
+    }
+
+    /**
+     * Accessor for formatted unit price
+     */
+    public function getUnitPriceFormattedAttribute(): string
+    {
+        return 'Rs. ' . number_format($this->unit_price ?? 0, 2);
+    }
+
+    /**
+     * Accessor for formatted total
+     */
+    public function getTotalFormattedAttribute(): string
+    {
+        return 'Rs. ' . number_format($this->line_total ?? 0, 2);
     }
 
     public function getDisplaySkuAttribute(): string

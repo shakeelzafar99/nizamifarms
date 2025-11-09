@@ -21,7 +21,7 @@ class LedgerController extends Controller
         $startDate = $request->start_date ?? now()->startOfMonth()->format('Y-m-d');
         $endDate = $request->end_date ?? now()->endOfMonth()->format('Y-m-d');
         
-        $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy']);
+        $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer']);
 
         // Filter by date range
         if ($startDate) {
@@ -372,7 +372,7 @@ class LedgerController extends Controller
      */
     public function show($id)
     {
-        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'approvedBy', 'order', 'request'])
+        $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'approvedBy', 'order.customer', 'request'])
                                   ->findOrFail($id);
 
         return view('fin.ledger.show', compact('transaction'));
@@ -696,8 +696,30 @@ class LedgerController extends Controller
     public function getApprovalDetails($id)
     {
         try {
-            $transaction = LedgerModel::with(['approvedBy', 'fromAccount', 'toAccount'])
+            $transaction = LedgerModel::with(['approvedBy', 'fromAccount', 'toAccount', 'order'])
                 ->findOrFail($id);
+            
+            // Get invoice details if this is a settlement transaction
+            $invoices = [];
+            if ($transaction->settlement_metadata && isset($transaction->settlement_metadata['invoice_ids'])) {
+                $invoiceIds = $transaction->settlement_metadata['invoice_ids'];
+                $invoiceModels = LedgerModel::whereIn('id', $invoiceIds)
+                    ->with('order')
+                    ->orderBy('transaction_date', 'asc')
+                    ->get();
+                
+                foreach ($invoiceModels as $invoice) {
+                    $invoices[] = [
+                        'id' => $invoice->id,
+                        'order_number' => $invoice->order ? $invoice->order->order_number : 'Invoice #' . $invoice->id,
+                        'order_id' => $invoice->order_id,
+                        'date' => $invoice->transaction_date->format('M j, Y'),
+                        'amount' => $invoice->amount,
+                        'settlement_status' => $invoice->settlement_status,
+                        'settled_amount' => $invoice->settled_amount ?? 0
+                    ];
+                }
+            }
             
             return response()->json([
                 'success' => true,
@@ -711,6 +733,8 @@ class LedgerController extends Controller
                     'approver_name' => $transaction->approvedBy ? $transaction->approvedBy->fullname : 'System',
                     'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : null,
                     'to_account' => $transaction->toAccount ? $transaction->toAccount->account_name : null,
+                    'invoices' => $invoices,
+                    'total_outstanding' => $transaction->settlement_metadata['total_outstanding'] ?? null
                 ]
             ]);
             
