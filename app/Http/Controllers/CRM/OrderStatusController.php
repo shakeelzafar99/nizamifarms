@@ -127,9 +127,68 @@ class OrderStatusController extends Controller
         $request->validate([
             'order_id' => 'required|integer|exists:t_crm_prod_order,id',
             'status_code' => 'required|string|exists:t_crm_order_status_master,status_code',
-            'notes' => 'nullable|string|max:1000'
+            'notes' => 'nullable|string|max:1000',
+            'confirmed' => 'nullable|boolean' // For ledger reversal confirmation
         ]);
 
+        // ================================================================
+        // LEDGER REVERSAL DETECTION FOR CANCELLATION
+        // ================================================================
+        // Check if changing to 'cancelled' and order has ledger entry
+        if ($request->status_code === 'cancelled') {
+            $order = OrderModel::find($request->order_id);
+            
+            if ($order && $order->ledger_transaction_id) {
+                $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
+                
+                if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
+                    // Check if ledger is settled
+                    if ($ledger->settlement_status === 'settled') {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Cannot cancel order: Invoice has already been settled. Please reverse the settlement first.',
+                            'error_type' => 'already_settled'
+                        ], 422);
+                    }
+                    
+                    // Check for partial settlement
+                    if ($ledger->settlement_status === 'partial' || ($ledger->settled_amount > 0)) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Cannot cancel order: Invoice has partial settlement. Please reverse the settlement first.',
+                            'error_type' => 'partial_settlement'
+                        ], 422);
+                    }
+                    
+                    // Require confirmation if not already confirmed
+                    if (!$request->has('confirmed') || !$request->confirmed) {
+                        // Get rider name for display
+                        $riderName = 'Unknown';
+                        if ($ledger->mode === \App\Models\FIN\LedgerModel::MODE_CASH && $order->assigned_rider_user_id) {
+                            $rider = \App\Models\User::find($order->assigned_rider_user_id);
+                            $riderName = $rider ? ($rider->fullname ?? $rider->name) : 'Unknown';
+                        } elseif ($ledger->mode === \App\Models\FIN\LedgerModel::MODE_ONLINE) {
+                            $riderName = 'Online Bank Account';
+                        }
+                        
+                        return response()->json([
+                            'success' => false,
+                            'requires_confirmation' => true,
+                            'confirmation_data' => [
+                                'message' => 'Order cancellation will reverse ledger entry',
+                                'order_number' => $order->order_number,
+                                'amount' => $order->total_price,
+                                'ledger_mode' => $ledger->mode,
+                                'account_name' => $riderName,
+                                'ledger_id' => $ledger->id
+                            ]
+                        ], 200);
+                    }
+                }
+            }
+        }
+
+        // Proceed with status change (ledger reversal will happen in OrderModel::changeStatus)
         $result = $this->statusService->changeOrderStatus(
             $request->order_id,
             $request->status_code,

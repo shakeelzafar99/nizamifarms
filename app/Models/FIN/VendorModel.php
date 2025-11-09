@@ -35,6 +35,8 @@ class VendorModel extends BaseModel
     protected $casts = [
         'is_active' => 'boolean'
     ];
+    
+    protected $appends = ['purchase_method'];
 
     /**
      * Relationships
@@ -97,6 +99,14 @@ class VendorModel extends BaseModel
     public function getFormattedBalanceAttribute()
     {
         return number_format($this->getBalance(), 2);
+    }
+    
+    /**
+     * Accessor for purchase_method (maps to default_purchase_method for API consistency)
+     */
+    public function getPurchaseMethodAttribute()
+    {
+        return $this->default_purchase_method;
     }
 
     public function getTotalPurchases()

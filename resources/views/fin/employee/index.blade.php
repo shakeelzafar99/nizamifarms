@@ -55,81 +55,86 @@
         </form>
     </div>
 
-    <!-- Audit Modal -->
-    <div id="auditModal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-        <div class="bg-white rounded-lg shadow-2xl max-w-6xl w-full flex flex-col" style="max-height: 90vh;">
-            <!-- Modal Header -->
-            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4 border-b border-purple-700 flex-shrink-0 rounded-t-lg">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-                        </svg>
-                        <h2 class="text-xl font-bold text-white">Ledger Audit Report</h2>
+    <!-- Audit Modal - Elegant Design (Matching Vendor Modal Style) -->
+    <div id="auditModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+        <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+            <!-- Fixed Header -->
+            <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #60a5fa, #818cf8); display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 2px 8px rgba(96, 165, 250, 0.3);">
+                        🔍
                     </div>
-                    <button onclick="closeAuditModal()" class="text-white hover:text-gray-200 text-2xl font-bold leading-none">
-                        ×
-                    </button>
+                    <div>
+                        <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Ledger Audit Report</h3>
+                        <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Comprehensive integrity and consistency checks</p>
+                    </div>
                 </div>
+                <button type="button" onclick="closeAuditModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
             </div>
-
+            
             <!-- Date Filter Section -->
-            <div class="bg-gray-50 px-6 py-3 border-b border-gray-200 flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
-                        <input type="checkbox" id="auditIncludeLegacy" onchange="toggleAuditDateFilter()" class="rounded border-gray-300 text-purple-600 focus:ring-purple-500">
+            <div style="padding: 16px 24px; border-bottom: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; color: #374151;">
+                        <input type="checkbox" id="auditIncludeLegacy" onchange="toggleAuditDateFilter()" style="width: 16px; height: 16px; border-radius: 4px; border: 1px solid #d1d5db; cursor: pointer;">
                         <span>Include records before Nov 1, 2025</span>
                     </label>
-                    <div id="auditCustomDateRange" class="hidden flex items-center gap-2">
-                        <span class="text-sm text-gray-600">From:</span>
-                        <input type="date" id="auditStartDate" value="2025-11-01" class="px-2 py-1 text-sm border border-gray-300 rounded">
-                        <span class="text-sm text-gray-600">To:</span>
-                        <input type="date" id="auditEndDate" value="{{ date('Y-m-d') }}" class="px-2 py-1 text-sm border border-gray-300 rounded">
+                    <div id="auditCustomDateRange" style="display: none; align-items: center; gap: 8px; font-size: 13px;">
+                        <span style="color: #6b7280;">From:</span>
+                        <input type="date" id="auditStartDate" value="2025-11-01" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none;">
+                        <span style="color: #6b7280;">To:</span>
+                        <input type="date" id="auditEndDate" value="{{ date('Y-m-d') }}" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none;">
                     </div>
-                    <button onclick="refreshAuditReport()" class="ml-auto px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold rounded">
+                    <button onclick="refreshAuditReport()" style="margin-left: auto; padding: 8px 16px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; font-weight: 600; font-size: 13px; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3); transition: all 0.15s;">
                         🔄 Refresh
                     </button>
                 </div>
             </div>
 
-            <!-- Modal Content (Scrollable) -->
-            <div class="p-6 overflow-y-auto flex-1">
+            <!-- Scrollable Content -->
+            <div style="overflow-y: auto; flex: 1; padding: 24px;">
                 <!-- Loading State -->
-                <div id="auditLoading" class="text-center py-12">
-                    <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-                    <p class="mt-4 text-gray-600">Running audit checks...</p>
+                <div id="auditLoading" style="text-center; padding: 48px 0;">
+                    <div style="display: inline-block; width: 48px; height: 48px; border: 4px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                    <p style="margin-top: 16px; font-size: 16px; font-weight: 500; color: #6b7280;">Running audit checks...</p>
                 </div>
 
                 <!-- Summary Section -->
-                <div id="auditSummary" class="hidden mb-6 grid grid-cols-3 gap-4">
-                    <div class="bg-gradient-to-br from-red-50 to-red-100 border-2 border-red-300 rounded-lg p-4 text-center">
-                        <div class="text-3xl font-bold text-red-700" id="totalIssues">0</div>
-                        <div class="text-sm font-medium text-red-600 mt-1">Total Issues</div>
+                <div id="auditSummary" style="display: none; margin-bottom: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                    <div style="background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); border: 2px solid #fecaca; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <div style="font-size: 36px; font-weight: 700; color: #dc2626;" id="totalIssues">0</div>
+                        <div style="font-size: 12px; font-weight: 600; color: #991b1b; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Total Issues</div>
                     </div>
-                    <div class="bg-gradient-to-br from-orange-50 to-orange-100 border-2 border-orange-300 rounded-lg p-4 text-center">
-                        <div class="text-3xl font-bold text-orange-700" id="criticalIssues">0</div>
-                        <div class="text-sm font-medium text-orange-600 mt-1">Critical Issues</div>
+                    <div style="background: linear-gradient(135deg, #fff7ed 0%, #fed7aa 100%); border: 2px solid #fdba74; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <div style="font-size: 36px; font-weight: 700; color: #ea580c;" id="criticalIssues">0</div>
+                        <div style="font-size: 12px; font-weight: 600; color: #9a3412; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Critical Issues</div>
                     </div>
-                    <div class="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-300 rounded-lg p-4 text-center">
-                        <div class="text-3xl font-bold text-green-700" id="issueTypes">0</div>
-                        <div class="text-sm font-medium text-green-600 mt-1">Issue Types</div>
+                    <div style="background: linear-gradient(135deg, #f0fdf4 0%, #bbf7d0 100%); border: 2px solid #86efac; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <div style="font-size: 36px; font-weight: 700; color: #059669;" id="issueTypes">0</div>
+                        <div style="font-size: 12px; font-weight: 600; color: #065f46; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Issue Types</div>
                     </div>
                 </div>
 
                 <!-- Issues List -->
-                <div id="auditIssues" class="hidden space-y-4">
+                <div id="auditIssues" style="display: none;">
                     <!-- Will be populated by JavaScript -->
                 </div>
 
                 <!-- No Issues State -->
-                <div id="auditNoIssues" class="hidden text-center py-12">
-                    <div class="text-6xl mb-4">✅</div>
-                    <h3 class="text-2xl font-bold text-green-700 mb-2">All Clear!</h3>
-                    <p class="text-gray-600">No ledger integrity issues detected.</p>
+                <div id="auditNoIssues" style="display: none; text-center; padding: 64px 0;">
+                    <div style="font-size: 80px; margin-bottom: 16px;">✅</div>
+                    <h3 style="font-size: 28px; font-weight: 700; color: #059669; margin-bottom: 8px;">All Clear!</h3>
+                    <p style="font-size: 16px; color: #6b7280;">No ledger integrity issues detected.</p>
                 </div>
             </div>
         </div>
     </div>
+    
+    <style>
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
 
     <!-- Summary KPI Cards (Enhanced - 5 Cards) -->
     <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
@@ -265,39 +270,36 @@
         // ================================================================
         let auditData = null;
 
-        async function openAuditModal() {
-            const modal = document.getElementById('auditModal');
-            modal.classList.remove('hidden');
-            
-            // Prevent background scrolling
-            document.body.style.overflow = 'hidden';
-            
-            await refreshAuditReport();
-        }
+async function openAuditModal() {
+    const modal = document.getElementById('auditModal');
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    
+    await refreshAuditReport();
+}
 
-        function closeAuditModal() {
-            document.getElementById('auditModal').classList.add('hidden');
-            
-            // Restore background scrolling
-            document.body.style.overflow = 'auto';
-        }
+function closeAuditModal() {
+    const modal = document.getElementById('auditModal');
+    modal.style.display = 'none';
+    document.body.style.overflow = 'auto';
+}
 
         function toggleAuditDateFilter() {
             const checkbox = document.getElementById('auditIncludeLegacy');
             const customRange = document.getElementById('auditCustomDateRange');
             
             if (checkbox.checked) {
-                customRange.classList.remove('hidden');
+                customRange.style.display = 'flex';
             } else {
-                customRange.classList.add('hidden');
+                customRange.style.display = 'none';
             }
         }
 
         async function refreshAuditReport() {
-            document.getElementById('auditLoading').classList.remove('hidden');
-            document.getElementById('auditSummary').classList.add('hidden');
-            document.getElementById('auditIssues').classList.add('hidden');
-            document.getElementById('auditNoIssues').classList.add('hidden');
+            document.getElementById('auditLoading').style.display = 'block';
+            document.getElementById('auditSummary').style.display = 'none';
+            document.getElementById('auditIssues').style.display = 'none';
+            document.getElementById('auditNoIssues').style.display = 'none';
             
             // Build query params
             let url = '/finance/ledger/audit/report';
@@ -331,17 +333,17 @@
         }
 
         function displayAuditReport(data) {
-            document.getElementById('auditLoading').classList.add('hidden');
+            document.getElementById('auditLoading').style.display = 'none';
             
             if (data.issues.length === 0) {
-                document.getElementById('auditNoIssues').classList.remove('hidden');
+                document.getElementById('auditNoIssues').style.display = 'block';
                 return;
             }
             
             document.getElementById('totalIssues').textContent = data.summary.total_issues;
             document.getElementById('criticalIssues').textContent = data.summary.critical_issues;
             document.getElementById('issueTypes').textContent = data.summary.issue_types;
-            document.getElementById('auditSummary').classList.remove('hidden');
+            document.getElementById('auditSummary').style.display = 'grid';
             
             const issuesContainer = document.getElementById('auditIssues');
             issuesContainer.innerHTML = '';
@@ -351,7 +353,7 @@
                 issuesContainer.appendChild(issueCard);
             });
             
-            document.getElementById('auditIssues').classList.remove('hidden');
+            document.getElementById('auditIssues').style.display = 'block';
         }
 
         function createIssueCard(issue, index) {

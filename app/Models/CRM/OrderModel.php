@@ -982,7 +982,41 @@ class OrderModel extends BaseModel
                     'new_status' => $this->order_status
                 ]);
 
-                // 4. If status changed to 'delivered', post invoice to ledger
+                // 4. If status changed to 'cancelled', reverse ledger if exists
+                if ($statusCode === 'cancelled' && $this->ledger_transaction_id) {
+                    try {
+                        $ledger = \App\Models\FIN\LedgerModel::find($this->ledger_transaction_id);
+                        
+                        if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
+                            // Check if ledger is settled
+                            if ($ledger->settlement_status === 'settled') {
+                                throw new \Exception('Cannot cancel order: Invoice has already been settled. Please reverse the settlement first.');
+                            }
+                            
+                            // Check for partial settlement
+                            if ($ledger->settlement_status === 'partial' || ($ledger->settled_amount > 0)) {
+                                throw new \Exception('Cannot cancel order: Invoice has partial settlement. Please reverse the settlement first.');
+                            }
+                            
+                            // Reverse the ledger entry
+                            $this->reverseLedgerForCancellation($ledger);
+                            
+                            \Log::info("Ledger reversed for cancelled order", [
+                                'order_id' => $this->id,
+                                'ledger_id' => $ledger->id
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Failed to reverse ledger for cancelled order", [
+                            'order_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Re-throw to prevent status change if ledger reversal fails
+                        throw $e;
+                    }
+                }
+
+                // 5. If status changed to 'delivered', post invoice to ledger
                 if ($statusCode === 'delivered') {
                     try {
                         // Ensure customer relationship is loaded for ledger description
@@ -1031,6 +1065,63 @@ class OrderModel extends BaseModel
     public function getCurrentStatus(): ?OrderStatusMaster
     {
         return OrderStatusMaster::getByCode($this->order_status);
+    }
+
+    /**
+     * Reverse a ledger entry when order is cancelled
+     * 
+     * @param \App\Models\FIN\LedgerModel $ledger
+     * @return void
+     * @throws \Exception
+     */
+    private function reverseLedgerForCancellation($ledger)
+    {
+        $wasApproved = $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED;
+        
+        // Mark ledger as reversed
+        $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+        $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
+                           "REVERSED: Order #{$this->order_number} was cancelled";
+        $ledger->save();
+        
+        // Reverse balances ONLY if the transaction was approved
+        if ($wasApproved) {
+            $fromAccount = $ledger->fromAccount;
+            $toAccount = $ledger->toAccount;
+            
+            if ($fromAccount) {
+                // Reverse the debit (add back)
+                $fromAccount->current_balance += $ledger->amount;
+                $fromAccount->save();
+                
+                \Log::info("Reversed balance for from_account (cancellation)", [
+                    'account_id' => $fromAccount->id,
+                    'account_name' => $fromAccount->account_name,
+                    'amount_added_back' => $ledger->amount,
+                    'new_balance' => $fromAccount->current_balance
+                ]);
+            }
+            
+            if ($toAccount) {
+                // Reverse the credit (subtract back)
+                $toAccount->current_balance -= $ledger->amount;
+                $toAccount->save();
+                
+                \Log::info("Reversed balance for to_account (cancellation)", [
+                    'account_id' => $toAccount->id,
+                    'account_name' => $toAccount->account_name,
+                    'amount_subtracted' => $ledger->amount,
+                    'new_balance' => $toAccount->current_balance
+                ]);
+            }
+        }
+        
+        \Log::info("Ledger entry reversed for cancellation", [
+            'ledger_id' => $ledger->id,
+            'order_id' => $this->id,
+            'was_approved' => $wasApproved,
+            'balances_reversed' => $wasApproved
+        ]);
     }
 
     /**

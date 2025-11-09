@@ -154,5 +154,25 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
+    }); // Close rider prefix group
+    
+    // Vendor Management (Store Mode - uses token auth, but NOT under /rider prefix)
+    Route::prefix('vendors')->group(function () {
+        Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index']);
+        Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show']);
+        Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase']);
+        Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment']);
+        Route::post('/{id}/weighted-purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordWeightedPurchase']);
+        Route::post('/transaction/{id}/delete', [\App\Http\Controllers\FIN\VendorController::class, 'deleteTransaction']);
+        Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\VendorController::class, 'updateTransaction']);
+        
+        // Vendor Products (for weight-based vendors)
+        Route::get('/{id}/products/list', [\App\Http\Controllers\FIN\VendorProductController::class, 'list']);
+        Route::post('/{id}/products', [\App\Http\Controllers\FIN\VendorProductController::class, 'store']);
+        Route::put('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'update']);
+        Route::delete('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'destroy']);
     });
-});
+
+    // Ledger transaction details (used by mobile vendor view - mirrors web route)
+    Route::get('/finance/ledger/transaction/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getTransactionDetails']);
+}); // Close auth:sanctum middleware group

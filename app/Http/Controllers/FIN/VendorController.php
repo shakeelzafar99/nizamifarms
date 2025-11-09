@@ -9,6 +9,7 @@ use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class VendorController extends Controller
 {
@@ -65,6 +66,21 @@ class VendorController extends Controller
                 $vendor->last_payment_date = null;
                 $vendor->last_payment_amount = null;
             }
+        }
+
+        // Return JSON for API requests
+        if ($request->expectsJson() || $request->is('api/*')) {
+            return response()->json([
+                'success' => true,
+                'vendors' => $vendors->items(),
+                'total_balance' => $totalBalance,
+                'pagination' => [
+                    'current_page' => $vendors->currentPage(),
+                    'last_page' => $vendors->lastPage(),
+                    'per_page' => $vendors->perPage(),
+                    'total' => $vendors->total()
+                ]
+            ]);
         }
 
         return view('fin.vendor.index', compact('vendors', 'totalBalance'));
@@ -318,6 +334,25 @@ class VendorController extends Controller
         // Get expand preference from session (default: collapsed)
         $expandAll = session('vendor_transactions_expand_all', false);
         
+        // Return JSON for API requests
+        if ($request->expectsJson() || $request->is('api/*')) {
+            // Format grouped transactions for API
+            $formattedTransactions = [];
+            foreach ($groupedTransactions as $date => $transactions) {
+                $formattedTransactions[$date] = [
+                    'transactions' => $transactions->toArray(),
+                    'summary' => $dailySummaries[$date] ?? []
+                ];
+            }
+            
+            return response()->json([
+                'success' => true,
+                'vendor' => $vendor,
+                'grouped_transactions' => $formattedTransactions,
+                'summary' => $summary
+            ]);
+        }
+        
         return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll'));
     }
 
@@ -486,13 +521,8 @@ class VendorController extends Controller
                 throw new \Exception("Purchase expense account not found");
             }
 
-            // Handle bill image upload
-            $billImagePath = null;
-            if ($request->hasFile('bill_image')) {
-                $file = $request->file('bill_image');
-                $filename = 'vendor_' . $vendor->id . '_' . time() . '.' . $file->getClientOriginalExtension();
-                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
-            }
+            // Handle bill image upload (web or mobile)
+            $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
 
             // Create ledger entry
             LedgerModel::create([
@@ -517,12 +547,28 @@ class VendorController extends Controller
 
             DB::commit();
 
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Purchase recorded successfully!'
+                ]);
+            }
+
             return redirect()->route('fin.vendors.show', $vendor->id)
                            ->with('success', 'Purchase recorded successfully!');
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error("Error recording purchase: " . $e->getMessage());
+            
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error recording purchase: ' . $e->getMessage()
+                ], 500);
+            }
             
             return back()->withInput()
                        ->with('error', 'Error recording purchase: ' . $e->getMessage());
@@ -538,7 +584,8 @@ class VendorController extends Controller
             'amount' => 'required|numeric|min:0.01',
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
-            'transaction_date' => 'required|date'
+            'transaction_date' => 'required|date',
+            'receipt_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Receipt image
         ]);
 
         try {
@@ -561,6 +608,9 @@ class VendorController extends Controller
             if ($request->amount > $vendor->getBalance()) {
                 throw new \Exception("Payment amount cannot exceed vendor balance");
             }
+
+            // Handle receipt image upload (web or mobile)
+            $receiptImagePath = $this->handleImageUpload($request, 'receipt_image', $vendor);
 
             // Check approval configuration for vendor payments
             $vendorPaymentCategory = \App\Models\Request\RequestCategoryModel::getByCode('vendor_payment');
@@ -600,6 +650,7 @@ class VendorController extends Controller
                 'approval_status' => $approvalStatus,
                 'approval_date' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? now() : null,
                 'approved_by' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? auth()->id() : null,
+                'bill_image' => $receiptImagePath, // Store receipt image in bill_image field
                 'created_by' => auth()->id(),
                 'comments' => "Paid from: {$paymentAccount->account_name}"
             ]);
@@ -619,12 +670,28 @@ class VendorController extends Controller
                 ? 'Payment recorded and pending approval!' 
                 : 'Payment recorded successfully!';
 
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => true,
+                    'message' => $message
+                ]);
+            }
+
             return redirect()->route('fin.vendors.show', $vendor->id)
                            ->with('success', $message);
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error("Error recording payment: " . $e->getMessage());
+            
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error recording payment: ' . $e->getMessage()
+                ], 500);
+            }
             
             return back()->withInput()
                        ->with('error', 'Error recording payment: ' . $e->getMessage());
@@ -658,17 +725,8 @@ class VendorController extends Controller
                 throw new \Exception("Purchase expense account not found");
             }
 
-            // Handle bill image upload
-            $billImagePath = null;
-            if ($request->hasFile('bill_image')) {
-                Log::info('Bill image file detected in weighted purchase');
-                $file = $request->file('bill_image');
-                $filename = 'vendor_' . $vendor->id . '_weighted_' . time() . '.' . $file->getClientOriginalExtension();
-                $billImagePath = $file->storeAs('vendor_bills', $filename, 'public');
-                Log::info('Bill image saved to: ' . $billImagePath);
-            } else {
-                Log::info('No bill image file in weighted purchase request');
-            }
+            // Handle bill image upload (web or mobile) - use helper method
+            $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
 
             // Calculate grand total from line items
             $grandTotal = 0;
@@ -722,12 +780,28 @@ class VendorController extends Controller
 
             DB::commit();
 
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Weighted purchase recorded successfully! Total: Rs. ' . number_format($grandTotal, 2)
+                ]);
+            }
+
             return redirect()->route('fin.vendors.show', $vendor->id)
                            ->with('success', 'Weighted purchase recorded successfully! Total: Rs. ' . number_format($grandTotal, 2));
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error("Error recording weighted purchase: " . $e->getMessage());
+            
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error recording weighted purchase: ' . $e->getMessage()
+                ], 500);
+            }
             
             return back()->withInput()
                        ->with('error', 'Error recording weighted purchase: ' . $e->getMessage());
@@ -1130,6 +1204,35 @@ class VendorController extends Controller
             'success' => true,
             'expand_all' => $expandAll
         ]);
+    }
+
+    /**
+     * Helper method to handle image uploads from both web (multipart) and mobile (base64)
+     */
+    private function handleImageUpload(Request $request, $fieldName, $vendor)
+    {
+        // Check for traditional file upload (web)
+        if ($request->hasFile($fieldName)) {
+            $file = $request->file($fieldName);
+            $filename = 'vendor_' . $vendor->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            return $file->storeAs('vendor_bills', $filename, 'public');
+        }
+        
+        // Check for base64 upload (mobile)
+        $base64Field = $fieldName . '_base64';
+        if ($request->has($base64Field) && $request->input($base64Field)) {
+            $base64Image = $request->input($base64Field);
+            
+            // Remove data:image prefix if present
+            $image = base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $base64Image));
+            
+            $filename = 'vendor_' . $vendor->id . '_' . time() . '.jpg';
+            Storage::disk('public')->put('vendor_bills/' . $filename, $image);
+            
+            return 'vendor_bills/' . $filename;
+        }
+        
+        return null;
     }
 }
 

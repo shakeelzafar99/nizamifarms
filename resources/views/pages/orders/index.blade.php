@@ -3118,13 +3118,77 @@ function loadEditForm(order) {
                         rSel.innerHTML = '<option value="">No riders found</option>';
                     }
                 }).catch(()=>{ rSel.innerHTML = '<option value="">Load failed</option>'; });
-            rBtn.onclick = function(){
+            rBtn.onclick = async function(){
                 const val = rSel.value;
-                rBtn.textContent = 'Assigning...'; rBtn.disabled = true;
-                fetch(`/orders/${order.id}/rider/assign`, { method:'POST', headers:{ 'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') }, body: JSON.stringify({ rider_user_id: val ? parseInt(val,10) : null }) })
-                    .then(r=>r.json())
-                    .then(j=>{ if (!j.success) throw new Error(j.message||'Failed'); location.reload(); })
-                    .catch(()=>{ alert('Assign rider failed'); rBtn.textContent='Assign'; rBtn.disabled=false; });
+                const selectedRiderName = val ? rSel.selectedOptions[0].text : 'Unassigned';
+                
+                // Helper function to actually assign the rider
+                const assignRider = async function(confirmed = false) {
+                    try {
+                        const payload = { 
+                            rider_user_id: val ? parseInt(val,10) : null 
+                        };
+                        
+                        // Add confirmation flag if this is a retry after confirmation
+                        if (confirmed) {
+                            payload.confirmed = true;
+                        }
+                        
+                        rBtn.textContent = 'Assigning...'; 
+                        rBtn.disabled = true;
+                        
+                        const response = await fetch(`/orders/${order.id}/rider/assign`, { 
+                            method:'POST', 
+                            headers:{ 
+                                'Accept':'application/json',
+                                'Content-Type':'application/json',
+                                'X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') 
+                            }, 
+                            body: JSON.stringify(payload) 
+                        });
+                        const result = await response.json();
+                        
+                        // Check if confirmation is required (ledger will be updated)
+                        if (!result.success && result.requires_confirmation && result.confirmation_data) {
+                            const data = result.confirmation_data;
+                            const confirmMsg = 
+                                `⚠️ LEDGER WILL BE UPDATED\n\n` +
+                                `This order has been posted to the ledger.\n` +
+                                `Changing the rider will reverse the old ledger entry and create a new one.\n\n` +
+                                `Order: ${data.order_number}\n` +
+                                `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n\n` +
+                                `Old Rider: ${data.old_rider_name}\n` +
+                                `New Rider: ${data.new_rider_name}\n\n` +
+                                `The ledger will be moved from ${data.old_rider_name}'s account to ${data.new_rider_name}'s account.\n\n` +
+                                `Do you want to proceed?`;
+                            
+                            rBtn.textContent = 'Assign'; 
+                            rBtn.disabled = false;
+                            
+                            if (confirm(confirmMsg)) {
+                                // User confirmed - retry with confirmation flag
+                                await assignRider(true);
+                            }
+                            return;
+                        }
+                        
+                        // Check for other errors
+                        if (!result.success) {
+                            throw new Error(result.message || 'Failed');
+                        }
+                        
+                        // Success!
+                        location.reload();
+                        
+                    } catch(error) {
+                        alert('Assign rider failed: ' + error.message);
+                        rBtn.textContent = 'Assign'; 
+                        rBtn.disabled = false;
+                    }
+                };
+                
+                // Start the assignment process
+                await assignRider(false);
             };
         }
         // Load rider assignment history
@@ -3653,26 +3717,87 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                     const val = document.getElementById('quickRiderSelectStandalone').value;
                     const selectedRiderName = val ? document.getElementById('quickRiderSelectStandalone').selectedOptions[0].text : 'Unassigned';
                     saveBtn.textContent = 'Assigning...'; saveBtn.disabled = true;
-                    try {
-                        const aRes = await fetch(`/orders/${orderId}/rider/assign`, { method:'POST', headers:{ 'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') }, body: JSON.stringify({ rider_user_id: val ? parseInt(val,10) : null }) });
-                        const aJson = await aRes.json();
-                        if (!aJson.success) throw new Error(aJson.message||'Failed');
-                        
-                        // ⭐ SMART SYNC: Update specific order row (NO HARD REFRESH)
-                        updateOrderRowRider(orderId, val ? parseInt(val,10) : null, selectedRiderName);
-                        
-                        // Show success toast
-                        showToast('✓ Rider assigned successfully', 'success');
-                        
-                        // Close modal
-                        document.getElementById('quickRiderModal').remove();
-                        
-                        // Refresh card counts
-                        if (window.refreshRiderCards) refreshRiderCards();
-                    } catch(e) {
-                        alert('Assign rider failed: ' + (e.message || 'Unknown error'));
-                        saveBtn.textContent = 'Assign Rider'; saveBtn.disabled = false;
-                    }
+                    
+                    // Helper function to actually assign the rider
+                    const assignRider = async function(confirmed = false) {
+                        try {
+                            const payload = { 
+                                rider_user_id: val ? parseInt(val,10) : null 
+                            };
+                            
+                            // Add confirmation flag if this is a retry after confirmation
+                            if (confirmed) {
+                                payload.confirmed = true;
+                            }
+                            
+                            const aRes = await fetch(`/orders/${orderId}/rider/assign`, { 
+                                method:'POST', 
+                                headers:{ 
+                                    'Accept':'application/json',
+                                    'Content-Type':'application/json',
+                                    'X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') 
+                                }, 
+                                body: JSON.stringify(payload) 
+                            });
+                            const aJson = await aRes.json();
+                            
+                            // Check if confirmation is required (ledger will be updated)
+                            if (!aJson.success && aJson.requires_confirmation && aJson.confirmation_data) {
+                                const data = aJson.confirmation_data;
+                                const confirmMsg = 
+                                    `⚠️ LEDGER WILL BE UPDATED\n\n` +
+                                    `This order has been posted to the ledger.\n` +
+                                    `Changing the rider will reverse the old ledger entry and create a new one.\n\n` +
+                                    `Order: ${data.order_number}\n` +
+                                    `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n\n` +
+                                    `Old Rider: ${data.old_rider_name}\n` +
+                                    `New Rider: ${data.new_rider_name}\n\n` +
+                                    `The ledger will be moved from ${data.old_rider_name}'s account to ${data.new_rider_name}'s account.\n\n` +
+                                    `Do you want to proceed?`;
+                                
+                                saveBtn.textContent = 'Assign Rider'; 
+                                saveBtn.disabled = false;
+                                
+                                if (confirm(confirmMsg)) {
+                                    // User confirmed - retry with confirmation flag
+                                    saveBtn.textContent = 'Assigning...'; 
+                                    saveBtn.disabled = true;
+                                    await assignRider(true);
+                                }
+                                return;
+                            }
+                            
+                            // Check for other errors
+                            if (!aJson.success) {
+                                throw new Error(aJson.message||'Failed');
+                            }
+                            
+                            // Success!
+                            // ⭐ SMART SYNC: Update specific order row (NO HARD REFRESH)
+                            updateOrderRowRider(orderId, val ? parseInt(val,10) : null, selectedRiderName);
+                            
+                            // Show success toast with ledger info if applicable
+                            let successMsg = '✓ Rider assigned successfully';
+                            if (aJson.ledger_updated) {
+                                successMsg += ' (Ledger updated)';
+                            }
+                            showToast(successMsg, 'success');
+                            
+                            // Close modal
+                            document.getElementById('quickRiderModal').remove();
+                            
+                            // Refresh card counts
+                            if (window.refreshRiderCards) refreshRiderCards();
+                            
+                        } catch(e) {
+                            alert('Assign rider failed: ' + (e.message || 'Unknown error'));
+                            saveBtn.textContent = 'Assign Rider'; 
+                            saveBtn.disabled = false;
+                        }
+                    };
+                    
+                    // Start the assignment process
+                    await assignRider(false);
                 };
             } catch(e) { console.warn('Quick rider load failed', e); }
         })();
@@ -4148,22 +4273,83 @@ function openQuickStatusChange(orderId, currentStatus) {
             // Load timeline
             loadQuickStatusTimeline(orderId);
             const btn = document.getElementById('quickStatusSave');
-            btn.onclick = async function(){
-                const status_code = document.getElementById('quickStatusSelect').value;
-                const notes = document.getElementById('quickStatusNotes').value;
-                const res = await fetch('/order-status/api/change-status', {
-                    method:'POST',
-                    headers:{ 'Accept':'application/json','Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') },
-                    credentials:'same-origin',
-                    body: JSON.stringify({ order_id: orderId, status_code, notes })
-                });
-                const j = await res.json();
-                if (j && j.success) {
-                    document.getElementById('quickStatusModal').remove();
-                    location.reload();
-                } else {
-                    alert(j.message || 'Failed to change status');
+            
+            // Helper function to actually change the status
+            const changeStatus = async function(confirmed = false) {
+                try {
+                    const status_code = document.getElementById('quickStatusSelect').value;
+                    const notes = document.getElementById('quickStatusNotes').value;
+                    
+                    const payload = { 
+                        order_id: orderId, 
+                        status_code, 
+                        notes 
+                    };
+                    
+                    // Add confirmation flag if this is a retry after confirmation
+                    if (confirmed) {
+                        payload.confirmed = true;
+                    }
+                    
+                    btn.textContent = 'Saving...';
+                    btn.disabled = true;
+                    
+                    const res = await fetch('/order-status/api/change-status', {
+                        method:'POST',
+                        headers:{ 
+                            'Accept':'application/json',
+                            'Content-Type':'application/json',
+                            'X-Requested-With':'XMLHttpRequest',
+                            'X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') 
+                        },
+                        credentials:'same-origin',
+                        body: JSON.stringify(payload)
+                    });
+                    const j = await res.json();
+                    
+                    // Check if confirmation is required (ledger will be reversed)
+                    if (!j.success && j.requires_confirmation && j.confirmation_data) {
+                        const data = j.confirmation_data;
+                        const confirmMsg = 
+                            `⚠️ LEDGER REVERSAL REQUIRED\n\n` +
+                            `This order has been posted to the ledger.\n` +
+                            `Cancelling will reverse the ledger entry.\n\n` +
+                            `Order: ${data.order_number}\n` +
+                            `Amount: Rs. ${parseFloat(data.amount).toFixed(2)}\n` +
+                            `Posted to: ${data.account_name}\n` +
+                            `Mode: ${data.ledger_mode === 'cash' ? 'Cash' : 'Online'}\n\n` +
+                            `The ledger entry will be reversed and account balances will be updated.\n\n` +
+                            `Do you want to proceed with cancellation?`;
+                        
+                        btn.textContent = 'Save';
+                        btn.disabled = false;
+                        
+                        if (confirm(confirmMsg)) {
+                            // User confirmed - retry with confirmation flag
+                            await changeStatus(true);
+                        }
+                        return;
+                    }
+                    
+                    // Check for other errors
+                    if (j && j.success) {
+                        document.getElementById('quickStatusModal').remove();
+                        location.reload();
+                    } else {
+                        alert(j.message || 'Failed to change status');
+                        btn.textContent = 'Save';
+                        btn.disabled = false;
+                    }
+                } catch(e) {
+                    console.error('Status change failed:', e);
+                    alert('Failed to change status: ' + e.message);
+                    btn.textContent = 'Save';
+                    btn.disabled = false;
                 }
+            };
+            
+            btn.onclick = async function(){
+                await changeStatus(false);
             };
         } catch(e) {
             console.warn('Quick status fetch failed', e);
@@ -6214,6 +6400,21 @@ function getCellContent_DEPRECATED(order, columnId) {
                 'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '' }
             };
             const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' };
+            
+            // Check if quick status change should be disabled (delivered orders with ledger)
+            const hasLedgerForStatus2 = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDeliveredForStatus2 = order.order_status === 'delivered';
+            const restrictStatusChange2 = hasLedgerForStatus2 && isDeliveredForStatus2;
+            
+            if (restrictStatusChange2) {
+                // Show non-clickable badge with lock indicator
+                return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" title="Status change restricted for delivered orders with ledger entry">
+                            <span class=\"mr-1 text-xs\">${config.icon}</span>
+                            ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
+                            <span class=\"ml-1 text-xs\">🔒</span>
+                        </span>`;
+            }
+            
             return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition" title="Quick change status">
                         <span class=\"mr-1 text-xs\">${config.icon}</span>
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
@@ -6336,6 +6537,16 @@ function getCellContent_DEPRECATED(order, columnId) {
             } else if (normalizedMethod.includes('cash') || normalizedMethod.includes('cod')) {
                 displayText = 'Cash';
                 pmConfig = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
+            }
+            
+            // Check if quick payment method change should be disabled (delivered orders with ledger)
+            const hasLedgerForPM = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDeliveredForPM = order.order_status === 'delivered';
+            const restrictPMChange = hasLedgerForPM && isDeliveredForPM;
+            
+            if (restrictPMChange) {
+                // Show non-clickable badge with lock indicator
+                return `<div class="order-payment-method-cell"><span class="inline-flex items-center px-2 py-1 rounded ${pmConfig.bg} ${pmConfig.border} border ${pmConfig.text} text-xs font-medium opacity-75" title="Payment method change restricted for delivered orders with ledger entry">${displayText} <span class="ml-1">🔒</span></span></div>`;
             }
             
             return `<div class="order-payment-method-cell"><button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${order.id}, '${paymentMethod}')" class="inline-flex items-center px-2 py-1 rounded ${pmConfig.bg} ${pmConfig.border} border ${pmConfig.text} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText}</button></div>`;
@@ -6607,6 +6818,21 @@ function getCellContent(order, columnId) {
                 'delivered': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' }
             };
             const config = statusConfig[status] || { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' };
+            
+            // Check if quick status change should be disabled (delivered orders with ledger)
+            const hasLedgerForStatus = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDeliveredForStatus = order.order_status === 'delivered';
+            const restrictStatusChange = hasLedgerForStatus && isDeliveredForStatus;
+            
+            if (restrictStatusChange) {
+                // Show non-clickable badge with lock indicator
+                return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" title="Status change restricted for delivered orders with ledger entry">
+                            <span class="mr-1 text-xs">${config.icon}</span>
+                            ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
+                            <span class="ml-1 text-xs">🔒</span>
+                        </span>`;
+            }
+            
             return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" title="Click to change status">
                         <span class="mr-1 text-xs">${config.icon}</span>
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
@@ -6734,6 +6960,16 @@ function getCellContent(order, columnId) {
                 pmConfig2 = { bg: 'bg-green-50', border: 'border-green-300', text: 'text-green-800' };
             }
             
+            // Check if quick payment method change should be disabled (delivered orders with ledger)
+            const hasLedgerForPM2 = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDeliveredForPM2 = order.order_status === 'delivered';
+            const restrictPMChange2 = hasLedgerForPM2 && isDeliveredForPM2;
+            
+            if (restrictPMChange2) {
+                // Show non-clickable badge with lock indicator
+                return `<div class="order-payment-method-cell"><span class="inline-flex items-center px-2 py-1 rounded ${pmConfig2.bg} ${pmConfig2.border} border ${pmConfig2.text} text-xs font-medium opacity-75" title="Payment method change restricted for delivered orders with ledger entry">${displayText2} <span class="ml-1">🔒</span></span></div>`;
+            }
+            
             return `<div class="order-payment-method-cell"><button type="button" onclick="event.stopPropagation(); openQuickPaymentMethodChange(${order.id}, '${paymentMethod2}')" class="inline-flex items-center px-2 py-1 rounded ${pmConfig2.bg} ${pmConfig2.border} border ${pmConfig2.text} text-xs font-medium hover:opacity-80 cursor-pointer transition" title="Click to change payment method">${displayText2}</button></div>`;
         case 'coupon_code':
             return order.coupon_code || '';
@@ -6766,6 +7002,22 @@ function getCellContent(order, columnId) {
         case 'rider':
             const rid = order.assigned_rider_user_id || order.rider_user_id || null;
             const rname = order.rider_name || (order.assigned_rider && (order.assigned_rider.fullname || order.assigned_rider.name)) || null;
+            
+            // Check if quick rider assignment should be disabled (delivered orders with ledger)
+            const hasLedgerForRider = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDeliveredForRider = order.order_status === 'delivered';
+            const restrictRiderChange = hasLedgerForRider && isDeliveredForRider;
+            
+            if (restrictRiderChange) {
+                // Show non-clickable badge with lock indicator
+                if (!rname && rid) {
+                    return `<span class="inline-flex items-center px-2 py-1 rounded bg-amber-50 text-amber-800 border border-amber-300 text-xs font-medium opacity-75" title="Rider assignment restricted for delivered orders with ledger entry">User #${rid} <span class="ml-1">🔒</span></span>`;
+                }
+                if (!rname && !rid) {
+                    return `<span class="inline-flex items-center px-2 py-1 rounded bg-gray-100 text-gray-700 text-xs opacity-75" title="Rider assignment restricted for delivered orders with ledger entry">Unassigned <span class="ml-1">🔒</span></span>`;
+                }
+                return `<span class="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-300 text-xs font-medium opacity-75" title="Rider assignment restricted for delivered orders with ledger entry">${String(rname)} <span class="ml-1">🔒</span></span>`;
+            }
             
             // GUARANTEED FALLBACK: If we have an ID but no name, show "User #ID" in amber (clickable)
             if (!rname && rid) {
@@ -6815,14 +7067,31 @@ function getCellContent(order, columnId) {
             }
             
             // Default full actions for non-Shopify orders (webapp, manual, etc.)
+            // Check if order is delivered with ledger entry (restrict quick edit)
+            const hasLedger = order.ledger_transaction_id && order.ledger_transaction_id > 0;
+            const isDelivered = order.order_status === 'delivered';
+            const restrictEdit = hasLedger && isDelivered;
+            
+            // Build edit button - disabled if delivered with ledger
+            let editButton = '';
+            if (restrictEdit) {
+                // Show disabled edit button with lock icon and tooltip
+                editButton = `<button disabled class="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-gray-50 border border-gray-200 rounded-lg cursor-not-allowed opacity-60" title="Quick edit disabled for delivered orders. Use full edit modal from view details.">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                </button>`;
+            } else {
+                // Show normal edit button
+                editButton = `<button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                </button>`;
+            }
+            
             return `
                 <div class="flex items-center justify-center gap-1.5">
                     <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    <button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                    </button>
+                    ${editButton}
                     <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
