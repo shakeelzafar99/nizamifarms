@@ -27,9 +27,19 @@ class ExpenseManagementController extends Controller
      */
     public function index(Request $request)
     {
-        // Get filter parameters
-        $dateFrom = $request->input('date_from');
-        $dateTo = $request->input('date_to');
+        // Get filter parameters with "This Month" as default
+        // Only apply default if no date filters are explicitly provided
+        $hasDateFilter = $request->has('date_from') || $request->has('date_to');
+        
+        if (!$hasDateFilter) {
+            // Default to "This Month"
+            $dateFrom = date('Y-m-01'); // First day of current month
+            $dateTo = date('Y-m-t'); // Last day of current month
+        } else {
+            $dateFrom = $request->input('date_from');
+            $dateTo = $request->input('date_to');
+        }
+        
         $category = $request->input('category');
         $paymentSource = $request->input('payment_source');
         $settlementStatus = $request->input('settlement_status');

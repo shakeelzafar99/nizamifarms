@@ -3,6 +3,85 @@
 @section('title', 'Expense Management')
 
 @section('content')
+<style>
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+#newRequestModal .form-field-enhanced {
+    transition: all 0.2s ease;
+}
+
+#newRequestModal .form-field-enhanced:focus {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(5, 150, 105, 0.15);
+}
+
+#newRequestModal .radio-card {
+    transition: all 0.2s ease;
+}
+
+#newRequestModal .radio-card:hover {
+    transform: translateX(4px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+#newRequestModal .radio-card input:checked + span {
+    color: #059669;
+    font-weight: 600;
+}
+</style>
+
+<script>
+// Define openNewRequestModal FIRST before any HTML that uses it
+function openNewRequestModal() {
+    const modal = document.getElementById('newRequestModal');
+    if (!modal) {
+        alert('Form not ready. Please refresh the page.');
+        return;
+    }
+    
+    // Make modal visible
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+
+function closeNewRequestModal() {
+    const modal = document.getElementById('newRequestModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+        
+        // Reset form
+        document.getElementById('quickRequestForm').reset();
+    }
+}
+
+// Make globally available
+window.openNewRequestModal = openNewRequestModal;
+window.closeNewRequestModal = closeNewRequestModal;
+
+console.log('[NewRequest] Functions defined and ready');
+
+// Attach click handler when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    const newRequestBtn = document.getElementById('newRequestBtn');
+    if (newRequestBtn) {
+        newRequestBtn.addEventListener('click', openNewRequestModal);
+        console.log('[NewRequest] Click handler attached');
+    }
+});
+</script>
+
 <div class="container-fluid px-6 py-6">
     <!-- Page Header -->
     <div class="flex items-center justify-between mb-6">
@@ -10,6 +89,11 @@
             <h1 class="text-2xl font-bold text-gray-900">💰 Expense Management</h1>
             <p class="text-sm text-gray-600 mt-1">Track all expenses and manage settlements</p>
         </div>
+        <button id="newRequestBtn" type="button" role="button"
+                class="px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 hover:text-blue-700 text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2">
+            <span class="text-lg">➕</span>
+            <span class="font-bold">New Request</span>
+        </button>
     </div>
 
     <!-- KPI Cards - Redesigned Layout: 4 cards (2x2) on left, 1 large card on right -->
@@ -89,9 +173,9 @@
                 <!-- Quick Month Selector -->
                 <div class="flex-shrink-0">
                     <label class="text-xs font-medium text-gray-700 block mb-1">📅 Quick Select</label>
-                    <select onchange="setMonthRange(this.value)" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                    <select id="quickMonthSelect" onchange="setMonthRange(this.value)" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
                         <option value="">Custom Range</option>
-                        <option value="current_month">This Month</option>
+                        <option value="current_month" {{ !request()->has('date_from') && !request()->has('date_to') ? 'selected' : '' }}>This Month</option>
                         <option value="last_month">Last Month</option>
                         <option value="last_3_months">Last 3 Months</option>
                         <option value="last_6_months">Last 6 Months</option>
@@ -483,6 +567,515 @@
         </div>
     </div>
 </div>
+
+<!-- New Request Modal -->
+<div id="newRequestModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="if(event.target === this) closeNewRequestModal()">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 700px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #d1fae5 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #6ee7b7; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    ➕
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Create New Request</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Quick request submission from Expense Management</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeNewRequestModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div id="newRequestModalQuick" style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <form id="quickRequestForm">
+                @csrf
+                
+                @php
+                    // Check if user can create requests for others
+                    $canCreateForOthers = false;
+                    if (auth()->check()) {
+                        $userRoles = \DB::table('t_sys_user_role as ur')
+                            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                            ->where('ur.user_id', auth()->id())
+                            ->select('r.type', 'r.urole_name')
+                            ->get();
+                        
+                        foreach ($userRoles as $roleInfo) {
+                            if (in_array(strtolower($roleInfo->type ?? ''), ['admin', 'manager', 'supervisor'])) {
+                                $canCreateForOthers = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Get only the limited categories we want to show (using the model to get approval config)
+                    $limitedCategories = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
+                        ->whereIn('category_code', ['expense', 'salary_advance', 'leave'])
+                        ->where('is_active', 1)
+                        ->orderByRaw("FIELD(category_code, 'expense', 'salary_advance', 'leave')")
+                        ->get();
+                @endphp
+                
+                <!-- Step 1: Create For (if admin/manager) -->
+                       @if($canCreateForOthers)
+                       <div class="mb-6 p-5 bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl shadow-sm">
+                           <label class="block text-base font-bold text-blue-900 mb-4 flex items-center gap-2">
+                               <span class="text-xl">👤</span>
+                               <span>Create Request For:</span>
+                           </label>
+                           <div class="space-y-3">
+                               <label class="radio-card flex items-center p-4 bg-white border-2 border-blue-200 rounded-xl cursor-pointer hover:border-blue-400 shadow-sm">
+                                   <input type="radio" name="request_for" value="myself" checked onchange="handleRequestForChange()" class="w-5 h-5 text-blue-600">
+                                   <span class="ml-3 text-base font-medium text-gray-900">Myself</span>
+                               </label>
+                               <label class="radio-card flex items-center p-4 bg-white border-2 border-blue-200 rounded-xl cursor-pointer hover:border-blue-400 shadow-sm">
+                                   <input type="radio" name="request_for" value="someone_else" onchange="handleRequestForChange()" class="w-5 h-5 text-blue-600">
+                                   <span class="ml-3 text-base font-medium text-gray-900">Someone Else</span>
+                               </label>
+                           </div>
+                    
+                    <div id="userSelectField" class="mt-3" style="display: none;">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Select Employee</label>
+                        <select name="requester_user_id" id="requester_user_id" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">-- Select Employee --</option>
+                            @php
+                                $activeUsers = \DB::table('t_sys_user')
+                                    ->where('is_active', 1)
+                                    ->whereNotIn('id', [auth()->id()])
+                                    ->orderBy('fullname')
+                                    ->get();
+                            @endphp
+                            @foreach($activeUsers as $user)
+                            <option value="{{ $user->id }}">{{ $user->fullname }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                </div>
+                @endif
+                
+                       <!-- Request Category (Limited) -->
+                       <div class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>Request Type</span>
+                               <span class="text-red-500 text-lg">*</span>
+                           </label>
+                           <select id="quick_category_id" name="category_id" required onchange="handleQuickCategoryChange()" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
+                        <option value="">Select Request Type</option>
+                        @foreach($limitedCategories as $category)
+                        <option value="{{ $category->id }}" 
+                                data-code="{{ $category->category_code }}"
+                                data-requires-l1="{{ $category->requiresLevel1() ? '1' : '0' }}"
+                                data-requires-l2="{{ $category->requiresLevel2() ? '1' : '0' }}">
+                            @if($category->category_code === 'expense')
+                                💸 Expense Reimbursement
+                            @elseif($category->category_code === 'salary_advance')
+                                💰 Salary Advance
+                            @elseif($category->category_code === 'leave')
+                                🏖️ Leave Request
+                            @else
+                                {{ $category->category_name }}
+                            @endif
+                        </option>
+                        @endforeach
+                    </select>
+                    <div class="mt-2 text-sm text-gray-600" id="quick-approval-info"></div>
+                </div>
+
+                <!-- Leave Fields -->
+                <div id="quick-leave-fields" style="display: none;">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Start Date <span class="text-red-500">*</span></label>
+                            <input type="date" name="leave_start_date" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" onchange="calculateQuickLeaveDays()">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">End Date <span class="text-red-500">*</span></label>
+                            <input type="date" name="leave_end_date" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" onchange="calculateQuickLeaveDays()">
+                        </div>
+                    </div>
+                    <input type="hidden" name="leave_type" value="annual">
+                    <div id="quick-leave-days-info" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg" style="display: none;">
+                        <span class="text-sm text-blue-800 font-medium" id="quick-leave-days-text"></span>
+                    </div>
+                </div>
+
+                       <!-- Expense Type (for Expense Reimbursement) -->
+                       <div id="quick-expense-category-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>Expense Type</span>
+                               <span class="text-red-500 text-lg">*</span>
+                           </label>
+                           <select name="expense_category" id="quick_expense_category" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm" onchange="handleQuickExpenseCategoryChange()">
+                        <option value="">Select Expense Type</option>
+                        @php
+                            $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                                ->orderBy('config_value')
+                                ->pluck('config_value');
+                        @endphp
+                        @foreach($expenseCategories as $cat)
+                            <option value="{{ $cat }}">{{ $cat }}</option>
+                        @endforeach
+                        <option value="__ADD_NEW__" style="background-color: #f3f4f6; font-weight: bold; color: #059669;">➕ Add New Category...</option>
+                    </select>
+                </div>
+
+                       <!-- Amount (for Expense & Salary Advance) -->
+                       <div id="quick-amount-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>Amount (Rs.)</span>
+                               <span class="text-red-500 text-lg">*</span>
+                           </label>
+                           <input type="number" name="amount" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium shadow-sm" placeholder="0.00" step="0.01" min="0">
+                       </div>
+
+                       <!-- Description -->
+                       <div class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3" id="quick-description-label">Description</label>
+                           <textarea name="description" id="quick-description-field" rows="4" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base shadow-sm resize-none" placeholder="Provide details about your request"></textarea>
+                       </div>
+
+                       <!-- Priority -->
+                       <div class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3">Priority</label>
+                           <select name="priority" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
+                        <option value="normal">Normal</option>
+                        <option value="low">Low</option>
+                        <option value="high">High</option>
+                        <option value="urgent">Urgent</option>
+                    </select>
+                </div>
+
+                <!-- Hidden Fields -->
+                <input type="hidden" name="title" id="quick-hidden-title" value="">
+                <input type="hidden" name="payment_source" value="EXP_FUND">
+            </form>
+        </div>
+        
+        <!-- Fixed Footer with Action Buttons -->
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; gap: 12px;">
+            <button type="button" onclick="closeNewRequestModal()" style="flex: 1; padding: 12px 24px; background: #e5e7eb; color: #374151; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                Cancel
+            </button>
+            <button type="submit" form="quickRequestForm" style="flex: 2; padding: 12px 24px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.3); transition: all 0.2s;">
+                ✓ Submit Request
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Add New Expense Category Modal (Inline) -->
+<div id="quickExpenseCategoryModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 100000; display: none; align-items: center; justify-content: center; padding: 20px;" onclick="if(event.target === this) closeQuickExpenseCategoryModal()">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 500px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #f3e8ff 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #d8b4fe; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    ➕
+                </div>
+                <div>
+                    <h4 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Add New Expense Category</h4>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Create a new category for expense tracking</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeQuickExpenseCategoryModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <div style="display: flex; flex-direction: column; gap: 16px;">
+                <div>
+                    <label style="display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px;">
+                        Category Name <span style="color: #ef4444;">*</span>
+                    </label>
+                    <input type="text" id="quick_inline_category_name" placeholder="e.g., Transportation, Equipment, Travel" style="width: 100%; padding: 12px 16px; border: 2px solid #d1d5db; border-radius: 8px; font-size: 14px; transition: all 0.2s;" onfocus="this.style.borderColor='#9333ea'; this.style.boxShadow='0 0 0 3px rgba(147, 51, 234, 0.1)';" onblur="this.style.borderColor='#d1d5db'; this.style.boxShadow='none';">
+                </div>
+                
+                <div style="padding: 12px; background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px;">
+                    <p style="font-size: 12px; color: #92400e; margin: 0; line-height: 1.5;">
+                        <strong>ℹ️ Note:</strong> The system will automatically create an expense account and make it available in all expense forms.
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Fixed Footer with Action Buttons -->
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; gap: 12px;">
+            <button type="button" onclick="closeQuickExpenseCategoryModal()" style="flex: 1; padding: 12px 24px; background: #e5e7eb; color: #374151; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                Cancel
+            </button>
+            <button type="button" onclick="submitQuickInlineCategory()" style="flex: 2; padding: 12px 24px; background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(168, 85, 247, 0.3); transition: all 0.2s;">
+                ✓ Create Category
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+// New Request Modal Functions - REMOVED DUPLICATE (defined at top of file)
+
+function handleRequestForChange() {
+    const forSomeoneElse = document.querySelector('input[name="request_for"]:checked').value === 'someone_else';
+    const userSelectField = document.getElementById('userSelectField');
+    const requesterSelect = document.getElementById('requester_user_id');
+    
+    if (forSomeoneElse) {
+        userSelectField.style.display = 'block';
+        requesterSelect.required = true;
+    } else {
+        userSelectField.style.display = 'none';
+        requesterSelect.required = false;
+        requesterSelect.value = '';
+    }
+}
+
+function handleQuickCategoryChange() {
+    const select = document.getElementById('quick_category_id');
+    const selectedOption = select.options[select.selectedIndex];
+    const categoryCode = selectedOption.dataset.code;
+    const requiresL1 = selectedOption.dataset.requiresL1 === '1';
+    const requiresL2 = selectedOption.dataset.requiresL2 === '1';
+    const hiddenTitle = document.getElementById('quick-hidden-title');
+    
+    // Show/hide fields based on category
+    const leaveFields = document.getElementById('quick-leave-fields');
+    const amountField = document.getElementById('quick-amount-field');
+    const expenseCategoryField = document.getElementById('quick-expense-category-field');
+    const descriptionLabel = document.getElementById('quick-description-label');
+    const descriptionField = document.getElementById('quick-description-field');
+    const expenseCategorySelect = document.getElementById('quick_expense_category');
+    const form = document.getElementById('quickRequestForm');
+    
+    // Reset all fields first
+    leaveFields.style.display = 'none';
+    amountField.style.display = 'none';
+    expenseCategoryField.style.display = 'none';
+    form.querySelector('[name="leave_start_date"]').required = false;
+    form.querySelector('[name="leave_end_date"]').required = false;
+    form.querySelector('[name="amount"]').required = false;
+    expenseCategorySelect.required = false;
+    
+    if (categoryCode === 'leave') {
+        leaveFields.style.display = 'block';
+        form.querySelector('[name="leave_start_date"]').required = true;
+        form.querySelector('[name="leave_end_date"]').required = true;
+        descriptionField.required = false;
+        descriptionField.placeholder = 'Optional: Provide additional details about your leave';
+        hiddenTitle.value = 'leave';
+    } else if (categoryCode === 'expense') {
+        expenseCategoryField.style.display = 'block';
+        amountField.style.display = 'block';
+        expenseCategorySelect.required = true;
+        form.querySelector('[name="amount"]').required = true;
+        descriptionField.required = true;
+        descriptionField.placeholder = 'Required: Provide details about this expense';
+        hiddenTitle.value = 'expense';
+    } else if (categoryCode === 'salary_advance') {
+        amountField.style.display = 'block';
+        form.querySelector('[name="amount"]').required = true;
+        descriptionField.required = true;
+        descriptionField.placeholder = 'Required: Explain why you need this advance';
+        hiddenTitle.value = 'salary advance';
+    }
+    
+    // Update approval info
+    let approvalText = 'This request will require: ';
+    if (requiresL1 && requiresL2) {
+        approvalText += 'Level 1 approval only';
+    } else if (requiresL1) {
+        approvalText += 'Level 1 approval';
+    } else {
+        approvalText += 'No approval';
+    }
+    document.getElementById('quick-approval-info').textContent = approvalText;
+}
+
+function calculateQuickLeaveDays() {
+    const startDate = document.querySelector('#quickRequestForm [name="leave_start_date"]').value;
+    const endDate = document.querySelector('#quickRequestForm [name="leave_end_date"]').value;
+    
+    if (startDate && endDate) {
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        const diffTime = Math.abs(end - start);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        
+        const infoDiv = document.getElementById('quick-leave-days-info');
+        const textSpan = document.getElementById('quick-leave-days-text');
+        
+        if (diffDays > 0) {
+            textSpan.textContent = `Total leave days: ${diffDays} day(s)`;
+            infoDiv.style.display = 'block';
+        } else {
+            infoDiv.style.display = 'none';
+        }
+    }
+}
+
+function handleQuickExpenseCategoryChange() {
+    const expenseCategorySelect = document.getElementById('quick_expense_category');
+    const selectedValue = expenseCategorySelect.value;
+    
+    if (selectedValue === '__ADD_NEW__') {
+        openQuickExpenseCategoryModal();
+        expenseCategorySelect.value = '';
+    } else {
+        updateQuickExpenseTitle();
+    }
+}
+
+function updateQuickExpenseTitle() {
+    const expenseCategorySelect = document.getElementById('quick_expense_category');
+    const hiddenTitle = document.getElementById('quick-hidden-title');
+    const selectedExpense = expenseCategorySelect.value;
+    
+    if (selectedExpense && selectedExpense !== '__ADD_NEW__') {
+        hiddenTitle.value = selectedExpense;
+    } else {
+        hiddenTitle.value = 'expense';
+    }
+}
+
+function openQuickExpenseCategoryModal() {
+    const modal = document.getElementById('quickExpenseCategoryModal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        
+        // Focus on the input field
+        setTimeout(() => {
+            document.getElementById('quick_inline_category_name').focus();
+        }, 100);
+    }
+}
+
+function closeQuickExpenseCategoryModal() {
+    const modal = document.getElementById('quickExpenseCategoryModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+        document.getElementById('quick_inline_category_name').value = '';
+    }
+}
+
+function submitQuickInlineCategory() {
+    const categoryName = document.getElementById('quick_inline_category_name').value.trim();
+    
+    if (!categoryName) {
+        alert('Please enter a category name');
+        return;
+    }
+    
+    const submitBtn = event.target;
+    const originalText = submitBtn.innerHTML;
+    submitBtn.innerHTML = '⏳ Creating...';
+    submitBtn.disabled = true;
+    
+    fetch('{{ route("fin.expense-category.store") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({ category_name: categoryName })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => Promise.reject(err));
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success || (data.message && data.message.includes('successfully'))) {
+            const expenseCategorySelect = document.getElementById('quick_expense_category');
+            const newOption = document.createElement('option');
+            newOption.value = categoryName;
+            newOption.textContent = categoryName;
+            
+            const addNewOption = expenseCategorySelect.querySelector('option[value="__ADD_NEW__"]');
+            expenseCategorySelect.insertBefore(newOption, addNewOption);
+            expenseCategorySelect.value = categoryName;
+            updateQuickExpenseTitle();
+            
+            closeQuickExpenseCategoryModal();
+            alert('✓ Category "' + categoryName + '" created successfully!');
+        } else {
+            alert('Error: ' + (data.message || 'Failed to create category'));
+        }
+    })
+    .catch(error => {
+        console.error('Error creating category:', error);
+        const errorMessage = error.message || (error.errors ? JSON.stringify(error.errors) : 'Failed to create category');
+        alert('Error: ' + errorMessage);
+    })
+    .finally(() => {
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+    });
+}
+
+// Submit Quick Request Form
+document.getElementById('quickRequestForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    const data = Object.fromEntries(formData.entries());
+    
+    // Remove requester_user_id if creating for myself
+    if (!data.requester_user_id || data.requester_user_id === '') {
+        delete data.requester_user_id;
+    }
+    
+    // Get submit button by form attribute (it's outside the form)
+    const submitBtn = document.querySelector('button[type="submit"][form="quickRequestForm"]');
+    if (!submitBtn) {
+        console.error('Submit button not found');
+        return;
+    }
+    
+    const originalText = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '⏳ Submitting...';
+    
+    fetch('{{ route("requests.store") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(err => Promise.reject(err));
+        }
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            alert('✓ Request submitted successfully!');
+            closeNewRequestModal();
+            // Reload page to refresh KPIs
+            window.location.reload();
+        } else {
+            alert('Error: ' + (data.message || 'Failed to submit request'));
+            submitBtn.innerHTML = originalText;
+            submitBtn.disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Error submitting request:', error);
+        alert('Error: ' + (error.message || 'Failed to submit request'));
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+    });
+});
+</script>
 @endsection
 
 <!-- Settlement Modal (Portalized outside content to avoid clipping) -->
@@ -840,19 +1433,7 @@ function openPendingApprovalsModal() {
     const modal = document.getElementById('pendingApprovalsModal');
     if (modal) {
         modal.classList.remove('hidden');
-        // Force proper modal display and centering
-        Object.assign(modal.style, {
-            display: 'flex',
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            right: '0',
-            bottom: '0',
-            zIndex: '9999',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: 'rgba(0,0,0,0.5)'
-        });
+        modal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
     }
 }
@@ -1063,11 +1644,15 @@ window.openPendingApprovalsModal = openPendingApprovalsModal;
 window.closePendingApprovalsModal = closePendingApprovalsModal;
 window.openRequestDetailModal = openRequestDetailModal;
 window.closeRequestDetailModal = closeRequestDetailModal;
+// Expose new request modal handlers globally
+window.openNewRequestModal = openNewRequestModal;
+window.closeNewRequestModal = closeNewRequestModal;
 
 console.log('Expense Management JS loaded. Functions:', {
     openSettlementModal: typeof window.openSettlementModal,
     switchTab: typeof window.switchTab,
-    openPendingApprovalsModal: typeof window.openPendingApprovalsModal
+    openPendingApprovalsModal: typeof window.openPendingApprovalsModal,
+    openNewRequestModal: typeof window.openNewRequestModal
 });
 </script>
 
@@ -1075,17 +1660,24 @@ console.log('Expense Management JS loaded. Functions:', {
 
 
 <!-- Pending Approvals Modal (Portalized - matches working modals) -->
-<div id="pendingApprovalsModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-    <div class="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-        <div class="p-6">
-            <!-- Header -->
-            <div class="flex justify-between items-center mb-4 border-b pb-3">
-                <div>
-                    <h2 class="text-xl font-bold text-gray-900">Pending Expense Approvals</h2>
-                    <p class="text-sm text-gray-600 mt-1">Review and approve pending expense requests</p>
+<div id="pendingApprovalsModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="if(event.target === this) closePendingApprovalsModal()">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #fef3c7 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #fde68a; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    ⏳
                 </div>
-                <button onclick="closePendingApprovalsModal()" class="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
+                <div>
+                    <h2 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Pending Expense Approvals</h2>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Review and approve pending expense requests</p>
+                </div>
             </div>
+            <button type="button" onclick="closePendingApprovalsModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content Area -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
             
             @if($pendingApprovals && $pendingApprovals->count() > 0)
             <!-- Pending Requests List -->
@@ -1159,14 +1751,13 @@ console.log('Expense Management JS loaded. Functions:', {
                 <p class="text-gray-500 mt-1">No pending expense requests at the moment.</p>
             </div>
             @endif
-            
-            <!-- Footer -->
-            <div class="mt-6 pt-4 border-t flex justify-end">
-                <button onclick="closePendingApprovalsModal()" 
-                        class="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors">
-                    Close
-                </button>
-            </div>
+        </div>
+        
+        <!-- Fixed Footer -->
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; justify-content: flex-end;">
+            <button type="button" onclick="closePendingApprovalsModal()" style="padding: 12px 24px; background: #e5e7eb; color: #374151; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                Close
+            </button>
         </div>
     </div>
 </div>

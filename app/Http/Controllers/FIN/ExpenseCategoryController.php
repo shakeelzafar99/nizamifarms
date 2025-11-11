@@ -32,6 +32,14 @@ class ExpenseCategoryController extends Controller
             $existing = ConfigModel::where('config_key', $configKey)->first();
             
             if ($existing) {
+                // Check if this is an AJAX request
+                if ($request->wantsJson() || $request->ajax() || $request->expectsJson()) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Expense category '{$categoryName}' already exists!"
+                    ], 400);
+                }
+                
                 return redirect()->route('admin.operations')
                                ->with('error', "Expense category '{$categoryName}' already exists!");
             }

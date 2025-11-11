@@ -200,6 +200,49 @@ class RequestController extends Controller
                 $leaveDays = $end->diffInDays($start) + 1;
             }
 
+            // Check if the logged-in user has L1 or L2 approval rights for auto-approval
+            $userHasL1 = RoleApprovalLevelModel::userHasApprovalLevel($loggedInUser->id, 1);
+            $userHasL2 = RoleApprovalLevelModel::userHasApprovalLevel($loggedInUser->id, 2);
+            
+            // Determine initial approval statuses based on user's approval rights
+            $requiresL1 = $category->requiresLevel1();
+            $requiresL2 = $category->requiresLevel2();
+            
+            // Auto-approve L1 if user has L1 rights
+            $level1Status = null;
+            $level1ApprovedBy = null;
+            $level1ApprovedAt = null;
+            if ($requiresL1) {
+                if ($userHasL1) {
+                    $level1Status = RequestModel::APPROVAL_STATUS_APPROVED;
+                    $level1ApprovedBy = $loggedInUser->id;
+                    $level1ApprovedAt = now();
+                } else {
+                    $level1Status = RequestModel::APPROVAL_STATUS_PENDING;
+                }
+            }
+            
+            // Auto-approve L2 if user has L2 rights (and L1 is approved or not required)
+            $level2Status = null;
+            $level2ApprovedBy = null;
+            $level2ApprovedAt = null;
+            if ($requiresL2) {
+                if ($userHasL2 && (!$requiresL1 || $level1Status === RequestModel::APPROVAL_STATUS_APPROVED)) {
+                    $level2Status = RequestModel::APPROVAL_STATUS_APPROVED;
+                    $level2ApprovedBy = $loggedInUser->id;
+                    $level2ApprovedAt = now();
+                } else {
+                    $level2Status = RequestModel::APPROVAL_STATUS_PENDING;
+                }
+            }
+            
+            // Determine overall status
+            $overallStatus = RequestModel::STATUS_PENDING;
+            if ((!$requiresL1 || $level1Status === RequestModel::APPROVAL_STATUS_APPROVED) &&
+                (!$requiresL2 || $level2Status === RequestModel::APPROVAL_STATUS_APPROVED)) {
+                $overallStatus = RequestModel::STATUS_APPROVED;
+            }
+            
             // Create request
             $requestModel = RequestModel::create([
                 'request_number' => RequestModel::generateRequestNumber(),
@@ -214,27 +257,56 @@ class RequestController extends Controller
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
                 'leave_days' => $leaveDays,
-                'status' => RequestModel::STATUS_PENDING,
+                'status' => $overallStatus,
                 'priority' => $validated['priority'] ?? 'normal',
-                'requires_level_1' => $category->requiresLevel1(),
-                'requires_level_2' => $category->requiresLevel2(),
-                'level_1_status' => $category->requiresLevel1() ? RequestModel::APPROVAL_STATUS_PENDING : null,
-                'level_2_status' => $category->requiresLevel2() ? RequestModel::APPROVAL_STATUS_PENDING : null,
+                'requires_level_1' => $requiresL1,
+                'requires_level_2' => $requiresL2,
+                'level_1_status' => $level1Status,
+                'level_1_approved_by' => $level1ApprovedBy,
+                'level_1_approved_at' => $level1ApprovedAt,
+                'level_2_status' => $level2Status,
+                'level_2_approved_by' => $level2ApprovedBy,
+                'level_2_approved_at' => $level2ApprovedAt,
                 'submitted_at' => now(),
                 'created_by' => $loggedInUser->id // Track who actually created it
             ]);
 
+            // If auto-approved and it's an expense/salary advance, post to ledger
+            if ($overallStatus === RequestModel::STATUS_APPROVED) {
+                $categoryCode = $category->category_code;
+                if (in_array($categoryCode, ['expense', 'salary_advance'])) {
+                    try {
+                        $ledgerService = app(\App\Services\FIN\LedgerPostingService::class);
+                        $ledgerService->postExpenseFromRequest($requestModel);
+                        Log::info("Auto-approved expense posted to ledger", [
+                            'request_id' => $requestModel->id,
+                            'request_number' => $requestModel->request_number
+                        ]);
+                    } catch (\Exception $e) {
+                        Log::error("Failed to post auto-approved expense to ledger: " . $e->getMessage(), [
+                            'request_id' => $requestModel->id
+                        ]);
+                        // Don't fail the request creation, just log the error
+                    }
+                }
+            }
+
             DB::commit();
 
+            $autoApprovedNote = ($userHasL1 || $userHasL2) && $overallStatus === RequestModel::STATUS_APPROVED 
+                ? ' (Auto-approved)' 
+                : '';
+            
             $message = $requesterId !== $loggedInUser->id 
-                ? 'Request created successfully for ' . ($requesterUser->fullname ?? 'employee')
-                : 'Request submitted successfully';
+                ? 'Request created successfully for ' . ($requesterUser->fullname ?? 'employee') . $autoApprovedNote
+                : 'Request submitted successfully' . $autoApprovedNote;
 
             return response()->json([
                 'success' => true,
                 'message' => $message,
                 'request_id' => $requestModel->id,
-                'request_number' => $requestModel->request_number
+                'request_number' => $requestModel->request_number,
+                'auto_approved' => $overallStatus === RequestModel::STATUS_APPROVED
             ]);
 
         } catch (\Exception $e) {

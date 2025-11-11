@@ -122,7 +122,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/requests', [\App\Http\Controllers\API\RiderController::class, 'getRequests']);
         Route::post('/requests', [\App\Http\Controllers\API\RiderController::class, 'createRequest']);
         
-    // Salary
+        // Salary
     Route::get('/salary', [\App\Http\Controllers\API\RiderController::class, 'getSalaryInfo']);
     Route::get('/salary/slips/{slipId}', [\App\Http\Controllers\API\RiderController::class, 'getSalarySlipDetails']);
     
@@ -155,6 +155,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
     }); // Close rider prefix group
+    
+    // Store Mode - Requests (uses same controller as web for consistency, under /api prefix)
+    Route::post('/requests/store', [\App\Http\Controllers\Request\RequestController::class, 'store']);
+    Route::post('/requests/{id}/approve', [\App\Http\Controllers\Request\RequestApprovalController::class, 'approve']);
+    Route::post('/requests/{id}/reject', [\App\Http\Controllers\Request\RequestApprovalController::class, 'reject']);
     
     // Vendor Management (Store Mode - uses token auth, but NOT under /rider prefix)
     Route::prefix('vendors')->group(function () {
