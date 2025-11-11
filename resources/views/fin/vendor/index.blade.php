@@ -821,13 +821,25 @@ function displayReport(report, showPayments = true) {
             });
         });
         
+        // Calculate payment mode totals for this vendor
+        let vendorTotalPaymentsOnline = 0;
+        let vendorTotalPaymentsCash = 0;
+        vendor.daily_summary.forEach(day => {
+            vendorTotalPaymentsOnline += day.total_payments_online || 0;
+            vendorTotalPaymentsCash += day.total_payments_cash || 0;
+        });
+        
         // Vendor Summary Row
         html += `
                             <tr class="bg-purple-100 font-bold print:bg-purple-200">
                                 <td colspan="3" class="border border-gray-300 px-3 py-2 text-right">
                                     <span class="text-gray-700">Vendor Total:</span>
                                     <span class="text-red-600 ml-4">Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
-                                    ${showPayments ? `<span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>` : ''}
+                                    ${showPayments ? `
+                                        <span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                        ${vendorTotalPaymentsOnline > 0 ? `<span class="text-blue-600 ml-2 text-xs">(Online: Rs. ${Number(vendorTotalPaymentsOnline).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
+                                        ${vendorTotalPaymentsCash > 0 ? `<span class="text-orange-600 ml-2 text-xs">(Cash: Rs. ${Number(vendorTotalPaymentsCash).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
+                                    ` : ''}
                                 </td>
                                 <td class="border border-gray-300 px-3 py-2 text-right ${(vendor.total_purchases - vendor.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
                                     Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}

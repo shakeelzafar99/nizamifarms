@@ -47,16 +47,25 @@ class VendorProductController extends Controller
         $request->validate([
             'product_name' => 'required|string|max:255',
             'unit' => 'required|string|max:50',
-            'rate_per_unit' => 'required|numeric|min:0.01'
+            'rate_per_unit' => 'required|numeric|min:0.01',
+            'is_default' => 'nullable|boolean'
         ]);
 
         try {
+            // If this is being set as default, unset any existing defaults
+            if ($request->is_default) {
+                VendorProductModel::where('vendor_id', $vendorId)
+                                  ->where('is_default', 1)
+                                  ->update(['is_default' => 0]);
+            }
+
             $product = VendorProductModel::create([
                 'vendor_id' => $vendorId,
                 'product_name' => $request->product_name,
                 'unit' => $request->unit,
                 'rate_per_unit' => $request->rate_per_unit,
-                'is_active' => 1
+                'is_active' => 1,
+                'is_default' => $request->is_default ? 1 : 0
             ]);
 
             return response()->json([
@@ -83,17 +92,27 @@ class VendorProductController extends Controller
         $request->validate([
             'product_name' => 'required|string|max:255',
             'unit' => 'required|string|max:50',
-            'rate_per_unit' => 'required|numeric|min:0.01'
+            'rate_per_unit' => 'required|numeric|min:0.01',
+            'is_default' => 'nullable|boolean'
         ]);
 
         try {
             $product = VendorProductModel::where('vendor_id', $vendorId)
                                          ->findOrFail($productId);
 
+            // If this is being set as default, unset any existing defaults
+            if ($request->is_default && !$product->is_default) {
+                VendorProductModel::where('vendor_id', $vendorId)
+                                  ->where('id', '!=', $productId)
+                                  ->where('is_default', 1)
+                                  ->update(['is_default' => 0]);
+            }
+
             $product->update([
                 'product_name' => $request->product_name,
                 'unit' => $request->unit,
-                'rate_per_unit' => $request->rate_per_unit
+                'rate_per_unit' => $request->rate_per_unit,
+                'is_default' => $request->is_default ? 1 : 0
             ]);
 
             return response()->json([
@@ -136,6 +155,40 @@ class VendorProductController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error updating status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Set a product as default for the vendor
+     */
+    public function setAsDefault($vendorId, $productId)
+    {
+        try {
+            // First, unset any existing default for this vendor
+            VendorProductModel::where('vendor_id', $vendorId)
+                              ->where('is_default', 1)
+                              ->update(['is_default' => 0]);
+
+            // Set the selected product as default
+            $product = VendorProductModel::where('vendor_id', $vendorId)
+                                         ->findOrFail($productId);
+            
+            $product->is_default = 1;
+            $product->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Default product updated successfully!',
+                'product' => $product
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error setting default vendor product: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error setting default product: ' . $e->getMessage()
             ], 500);
         }
     }

@@ -1,6 +1,131 @@
 @extends('layouts.app')
 
 @section('content')
+<style>
+@media print {
+    /* Hide everything except the report content */
+    body * {
+        visibility: hidden;
+    }
+    
+    /* Show only the printable report */
+    #printableVendorReport,
+    #printableVendorReport * {
+        visibility: visible;
+    }
+    
+    /* Position the report at the top of the page */
+    #printableVendorReport {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        padding: 20px;
+    }
+    
+    /* Hide the modal overlay and wrapper */
+    #vendorReportModal {
+        background: white !important;
+        backdrop-filter: none !important;
+        position: static !important;
+        padding: 0 !important;
+    }
+    
+    /* Remove shadows for print but keep borders */
+    #printableVendorReport {
+        box-shadow: none !important;
+    }
+    
+    /* Hide print and excel buttons when printing */
+    button[onclick="printVendorReport()"],
+    button[onclick="exportVendorToExcel()"] {
+        display: none !important;
+    }
+    
+    /* Ensure proper page breaks */
+    .print\\:break-inside-avoid {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+    
+    /* Preserve table borders */
+    table, th, td {
+        border: 1px solid #000 !important;
+    }
+    
+    /* Preserve background colors for headers */
+    .print\\:bg-white {
+        background-color: white !important;
+    }
+    
+    .print\\:bg-purple-200 {
+        background-color: #e9d5ff !important;
+    }
+    
+    /* Preserve colors for amounts */
+    .text-red-600, .text-red-700 {
+        color: #dc2626 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .text-green-600, .text-green-700 {
+        color: #16a34a !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .text-blue-600 {
+        color: #2563eb !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .text-orange-600 {
+        color: #ea580c !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    /* Preserve gradient backgrounds */
+    .bg-gradient-to-r {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        color-adjust: exact;
+    }
+    
+    /* Ensure text is black for better print quality */
+    body {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    /* Custom page margins and settings */
+    @page {
+        margin: 0.5cm;
+        size: A4;
+    }
+    
+    /* Add company name to footer */
+    #printableVendorReport::after {
+        content: "Nizami Farms";
+        display: block;
+        text-align: left;
+        margin-top: 20px;
+        padding-top: 10px;
+        border-top: 1px solid #e5e7eb;
+        font-size: 10pt;
+        color: #666;
+        visibility: visible;
+    }
+    
+    /* Ensure content starts from top */
+    html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+}
+</style>
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">{{ $vendor->vendor_name }}</h1>
@@ -140,6 +265,11 @@
                 class="inline-flex items-center px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-md"
                 style="background-color: #059669 !important; color: white !important;">
             <span style="color: white !important;">💰 Record Payment</span>
+        </button>
+        <button onclick="openVendorReportModal()" 
+                class="inline-flex items-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md"
+                style="background-color: #9333ea !important; color: white !important;">
+            <span style="color: white !important;">📊 Vendor Report</span>
         </button>
     </div>
 
@@ -388,7 +518,7 @@
                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent">
                         </div>
                         <div class="flex items-end">
-                            <button type="button" onclick="addLineItem()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
+                            <button type="button" onclick="addLineItem(true)" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
                                 + Add Line Item
                             </button>
                         </div>
@@ -445,41 +575,53 @@
     </div>
 </div>
 
-<!-- Record Payment Modal - Modern Design -->
-<div id="paymentModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-    <div class="bg-white rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-        <div class="p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-semibold text-gray-800">💰 Record Payment</h3>
-                <button onclick="closePaymentModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+<!-- Record Payment Modal - Elegant Design (Matching Purchase Style) -->
+<div id="paymentModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 600px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #d1fae5 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #6ee7b7; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    💰
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Record Payment</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Pay vendor for outstanding purchases</p>
+                </div>
             </div>
-            <form action="{{ route('fin.vendors.payment', $vendor->id) }}" method="POST">
+            <button type="button" onclick="closePaymentModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <form action="{{ route('fin.vendors.payment', $vendor->id) }}" method="POST" id="paymentForm">
                 @csrf
-                <div class="space-y-4">
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <!-- Date Field -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Date <span class="text-red-500">*</span></label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Date <span class="text-red-500">*</span></label>
                         <input type="date" name="transaction_date" value="{{ date('Y-m-d') }}" required
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent">
                     </div>
+                    
+                    <!-- Amount Field -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Amount (Rs.) <span class="text-red-500">*</span></label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Amount (Rs.) <span class="text-red-500">*</span></label>
                         <input type="number" name="amount" step="0.01" min="0.01" max="{{ $vendor->getBalance() }}" required placeholder="0.00"
-                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent text-lg font-semibold">
                         <p class="text-xs text-gray-500 mt-1">Current payable: Rs. {{ number_format($vendor->getBalance(), 2) }}</p>
                     </div>
                     
                     <!-- Payment Source Selection -->
-                    <div class="p-3 bg-green-50 border border-green-200 rounded-md">
-                        <label class="block text-sm font-medium text-green-900 mb-2">💳 Pay From:</label>
+                    <div style="padding: 12px; background: #d1fae5; border: 2px solid #6ee7b7; border-radius: 8px;">
+                        <label class="block text-sm font-medium text-gray-800 mb-2">💳 Pay From:</label>
                         <select name="payment_source_account_id" 
-                                class="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500">
+                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent">
                             <option value="">NF Cash (Auto-Approved)</option>
                             @php
+                                // Only show Online Bank, NF Cash (Main Till), and Expense Fund
                                 $paymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
-                                    ->where(function($q) {
-                                        $q->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
-                                          ->orWhere('account_category', 'employee_cash');
-                                    })
+                                    ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
                                     ->orderBy('account_name')
                                     ->get();
                             @endphp
@@ -489,32 +631,47 @@
                                 </option>
                             @endforeach
                         </select>
-                        <p class="text-xs text-green-700 mt-1">⚠️ Online and Manager cash require approval</p>
+                        <p style="font-size: 11px; color: #047857; font-weight: 600; margin: 6px 0 0 0;">
+                            ⚠️ Online and Manager cash require approval
+                        </p>
                     </div>
                     
+                    <!-- Description -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                        <textarea name="description" rows="3" placeholder="Optional payment details..."
-                                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"></textarea>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
+                        <textarea name="description" rows="2" placeholder="Add any notes about this payment..."
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent text-sm"></textarea>
                     </div>
                     
-                    <div class="flex gap-3 mt-6">
-                        <button type="button" onclick="closePaymentModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
-                            Cancel
-                        </button>
-                        <button type="submit" 
-                                class="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-md"
-                                style="background-color: #059669 !important; color: white !important;">
-                            <span style="color: white !important;">✓ Record Payment</span>
-                        </button>
+                    <!-- Warning -->
+                    <div style="padding: 12px; background: #d1fae5; border: 2px solid #6ee7b7; border-radius: 8px;">
+                        <p style="font-size: 12px; color: #065f46; font-weight: 600; margin: 0;">
+                            ✓ This will reduce the amount payable to this vendor.
+                        </p>
                     </div>
                 </div>
             </form>
+        </div>
+        
+        <!-- Fixed Footer with Actions -->
+        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 20px 24px; flex-shrink: 0;">
+            <div style="display: flex; gap: 12px;">
+                <button type="button" onclick="closePaymentModal()" style="flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                    Cancel
+                </button>
+                <button type="submit" form="paymentForm"
+                        style="flex: 1; padding: 12px 16px; background: #059669; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
+                    ✓ Record Payment
+                </button>
+            </div>
         </div>
     </div>
 </div>
 
 <script>
+// Vendor Data
+const vendorName = '{{ $vendor->vendor_name }}';
+
 // Vendor Products Data (fetched from server)
 let vendorProducts = [];
 let lineItemCounter = 0;
@@ -580,10 +737,10 @@ function openWeightedPurchaseModal() {
     });
     document.body.style.overflow = 'hidden';
     
-    // Automatically add the first product line item so user doesn't have to click "Add Product Line"
+    // Automatically add the first product line item with default product pre-selected
     const container = document.getElementById('lineItemsContainer');
     if (!container.children.length || container.children.length === 0) {
-        addLineItem();
+        addLineItem(true); // Pass true to auto-select default product
     }
 }
 
@@ -605,16 +762,20 @@ function closeWeightedPurchaseModal() {
     }
 }
 
-function addLineItem() {
+function addLineItem(isInitialLoad = false) {
     lineItemCounter++;
     const container = document.getElementById('lineItemsContainer');
     const emptyMsg = document.getElementById('emptyLineItemsMsg');
     if (emptyMsg) emptyMsg.style.display = 'none';
     
+    // Find default product if this is initial load or user wants default
+    const defaultProduct = vendorProducts.find(p => p.is_default === 1 || p.is_default === true);
+    
     // Create product options HTML
     let productOptions = '<option value="">-- Select Product --</option>';
     vendorProducts.forEach(product => {
-        productOptions += `<option value="${product.id}" data-rate="${product.rate_per_unit}" data-unit="${product.unit}">${product.product_name} (${product.unit}) - Rs. ${parseFloat(product.rate_per_unit).toFixed(2)}/${product.unit}</option>`;
+        const isSelected = isInitialLoad && defaultProduct && product.id === defaultProduct.id ? 'selected' : '';
+        productOptions += `<option value="${product.id}" data-rate="${product.rate_per_unit}" data-unit="${product.unit}" ${isSelected}>${product.product_name} (${product.unit}) - Rs. ${parseFloat(product.rate_per_unit).toFixed(2)}/${product.unit}</option>`;
     });
     
     const lineItem = document.createElement('div');
@@ -663,7 +824,8 @@ function addLineItem() {
         <input type="hidden" name="items[${lineItemCounter}][product_name]" value="">
     `;
     
-    container.appendChild(lineItem);
+    // Insert at the beginning instead of end for easier access
+    container.insertBefore(lineItem, container.firstChild);
 }
 
 function updateLineItem(id) {
@@ -1000,19 +1162,36 @@ function closeEditWeightedPurchaseModal() {
     document.getElementById('editLineItemsContainer').innerHTML = '';
 }
 
-function addEditLineItem(existingItem = null, index = null) {
+function addEditLineItem(existingItem = null, index = null, isInitialLoad = false) {
     const container = document.getElementById('editLineItemsContainer');
     const itemIndex = index !== null ? index : Date.now();
     
-    console.log('addEditLineItem called with:', {existingItem, index, itemIndex});
+    console.log('addEditLineItem called with:', {existingItem, index, itemIndex, isInitialLoad});
+    
+    // Find default product if this is initial load and no existing item
+    const defaultProduct = !existingItem && isInitialLoad ? vendorProducts.find(p => p.is_default === 1 || p.is_default === true) : null;
     
     // Build product options HTML
     let productOptionsHtml = '<option value="">Select Product</option>';
     vendorProducts.forEach(p => {
-        const selected = existingItem && existingItem.vendor_product_id == p.id ? 'selected' : '';
+        let selected = '';
+        if (existingItem && existingItem.vendor_product_id == p.id) {
+            selected = 'selected';
+        } else if (defaultProduct && p.id === defaultProduct.id) {
+            selected = 'selected';
+        }
         console.log(`Product ${p.product_name}: existingItem.vendor_product_id=${existingItem?.vendor_product_id}, p.id=${p.id}, selected=${selected}`);
-        productOptionsHtml += `<option value="${p.id}" data-unit="${p.unit}" data-rate="${p.default_rate}" data-name="${p.product_name}" ${selected}>${p.product_name}</option>`;
+        productOptionsHtml += `<option value="${p.id}" data-unit="${p.unit}" data-rate="${p.rate_per_unit}" data-name="${p.product_name}" ${selected}>${p.product_name}</option>`;
     });
+    
+    // Use default product values if available and no existing item
+    const itemData = existingItem || (defaultProduct ? {
+        product_name: defaultProduct.product_name,
+        quantity: '',
+        unit: defaultProduct.unit,
+        rate_per_unit: defaultProduct.rate_per_unit,
+        line_total: 0
+    } : {});
     
     const itemHtml = `
         <div class="edit-line-item border border-gray-300 rounded-lg p-3 bg-gray-50" data-index="${itemIndex}">
@@ -1022,23 +1201,23 @@ function addEditLineItem(existingItem = null, index = null) {
                     <select name="items[${itemIndex}][product_id]" required onchange="updateEditProductDetails(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
                         ${productOptionsHtml}
                     </select>
-                    <input type="hidden" name="items[${itemIndex}][product_name]" value="${existingItem ? existingItem.product_name : ''}">
+                    <input type="hidden" name="items[${itemIndex}][product_name]" value="${itemData.product_name || ''}">
                 </div>
                 <div class="col-span-2">
                     <label class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
-                    <input type="number" name="items[${itemIndex}][quantity]" step="0.001" min="0.001" value="${existingItem ? existingItem.quantity : ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
+                    <input type="number" name="items[${itemIndex}][quantity]" step="0.001" min="0.001" value="${itemData.quantity || ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
                 </div>
                 <div class="col-span-2">
                     <label class="block text-xs font-medium text-gray-700 mb-1">Unit</label>
-                    <input type="text" name="items[${itemIndex}][unit]" value="${existingItem ? existingItem.unit : ''}" required readonly class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100">
+                    <input type="text" name="items[${itemIndex}][unit]" value="${itemData.unit || ''}" required readonly class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100">
                 </div>
                 <div class="col-span-2">
                     <label class="block text-xs font-medium text-gray-700 mb-1">Rate</label>
-                    <input type="number" name="items[${itemIndex}][rate]" step="0.01" min="0.01" value="${existingItem ? existingItem.rate_per_unit : ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
+                    <input type="number" name="items[${itemIndex}][rate]" step="0.01" min="0.01" value="${itemData.rate_per_unit || ''}" required onchange="calculateEditLineTotal(${itemIndex})" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500">
                 </div>
                 <div class="col-span-1">
                     <label class="block text-xs font-medium text-gray-700 mb-1">Total</label>
-                    <input type="text" readonly class="line-total w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100 font-semibold" value="${existingItem ? parseFloat(existingItem.line_total).toFixed(2) : '0.00'}">
+                    <input type="text" readonly class="line-total w-full px-2 py-1.5 text-sm border border-gray-300 rounded bg-gray-100 font-semibold" value="${itemData.line_total ? parseFloat(itemData.line_total).toFixed(2) : '0.00'}">
                 </div>
                 <div class="col-span-1 flex items-end justify-center">
                     <button type="button" onclick="removeEditLineItem(${itemIndex})" class="px-2 py-1.5 text-red-600 hover:text-red-800 text-lg font-bold">×</button>
@@ -1047,7 +1226,8 @@ function addEditLineItem(existingItem = null, index = null) {
         </div>
     `;
     
-    container.insertAdjacentHTML('beforeend', itemHtml);
+    // Insert at the beginning instead of end for easier access
+    container.insertAdjacentHTML('afterbegin', itemHtml);
 }
 
 function updateEditProductDetails(index) {
@@ -1397,7 +1577,7 @@ function toggleExpandAll() {
                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent">
                         </div>
                         <div class="flex items-end">
-                            <button type="button" onclick="addEditLineItem()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
+                            <button type="button" onclick="addEditLineItem(null, null, true)" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-150 text-sm font-medium">
                                 + Add Line Item
                             </button>
                         </div>
@@ -1444,6 +1624,323 @@ function toggleExpandAll() {
         </div>
     </div>
 </div>
+
+<!-- Vendor Report Modal (Pre-filtered for this vendor) -->
+<div id="vendorReportModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;" onclick="if(event.target === this) closeVendorReportModal()">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1400px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #f3e8ff 0%, #ffffff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: #c084fc; display: flex; align-items: center; justify-content: center; font-size: 24px;">
+                    📊
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">{{ $vendor->vendor_name }} - Report</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">View detailed purchase and payment summary</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeVendorReportModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 20px 24px;">
+            <!-- Report Filters - Compact Design -->
+            <div class="bg-gradient-to-r from-purple-50 to-purple-100 rounded-lg p-3 border border-purple-300 mb-4 shadow-sm">
+                <div class="flex flex-wrap items-end gap-3">
+                    <div class="flex-1 min-w-[150px]">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">From <span class="text-red-600">*</span></label>
+                        <input type="date" id="vendor_report_date_from" value="{{ date('Y-m-01') }}"
+                               class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900">
+                    </div>
+                    <div class="flex-1 min-w-[150px]">
+                        <label class="block text-xs font-semibold text-gray-700 mb-1">To <span class="text-red-600">*</span></label>
+                        <input type="date" id="vendor_report_date_to" value="{{ date('Y-m-d') }}"
+                               class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 focus:border-purple-500 text-gray-900">
+                    </div>
+                    <div class="flex items-end">
+                        <label class="inline-flex items-center px-3 py-1.5 bg-white border border-gray-300 rounded cursor-pointer hover:bg-gray-50 transition-colors">
+                            <input type="checkbox" id="vendor_show_payments" checked class="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500 focus:ring-2">
+                            <span class="ml-2 text-sm font-medium text-gray-700">Show Payments</span>
+                        </label>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="generateVendorReport()" 
+                                class="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            🔍 Generate
+                        </button>
+                        <button onclick="printVendorReport()" id="vendorPrintBtn" style="display: none;"
+                                class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            🖨️ Print
+                        </button>
+                        <button onclick="exportVendorToExcel()" id="vendorExcelBtn" style="display: none;"
+                                class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded shadow-sm transition-colors">
+                            📊 Excel
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Report Content -->
+            <div id="vendorReportContent" style="display: none;">
+                <!-- Report will be loaded here -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Vendor Report Functions
+function openVendorReportModal() {
+    const modal = document.getElementById('vendorReportModal');
+    if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+    }
+    modal.classList.remove('hidden');
+    Object.assign(modal.style, {
+        display: 'flex',
+        position: 'fixed',
+        top: '0',
+        left: '0',
+        right: '0',
+        bottom: '0',
+        zIndex: '99999'
+    });
+    document.body.style.overflow = 'hidden';
+}
+
+function closeVendorReportModal() {
+    const modal = document.getElementById('vendorReportModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    document.body.style.overflow = 'auto';
+}
+
+function generateVendorReport() {
+    const dateFrom = document.getElementById('vendor_report_date_from').value;
+    const dateTo = document.getElementById('vendor_report_date_to').value;
+    const showPayments = document.getElementById('vendor_show_payments').checked;
+    
+    if (!dateFrom || !dateTo) {
+        alert('Please select both From and To dates');
+        return;
+    }
+    
+    // Show loading
+    const reportContent = document.getElementById('vendorReportContent');
+    reportContent.style.display = 'block';
+    reportContent.innerHTML = '<div class="text-center py-8"><div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div><p class="mt-4 text-gray-600">Generating report...</p></div>';
+    
+    // Fetch report data (pre-filtered for this vendor)
+    fetch(`/finance/vendors/report?vendor_id={{ $vendor->id }}&date_from=${dateFrom}&date_to=${dateTo}&show_payments=${showPayments ? 1 : 0}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayVendorReport(data.report);
+                document.getElementById('vendorPrintBtn').style.display = 'inline-block';
+                document.getElementById('vendorExcelBtn').style.display = 'inline-block';
+            } else {
+                reportContent.innerHTML = '<div class="text-center py-8 text-red-600">Error generating report</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            reportContent.innerHTML = '<div class="text-center py-8 text-red-600">Error generating report</div>';
+        });
+}
+
+function displayVendorReport(report) {
+    const reportContent = document.getElementById('vendorReportContent');
+    const showPayments = document.getElementById('vendor_show_payments').checked;
+    
+    // Extract vendor data (should be only one vendor since we're filtering by vendor_id)
+    const vendor = report.vendors && report.vendors.length > 0 ? report.vendors[0] : null;
+    
+    if (!vendor) {
+        reportContent.innerHTML = '<div class="text-center py-8 text-red-600">No data found for this period</div>';
+        return;
+    }
+    
+    let html = `
+        <div id="printableVendorReport" class="bg-white">
+            <!-- Vendor Name Header for Print -->
+            <div style="text-align: center; margin-bottom: 20px; padding: 20px 0; border-bottom: 3px solid #7c3aed;">
+                <h1 style="font-size: 28px; font-weight: bold; color: #111827; margin: 0 0 8px 0;">${vendorName}</h1>
+                <p style="font-size: 14px; color: #6b7280; margin: 0;">Report Period: ${report.date_from} to ${report.date_to}</p>
+            </div>
+            
+            <div style="padding: 0 20px;">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm border-collapse">
+                        <thead>
+                            <tr class="bg-purple-100 print:bg-purple-200">
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Date</th>
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Type</th>
+                                <th class="border border-gray-300 px-3 py-2 text-left font-semibold text-gray-700">Details</th>
+                                <th class="border border-gray-300 px-3 py-2 text-right font-semibold text-gray-700">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+    `;
+    
+    // Loop through each day and transaction
+    vendor.daily_summary.forEach(day => {
+        let dayRowSpan = 0;
+        
+        // Count total rows for this day (including line items)
+        day.transactions.forEach(txn => {
+            if (txn.line_items && txn.line_items.length > 0) {
+                dayRowSpan += txn.line_items.length;
+            } else {
+                dayRowSpan += 1;
+            }
+        });
+        
+        let isFirstRowOfDay = true;
+        
+        day.transactions.forEach(txn => {
+            const isPayment = txn.type === 'payment';
+            const amountColor = isPayment ? 'text-green-700' : 'text-red-700';
+            const bgColor = isPayment ? 'bg-green-50' : 'bg-red-50';
+            
+            if (txn.line_items && txn.line_items.length > 0) {
+                // Weighted purchase with line items
+                txn.line_items.forEach((item, itemIndex) => {
+                    html += `<tr class="${bgColor} print:bg-white">`;
+                    
+                    // Date column (only on first row of the day)
+                    if (isFirstRowOfDay) {
+                        html += `<td class="border border-gray-300 px-3 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
+                        isFirstRowOfDay = false;
+                    }
+                    
+                    // Type column (only on first line item)
+                    if (itemIndex === 0) {
+                        html += `
+                            <td class="border border-gray-300 px-3 py-2 align-top" rowspan="${txn.line_items.length}">
+                                <div class="font-medium ${amountColor}">${isPayment ? '💰 Payment' : '📦 Purchase'}</div>
+                                <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
+                                ${txn.description ? `<div class="text-xs text-gray-600 mt-1">${txn.description}</div>` : ''}
+                                ${isPayment && txn.payment_mode ? `<div class="text-xs text-blue-600 mt-1">${txn.payment_mode}</div>` : ''}
+                            </td>
+                        `;
+                    }
+                    
+                    // Details column (product details)
+                    html += `
+                        <td class="border border-gray-300 px-3 py-2">
+                            <div class="flex justify-between items-center">
+                                <span class="font-medium text-gray-800">${item.product_name}</span>
+                                <span class="text-gray-600 ml-4">${item.quantity} ${item.unit} × Rs. ${Number(item.rate_per_unit).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                            </div>
+                        </td>
+                    `;
+                    
+                    // Amount column (only on first line item, show total)
+                    if (itemIndex === 0) {
+                        html += `
+                            <td class="border border-gray-300 px-3 py-2 text-right align-top font-bold ${amountColor}" rowspan="${txn.line_items.length}">
+                                Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            </td>
+                        `;
+                    }
+                    
+                    html += `</tr>`;
+                });
+            } else {
+                // Simple transaction (payment or flat purchase)
+                html += `<tr class="${bgColor} print:bg-white">`;
+                
+                // Date column (only on first row of the day)
+                if (isFirstRowOfDay) {
+                    html += `<td class="border border-gray-300 px-3 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
+                    isFirstRowOfDay = false;
+                }
+                
+                // Type column
+                html += `
+                    <td class="border border-gray-300 px-3 py-2">
+                        <div class="font-medium ${amountColor}">${isPayment ? '💰 Payment' : '📦 Purchase'}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
+                        ${isPayment && txn.payment_mode ? `<div class="text-xs text-blue-600 mt-1">${txn.payment_mode}</div>` : ''}
+                    </td>
+                `;
+                
+                // Details column
+                html += `
+                    <td class="border border-gray-300 px-3 py-2">
+                        <div class="text-gray-700">${txn.description || '-'}</div>
+                    </td>
+                `;
+                
+                // Amount column
+                html += `
+                    <td class="border border-gray-300 px-3 py-2 text-right font-bold ${amountColor}">
+                        Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    </td>
+                `;
+                
+                html += `</tr>`;
+            }
+        });
+    });
+    
+    // Calculate payment mode totals
+    let vendorTotalPaymentsOnline = 0;
+    let vendorTotalPaymentsCash = 0;
+    vendor.daily_summary.forEach(day => {
+        vendorTotalPaymentsOnline += day.total_payments_online || 0;
+        vendorTotalPaymentsCash += day.total_payments_cash || 0;
+    });
+    
+    // Vendor Summary Row
+    html += `
+                            <tr class="bg-purple-100 font-bold print:bg-purple-200">
+                                <td colspan="3" class="border border-gray-300 px-3 py-2 text-right">
+                                    <span class="text-gray-700">Vendor Total:</span>
+                                    <span class="text-red-600 ml-4">Purchases: Rs. ${Number(vendor.total_purchases).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                    ${showPayments ? `
+                                        <span class="text-green-600 ml-4">Payments: Rs. ${Number(vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
+                                        ${vendorTotalPaymentsOnline > 0 ? `<span class="text-blue-600 ml-2 text-xs">(Online: Rs. ${Number(vendorTotalPaymentsOnline).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
+                                        ${vendorTotalPaymentsCash > 0 ? `<span class="text-orange-600 ml-2 text-xs">(Cash: Rs. ${Number(vendorTotalPaymentsCash).toLocaleString('en-PK', {minimumFractionDigits: 2})})</span>` : ''}
+                                    ` : ''}
+                                </td>
+                                <td class="border border-gray-300 px-3 py-2 text-right ${(vendor.total_purchases - vendor.total_payments) > 0 ? 'text-red-600' : 'text-green-600'}">
+                                    Rs. ${Number(vendor.total_purchases - vendor.total_payments).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    reportContent.innerHTML = html;
+}
+
+function printVendorReport() {
+    // Show instructions for better print quality
+    const userConfirmed = confirm(
+        'Print Tips:\n\n' +
+        '1. In the print dialog, click "More settings"\n' +
+        '2. Uncheck "Headers and footers" to hide the URL\n' +
+        '3. Set margins to "None" or "Minimum" for best results\n\n' +
+        'Click OK to continue to print dialog.'
+    );
+    
+    if (userConfirmed) {
+        window.print();
+    }
+}
+
+function exportVendorToExcel() {
+    const dateFrom = document.getElementById('vendor_report_date_from').value;
+    const dateTo = document.getElementById('vendor_report_date_to').value;
+    const showPayments = document.getElementById('vendor_show_payments').checked;
+    
+    window.location.href = `/finance/vendors/report/export?vendor_id={{ $vendor->id }}&date_from=${dateFrom}&date_to=${dateTo}&show_payments=${showPayments ? 1 : 0}`;
+}
+</script>
 
 @endsection
 

@@ -13,12 +13,14 @@ class VendorProductModel extends Model
         'product_name',
         'unit',
         'rate_per_unit',
-        'is_active'
+        'is_active',
+        'is_default'
     ];
 
     protected $casts = [
         'rate_per_unit' => 'decimal:2',
         'is_active' => 'boolean',
+        'is_default' => 'boolean',
         'created_at' => 'datetime',
         'updated_at' => 'datetime'
     ];

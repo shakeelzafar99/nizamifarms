@@ -365,6 +365,7 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/products', [\App\Http\Controllers\FIN\VendorProductController::class, 'store'])->name('products.store');
             Route::put('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'update'])->name('products.update');
             Route::post('/{vendorId}/products/{productId}/toggle', [\App\Http\Controllers\FIN\VendorProductController::class, 'toggleStatus'])->name('products.toggle');
+            Route::post('/{vendorId}/products/{productId}/set-default', [\App\Http\Controllers\FIN\VendorProductController::class, 'setAsDefault'])->name('products.set-default');
             Route::delete('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'destroy'])->name('products.delete');
         });
 

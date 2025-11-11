@@ -850,7 +850,8 @@ class VendorController extends Controller
                     $transactionTypes[] = LedgerModel::TYPE_VENDOR_PAYMENT;
                 }
                 
-                $transactions = LedgerModel::where(function($q) use ($vendor) {
+                $transactions = LedgerModel::with('fromAccount')
+                    ->where(function($q) use ($vendor) {
                         $q->where('from_account_id', $vendor->account->id)
                           ->orWhere('to_account_id', $vendor->account->id);
                     })
@@ -870,13 +871,16 @@ class VendorController extends Controller
                 $vendorTotalPayments = 0;
 
                 foreach ($transactions as $txn) {
-                    $date = $txn->transaction_date->format('M j, Y');
+                    // Format date with day of week: "Nov 7, 2025 Friday"
+                    $date = $txn->transaction_date->format('M j, Y l');
                     
                     if (!isset($dailySummary[$date])) {
                         $dailySummary[$date] = [
                             'date' => $date,
                             'total_purchases' => 0,
                             'total_payments' => 0,
+                            'total_payments_online' => 0,
+                            'total_payments_cash' => 0,
                             'transactions' => []
                         ];
                     }
@@ -901,12 +905,24 @@ class VendorController extends Controller
                             ->toArray();
                     }
 
+                    // Determine payment mode for payments (Online or Cash)
+                    $paymentMode = null;
+                    if (!$isPurchase) {
+                        // Load the fromAccount to check account_code
+                        $fromAccount = $txn->fromAccount;
+                        if ($fromAccount) {
+                            // If account_code is 'ONLINE', it's Online, otherwise it's Cash
+                            $paymentMode = ($fromAccount->account_code === 'ONLINE') ? 'Online' : 'Cash';
+                        }
+                    }
+
                     $dailySummary[$date]['transactions'][] = [
                         'transaction_id' => $txn->transaction_id,
                         'type' => $isPurchase ? 'purchase' : 'payment',
                         'amount' => $amount,
                         'description' => $txn->description,
-                        'line_items' => $lineItems
+                        'line_items' => $lineItems,
+                        'payment_mode' => $paymentMode
                     ];
 
                     if ($isPurchase) {
@@ -915,6 +931,13 @@ class VendorController extends Controller
                     } else {
                         $dailySummary[$date]['total_payments'] += $amount;
                         $vendorTotalPayments += $amount;
+                        
+                        // Track payment mode totals
+                        if ($paymentMode === 'Online') {
+                            $dailySummary[$date]['total_payments_online'] += $amount;
+                        } else {
+                            $dailySummary[$date]['total_payments_cash'] += $amount;
+                        }
                     }
                 }
 

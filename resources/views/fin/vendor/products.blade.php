@@ -46,6 +46,10 @@
                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
             </div>
             <div>
+                <label class="inline-flex items-center cursor-pointer mb-2">
+                    <input type="checkbox" id="is_default" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <span class="ml-2 text-sm font-medium text-gray-700">⭐ Set as Default</span>
+                </label>
                 <button type="submit" 
                         class="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md"
                         style="background-color: #2563eb !important; color: white !important;">
@@ -68,6 +72,7 @@
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product Name</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unit</th>
                         <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Rate per Unit</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Default</th>
                         <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                     </tr>
@@ -75,9 +80,21 @@
                 <tbody class="bg-white divide-y divide-gray-200" id="productsTableBody">
                     @forelse($products as $product)
                         <tr class="hover:bg-gray-50" data-product-id="{{ $product->id }}">
-                            <td class="px-6 py-4 text-sm text-gray-900 font-medium">{{ $product->product_name }}</td>
+                            <td class="px-6 py-4 text-sm text-gray-900 font-medium">
+                                {{ $product->product_name }}
+                                @if($product->is_default)
+                                    <span class="ml-2 text-yellow-500" title="Default Product">⭐</span>
+                                @endif
+                            </td>
                             <td class="px-6 py-4 text-sm text-gray-600">{{ $product->unit }}</td>
                             <td class="px-6 py-4 text-sm text-gray-900 text-right font-semibold">Rs. {{ number_format($product->rate_per_unit, 2) }}</td>
+                            <td class="px-6 py-4 text-center">
+                                <button onclick="setAsDefault({{ $product->id }}, {{ $product->is_default ? 'true' : 'false' }})"
+                                        class="px-3 py-1 text-xs rounded-md default-badge-{{ $product->id }}
+                                            {{ $product->is_default ? 'bg-yellow-100 text-yellow-800 cursor-not-allowed' : 'bg-gray-100 text-gray-600 hover:bg-yellow-50' }}">
+                                    {{ $product->is_default ? '⭐ Default' : 'Set Default' }}
+                                </button>
+                            </td>
                             <td class="px-6 py-4 text-center">
                                 <span class="px-2 py-1 text-xs font-semibold rounded-full status-badge-{{ $product->id }}
                                     {{ $product->is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800' }}">
@@ -86,7 +103,7 @@
                             </td>
                             <td class="px-6 py-4 text-center">
                                 <div class="flex justify-center gap-2">
-                                    <button onclick='editProduct({{ $product->id }}, {{ json_encode($product->product_name) }}, "{{ $product->unit }}", {{ $product->rate_per_unit }})'
+                                    <button onclick='editProduct({{ $product->id }}, {{ json_encode($product->product_name) }}, "{{ $product->unit }}", {{ $product->rate_per_unit }}, {{ $product->is_default ? 'true' : 'false' }})'
                                             class="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200">
                                         ✏️ Edit
                                     </button>
@@ -103,7 +120,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500">
+                            <td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
                                 No products added yet. Add your first product above.
                             </td>
                         </tr>
@@ -148,6 +165,12 @@
                         <input type="number" id="edit_rate_per_unit" step="0.01" min="0.01" required
                                class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                     </div>
+                    <div>
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="edit_is_default" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                            <span class="ml-2 text-sm font-medium text-gray-700">⭐ Set as Default</span>
+                        </label>
+                    </div>
                     <div class="flex gap-3 mt-6">
                         <button type="button" onclick="closeEditModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
                             Cancel
@@ -174,7 +197,8 @@ document.getElementById('addProductForm').addEventListener('submit', function(e)
     const formData = {
         product_name: document.getElementById('product_name').value,
         unit: document.getElementById('unit').value,
-        rate_per_unit: document.getElementById('rate_per_unit').value
+        rate_per_unit: document.getElementById('rate_per_unit').value,
+        is_default: document.getElementById('is_default').checked ? 1 : 0
     };
     
     fetch(`/finance/vendors/${vendorId}/products`, {
@@ -202,11 +226,12 @@ document.getElementById('addProductForm').addEventListener('submit', function(e)
 });
 
 // Edit Product
-function editProduct(id, name, unit, rate) {
+function editProduct(id, name, unit, rate, isDefault) {
     document.getElementById('edit_product_id').value = id;
     document.getElementById('edit_product_name').value = name;
     document.getElementById('edit_unit').value = unit;
     document.getElementById('edit_rate_per_unit').value = rate;
+    document.getElementById('edit_is_default').checked = isDefault;
     
     const modal = document.getElementById('editModal');
     modal.classList.remove('hidden');
@@ -226,7 +251,8 @@ document.getElementById('editProductForm').addEventListener('submit', function(e
     const formData = {
         product_name: document.getElementById('edit_product_name').value,
         unit: document.getElementById('edit_unit').value,
-        rate_per_unit: document.getElementById('edit_rate_per_unit').value
+        rate_per_unit: document.getElementById('edit_rate_per_unit').value,
+        is_default: document.getElementById('edit_is_default').checked ? 1 : 0
     };
     
     fetch(`/finance/vendors/${vendorId}/products/${productId}`, {
@@ -277,6 +303,39 @@ function toggleStatus(id, currentStatus) {
     })
     .catch(error => {
         showMessage('error', 'Error updating status');
+        console.error('Error:', error);
+    });
+}
+
+// Set as Default
+function setAsDefault(productId, isCurrentlyDefault) {
+    if (isCurrentlyDefault) {
+        showMessage('info', 'This product is already set as default');
+        return;
+    }
+    
+    if (!confirm('Set this product as default? This will unset any other default product.')) {
+        return;
+    }
+    
+    fetch(`/finance/vendors/${vendorId}/products/${productId}/set-default`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('success', 'Default product updated!');
+            setTimeout(() => window.location.reload(), 1000);
+        } else {
+            showMessage('error', data.message);
+        }
+    })
+    .catch(error => {
+        showMessage('error', 'Error setting default product');
         console.error('Error:', error);
     });
 }
