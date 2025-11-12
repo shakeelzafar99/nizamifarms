@@ -129,6 +129,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Mobile Permissions
     Route::get('/permissions', [\App\Http\Controllers\API\RiderController::class, 'getMobilePermissions']);
     
+    // Active Users (for creating requests for others)
+    Route::get('/users/active', [\App\Http\Controllers\API\RiderController::class, 'getActiveUsers']);
+    
     // Store Mode - Open Orders
     Route::get('/store/order-statuses', [\App\Http\Controllers\API\RiderController::class, 'getOrderStatuses']);
     Route::get('/store/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrders']);

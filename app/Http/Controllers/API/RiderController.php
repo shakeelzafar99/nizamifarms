@@ -2097,6 +2097,40 @@ class RiderController extends Controller
             ], 500);
         }
     }
+    
+    /**
+     * Get active users for creating requests on behalf of others
+     * Only accessible to users with store mode permission
+     * Matches web implementation - excludes current user
+     */
+    public function getActiveUsers(Request $request)
+    {
+        try {
+            $users = \DB::table('t_sys_user')
+                ->where('is_active', 1)
+                ->whereNotIn('id', [Auth::id()]) // Exclude current user
+                ->orderBy('fullname')
+                ->select('id', 'fullname', 'email')
+                ->get();
+            
+            return response()->json([
+                'success' => true,
+                'users' => $users
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to fetch active users', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch users',
+                'users' => []
+            ], 500);
+        }
+    }
 
     /**
      * STORE MODE: Get available order statuses
@@ -2755,6 +2789,7 @@ class RiderController extends Controller
             // Get parameters
             $level = (int) $request->get('level', 0);
             $filters = json_decode($request->get('filters', '{}'), true) ?: [];
+            $statusFilter = $request->get('status_filter'); // Optional status filter
             
             // Get global settings from database (same as web app)
             $hierarchySetting = DB::table('t_crm_open_quantities_settings')
@@ -2788,9 +2823,15 @@ class RiderController extends Controller
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
                 })
-                ->whereNotIn('o.order_status', $excludedStatuses)
-                // Default: Only show orders from last 20 days for performance
-                ->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(20));
+                ->whereNotIn('o.order_status', $excludedStatuses);
+            
+            // Apply status filter if provided
+            if ($statusFilter) {
+                $query->where('o.order_status', $statusFilter);
+            }
+            
+            // Default: Only show orders from last 20 days for performance
+            $query->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(20));
             
             // Apply parent filters - but only filter on fields where we have product data
             \Log::debug('Open Quantities Mobile - Filters:', [

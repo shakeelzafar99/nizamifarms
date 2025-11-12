@@ -66,6 +66,16 @@
                             'icon' => '📈',
                             'color' => 'green'
                         ],
+                        'store_mode_expenses' => [
+                            'title' => '💰 Store Mode - Expenses',
+                            'icon' => '💵',
+                            'color' => 'yellow'
+                        ],
+                        'store_mode_vendors' => [
+                            'title' => '🏭 Store Mode - Vendors',
+                            'icon' => '🏭',
+                            'color' => 'indigo'
+                        ],
                         'store_mode_future' => [
                             'title' => '🚀 Store Mode - Future Features',
                             'icon' => '⏳',
