@@ -180,4 +180,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Ledger transaction details (used by mobile vendor view - mirrors web route)
     Route::get('/finance/ledger/transaction/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getTransactionDetails']);
+    
+    // Payment source accounts (for vendor payments in mobile)
+    Route::get('/finance/accounts/payment-sources', [\App\Http\Controllers\FIN\AccountController::class, 'getPaymentSources']);
 }); // Close auth:sanctum middleware group

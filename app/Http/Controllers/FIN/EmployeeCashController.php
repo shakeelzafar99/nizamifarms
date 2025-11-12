@@ -387,13 +387,29 @@ class EmployeeCashController extends Controller
 
         // Apply date filters if provided
         if ($dateFrom && $dateTo) {
-            $ledgerQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+            // For vendor payments, use posted_date if available; otherwise transaction_date.
+            $ledgerQuery->where(function($q) use ($dateFrom, $dateTo) {
+                $q->where(function($subQ) use ($dateFrom, $dateTo) {
+                    $subQ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->where(function($dateQ) use ($dateFrom, $dateTo) {
+                             $dateQ->whereBetween('posted_date', [$dateFrom, $dateTo])
+                                   ->orWhere(function($fallbackQ) use ($dateFrom, $dateTo) {
+                                       $fallbackQ->whereNull('posted_date')
+                                                 ->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+                                   });
+                         });
+                })->orWhere(function($subQ) use ($dateFrom, $dateTo) {
+                    $subQ->where('transaction_type', '!=', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->whereBetween('transaction_date', [$dateFrom, $dateTo]);
+                });
+            });
         }
 
         // Get ledger transactions
         $ledger = $ledgerQuery
             ->with(['fromAccount', 'toAccount', 'order.customer'])
-            ->orderBy('transaction_date', 'desc')
+            // Order by effective date: posted_date (for vendor payments) or transaction_date
+            ->orderByRaw("COALESCE(CASE WHEN transaction_type = ? THEN posted_date END, transaction_date) DESC", [LedgerModel::TYPE_VENDOR_PAYMENT])
             ->orderBy('created_at', 'desc')
             ->paginate(50);
 

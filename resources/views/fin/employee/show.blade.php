@@ -416,7 +416,11 @@
         // IMPORTANT: Only count APPROVED transactions for in/out totals (exclude pending/rejected)
         $groupedByDate = [];
         foreach($ledger as $txn) {
-            $date = $txn->transaction_date ? $txn->transaction_date->format('Y-m-d') : 'unknown';
+            // Use posted_date for vendor payments; fallback to transaction_date
+            $effectiveDate = ($txn->transaction_type === 'vendor_payment' && $txn->posted_date)
+                ? \Carbon\Carbon::parse($txn->posted_date)
+                : ($txn->transaction_date ? \Carbon\Carbon::parse($txn->transaction_date) : null);
+            $date = $effectiveDate ? $effectiveDate->format('Y-m-d') : 'unknown';
             if (!isset($groupedByDate[$date])) {
                 $groupedByDate[$date] = ['in' => 0, 'out' => 0, 'transactions' => []];
             }
@@ -759,7 +763,14 @@
                     @foreach($ledger as $transaction)
                         <tr class="hover:bg-gray-50">
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                {{ $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-' }}
+                                @if($transaction->transaction_type === 'vendor_payment' && $transaction->posted_date)
+                                    {{ \Carbon\Carbon::parse($transaction->posted_date)->format('M j, Y') }}
+                                    @if(\Carbon\Carbon::parse($transaction->posted_date)->format('Y-m-d') !== ($transaction->transaction_date ? $transaction->transaction_date->format('Y-m-d') : ''))
+                                        <div class="text-xs text-gray-500">(Txn: {{ $transaction->transaction_date?->format('M j') }})</div>
+                                    @endif
+                                @else
+                                    {{ $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-' }}
+                                @endif
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap">
                                 @php

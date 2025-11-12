@@ -63,7 +63,12 @@
             <div class="text-center py-6 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border-2 border-blue-200">
                 <div class="text-sm font-medium text-gray-600 uppercase mb-2">Transaction Amount</div>
                 <div class="text-4xl font-bold text-gray-900">Rs. {{ number_format($transaction->amount, 2) }}</div>
-                <div class="text-sm text-gray-600 mt-2">{{ \Carbon\Carbon::parse($transaction->transaction_date)->format('M j, Y') }}</div>
+                <div class="text-sm text-gray-600 mt-2">
+                    {{ \Carbon\Carbon::parse($transaction->transaction_date)->format('M j, Y') }}
+                    @if($transaction->transaction_type === 'vendor_payment' && $transaction->posted_date)
+                        <span class="ml-2 text-xs text-gray-500">• Posted: {{ \Carbon\Carbon::parse($transaction->posted_date)->format('M j, Y') }}</span>
+                    @endif
+                </div>
             </div>
 
             <!-- Flow Diagram -->

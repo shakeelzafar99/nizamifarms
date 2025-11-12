@@ -338,5 +338,31 @@ class AccountController extends Controller
                        ->with('error', 'Error adjusting balance: ' . $e->getMessage());
         }
     }
+
+    /**
+     * Get payment source accounts for vendor payments (API endpoint for mobile)
+     */
+    public function getPaymentSources()
+    {
+        try {
+            // Only show Online, NF Cash, and Expense Fund for vendor payments
+            $accounts = AccountModel::where('is_active', 1)
+                ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
+                ->orderBy('account_name')
+                ->get(['id', 'account_name', 'account_code', 'current_balance']);
+
+            return response()->json([
+                'success' => true,
+                'accounts' => $accounts
+            ]);
+        } catch (\Exception $e) {
+            Log::error("Error fetching payment sources: " . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Error fetching payment sources'
+            ], 500);
+        }
+    }
 }
 

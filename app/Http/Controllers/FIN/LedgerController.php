@@ -24,11 +24,44 @@ class LedgerController extends Controller
         $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer']);
 
         // Filter by date range
+        // For vendor payments, use posted_date; for others, use transaction_date
         if ($startDate) {
-            $query->where('transaction_date', '>=', $startDate);
+            $query->where(function($q) use ($startDate) {
+                $q->where(function($subQ) use ($startDate) {
+                    // Vendor payments use posted_date
+                    $subQ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->where(function($dateQ) use ($startDate) {
+                             $dateQ->where('posted_date', '>=', $startDate)
+                                   ->orWhere(function($fallbackQ) use ($startDate) {
+                                       $fallbackQ->whereNull('posted_date')
+                                                 ->where('transaction_date', '>=', $startDate);
+                                   });
+                         });
+                })->orWhere(function($subQ) use ($startDate) {
+                    // All other transactions use transaction_date
+                    $subQ->where('transaction_type', '!=', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->where('transaction_date', '>=', $startDate);
+                });
+            });
         }
         if ($endDate) {
-            $query->where('transaction_date', '<=', $endDate);
+            $query->where(function($q) use ($endDate) {
+                $q->where(function($subQ) use ($endDate) {
+                    // Vendor payments use posted_date
+                    $subQ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->where(function($dateQ) use ($endDate) {
+                             $dateQ->where('posted_date', '<=', $endDate)
+                                   ->orWhere(function($fallbackQ) use ($endDate) {
+                                       $fallbackQ->whereNull('posted_date')
+                                                 ->where('transaction_date', '<=', $endDate);
+                                   });
+                         });
+                })->orWhere(function($subQ) use ($endDate) {
+                    // All other transactions use transaction_date
+                    $subQ->where('transaction_type', '!=', LedgerModel::TYPE_VENDOR_PAYMENT)
+                         ->where('transaction_date', '<=', $endDate);
+                });
+            });
         }
 
         // Filter by transaction type
@@ -774,19 +807,32 @@ class LedgerController extends Controller
                     ->toArray();
             }
 
+            // Generate full image URL if bill_image exists
+            $billImageUrl = null;
+            if ($transaction->bill_image) {
+                $billImageUrl = $transaction->bill_image;
+                // If it's not already a full URL, prepend storage path
+                if (!str_starts_with($transaction->bill_image, 'http')) {
+                    $billImageUrl = url('storage/' . $transaction->bill_image);
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'transaction' => [
                     'id' => $transaction->id,
                     'transaction_date' => $transaction->transaction_date ? $transaction->transaction_date->format('Y-m-d') : '-',
                     'transaction_date_formatted' => $transaction->transaction_date ? $transaction->transaction_date->format('M j, Y') : '-',
+                    'posted_date' => $transaction->posted_date ? $transaction->posted_date->format('Y-m-d') : ($transaction->transaction_date ? $transaction->transaction_date->format('Y-m-d') : '-'),
                     'transaction_type' => ucfirst(str_replace('_', ' ', $transaction->transaction_type)),
                     'description' => $transaction->description,
-                    'amount' => $transaction->amount,
-                    'bill_image' => $transaction->bill_image,
+                    'amount' => (float) $transaction->amount, // Ensure numeric
+                    'bill_image' => $billImageUrl, // Full URL
                     'line_items' => $lineItems,
                     'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : '-',
+                    'from_account_id' => $transaction->from_account_id,
                     'to_account' => $transaction->toAccount ? $transaction->toAccount->account_name : '-',
+                    'to_account_id' => $transaction->to_account_id,
                     'created_by' => $transaction->createdBy ? $transaction->createdBy->name : '-',
                     'created_at' => $transaction->created_at ? $transaction->created_at->format('M j, Y g:i A') : '-',
                 ]

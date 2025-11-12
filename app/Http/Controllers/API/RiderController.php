@@ -2350,6 +2350,7 @@ class RiderController extends Controller
                     'order_date' => $order->order_date,
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
+                    'customer_id' => $order->customer_id, // Added for verified location functionality
                     'customer_name' => $customerName,
                     // Eager address/phone for immediate display on list
                     'customer_address' => trim(implode(', ', array_filter([

@@ -585,6 +585,7 @@ class VendorController extends Controller
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
             'description' => 'nullable|string|max:500',
             'transaction_date' => 'required|date',
+            'posted_date' => 'nullable|date', // Date when entry is posted to ledger
             'receipt_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120' // Receipt image
         ]);
 
@@ -639,8 +640,13 @@ class VendorController extends Controller
 
             // Create ledger entry
             // Dr Vendor Account (liability decreases) → Cr Payment Account (cash/bank decreases)
+            // posted_date: date when entry is posted to ledger (for balance calculations)
+            // transaction_date: actual date of transaction (for vendor records)
+            $postedDate = $request->posted_date ?? $request->transaction_date;
+            
             $ledger = LedgerModel::create([
                 'transaction_date' => $request->transaction_date,
+                'posted_date' => $postedDate,
                 'transaction_type' => LedgerModel::TYPE_VENDOR_PAYMENT,
                 'description' => $request->description ?? "Payment to {$vendor->vendor_name}",
                 'from_account_id' => $paymentAccount->id,  // Money leaving from payment source
@@ -1076,6 +1082,7 @@ class VendorController extends Controller
     {
         $request->validate([
             'transaction_date' => 'required|date',
+            'posted_date' => 'nullable|date',
             'amount' => 'nullable|numeric|min:0.01',
             'description' => 'nullable|string|max:500',
             'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
@@ -1140,6 +1147,12 @@ class VendorController extends Controller
 
             // Update basic fields
             $transaction->transaction_date = $request->transaction_date;
+            if ($request->has('posted_date')) {
+                $transaction->posted_date = $request->posted_date;
+            } elseif (!$transaction->posted_date) {
+                // If no posted_date exists, default to transaction_date
+                $transaction->posted_date = $request->transaction_date;
+            }
             if ($request->has('description')) {
                 $transaction->description = $request->description;
             }

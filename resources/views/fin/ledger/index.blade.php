@@ -213,7 +213,14 @@
                     @forelse($ledger as $transaction)
                         <tr class="hover:bg-gray-50">
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                {{ $transaction->transaction_date->format('Y-m-d') }}
+                                @if($transaction->transaction_type === 'vendor_payment' && $transaction->posted_date)
+                                    {{ $transaction->posted_date->format('Y-m-d') }}
+                                    @if($transaction->posted_date->format('Y-m-d') !== $transaction->transaction_date->format('Y-m-d'))
+                                        <span class="text-xs text-gray-500 block">(Txn: {{ $transaction->transaction_date->format('M j') }})</span>
+                                    @endif
+                                @else
+                                    {{ $transaction->transaction_date->format('Y-m-d') }}
+                                @endif
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-xs">
                                 <span class="px-2 py-1 rounded-full bg-gray-100 text-gray-800">

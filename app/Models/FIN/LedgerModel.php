@@ -42,12 +42,14 @@ class LedgerModel extends BaseModel
         'comments',
         'settlement_metadata',
         'bill_image',
+        'posted_date',
         'created_by',
         'updated_by'
     ];
 
     protected $casts = [
         'transaction_date' => 'date',
+        'posted_date' => 'date',
         'approval_date' => 'date',
         'settled_at' => 'datetime',
         'amount' => 'decimal:2',
