@@ -8,6 +8,8 @@ use App\Models\CRM\OrderStatusHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 use App\Models\HR\SalarySlipModel;
 use App\Models\HR\EmployeeLoanModel;
 use App\Models\HR\EmployeeProfileModel;
@@ -2773,6 +2775,533 @@ class RiderController extends Controller
      * STORE MODE: Get open order quantities with drill-down
      * Reuses webapp logic from OrderController::openQuantitiesData
      */
+    public function getOpenOrderQuantitiesTree(Request $request)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user->hasMobilePermission('view_open_quantities')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view open order quantities'
+                ], 403);
+            }
+
+            $statusFilter = $request->get('status_filter');
+            if ($statusFilter === 'all') {
+                $statusFilter = null;
+            }
+
+            $hierarchySetting = DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'hierarchy_levels')
+                ->first();
+            $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'];
+            if (!is_array($hierarchy) || empty($hierarchy)) {
+                $hierarchy = ['product_type', 'product_name', 'orders'];
+            }
+            if (!in_array('orders', $hierarchy, true)) {
+                $hierarchy[] = 'orders';
+            }
+
+            $statusSetting = DB::table('t_crm_open_quantities_settings')
+                ->where('setting_key', 'excluded_statuses')
+                ->first();
+            $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
+            if (!is_array($excludedStatuses) || empty($excludedStatuses)) {
+                $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            }
+
+            $query = DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product_variant as pv', function ($join) {
+                    $join->where(function ($q) {
+                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                          ->orWhereColumn('li.variant_id', 'pv.id')
+                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                          ->orWhereColumn('li.product_id', 'pv.id');
+                    });
+                })
+                ->leftJoin('t_crm_prod_product as p', function ($join) {
+                    $join->where(function ($q) {
+                        $q->whereColumn('pv.product_id', 'p.id')
+                          ->orWhereColumn('li.product_id', 'p.id');
+                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                })
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where(function ($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->where('o.order_date', '>=', Carbon::now()->subDays(20));
+
+            if ($statusFilter) {
+                $query->where('o.order_status', $statusFilter);
+            }
+
+            $rows = $query->select([
+                    'o.id as order_id',
+                    'o.order_number',
+                    'o.order_status',
+                    'o.order_date',
+                    DB::raw("COALESCE(
+                        NULLIF(TRIM(o.name), ''),
+                        NULLIF(TRIM(CONCAT(COALESCE(c.first_name, ''), ' ', COALESCE(c.last_name, ''))), ''),
+                        TRIM(CONCAT(COALESCE(o.address_first_name, ''), ' ', COALESCE(o.address_last_name, '')))
+                    ) as customer_name"),
+                    'li.id as line_item_id',
+                    'li.quantity as line_item_quantity',
+                    'li.preparation_status as line_item_status',
+                    'li.product_id as line_item_product_id',
+                    'li.variant_id as line_item_variant_id',
+                    'li.name as line_item_name',
+                    'p.id as product_id',
+                    'p.title as product_title',
+                    'p.product_type',
+                    'p.attribute_1',
+                    'p.attribute_2',
+                    'p.attribute_3',
+                    DB::raw('COALESCE(p.is_lean, 0) as is_lean')
+                ])
+                ->orderBy('o.order_date', 'desc')
+                ->get();
+
+            $totalQuantity = 0.0;
+            $totalLineItems = 0;
+            $uniqueOrderIds = [];
+            $orderStatusesByOrder = [];
+
+            $tree = [];
+            $rootMap = [];
+
+            $addMetrics = function (&$node, $row) {
+                $qty = (float) ($row->line_item_quantity ?? 0);
+                $isLean = (int) ($row->is_lean ?? 0) === 1;
+                $orderStatus = strtolower((string) ($row->order_status ?? ''));
+                $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
+
+                $node['quantity'] += $qty;
+                if ($isLean) {
+                    $node['lean_quantity'] += $qty;
+                } else {
+                    $node['non_lean_quantity'] += $qty;
+                }
+                if ($orderStatus === 'processing') {
+                    $node['processing_quantity'] += $qty;
+                }
+                if ($lineStatus === 'preparing') {
+                    $node['prepared_quantity'] += $qty;
+                }
+            };
+
+            foreach ($rows as $row) {
+                $qty = (float) ($row->line_item_quantity ?? 0);
+                $totalQuantity += $qty;
+                $totalLineItems++;
+                $uniqueOrderIds[$row->order_id] = true;
+
+                if (!isset($orderStatusesByOrder[$row->order_id])) {
+                    $orderStatusesByOrder[$row->order_id] = $row->order_status ?? 'new';
+                }
+
+                $currentList =& $tree;
+                $currentMap =& $rootMap;
+                $currentFilters = [];
+
+                foreach ($hierarchy as $levelIndex => $field) {
+                    if ($field === 'orders') {
+                        $orderKey = $row->order_id;
+                        if (!isset($currentMap[$orderKey])) {
+                            $orderLabel = $row->order_number ? 'Order #' . $row->order_number : 'Order ' . $row->order_id;
+                            if (!empty($row->customer_name)) {
+                                $orderLabel .= ' - ' . $row->customer_name;
+                            }
+
+                            $orderNode = [
+                                'name' => $orderLabel,
+                                'field' => 'orders',
+                                'level' => $levelIndex,
+                                'quantity' => 0,
+                                'lean_quantity' => 0,
+                                'non_lean_quantity' => 0,
+                                'processing_quantity' => 0,
+                                'prepared_quantity' => 0,
+                                'order_count' => 0,
+                                'product_count' => 0,
+                                'order_id' => $row->order_id,
+                                'order_number' => $row->order_number,
+                                'status' => $row->order_status,
+                                'order_date' => $row->order_date ? Carbon::parse($row->order_date)->toIso8601String() : null,
+                                'customer_name' => $row->customer_name,
+                                'filters' => array_merge($currentFilters, ['order_id' => $row->order_id]),
+                                'children' => [],
+                                '_children_map' => [],
+                                '_order_ids' => [$row->order_id => true],
+                                '_product_ids' => [],
+                            ];
+
+                            $currentList[] = $orderNode;
+                            $currentMap[$orderKey] = &$currentList[count($currentList) - 1];
+                        }
+
+                        $orderNode =& $currentMap[$orderKey];
+                        $addMetrics($orderNode, $row);
+
+                        if ($row->line_item_product_id) {
+                            $orderNode['_product_ids'][(int) $row->line_item_product_id] = true;
+                        }
+                        if ($row->product_id) {
+                            $orderNode['_product_ids'][(int) $row->product_id] = true;
+                        }
+
+                        break;
+                    }
+
+                    if ($field === 'orders') {
+                        continue;
+                    }
+
+                    if ($field === 'product_name') {
+                        $label = $row->line_item_name ?: ($row->product_title ?: 'Uncategorized');
+                    } else {
+                        $value = $row->{$field} ?? null;
+                        $label = $value !== null && $value !== '' ? $value : 'Uncategorized';
+                    }
+
+                    $nodeKey = $label;
+
+                    if (!isset($currentMap[$nodeKey])) {
+                        $nodeFilters = array_merge($currentFilters, [$field => $label]);
+
+                        $node = [
+                            'name' => $label,
+                            'field' => $field,
+                            'level' => $levelIndex,
+                            'quantity' => 0,
+                            'lean_quantity' => 0,
+                            'non_lean_quantity' => 0,
+                            'processing_quantity' => 0,
+                            'prepared_quantity' => 0,
+                            'order_count' => 0,
+                            'product_count' => 0,
+                            'filters' => $nodeFilters,
+                            'children' => [],
+                            '_children_map' => [],
+                            '_order_ids' => [],
+                            '_product_ids' => [],
+                        ];
+
+                        if ($field === 'product_name') {
+                            $node['product_ids'] = [];
+                        }
+
+                        $currentList[] = $node;
+                        $currentMap[$nodeKey] = &$currentList[count($currentList) - 1];
+                    }
+
+                    $node =& $currentMap[$nodeKey];
+                    $addMetrics($node, $row);
+
+                    $node['_order_ids'][$row->order_id] = true;
+                    if ($row->line_item_product_id) {
+                        $node['_product_ids'][(int) $row->line_item_product_id] = true;
+                    }
+                    if ($row->product_id) {
+                        $node['_product_ids'][(int) $row->product_id] = true;
+                    }
+
+                    if ($field === 'product_name') {
+                        if (!isset($node['product_ids'])) {
+                            $node['product_ids'] = [];
+                        }
+                        if ($row->line_item_product_id) {
+                            $node['product_ids'][(int) $row->line_item_product_id] = true;
+                        }
+                        if ($row->product_id) {
+                            $node['product_ids'][(int) $row->product_id] = true;
+                        }
+
+                        $node['filters']['product_name'] = $label;
+                        if (!empty($node['product_ids'])) {
+                            $node['filters']['product_ids'] = implode(',', array_keys($node['product_ids']));
+                        }
+                    }
+
+                    $currentList =& $node['children'];
+                    $currentMap =& $node['_children_map'];
+                    $currentFilters = $node['filters'];
+                }
+            }
+
+            $finalizeNode = function (&$node) use (&$finalizeNode) {
+                $node['order_count'] = count($node['_order_ids']);
+                $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
+
+                unset($node['_order_ids'], $node['_product_ids'], $node['_children_map']);
+
+                if (isset($node['product_ids']) && is_array($node['product_ids'])) {
+                    $productIds = array_keys($node['product_ids']);
+                    sort($productIds);
+                    $node['product_ids'] = $productIds;
+                }
+
+                if (!empty($node['children'])) {
+                    foreach ($node['children'] as &$child) {
+                        $finalizeNode($child);
+                    }
+
+                    usort($node['children'], function ($a, $b) {
+                        return $b['quantity'] <=> $a['quantity'];
+                    });
+                }
+            };
+
+            foreach ($tree as &$rootNode) {
+                $finalizeNode($rootNode);
+            }
+            unset($rootNode);
+
+            usort($tree, function ($a, $b) {
+                return $b['quantity'] <=> $a['quantity'];
+            });
+
+            // Fallback: if root level appears incorrect (not level 0) or all quantities are zero,
+            // rebuild top of the tree using a grouping approach to ensure L0 matches attribute_1.
+            $needsFallback = empty($tree);
+            if (!$needsFallback) {
+                $hasLevel0 = false;
+                $sumRootQty = 0.0;
+                foreach ($tree as $n) {
+                    if (($n['level'] ?? 99) === 0) {
+                        $hasLevel0 = true;
+                    }
+                    $sumRootQty += (float) ($n['quantity'] ?? 0);
+                }
+                $needsFallback = (!$hasLevel0) || ($sumRootQty <= 0.0);
+            }
+
+            if ($needsFallback) {
+                try {
+                    $field0 = $hierarchy[0] ?? 'attribute_1';
+                    $field1 = $hierarchy[1] ?? null;
+                    $labelFor = function ($row, $field) {
+                        if ($field === 'product_name') {
+                            return $row->line_item_name ?: ($row->product_title ?: 'Uncategorized');
+                        }
+                        $value = $row->{$field} ?? null;
+                        return ($value !== null && $value !== '') ? $value : 'Uncategorized';
+                    };
+                    $addMetrics = function (&$node, $row) {
+                        $qty = (float) ($row->line_item_quantity ?? 0);
+                        $isLean = (int) ($row->is_lean ?? 0) === 1;
+                        $orderStatus = strtolower((string) ($row->order_status ?? ''));
+                        $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
+                        $node['quantity'] += $qty;
+                        if ($isLean) { $node['lean_quantity'] += $qty; } else { $node['non_lean_quantity'] += $qty; }
+                        if ($orderStatus === 'processing') { $node['processing_quantity'] += $qty; }
+                        if ($lineStatus === 'preparing') { $node['prepared_quantity'] += $qty; }
+                    };
+
+                    $groups0 = [];
+                    foreach ($rows as $row) {
+                        $key0 = $labelFor($row, $field0);
+                        if (!isset($groups0[$key0])) { $groups0[$key0] = []; }
+                        $groups0[$key0][] = $row;
+                    }
+
+                    $rebuilt = [];
+                    foreach ($groups0 as $label0 => $rows0) {
+                        $node0 = [
+                            'name' => $label0,
+                            'field' => $field0,
+                            'level' => 0,
+                            'quantity' => 0,
+                            'lean_quantity' => 0,
+                            'non_lean_quantity' => 0,
+                            'processing_quantity' => 0,
+                            'prepared_quantity' => 0,
+                            'order_count' => 0,
+                            'product_count' => 0,
+                            'filters' => [$field0 => $label0],
+                            'children' => [],
+                        ];
+                        $orderIds = [];
+                        $productIds = [];
+                        foreach ($rows0 as $r0) {
+                            $addMetrics($node0, $r0);
+                            $orderIds[$r0->order_id] = true;
+                            if ($r0->line_item_product_id) { $productIds[(int)$r0->line_item_product_id] = true; }
+                            if ($r0->product_id) { $productIds[(int)$r0->product_id] = true; }
+                        }
+                        $node0['order_count'] = count($orderIds);
+                        $node0['product_count'] = count(array_filter(array_keys($productIds)));
+
+                        // Optional level 1 (attribute_2)
+                        if ($field1) {
+                            $groups1 = [];
+                            foreach ($rows0 as $row1) {
+                                $key1 = $labelFor($row1, $field1);
+                                if (!isset($groups1[$key1])) { $groups1[$key1] = []; }
+                                $groups1[$key1][] = $row1;
+                            }
+                            foreach ($groups1 as $label1 => $rows1) {
+                                $child = [
+                                    'name' => $label1,
+                                    'field' => $field1,
+                                    'level' => 1,
+                                    'quantity' => 0,
+                                    'lean_quantity' => 0,
+                                    'non_lean_quantity' => 0,
+                                    'processing_quantity' => 0,
+                                    'prepared_quantity' => 0,
+                                    'order_count' => 0,
+                                    'product_count' => 0,
+                                    'filters' => [$field0 => $label0, $field1 => $label1],
+                                    'children' => [],
+                                ];
+                                $oIds = []; $pIds = [];
+                                foreach ($rows1 as $r1) {
+                                    $addMetrics($child, $r1);
+                                    $oIds[$r1->order_id] = true;
+                                    if ($r1->line_item_product_id) { $pIds[(int)$r1->line_item_product_id] = true; }
+                                    if ($r1->product_id) { $pIds[(int)$r1->product_id] = true; }
+                                }
+                                $child['order_count'] = count($oIds);
+                                $child['product_count'] = count(array_filter(array_keys($pIds)));
+
+                                // Optional level 2 (product_name)
+                                $field2 = $hierarchy[2] ?? null;
+                                if ($field2 === 'product_name') {
+                                    $groups2 = [];
+                                    foreach ($rows1 as $row2) {
+                                        $key2 = $labelFor($row2, $field2);
+                                        if (!isset($groups2[$key2])) { $groups2[$key2] = []; }
+                                        $groups2[$key2][] = $row2;
+                                    }
+                                    foreach ($groups2 as $label2 => $rows2) {
+                                        $prodNode = [
+                                            'name' => $label2,
+                                            'field' => $field2,
+                                            'level' => 2,
+                                            'quantity' => 0,
+                                            'lean_quantity' => 0,
+                                            'non_lean_quantity' => 0,
+                                            'processing_quantity' => 0,
+                                            'prepared_quantity' => 0,
+                                            'order_count' => 0,
+                                            'product_count' => 0,
+                                            'filters' => [$field0 => $label0, $field1 => $label1, $field2 => $label2],
+                                            'children' => [],
+                                            'product_ids' => [],
+                                        ];
+                                        $o2 = []; $p2 = [];
+                                        foreach ($rows2 as $r2) {
+                                            $addMetrics($prodNode, $r2);
+                                            $o2[$r2->order_id] = true;
+                                            if ($r2->line_item_product_id) { $p2[(int)$r2->line_item_product_id] = true; }
+                                            if ($r2->product_id) { $p2[(int)$r2->product_id] = true; }
+                                        }
+                                        $prodNode['order_count'] = count($o2);
+                                        $prodNode['product_count'] = count(array_filter(array_keys($p2)));
+                                        if (!empty($p2)) {
+                                            $ids = array_keys($p2);
+                                            sort($ids);
+                                            $prodNode['product_ids'] = $ids;
+                                            $prodNode['filters']['product_ids'] = implode(',', $ids);
+                                        }
+
+                                        // Optional level 3 (orders)
+                                        $field3 = $hierarchy[3] ?? null;
+                                        if ($field3 === 'orders') {
+                                            $orders = [];
+                                            foreach ($rows2 as $r3) {
+                                                $orderKey = (string) $r3->order_id;
+                                                if (!isset($orders[$orderKey])) {
+                                                    $orderLabel = $r3->order_number ? ('Order #' . $r3->order_number) : ('Order ' . $r3->order_id);
+                                                    if (!empty($r3->customer_name)) {
+                                                        $orderLabel .= ' - ' . $r3->customer_name;
+                                                    }
+                                                    $orders[$orderKey] = [
+                                                        'name' => $orderLabel,
+                                                        'field' => 'orders',
+                                                        'level' => 3,
+                                                        'quantity' => 0,
+                                                        'lean_quantity' => 0,
+                                                        'non_lean_quantity' => 0,
+                                                        'processing_quantity' => 0,
+                                                        'prepared_quantity' => 0,
+                                                        'order_count' => 0,
+                                                        'product_count' => 0,
+                                                        'order_id' => $r3->order_id,
+                                                        'order_number' => $r3->order_number,
+                                                        'status' => $r3->order_status,
+                                                        'order_date' => $r3->order_date ? \Carbon\Carbon::parse($r3->order_date)->toIso8601String() : null,
+                                                        'customer_name' => $r3->customer_name,
+                                                        'filters' => array_merge($prodNode['filters'], ['order_id' => $r3->order_id]),
+                                                        'children' => [],
+                                                    ];
+                                                }
+                                                $addMetrics($orders[$orderKey], $r3);
+                                            }
+                                            // finalize counts and append
+                                            foreach ($orders as &$ordNode) {
+                                                $ordNode['order_count'] = 1;
+                                            }
+                                            uasort($orders, function ($a, $b) { return $b['quantity'] <=> $a['quantity']; });
+                                            $prodNode['children'] = array_values($orders);
+                                        }
+
+                                        $child['children'][] = $prodNode;
+                                    }
+                                    usort($child['children'], function ($a, $b) { return $b['quantity'] <=> $a['quantity']; });
+                                }
+                                $node0['children'][] = $child;
+                            }
+                            usort($node0['children'], function ($a, $b) { return $b['quantity'] <=> $a['quantity']; });
+                        }
+
+                        $rebuilt[] = $node0;
+                    }
+                    usort($rebuilt, function ($a, $b) { return $b['quantity'] <=> $a['quantity']; });
+                    $tree = $rebuilt;
+                    Log::info('Applied fallback tree rebuild', ['root_count' => count($tree)]);
+                } catch (\Throwable $e) {
+                    Log::warning('Fallback tree rebuild failed', ['error' => $e->getMessage()]);
+                }
+            }
+
+            $orderStatusCounts = [];
+            foreach ($orderStatusesByOrder as $status) {
+                $orderStatusCounts[$status] = ($orderStatusCounts[$status] ?? 0) + 1;
+            }
+
+            return response()->json([
+                'success' => true,
+                'generated_at' => Carbon::now()->toIso8601String(),
+                'status_filter' => $statusFilter ?? 'all',
+                'hierarchy' => $hierarchy,
+                'summary' => [
+                    'total_orders' => count($uniqueOrderIds),
+                    'total_line_items' => $totalLineItems,
+                    'total_quantity' => round($totalQuantity, 2),
+                ],
+                'order_status_counts' => $orderStatusCounts,
+                'tree' => $tree,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to build open quantities tree', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load quantities tree: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
     public function getOpenOrderQuantities(Request $request)
     {
         try {
