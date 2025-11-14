@@ -1068,6 +1068,17 @@ class OrderModel extends BaseModel
     }
 
     /**
+     * Relationship: Get invoice approval request for online invoices
+     */
+    public function invoiceRequest()
+    {
+        return $this->hasOne(\App\Models\Request\RequestModel::class, 'order_id')
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'invoice_approval');
+                    });
+    }
+
+    /**
      * Reverse a ledger entry when order is cancelled
      * 
      * @param \App\Models\FIN\LedgerModel $ledger

@@ -55,10 +55,9 @@ class LedgerPostingService
             $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
             
             if (in_array($order->payment_method, $onlinePaymentMethods)) {
-                // Online payment
-                $toAccount = ConfigModel::getOnlineBankAccount();
-                $mode = LedgerModel::MODE_ONLINE;
-                $approvalStatus = LedgerModel::STATUS_PENDING; // Online requires approval
+                // NEW: Create invoice approval request instead of direct ledger posting
+                DB::commit(); // Commit any pending changes
+                return $this->createInvoiceApprovalRequest($order);
             } else {
                 // Cash payment - find rider's cash account
                 if ($order->assigned_rider_user_id) {
@@ -547,6 +546,226 @@ class LedgerPostingService
             // Otherwise, mark as pending settlement
             $request->settlement_status = 'pending';
         }
+    }
+
+    /**
+     * Create invoice approval request for online payments
+     * This replaces direct ledger posting for online invoices
+     * 
+     * @param OrderModel $order
+     * @return array
+     */
+    private function createInvoiceApprovalRequest(OrderModel $order): array
+    {
+        try {
+            DB::beginTransaction();
+            
+            // Get invoice_approval category
+            $category = \App\Models\Request\RequestCategoryModel::getByCode('invoice_approval');
+            if (!$category) {
+                throw new \Exception("Invoice approval category not found. Please run the approval routing migration.");
+            }
+            
+            // Get approval config
+            $requiresL1 = $category->requiresLevel1();
+            $requiresL2 = $category->requiresLevel2();
+            
+            // Determine assignee using routing rules
+            $assignedToL1 = $this->getAssigneeForApproval(
+                'request_category',
+                'invoice_approval',
+                1,
+                [
+                    'payment_mode' => 'online',
+                    'amount' => $order->total_price
+                ]
+            );
+            
+            // Build customer name for description
+            $customerName = $this->getCustomerNameFromOrder($order);
+            
+            // Create request
+            $request = RequestModel::create([
+                'request_number' => RequestModel::generateRequestNumber(),
+                'category_id' => $category->id,
+                'order_id' => $order->id,
+                'requester_user_id' => $order->created_by ?? 1,
+                'title' => "Online Invoice Approval - Order #{$order->order_number}",
+                'description' => "Online payment invoice for {$customerName}\nOrder: {$order->order_number}\nPayment Method: {$order->payment_method}\nAmount: Rs. " . number_format($order->total_price, 2),
+                'amount' => $order->total_price,
+                'status' => RequestModel::STATUS_PENDING,
+                'requires_level_1' => $requiresL1,
+                'requires_level_2' => $requiresL2,
+                'level_1_status' => $requiresL1 ? RequestModel::APPROVAL_STATUS_PENDING : null,
+                'level_1_assigned_to' => $assignedToL1,
+                'level_2_status' => $requiresL2 ? RequestModel::APPROVAL_STATUS_PENDING : null,
+                'submitted_at' => now(),
+                'created_by' => $order->created_by ?? 1
+            ]);
+            
+            // Link request to order
+            $order->invoice_request_id = $request->id;
+            $order->save();
+            
+            DB::commit();
+            
+            Log::info("Invoice approval request created for online payment", [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'request_id' => $request->id,
+                'request_number' => $request->request_number,
+                'amount' => $order->total_price,
+                'assigned_to' => $assignedToL1,
+                'payment_method' => $order->payment_method
+            ]);
+            
+            return [
+                'success' => true,
+                'message' => 'Invoice approval request created',
+                'request_id' => $request->id,
+                'request_number' => $request->request_number
+            ];
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Failed to create invoice approval request", [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return [
+                'success' => false,
+                'message' => 'Failed to create approval request: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Get assignee based on routing rules
+     * 
+     * @param string $areaType
+     * @param string $areaIdentifier
+     * @param int $level
+     * @param array $context
+     * @return int|null
+     */
+    private function getAssigneeForApproval(
+        string $areaType,
+        string $areaIdentifier,
+        int $level,
+        array $context = []
+    ): ?int
+    {
+        try {
+            // Query rules matching the criteria
+            $query = DB::table('t_req_approval_rules')
+                ->where('area_type', $areaType)
+                ->where('area_identifier', $areaIdentifier)
+                ->where('approval_level', $level)
+                ->where('is_active', 1);
+            
+            // Apply contextual filters
+            if (isset($context['payment_source_account_id'])) {
+                $query->where(function($q) use ($context) {
+                    $q->where('payment_source_account_id', $context['payment_source_account_id'])
+                      ->orWhereNull('payment_source_account_id');
+                });
+            }
+            
+            if (isset($context['payment_mode'])) {
+                $query->where(function($q) use ($context) {
+                    $q->where('payment_mode', $context['payment_mode'])
+                      ->orWhereNull('payment_mode');
+                });
+            }
+            
+            if (isset($context['amount'])) {
+                $amount = $context['amount'];
+                $query->where(function($q) use ($amount) {
+                    $q->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('min_amount')
+                             ->orWhere('min_amount', '<=', $amount);
+                    })
+                    ->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('max_amount')
+                             ->orWhere('max_amount', '>=', $amount);
+                    });
+                });
+            }
+            
+            // Get highest priority rule
+            $rule = $query->orderBy('priority', 'asc')->first();
+            
+            if (!$rule) {
+                Log::debug("No routing rule found for approval", [
+                    'area_type' => $areaType,
+                    'area_identifier' => $areaIdentifier,
+                    'level' => $level,
+                    'context' => $context
+                ]);
+                return null; // No rule found, use default behavior
+            }
+            
+            // Get primary assignee for this rule
+            $assignee = DB::table('t_req_approval_rule_assignees')
+                ->where('rule_id', $rule->id)
+                ->where('is_primary', 1)
+                ->orderBy('sequence_order', 'asc')
+                ->first();
+            
+            if ($assignee) {
+                Log::debug("Assignee found via routing rule", [
+                    'rule_id' => $rule->id,
+                    'rule_name' => $rule->rule_name,
+                    'user_id' => $assignee->user_id
+                ]);
+            }
+            
+            return $assignee ? $assignee->user_id : null;
+            
+        } catch (\Exception $e) {
+            Log::error("Error getting assignee for approval", [
+                'error' => $e->getMessage(),
+                'area_type' => $areaType,
+                'area_identifier' => $areaIdentifier
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Get customer name from order
+     * 
+     * @param OrderModel $order
+     * @return string
+     */
+    private function getCustomerNameFromOrder(OrderModel $order): string
+    {
+        $customerName = 'Unknown Customer';
+        
+        // PRIORITY 1: order.name field (customer name from address)
+        if (!empty($order->name) && trim($order->name)) {
+            $customerName = trim($order->name);
+        }
+        // PRIORITY 2: customer relationship
+        elseif ($order->customer) {
+            if (!empty($order->customer->full_name) && trim($order->customer->full_name)) {
+                $customerName = trim($order->customer->full_name);
+            } elseif (!empty($order->customer->name) && trim($order->customer->name)) {
+                $customerName = trim($order->customer->name);
+            }
+        }
+        // PRIORITY 3: Fallback to address fields
+        else {
+            $firstName = trim($order->address_first_name ?? '');
+            $lastName = trim($order->address_last_name ?? '');
+            if ($firstName || $lastName) {
+                $customerName = trim("{$firstName} {$lastName}");
+            }
+        }
+        
+        return $customerName;
     }
 }
 

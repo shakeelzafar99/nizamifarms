@@ -240,3 +240,4 @@ const backgroundPrefetchQuantities = async () => {
 This fix eliminates the race condition that was causing the "Failed to fetch quantities" error and weird data display. The hierarchy is now loaded **first and foremost**, ensuring all subsequent data fetching uses the correct structure. The user experience is improved with clear loading states and instant loads when cached.
 
 
+

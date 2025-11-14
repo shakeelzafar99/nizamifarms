@@ -32,8 +32,13 @@ class LedgerAuditController extends Controller
             // ================================================================
             // ISSUE 1: Delivered Orders WITHOUT Ledger Entries
             // ================================================================
+            // IMPORTANT: Exclude orders with pending invoice approval requests (online invoices)
             $missingInvoices = OrderModel::where('order_status', 'delivered')
                 ->whereNull('ledger_transaction_id')
+                ->whereDoesntHave('invoiceRequest', function($q) {
+                    // Exclude orders that have pending invoice approval requests
+                    $q->where('status', 'pending');
+                })
                 ->whereDate('order_date', '>=', $startDate)
                 ->whereDate('order_date', '<=', $endDate)
                 ->with(['customer', 'assignedRider'])

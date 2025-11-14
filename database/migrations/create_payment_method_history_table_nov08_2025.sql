@@ -21,3 +21,4 @@ ALTER TABLE `t_crm_order_payment_method_history`
 COMMENT = 'Tracks payment method changes for orders';
 
 
+

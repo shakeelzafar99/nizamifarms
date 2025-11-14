@@ -255,13 +255,25 @@ class RequestModel extends BaseModel
                 $this->setAttribute('status', self::STATUS_APPROVED);
                 $this->completed_at = now();
                 
+                // NEW: Handle invoice approval requests (online invoices)
+                if ($this->category->category_code === 'invoice_approval' && $this->order_id) {
+                    try {
+                        $this->postInvoiceToLedgerAfterApproval();
+                    } catch (\Exception $e) {
+                        \Log::error("Exception posting invoice to ledger after approval", [
+                            'request_id' => $this->id,
+                            'order_id' => $this->order_id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't fail the approval if ledger posting fails
+                    }
+                }
                 // If it's a leave request, create attendance records
-                if ($this->category->category_code === 'leave') {
+                elseif ($this->category->category_code === 'leave') {
                     $this->createAttendanceRecordsForLeave();
                 }
-                
                 // If it's an expense request, post to ledger
-                if ($this->category->category_code === 'expense' && $this->amount > 0) {
+                elseif ($this->category->category_code === 'expense' && $this->amount > 0) {
                     try {
                         $ledgerService = new \App\Services\FIN\LedgerPostingService();
                         $result = $ledgerService->postExpenseFromRequest($this);
@@ -285,9 +297,8 @@ class RequestModel extends BaseModel
                         // Don't fail the approval if ledger posting fails
                     }
                 }
-                
                 // If it's a salary advance request, post to ledger
-                if ($this->category->category_code === 'salary_advance' && $this->amount > 0) {
+                elseif ($this->category->category_code === 'salary_advance' && $this->amount > 0) {
                     try {
                         $this->postSalaryAdvanceToLedger();
                     } catch (\Exception $e) {
@@ -425,6 +436,139 @@ class RequestModel extends BaseModel
             ]);
             throw $e;
         }
+    }
+
+    /**
+     * Post invoice to ledger after request approval (for online invoices)
+     * This is called when an invoice_approval request is approved at L1
+     */
+    protected function postInvoiceToLedgerAfterApproval(): void
+    {
+        try {
+            $order = $this->order;
+            if (!$order) {
+                throw new \Exception("Order not found for invoice request");
+            }
+            
+            // Check if order payment method is still online
+            $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
+            
+            if (!in_array($order->payment_method, $onlinePaymentMethods)) {
+                // Payment method changed to cash - post as approved directly
+                \Log::info("Payment method changed to cash, posting invoice as approved", [
+                    'request_id' => $this->id,
+                    'request_number' => $this->request_number,
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'payment_method' => $order->payment_method
+                ]);
+                
+                // Use the standard posting service (will post as cash)
+                $ledgerService = new \App\Services\FIN\LedgerPostingService();
+                $result = $ledgerService->postInvoiceFromOrder($order);
+                
+                if ($result['success']) {
+                    \Log::info("Invoice posted to ledger as cash (auto-approved)", [
+                        'request_id' => $this->id,
+                        'order_id' => $order->id,
+                        'ledger_id' => $result['ledger_id'] ?? null
+                    ]);
+                } else {
+                    \Log::warning("Failed to post cash invoice to ledger", [
+                        'request_id' => $this->id,
+                        'order_id' => $order->id,
+                        'message' => $result['message'] ?? 'Unknown error'
+                    ]);
+                }
+                
+                return;
+            }
+            
+            // Still online - post as PENDING for L2 approval
+            \Log::info("Posting online invoice to ledger as pending (requires L2 approval)", [
+                'request_id' => $this->id,
+                'request_number' => $this->request_number,
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'amount' => $order->total_price
+            ]);
+            
+            DB::beginTransaction();
+            
+            $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
+            $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+            
+            if (!$salesAccount || !$onlineAccount) {
+                throw new \Exception("Required accounts not found (Sales Revenue or Online Bank)");
+            }
+            
+            // Build description with customer name
+            $customerName = 'Unknown Customer';
+            if (!empty($order->name)) {
+                $customerName = trim($order->name);
+            } elseif ($order->customer) {
+                $customerName = $order->customer->full_name ?? $order->customer->name ?? 'Unknown';
+            }
+            
+            $description = "Invoice #{$order->order_number} - Delivered ({$customerName})";
+            
+            // Create ledger entry as PENDING (needs L2 approval)
+            $ledger = \App\Models\FIN\LedgerModel::create([
+                'transaction_date' => now(),
+                'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                'description' => $description,
+                'from_account_id' => $salesAccount->id,
+                'to_account_id' => $onlineAccount->id,
+                'amount' => $order->total_price,
+                'mode' => \App\Models\FIN\LedgerModel::MODE_ONLINE,
+                'approval_status' => \App\Models\FIN\LedgerModel::STATUS_PENDING, // L2 approval needed
+                'settlement_status' => 'open',
+                'settled_amount' => 0.00,
+                'order_id' => $order->id,
+                'request_id' => $this->id,
+                'created_by' => $this->updated_by ?? auth()->id() ?? 1,
+                'comments' => "Approved via request #{$this->request_number} - Awaiting L2 ledger approval"
+            ]);
+            
+            // Link ledger to order
+            $order->ledger_transaction_id = $ledger->id;
+            $order->save();
+            
+            // Link ledger to request
+            $this->ledger_transaction_id = $ledger->id;
+            $this->save();
+            
+            DB::commit();
+            
+            \Log::info("Online invoice posted to ledger as pending", [
+                'request_id' => $this->id,
+                'request_number' => $this->request_number,
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'ledger_id' => $ledger->id,
+                'amount' => $order->total_price,
+                'status' => 'pending_l2_approval'
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Failed to post invoice to ledger after approval", [
+                'request_id' => $this->id,
+                'request_number' => $this->request_number,
+                'order_id' => $this->order_id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e;
+        }
+    }
+
+    /**
+     * Relationship: Get the order for invoice approval requests
+     */
+    public function order()
+    {
+        return $this->belongsTo(\App\Models\CRM\OrderModel::class, 'order_id', 'id');
     }
 }
 

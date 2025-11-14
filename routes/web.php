@@ -286,6 +286,13 @@ Route::middleware(['auth'])->group(function () {
         Route::put('/settings/categories/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateCategory'])->name('requests.settings.category.update');
         Route::post('/settings/categories', [\App\Http\Controllers\Request\RequestSettingsController::class, 'createCategory'])->name('requests.settings.category.create');
         
+        // Routing Rules
+        Route::get('/settings/routing-rules', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getRoutingRules'])->name('requests.settings.routing-rules.index');
+        Route::get('/settings/routing-rules/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getRoutingRule'])->name('requests.settings.routing-rules.show');
+        Route::post('/settings/routing-rules', [\App\Http\Controllers\Request\RequestSettingsController::class, 'createRoutingRule'])->name('requests.settings.routing-rules.store');
+        Route::put('/settings/routing-rules/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateRoutingRule'])->name('requests.settings.routing-rules.update');
+        Route::delete('/settings/routing-rules/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'deleteRoutingRule'])->name('requests.settings.routing-rules.destroy');
+        
         // POST routes
         Route::post('/', [\App\Http\Controllers\Request\RequestController::class, 'store'])->name('requests.store');
         Route::post('/{id}/cancel', [\App\Http\Controllers\Request\RequestController::class, 'cancel'])->name('requests.cancel');

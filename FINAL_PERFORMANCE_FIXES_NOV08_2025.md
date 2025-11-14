@@ -154,3 +154,4 @@ If expansion still feels slow on low-end devices:
 These optimizations can be added if needed, but current implementation should be fast enough for most devices.
 
 
+
