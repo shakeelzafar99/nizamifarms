@@ -512,7 +512,7 @@ class RequestModel extends BaseModel
             
             $description = "Invoice #{$order->order_number} - Delivered ({$customerName})";
             
-            // Create ledger entry as PENDING (needs L2 approval)
+            // Create ledger entry as PENDING L2 (explicit L2 approval on ledger)
             $ledger = \App\Models\FIN\LedgerModel::create([
                 'transaction_date' => now(),
                 'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_INVOICE,
@@ -521,7 +521,7 @@ class RequestModel extends BaseModel
                 'to_account_id' => $onlineAccount->id,
                 'amount' => $order->total_price,
                 'mode' => \App\Models\FIN\LedgerModel::MODE_ONLINE,
-                'approval_status' => \App\Models\FIN\LedgerModel::STATUS_PENDING, // L2 approval needed
+                'approval_status' => \App\Models\FIN\LedgerModel::STATUS_PENDING_L2, // Explicit L2 approval needed
                 'settlement_status' => 'open',
                 'settled_amount' => 0.00,
                 'order_id' => $order->id,

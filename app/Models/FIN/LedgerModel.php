@@ -77,10 +77,12 @@ class LedgerModel extends BaseModel
     const MODE_ONLINE = 'online';
 
     // Approval status constants
-    const STATUS_PENDING = 'pending';
-    const STATUS_APPROVED = 'approved';
-    const STATUS_REJECTED = 'rejected';
-    const STATUS_REVERSED = 'reversed'; // For payment method changes after delivery
+    const STATUS_PENDING      = 'pending';      // Legacy / generic pending (treated as L1)
+    const STATUS_PENDING_L1   = 'pending_l1';   // Explicit Level 1 pending
+    const STATUS_PENDING_L2   = 'pending_l2';   // Explicit Level 2 pending
+    const STATUS_APPROVED     = 'approved';
+    const STATUS_REJECTED     = 'rejected';
+    const STATUS_REVERSED     = 'reversed';     // For payment method changes after delivery
 
     /**
      * Relationships
@@ -145,7 +147,12 @@ class LedgerModel extends BaseModel
 
     public function scopePending($query)
     {
-        return $query->where('approval_status', self::STATUS_PENDING);
+        // Treat all pending stages as "pending" for query helpers
+        return $query->whereIn('approval_status', [
+            self::STATUS_PENDING,
+            self::STATUS_PENDING_L1,
+            self::STATUS_PENDING_L2,
+        ]);
     }
 
     public function scopeByType($query, $type)
@@ -188,7 +195,11 @@ class LedgerModel extends BaseModel
      */
     public function isPending(): bool
     {
-        return $this->approval_status === self::STATUS_PENDING;
+        return in_array($this->approval_status, [
+            self::STATUS_PENDING,
+            self::STATUS_PENDING_L1,
+            self::STATUS_PENDING_L2,
+        ], true);
     }
 
     public function isApproved(): bool

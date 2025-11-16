@@ -668,6 +668,12 @@
                                                     
                                                     // Enhanced description with transfer details
                                                     $enhancedDescription = $transaction->description;
+                                                    
+                                                    // For invoices, show customer name and order number
+                                                    if ($transaction->transaction_type === 'invoice' && $transaction->order) {
+                                                        $enhancedDescription = "Invoice {$transaction->order->order_number} - {$transaction->order->customer_name}";
+                                                    }
+                                                    
                                                     if ($transaction->transaction_type === 'transfer') {
                                                         $fromAccount = $transaction->fromAccount ? $transaction->fromAccount->account_name : 'Unknown';
                                                         $toAccount = $transaction->toAccount ? $transaction->toAccount->account_name : 'Unknown';

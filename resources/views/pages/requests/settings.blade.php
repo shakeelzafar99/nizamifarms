@@ -136,11 +136,63 @@
 
                 <div class="space-y-4">
                     @foreach($categories as $category)
+                    @php
+                        $categoryRouting = $routingRulesByCategory[$category->id] ?? [];
+                        $l1Routing = $categoryRouting[1] ?? [];
+                        $l2Routing = $categoryRouting[2] ?? [];
+
+                        // Detect whether this category has request-based routing,
+                        // ledger-based routing, or both (for display badges).
+                        // 1) Look at actual rules (area_type).
+                        $hasRequestRouting = false;
+                        $hasLedgerRouting = false;
+
+                        foreach ([$l1Routing, $l2Routing] as $levelRows) {
+                            foreach ($levelRows as $row) {
+                                if (isset($row['area_type'])) {
+                                    if ($row['area_type'] === 'request_category') {
+                                        $hasRequestRouting = true;
+                                    } elseif ($row['area_type'] === 'ledger_transaction') {
+                                        $hasLedgerRouting = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2) Apply sensible defaults based on category code so the flow
+                        //    badge is still meaningful even when there are no explicit rules.
+                        $code = $category->category_code;
+
+                        // Pure request-driven categories
+                        if (in_array($code, ['leave', 'expense', 'salary_advance'])) {
+                            $hasRequestRouting = true;
+                        }
+
+                        // Pure ledger-driven categories
+                        if (in_array($code, ['employee_deposit', 'vendor_payment', 'account_transfer', 'invoice_approval', 'invoice_adjustment'])) {
+                            $hasLedgerRouting = true;
+                        }
+                    @endphp
                     <div class="border rounded-lg p-4 bg-white hover:bg-gray-50">
                         <div class="flex items-start justify-between mb-3">
                             <div>
                                 <h4 class="font-semibold text-lg">{{ $category->category_name }}</h4>
                                 <p class="text-sm text-gray-600">{{ $category->description }}</p>
+
+                                @if($hasRequestRouting || $hasLedgerRouting)
+                                    <div class="mt-1 flex flex-wrap gap-1 text-xs">
+                                        @if($hasRequestRouting)
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-green-100 text-green-800 border border-green-200" title="Approvals start as a request (e.g., Leave, Expense, Salary Advance)">
+                                            Request flow
+                                        </span>
+                                        @endif
+                                        @if($hasLedgerRouting)
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200" title="Approvals happen directly on ledger entries (e.g., Employee Deposit, Vendor Payment, Account Transfer, Online Invoice)">
+                                            Ledger flow
+                                        </span>
+                                        @endif
+                                    </div>
+                                @endif
                             </div>
                             <button onclick="toggleCategoryDetails({{ $category->id }})" class="kt-btn kt-btn-sm kt-btn-light">
                                 <i class="ki-filled ki-down" id="icon-{{ $category->id }}"></i>
@@ -176,31 +228,49 @@
                                         <span class="w-6 h-6 rounded-full bg-blue-500 text-white flex items-center justify-center text-xs">L1</span>
                                         Level 1 Approvers
                                     </h5>
-                                    <div class="space-y-2">
-                                        <div>
-                                            <label class="text-xs text-gray-600">Assign Specific User (Optional)</label>
-                                            <select class="kt-select kt-select-sm w-full" 
-                                                    data-category-id="{{ $category->id }}"
-                                                    data-level="1">
-                                                <option value="">Any L1 user (role-based)</option>
-                                                @foreach(\App\Models\SysAdmin\UserModel::where('is_active', 1)->orderBy('fullname')->get() as $user)
-                                                <option value="{{ $user->id }}">{{ $user->fullname ?? $user->name }}</option>
-                                                @endforeach
-                                            </select>
+                                    <div id="l1-rules-{{ $category->id }}" class="space-y-2">
+                                        @php
+                                            $l1Rows = count($l1Routing) ? $l1Routing : [['user_id' => null, 'payment_source_account_id' => null]];
+                                        @endphp
+                                        @foreach($l1Rows as $row)
+                                        <div class="flex items-center gap-2 routing-row" data-level="1">
+                                            <div class="flex-1">
+                                                <label class="text-xs text-gray-600">Assign Specific User (Optional)</label>
+                                                <select class="kt-select kt-select-sm w-full" data-role="user">
+                                                    <option value="">Any L1 user (role-based)</option>
+                                                    @foreach(\App\Models\SysAdmin\UserModel::where('is_active', 1)->orderBy('fullname')->get() as $user)
+                                                    <option value="{{ $user->id }}"
+                                                        {{ isset($row['user_id']) && (int)$row['user_id'] === (int)$user->id ? 'selected' : '' }}>
+                                                        {{ $user->fullname ?? $user->name }}
+                                                    </option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                            <div class="flex-1">
+                                                <label class="text-xs text-gray-600">Payment Source (Optional)</label>
+                                                <select class="kt-select kt-select-sm w-full" data-role="payment_source">
+                                                    <option value="">Any payment source</option>
+                                                    @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->orderBy('account_name')->get() as $account)
+                                                    <option value="{{ $account->id }}"
+                                                        {{ isset($row['payment_source_account_id']) && (int)$row['payment_source_account_id'] === (int)$account->id ? 'selected' : '' }}>
+                                                        {{ $account->account_name }}
+                                                    </option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                            <button type="button"
+                                                    class="kt-btn kt-btn-sm kt-btn-danger mt-6"
+                                                    onclick="removeRoutingRow(this)">
+                                                <i class="ki-filled ki-trash"></i>
+                                            </button>
                                         </div>
-                                        <div>
-                                            <label class="text-xs text-gray-600">Payment Source Filter (Optional)</label>
-                                            <select class="kt-select kt-select-sm w-full"
-                                                    data-category-id="{{ $category->id }}"
-                                                    data-level="1"
-                                                    data-filter="payment_source">
-                                                <option value="">Any payment source</option>
-                                                @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->orderBy('account_name')->get() as $account)
-                                                <option value="{{ $account->id }}">{{ $account->account_name }}</option>
-                                                @endforeach
-                                            </select>
-                                        </div>
+                                        @endforeach
                                     </div>
+                                    <button type="button"
+                                            class="kt-btn kt-btn-xs kt-btn-light mt-2"
+                                            onclick="addRoutingRow({{ $category->id }}, 1)">
+                                        <i class="ki-filled ki-plus"></i> Add L1 Rule
+                                    </button>
                                 </div>
                                 
                                 <!-- Level 2 Routing -->
@@ -209,31 +279,49 @@
                                         <span class="w-6 h-6 rounded-full bg-purple-500 text-white flex items-center justify-center text-xs">L2</span>
                                         Level 2 Approvers
                                     </h5>
-                                    <div class="space-y-2">
-                                        <div>
-                                            <label class="text-xs text-gray-600">Assign Specific User (Optional)</label>
-                                            <select class="kt-select kt-select-sm w-full"
-                                                    data-category-id="{{ $category->id }}"
-                                                    data-level="2">
-                                                <option value="">Any L2 user (role-based)</option>
-                                                @foreach(\App\Models\SysAdmin\UserModel::where('is_active', 1)->orderBy('fullname')->get() as $user)
-                                                <option value="{{ $user->id }}">{{ $user->fullname ?? $user->name }}</option>
-                                                @endforeach
-                                            </select>
+                                    <div id="l2-rules-{{ $category->id }}" class="space-y-2">
+                                        @php
+                                            $l2Rows = count($l2Routing) ? $l2Routing : [['user_id' => null, 'payment_source_account_id' => null]];
+                                        @endphp
+                                        @foreach($l2Rows as $row)
+                                        <div class="flex items-center gap-2 routing-row" data-level="2">
+                                            <div class="flex-1">
+                                                <label class="text-xs text-gray-600">Assign Specific User (Optional)</label>
+                                                <select class="kt-select kt-select-sm w-full" data-role="user">
+                                                    <option value="">Any L2 user (role-based)</option>
+                                                    @foreach(\App\Models\SysAdmin\UserModel::where('is_active', 1)->orderBy('fullname')->get() as $user)
+                                                    <option value="{{ $user->id }}"
+                                                        {{ isset($row['user_id']) && (int)$row['user_id'] === (int)$user->id ? 'selected' : '' }}>
+                                                        {{ $user->fullname ?? $user->name }}
+                                                    </option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                            <div class="flex-1">
+                                                <label class="text-xs text-gray-600">Payment Source (Optional)</label>
+                                                <select class="kt-select kt-select-sm w-full" data-role="payment_source">
+                                                    <option value="">Any payment source</option>
+                                                    @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->orderBy('account_name')->get() as $account)
+                                                    <option value="{{ $account->id }}"
+                                                        {{ isset($row['payment_source_account_id']) && (int)$row['payment_source_account_id'] === (int)$account->id ? 'selected' : '' }}>
+                                                        {{ $account->account_name }}
+                                                    </option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                            <button type="button"
+                                                    class="kt-btn kt-btn-sm kt-btn-danger mt-6"
+                                                    onclick="removeRoutingRow(this)">
+                                                <i class="ki-filled ki-trash"></i>
+                                            </button>
                                         </div>
-                                        <div>
-                                            <label class="text-xs text-gray-600">Payment Source Filter (Optional)</label>
-                                            <select class="kt-select kt-select-sm w-full"
-                                                    data-category-id="{{ $category->id }}"
-                                                    data-level="2"
-                                                    data-filter="payment_source">
-                                                <option value="">Any payment source</option>
-                                                @foreach(\App\Models\FIN\AccountModel::where('is_active', 1)->whereIn('account_category', ['cash', 'bank'])->orderBy('account_name')->get() as $account)
-                                                <option value="{{ $account->id }}">{{ $account->account_name }}</option>
-                                                @endforeach
-                                            </select>
-                                        </div>
+                                        @endforeach
                                     </div>
+                                    <button type="button"
+                                            class="kt-btn kt-btn-xs kt-btn-light mt-2"
+                                            onclick="addRoutingRow({{ $category->id }}, 2)">
+                                        <i class="ki-filled ki-plus"></i> Add L2 Rule
+                                    </button>
                                 </div>
                             </div>
                             
@@ -297,21 +385,82 @@ function toggleCategoryDetails(categoryId) {
     }
 }
 
+// Add a new routing row for a given category and level (1 or 2)
+function addRoutingRow(categoryId, level) {
+    const container = document.getElementById(`l${level}-rules-${categoryId}`);
+    if (!container) return;
+
+    const firstRow = container.querySelector('.routing-row');
+    let newRow;
+
+    if (firstRow) {
+        newRow = firstRow.cloneNode(true);
+        // Reset selects in cloned row
+        newRow.querySelectorAll('select').forEach(sel => {
+            sel.value = '';
+        });
+    } else {
+        // Fallback: no existing row (should not normally happen)
+        newRow = document.createElement('div');
+        newRow.className = 'flex items-center gap-2 routing-row';
+        newRow.dataset.level = String(level);
+        newRow.innerHTML = '<span class="text-xs text-red-600">No template row found</span>';
+    }
+
+    container.appendChild(newRow);
+}
+
+// Remove a routing row (but keep at least one row for UX)
+function removeRoutingRow(button) {
+    const row = button.closest('.routing-row');
+    if (!row) return;
+
+    const container = row.parentElement;
+    const rows = container.querySelectorAll('.routing-row');
+
+    if (rows.length <= 1) {
+        // Just clear selections instead of removing the last row
+        row.querySelectorAll('select').forEach(sel => {
+            sel.value = '';
+        });
+    } else {
+        row.remove();
+    }
+}
+
 // Save category configuration and routing
 function saveCategoryConfigAndRouting(categoryId) {
-    const detailsDiv = document.getElementById(`details-${categoryId}`);
-    
     // Get basic config
     const requiresL1 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_1"]`).checked;
     const requiresL2 = document.querySelector(`input[data-category-id="${categoryId}"][data-field="requires_level_2"]`).checked;
     const threshold = document.querySelector(`input[data-category-id="${categoryId}"][data-field="auto_approve_threshold"]`).value;
-    
-    // Get routing config
-    const l1User = detailsDiv.querySelector(`select[data-category-id="${categoryId}"][data-level="1"]:not([data-filter])`).value;
-    const l1PaymentSource = detailsDiv.querySelector(`select[data-category-id="${categoryId}"][data-level="1"][data-filter="payment_source"]`).value;
-    const l2User = detailsDiv.querySelector(`select[data-category-id="${categoryId}"][data-level="2"]:not([data-filter])`).value;
-    const l2PaymentSource = detailsDiv.querySelector(`select[data-category-id="${categoryId}"][data-level="2"][data-filter="payment_source"]`).value;
-    
+
+    // Build routing rules array from UI
+    const rules = [];
+    [1, 2].forEach(level => {
+        const container = document.getElementById(`l${level}-rules-${categoryId}`);
+        if (!container) return;
+
+        container.querySelectorAll('.routing-row').forEach(row => {
+            const userSelect = row.querySelector('select[data-role="user"]');
+            const accountSelect = row.querySelector('select[data-role="payment_source"]');
+
+            if (!userSelect || !userSelect.value) {
+                return; // Skip rows without user selected
+            }
+
+            const rule = {
+                level: level,
+                user_id: parseInt(userSelect.value, 10),
+                payment_source_account_id: accountSelect && accountSelect.value
+                    ? parseInt(accountSelect.value, 10)
+                    : null
+            };
+
+            rules.push(rule);
+        });
+    });
+
     // First, save basic config
     fetch(`/requests/settings/categories/${categoryId}/config`, {
         method: 'PUT',
@@ -327,75 +476,37 @@ function saveCategoryConfigAndRouting(categoryId) {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
-            // Now save routing rules if any users are assigned
-            const promises = [];
-            
-            if (l1User) {
-                promises.push(saveRoutingRule(categoryId, 1, l1User, l1PaymentSource));
-            }
-            
-            if (l2User) {
-                promises.push(saveRoutingRule(categoryId, 2, l2User, l2PaymentSource));
-            }
-            
-            if (promises.length > 0) {
-                Promise.all(promises)
-                    .then(() => {
-                        alert('Configuration and routing saved successfully!');
-                    })
-                    .catch(error => {
-                        console.error('Error saving routing:', error);
-                        alert('Configuration saved, but routing had errors. Check console.');
-                    });
-            } else {
-                alert('Configuration saved successfully!');
-            }
-        } else {
+        if (!data.success) {
             alert('Error: ' + data.message);
+            return;
         }
+
+        // Now save routing rules (this will also clear any existing rules for this category)
+        fetch(`/requests/settings/categories/${categoryId}/routing`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': '{{ csrf_token() }}'
+            },
+            body: JSON.stringify({ rules })
+        })
+        .then(response => response.json())
+        .then(routingData => {
+            if (routingData.success) {
+                alert('Configuration and routing saved successfully!');
+            } else {
+                alert('Configuration saved, but routing failed: ' + routingData.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error saving routing rules:', error);
+            alert('Configuration saved, but routing had errors. Check console.');
+        });
     })
     .catch(error => {
         console.error('Error:', error);
         alert('An error occurred. Please try again.');
     });
-}
-
-// Helper function to save a routing rule
-function saveRoutingRule(categoryId, level, userId, paymentSourceId) {
-    // Get category code from the page
-    const categoryName = document.querySelector(`#details-${categoryId}`).closest('[class*="border rounded-lg"]').querySelector('h4').textContent.trim();
-    
-    return fetch('/requests/settings/routing-rules', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}'
-        },
-        body: JSON.stringify({
-            rule_name: `${categoryName} - L${level} Auto-Rule`,
-            area_type: 'request_category',
-            area_identifier: getCategoryCodeById(categoryId),
-            approval_level: level,
-            payment_source_account_id: paymentSourceId || null,
-            payment_mode: null,
-            min_amount: null,
-            max_amount: null,
-            priority: 100,
-            assignees: [{
-                user_id: parseInt(userId),
-                is_primary: 1,
-                sequence_order: 0
-            }]
-        })
-    });
-}
-
-// Helper to get category code by ID
-function getCategoryCodeById(categoryId) {
-    // This is a simple mapping - you might want to pass this from PHP
-    const categoryMap = @json($categories->pluck('category_code', 'id'));
-    return categoryMap[categoryId];
 }
 
 function assignRoleToLevel(level) {

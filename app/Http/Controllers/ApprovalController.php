@@ -70,6 +70,14 @@ class ApprovalController extends Controller
                 'amount' => $this->sumAmounts($rejectedItems)
             ]
         ];
+
+        // Build list of approver users (for assignee filter dropdown)
+        $level1Users = RoleApprovalLevelModel::getUsersWithApprovalLevel(1);
+        $level2Users = RoleApprovalLevelModel::getUsersWithApprovalLevel(2);
+        $approverUsers = $level1Users
+            ->merge($level2Users)
+            ->unique('id')
+            ->sortBy(fn($u) => strtolower($u->fullname ?? $u->name ?? $u->email ?? ''));
         
         // If AJAX request, return filtered data
         if ($request->ajax()) {
@@ -79,7 +87,8 @@ class ApprovalController extends Controller
         return view('approvals.unified', compact(
             'summaries',
             'hasLevel1Rights',
-            'hasLevel2Rights'
+            'hasLevel2Rights',
+            'approverUsers'
         ));
     }
 
@@ -107,9 +116,13 @@ class ApprovalController extends Controller
             }
         }
         
-        // Get pending ledger transactions (no L1/L2 - just pending)
+        // Get pending ledger transactions (ledger-level approvals)
         // IMPORTANT: Exclude ledger entries that are linked to requests (to avoid duplicates)
-        $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING)
+        // We treat legacy 'pending' and explicit 'pending_l1' as Level 1 items.
+        $pendingLedger = LedgerModel::whereIn('approval_status', [
+                LedgerModel::STATUS_PENDING,
+                LedgerModel::STATUS_PENDING_L1,
+            ])
             ->whereNull('request_id')  // Only show ledger entries NOT linked to requests
             ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
             ->orderBy('transaction_date', 'desc') // Newest first
@@ -152,6 +165,17 @@ class ApprovalController extends Controller
         
         foreach ($pendingRequests as $req) {
             $items[] = $this->formatRequestItem($req, 2, $expFundAccount, $nfCashAccount, $onlineAccount);
+        }
+
+        // Get L2 pending ledger transactions (explicit Level 2 status)
+        $pendingLedgerL2 = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)
+            ->whereNull('request_id')
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'request', 'order.customer'])
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+
+        foreach ($pendingLedgerL2 as $ledger) {
+            $items[] = $this->formatLedgerItem($ledger, $expFundAccount, $nfCashAccount, $onlineAccount);
         }
         
         // Get adjustments that passed L1 and need L2
@@ -288,6 +312,10 @@ class ApprovalController extends Controller
     private function formatRequestItem($request, $level = null, $expFundAccount = null, $nfCashAccount = null, $onlineAccount = null, $overrideStatus = null)
     {
         $area = $this->determineRequestArea($request, $expFundAccount, $nfCashAccount, $onlineAccount);
+        // Virtual assignment: compute assignee on the fly from routing rules,
+        // based on category, payment source and amount, instead of relying
+        // on stored level_1_assigned_to / level_2_assigned_to columns.
+        $assignedToId = $this->getVirtualAssigneeForRequest($request, $level);
         
         return [
             'type' => 'request',
@@ -304,6 +332,8 @@ class ApprovalController extends Controller
             'level' => $level,
             'area' => $area,
             'status' => $overrideStatus ?? 'pending',
+            // For \"my assignments\" filtering – null means \"unassigned\"
+            'assigned_to_id' => $assignedToId,
             'view_url' => route('requests.show', $request->id)
         ];
     }
@@ -314,6 +344,8 @@ class ApprovalController extends Controller
     private function formatLedgerItem($ledger, $expFundAccount = null, $nfCashAccount = null, $onlineAccount = null, $overrideStatus = null)
     {
         $area = $this->determineLedgerArea($ledger, $expFundAccount, $nfCashAccount, $onlineAccount);
+        $level = $this->getLedgerApprovalLevel($ledger);
+        $assignedToId = $this->getVirtualAssigneeForLedger($ledger, $expFundAccount, $nfCashAccount, $onlineAccount);
         
         $title = $ledger->description;
         $description = $ledger->description;
@@ -369,10 +401,11 @@ class ApprovalController extends Controller
             'amount' => $ledger->amount ?? 0,
             'leave_days' => 0,
             'date' => $ledger->created_at ? $ledger->created_at->format('Y-m-d H:i:s') : $ledger->transaction_date,
-            'level' => null, // Ledger transactions don't have L1/L2
+            'level' => $level, // Ledger transactions now participate in L1/L2 based on status
             'area' => $area,
             'status' => $overrideStatus ?? $ledger->approval_status,
-            'view_url' => route('fin.ledger.show', $ledger->id)
+            'assigned_to_id' => $assignedToId,
+            'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'approvals'])
         ];
     }
 
@@ -381,6 +414,13 @@ class ApprovalController extends Controller
      */
     private function formatAdjustmentItem($adjustment, $level = null, $expFundAccount = null, $nfCashAccount = null, $onlineAccount = null)
     {
+        $assignedToId = null;
+        if ($level === 1) {
+            $assignedToId = $adjustment->level_1_assigned_to ?? null;
+        } elseif ($level === 2) {
+            $assignedToId = $adjustment->level_2_assigned_to ?? null;
+        }
+
         return [
             'type' => 'adjustment',
             'id' => $adjustment->id,
@@ -396,6 +436,7 @@ class ApprovalController extends Controller
             'level' => $level,
             'area' => self::AREA_OTHERS,
             'status' => 'pending',
+            'assigned_to_id' => $assignedToId,
             'view_url' => route('fin.ledger.adjustments.show', $adjustment->id)
         ];
     }
@@ -529,6 +570,7 @@ class ApprovalController extends Controller
         $level = $request->input('level'); // 'l1', 'l2', 'approved', 'rejected'
         $area = $request->input('area'); // 'exp_fund', 'nf_cash', 'online', 'others'
         $search = $request->input('search');
+        $assigneeId = $request->input('assignee_id'); // user id for \"My assignments\" filter
         
         // Select items based on level
         $items = [];
@@ -556,6 +598,17 @@ class ApprovalController extends Controller
                 return $item['area'] === $area;
             });
         }
+
+        // Filter by assignee if specified (only applies to requests/adjustments with assigned_to_id)
+        if ($assigneeId) {
+            $assigneeIdInt = (int) $assigneeId;
+            $items = array_filter($items, function($item) use ($assigneeIdInt) {
+                if (!isset($item['assigned_to_id']) || !$item['assigned_to_id']) {
+                    return false;
+                }
+                return (int) $item['assigned_to_id'] === $assigneeIdInt;
+            });
+        }
         
         // Filter by search if specified
         if ($search) {
@@ -567,11 +620,313 @@ class ApprovalController extends Controller
             });
         }
         
+        // Calculate updated summaries if assignee filter is applied
+        $updatedSummaries = null;
+        if ($assigneeId) {
+            // Filter all item sets by assignee
+            $filteredL1 = array_filter($l1Items, function($item) use ($assigneeId) {
+                return isset($item['assigned_to_id']) && (int)$item['assigned_to_id'] === (int)$assigneeId;
+            });
+            $filteredL2 = array_filter($l2Items, function($item) use ($assigneeId) {
+                return isset($item['assigned_to_id']) && (int)$item['assigned_to_id'] === (int)$assigneeId;
+            });
+            
+            $updatedSummaries = [
+                'l1' => [
+                    'count' => count($filteredL1),
+                    'amount' => $this->sumAmounts($filteredL1),
+                    'by_area' => $this->groupByArea($filteredL1)
+                ],
+                'l2' => [
+                    'count' => count($filteredL2),
+                    'amount' => $this->sumAmounts($filteredL2),
+                    'by_area' => $this->groupByArea($filteredL2)
+                ]
+            ];
+        }
+        
         return response()->json([
             'success' => true,
             'items' => array_values($items),
             'count' => count($items),
-            'total_amount' => $this->sumAmounts($items)
+            'total_amount' => $this->sumAmounts($items),
+            'summaries' => $updatedSummaries // Include updated summaries if filtered
         ]);
+    }
+
+    /**
+     * Compute virtual assignee for a request based on current routing rules.
+     * This does NOT rely on stored level_1_assigned_to/level_2_assigned_to,
+     * so changing routing rules immediately affects \"who it is on\".
+     */
+    private function getVirtualAssigneeForRequest($request, ?int $level): ?int
+    {
+        if (!$level || !in_array($level, [1, 2], true)) {
+            return null;
+        }
+
+        // We need the category code to match routing rules (area_identifier)
+        if (!$request->relationLoaded('category')) {
+            $request->load('category');
+        }
+        if (!$request->category || !$request->category->category_code) {
+            return null;
+        }
+
+        $context = [];
+
+        // Derive a normalized payment source for routing:
+        // - If an explicit employee cash account is selected, treat it as NF_CASH bucket
+        // - If no account and category is 'expense', default to EXP_FUND bucket
+        // - Otherwise use the explicit payment_source_account_id
+        $normalizedSourceId = $request->payment_source_account_id;
+
+        try {
+            if ($request->relationLoaded('paymentSourceAccount') || method_exists($request, 'paymentSourceAccount')) {
+                $account = $request->paymentSourceAccount;
+                if ($account && $account->account_category === AccountModel::CATEGORY_EMPLOYEE_CASH) {
+                    // Map employee cash accounts to NF_CASH for routing purposes
+                    $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+                    if ($nfCashAccount) {
+                        $normalizedSourceId = $nfCashAccount->id;
+                    }
+                }
+            }
+
+            // For expense reimbursements without explicit payment source,
+            // default to EXP_FUND as the logical payment bucket
+            if (!$normalizedSourceId && $request->category && $request->category->category_code === 'expense') {
+                $expFundAccount = AccountModel::where('account_code', 'EXP_FUND')->first();
+                if ($expFundAccount) {
+                    $normalizedSourceId = $expFundAccount->id;
+                }
+            }
+        } catch (\Exception $e) {
+            // Fail soft; routing will just fall back to "no specific assignee"
+            \Log::error('Error normalizing payment source for virtual assignment', [
+                'error' => $e->getMessage(),
+                'request_id' => $request->id ?? null,
+            ]);
+        }
+
+        // Always include the (possibly normalized) payment_source_account_id in context
+        $context['payment_source_account_id'] = $normalizedSourceId;
+        
+        if (!empty($request->amount)) {
+            $context['amount'] = $request->amount;
+        }
+
+        return $this->getAssigneeFromRules(
+            'request_category',
+            $request->category->category_code,
+            $level,
+            $context
+        );
+    }
+
+    /**
+     * Determine logical approval level for a ledger transaction from its status.
+     * - Legacy 'pending' and explicit 'pending_l1' are treated as Level 1
+     * - 'pending_l2' is treated as Level 2
+     */
+    private function getLedgerApprovalLevel(LedgerModel $ledger): ?int
+    {
+        if (in_array($ledger->approval_status, [
+            LedgerModel::STATUS_PENDING,
+            LedgerModel::STATUS_PENDING_L1,
+        ], true)) {
+            return 1;
+        }
+
+        if ($ledger->approval_status === LedgerModel::STATUS_PENDING_L2) {
+            return 2;
+        }
+
+        return null; // Approved / rejected / reversed
+    }
+
+    /**
+     * Compute virtual assignee for a ledger transaction based on routing rules.
+     * This lets finance categories (Employee Deposit, Vendor Payment, Account Transfer,
+     * and L2 Invoice approvals) participate in "My assignments" without changing
+     * underlying ledger schemas.
+     */
+    private function getVirtualAssigneeForLedger($ledger, $expFundAccount = null, $nfCashAccount = null, $onlineAccount = null): ?int
+    {
+        $level = $this->getLedgerApprovalLevel($ledger);
+        if (!$level) {
+            return null; // No pending approval
+        }
+
+        // Derive payment bucket from area (EXP_FUND, NF_CASH, ONLINE)
+        $area = $this->determineLedgerArea($ledger, $expFundAccount, $nfCashAccount, $onlineAccount);
+        $paymentSourceId = null;
+
+        if ($area === self::AREA_EXP_FUND && $expFundAccount) {
+            $paymentSourceId = $expFundAccount->id;
+        } elseif ($area === self::AREA_NF_CASH && $nfCashAccount) {
+            $paymentSourceId = $nfCashAccount->id;
+        } elseif ($area === self::AREA_ONLINE && $onlineAccount) {
+            $paymentSourceId = $onlineAccount->id;
+        }
+
+        $context = [
+            'payment_source_account_id' => $paymentSourceId,
+        ];
+
+        return $this->getAssigneeFromRules(
+            'ledger_transaction',
+            $ledger->transaction_type,
+            $level,
+            $context
+        );
+    }
+
+    /**
+     * Shared helper to look up an assignee from routing rule tables.
+     * This mirrors the logic used in LedgerPostingService so dashboards
+     * and posting behave consistently.
+     */
+    private function getAssigneeFromRules(
+        string $areaType,
+        string $areaIdentifier,
+        int $level,
+        array $context = []
+    ): ?int {
+        try {
+            // Base rule query
+            $query = DB::table('t_req_approval_rules')
+                ->where('area_type', $areaType)
+                ->where('area_identifier', $areaIdentifier)
+                ->where('approval_level', $level)
+                ->where('is_active', 1);
+
+            // Contextual filters
+            if (isset($context['payment_source_account_id'])) {
+                $paymentSourceId = $context['payment_source_account_id'];
+                if ($paymentSourceId === null) {
+                    // Request has no payment source - match rules with NULL payment source only
+                    $query->whereNull('payment_source_account_id');
+                } else {
+                    // Request has a payment source - match specific account OR catch-all (NULL)
+                    $query->where(function($q) use ($paymentSourceId) {
+                        $q->where('payment_source_account_id', $paymentSourceId)
+                          ->orWhereNull('payment_source_account_id');
+                    });
+                }
+            }
+
+            if (!empty($context['payment_mode'])) {
+                $query->where(function($q) use ($context) {
+                    $q->where('payment_mode', $context['payment_mode'])
+                      ->orWhereNull('payment_mode');
+                });
+            }
+
+            if (isset($context['amount']) && $context['amount'] !== null) {
+                $amount = $context['amount'];
+                $query->where(function($q) use ($amount) {
+                    $q->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('min_amount')
+                             ->orWhere('min_amount', '<=', $amount);
+                    })
+                    ->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('max_amount')
+                             ->orWhere('max_amount', '>=', $amount);
+                    });
+                });
+            }
+
+            // Highest priority rule wins
+            $rule = $query->orderBy('priority', 'asc')->first();
+
+            // Backward compatibility: For historical configurations we may still
+            // have invoice routing stored as request_category/invoice_approval.
+            // If no ledger_transaction/invoice rule is found, fall back to that.
+            if (
+                !$rule &&
+                $areaType === 'ledger_transaction' &&
+                $areaIdentifier === \App\Models\FIN\LedgerModel::TYPE_INVOICE
+            ) {
+                $fallbackQuery = DB::table('t_req_approval_rules')
+                    ->where('area_type', 'request_category')
+                    ->where('area_identifier', 'invoice_approval')
+                    ->where('approval_level', $level)
+                    ->where('is_active', 1);
+
+                // Re-apply the same contextual filters to the fallback query
+                if (isset($context['payment_source_account_id'])) {
+                    $paymentSourceId = $context['payment_source_account_id'];
+                    if ($paymentSourceId === null) {
+                        $fallbackQuery->whereNull('payment_source_account_id');
+                    } else {
+                        $fallbackQuery->where(function($q) use ($paymentSourceId) {
+                            $q->where('payment_source_account_id', $paymentSourceId)
+                              ->orWhereNull('payment_source_account_id');
+                        });
+                    }
+                }
+
+                if (!empty($context['payment_mode'])) {
+                    $fallbackQuery->where(function($q) use ($context) {
+                        $q->where('payment_mode', $context['payment_mode'])
+                          ->orWhereNull('payment_mode');
+                    });
+                }
+
+                if (isset($context['amount']) && $context['amount'] !== null) {
+                    $amount = $context['amount'];
+                    $fallbackQuery->where(function($q) use ($amount) {
+                        $q->where(function($subQ) use ($amount) {
+                            $subQ->whereNull('min_amount')
+                                 ->orWhere('min_amount', '<=', $amount);
+                        })
+                        ->where(function($subQ) use ($amount) {
+                            $subQ->whereNull('max_amount')
+                                 ->orWhere('max_amount', '>=', $amount);
+                        });
+                    });
+                }
+
+                $rule = $fallbackQuery->orderBy('priority', 'asc')->first();
+            }
+            
+            // Debug logging
+            \Log::debug('Virtual Assignment Lookup', [
+                'area_type' => $areaType,
+                'area_identifier' => $areaIdentifier,
+                'level' => $level,
+                'context' => $context,
+                'rule_found' => $rule ? $rule->id : null,
+                'rule_payment_source' => $rule ? $rule->payment_source_account_id : null,
+            ]);
+            
+            if (!$rule) {
+                return null;
+            }
+
+            // Primary assignee for this rule
+            $assignee = DB::table('t_req_approval_rule_assignees')
+                ->where('rule_id', $rule->id)
+                ->where('is_primary', 1)
+                ->orderBy('sequence_order', 'asc')
+                ->first();
+            
+            \Log::debug('Virtual Assignment Result', [
+                'rule_id' => $rule->id,
+                'assignee_user_id' => $assignee ? $assignee->user_id : null,
+            ]);
+
+            return $assignee ? (int) $assignee->user_id : null;
+        } catch (\Exception $e) {
+            // Fail silently for UI – approvals still work via role-based rights
+            \Log::error('Error computing virtual assignee', [
+                'error' => $e->getMessage(),
+                'area_type' => $areaType,
+                'area_identifier' => $areaIdentifier,
+                'level' => $level,
+            ]);
+            return null;
+        }
     }
 }

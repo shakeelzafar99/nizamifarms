@@ -234,7 +234,15 @@
                                 {{ $transaction->toAccount->account_name ?? 'N/A' }}
                             </td>
                             <td class="px-6 py-4 text-sm text-gray-600 max-w-xs truncate">
-                                {{ $transaction->description }}
+                                @php
+                                    $displayDesc = $transaction->description;
+                                    // For invoices, show customer name and order number
+                                    if ($transaction->transaction_type === 'invoice' && $transaction->order) {
+                                        // Use order's customer_name attribute which handles name priority correctly
+                                        $displayDesc = "Invoice {$transaction->order->order_number} - {$transaction->order->customer_name}";
+                                    }
+                                @endphp
+                                {{ $displayDesc }}
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-gray-900">
                                 Rs. {{ number_format($transaction->amount, 2) }}

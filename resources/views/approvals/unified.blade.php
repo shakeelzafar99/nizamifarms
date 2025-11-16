@@ -286,16 +286,35 @@
     <!-- Table Container -->
     <div class="bg-white rounded-lg shadow-md border border-gray-200">
         <!-- Table Header -->
-        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-gray-900" id="tableTitle">All Pending Approvals</h2>
                 <p class="text-sm text-gray-600 mt-1" id="tableSubtitle">
                     <span id="itemCount">0</span> items • Rs. <span id="totalAmount">0</span>
                 </p>
             </div>
-            <button id="clearFiltersBtn" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition">
-                Clear Filters
-            </button>
+            <div class="flex items-center gap-3">
+                <!-- Assignee filter (My assignments / specific user / all) -->
+                <div class="flex items-center gap-2">
+                    <label for="assigneeFilter" class="text-xs font-medium text-gray-600">Assignee:</label>
+                    <select id="assigneeFilter"
+                            class="kt-select kt-select-sm min-w-[180px]"
+                            onchange="onAssigneeFilterChange()">
+                        <option value="">All approvers</option>
+                        <option value="{{ auth()->id() }}">My assignments ({{ auth()->user()->fullname ?? auth()->user()->name }})</option>
+                        @foreach($approverUsers as $approver)
+                            @if($approver->id !== auth()->id())
+                            <option value="{{ $approver->id }}">
+                                {{ $approver->fullname ?? $approver->name ?? $approver->email }}
+                            </option>
+                            @endif
+                        @endforeach
+                    </select>
+                </div>
+                <button id="clearFiltersBtn" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition">
+                    Clear Filters
+                </button>
+            </div>
         </div>
 
         <!-- Loading State -->
@@ -339,7 +358,8 @@
     window.approvalFilters = {
         level: null,
         area: null,
-        search: ''
+        search: '',
+        assignee_id: null
     };
 
     // Summaries from backend
@@ -459,8 +479,15 @@
         window.approvalFilters = {
             level: null,
             area: null,
-            search: ''
+            search: '',
+            assignee_id: null
         };
+
+        // Reset assignee dropdown
+        const assigneeSelect = document.getElementById('assigneeFilter');
+        if (assigneeSelect) {
+            assigneeSelect.value = '';
+        }
 
         // Remove all active states
         document.querySelectorAll('.level-card').forEach(card => card.classList.remove('active'));
@@ -476,7 +503,7 @@
 
     // Load table data via AJAX
     function loadTableData() {
-        const { level, area, search } = window.approvalFilters;
+        const { level, area, search, assignee_id } = window.approvalFilters;
 
         // Show loading state
         document.getElementById('loadingState').classList.remove('hidden');
@@ -487,6 +514,7 @@
         if (level) params.append('level', level);
         if (area) params.append('area', area);
         if (search) params.append('search', search);
+        if (assignee_id) params.append('assignee_id', assignee_id);
 
         // Make AJAX request
         fetch(`/approvals?${params.toString()}`, {
@@ -503,6 +531,11 @@
 
             if (data.success) {
                 renderTable(data.items, data.count, data.total_amount);
+                
+                // Update summary cards if filtered summaries are provided
+                if (data.summaries) {
+                    updateSummaryCards(data.summaries);
+                }
             } else {
                 alert('Error loading data');
             }
@@ -513,6 +546,41 @@
             document.getElementById('approvalsTable').classList.remove('opacity-50');
             alert('Error loading data');
         });
+    }
+    
+    // Update summary cards with filtered data
+    function updateSummaryCards(filteredSummaries) {
+        // Update L1 card
+        const l1Card = document.querySelector('[data-level="l1"]');
+        if (l1Card && filteredSummaries.l1) {
+            l1Card.querySelector('.count').textContent = filteredSummaries.l1.count;
+            l1Card.querySelector('.amount').textContent = 'Rs. ' + filteredSummaries.l1.amount.toLocaleString();
+        }
+        
+        // Update L2 card
+        const l2Card = document.querySelector('[data-level="l2"]');
+        if (l2Card && filteredSummaries.l2) {
+            l2Card.querySelector('.count').textContent = filteredSummaries.l2.count;
+            l2Card.querySelector('.amount').textContent = 'Rs. ' + filteredSummaries.l2.amount.toLocaleString();
+        }
+        
+        // Update area cards if Layer 2 is visible and we have a level selected
+        if (window.approvalFilters.level && (window.approvalFilters.level === 'l1' || window.approvalFilters.level === 'l2')) {
+            const areaData = filteredSummaries[window.approvalFilters.level].by_area;
+            Object.keys(areaData).forEach(area => {
+                const count = areaData[area].count || 0;
+                const amount = areaData[area].amount || 0;
+                
+                const countEl = document.getElementById(`area-${area.replace('_', '-')}-count`);
+                const amountEl = document.getElementById(`area-${area.replace('_', '-')}-amount`);
+                
+                if (countEl) countEl.textContent = count;
+                if (amountEl) amountEl.textContent = amount.toLocaleString();
+            });
+        }
+        
+        // Store filtered summaries globally for layer 2 navigation
+        window.filteredSummaries = filteredSummaries;
     }
 
     // Render table
@@ -581,10 +649,10 @@
                     <td class="text-center">${levelBadge}</td>
                     <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
                     <td class="text-center">
-                        <a href="${item.view_url}" 
+                        <button onclick="openApprovalModal('${item.view_url}')" 
                            class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">
                             View & Approve
-                        </a>
+                        </button>
                     </td>
                 </tr>
             `;
@@ -593,6 +661,20 @@
 
     // Initialize on page load
     document.addEventListener('DOMContentLoaded', function() {
+        // Store original summaries for reset functionality
+        window.originalSummaries = {
+            l1: {
+                count: {{ $summaries['l1']['count'] }},
+                amount: {{ $summaries['l1']['amount'] }},
+                by_area: @json($summaries['l1']['by_area'])
+            },
+            l2: {
+                count: {{ $summaries['l2']['count'] }},
+                amount: {{ $summaries['l2']['amount'] }},
+                by_area: @json($summaries['l2']['by_area'])
+            }
+        };
+        
         // Attach event listeners to level cards
         document.querySelectorAll('.level-card').forEach(card => {
             card.addEventListener('click', function() {
@@ -618,45 +700,136 @@
 
     // Load all pending items (L1 + L2 + Ledger transactions)
     function loadAllPendingItems() {
-        console.log('loadAllPendingItems called');
-        
-        // Show loading state
-        document.getElementById('loadingState').classList.remove('hidden');
-        document.getElementById('approvalsTable').classList.add('opacity-50');
+        // Keep current assignee filter but reset level/area/search
+        const currentAssignee = window.approvalFilters.assignee_id || null;
+        window.approvalFilters = {
+            level: null,
+            area: null,
+            search: '',
+            assignee_id: currentAssignee
+        };
 
-        // Make AJAX request without any filters
-        fetch('/approvals', {
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest',
-                'Accept': 'application/json'
-            }
-        })
-        .then(response => {
-            console.log('Response received:', response);
-            return response.json();
-        })
-        .then(data => {
-            console.log('Data received:', data);
-            
-            // Hide loading state
-            document.getElementById('loadingState').classList.add('hidden');
-            document.getElementById('approvalsTable').classList.remove('opacity-50');
-
-            if (data.success) {
-                document.getElementById('tableTitle').textContent = 'All Pending Approvals';
-                renderTable(data.items, data.count, data.total_amount);
-            } else {
-                console.error('Data success is false');
-                alert('Error loading data');
-            }
-        })
-        .catch(error => {
-            console.error('Fetch error:', error);
-            document.getElementById('loadingState').classList.add('hidden');
-            document.getElementById('approvalsTable').classList.remove('opacity-50');
-            alert('Error loading data: ' + error.message);
-        });
+        document.getElementById('tableTitle').textContent = 'All Pending Approvals';
+        loadTableData();
     }
+
+    // Handle assignee filter changes
+    function onAssigneeFilterChange() {
+        const select = document.getElementById('assigneeFilter');
+        if (!select) return;
+
+        const value = select.value;
+        window.approvalFilters.assignee_id = value ? parseInt(value, 10) : null;
+
+        // If filter is cleared, restore original summaries
+        if (!value) {
+            restoreOriginalSummaries();
+        }
+
+        // If level/area filters are set, respect them; otherwise show all pending
+        if (window.approvalFilters.level || window.approvalFilters.area || window.approvalFilters.search) {
+            loadTableData();
+        } else {
+            loadAllPendingItems();
+        }
+    }
+    
+    // Restore original summaries (from page load)
+    function restoreOriginalSummaries() {
+        if (window.originalSummaries) {
+            updateSummaryCards(window.originalSummaries);
+        }
+    }
+
+    // Modal functions
+    function openApprovalModal(url) {
+        const modal = document.getElementById('approvalModal');
+        const iframe = document.getElementById('approvalIframe');
+        
+        // Add origin parameter to URL if not already present
+        const separator = url.includes('?') ? '&' : '?';
+        const fullUrl = url.includes('origin=') ? url : url + separator + 'origin=approvals';
+        
+        iframe.src = fullUrl;
+        modal.style.display = 'flex';
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+    }
+
+    function closeApprovalModal() {
+        const modal = document.getElementById('approvalModal');
+        const iframe = document.getElementById('approvalIframe');
+        
+        modal.style.display = 'none';
+        modal.classList.add('hidden');
+        iframe.src = 'about:blank'; // Clear iframe
+        document.body.style.overflow = ''; // Restore scrolling
+        
+        // Reload the approvals data to reflect any changes
+        if (window.approvalFilters.level || window.approvalFilters.area || window.approvalFilters.search) {
+            loadTableData();
+        } else {
+            loadAllPendingItems();
+        }
+    }
+
+    // Listen for messages from iframe (when approval/rejection is complete)
+    window.addEventListener('message', function(event) {
+        // Check if message is from our iframe
+        if (event.data && event.data.type === 'approval_complete') {
+            // Show success message if provided
+            if (event.data.message) {
+                // Create a temporary success toast
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #10b981; color: white; padding: 16px 24px; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); z-index: 999999; font-weight: 600;';
+                toast.textContent = '✓ ' + event.data.message;
+                document.body.appendChild(toast);
+                
+                // Remove toast after 3 seconds
+                setTimeout(() => {
+                    toast.style.transition = 'opacity 0.3s';
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+            
+            // Close modal and refresh
+            closeApprovalModal();
+        }
+    });
 </script>
 @endpush
+
+<!-- Approval Modal -->
+<div id="approvalModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px;" onclick="closeApprovalModal()">
+    <div id="approvalCard" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1200px; height: 90vh; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;" onclick="event.stopPropagation();">
+        
+        <!-- Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: white; flex-shrink: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="width: 40px; height: 40px; border-radius: 50%; background: #dbeafe; display: flex; align-items: center; justify-content: center; color: #2563eb; font-size: 18px; font-weight: bold;">
+                        ✓
+                    </div>
+                    <div>
+                        <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;">Review & Approve</h3>
+                        <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Review the details and take action</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeApprovalModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+            </div>
+        </div>
+
+        <!-- Scrollable iframe Container -->
+        <div style="flex: 1 1 auto; overflow: hidden; min-height: 0; background: white;">
+            <iframe 
+                id="approvalIframe" 
+                src="about:blank" 
+                style="width: 100%; height: 100%; border: 0;"
+                title="Approval Details">
+            </iframe>
+        </div>
+
+    </div>
+</div>
 

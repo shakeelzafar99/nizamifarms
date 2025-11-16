@@ -7,6 +7,7 @@ use App\Models\FIN\LedgerModel;
 use App\Models\FIN\ConfigModel;
 use App\Models\CRM\OrderModel;
 use App\Models\Request\RequestModel;
+use App\Models\Request\RequestCategoryModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -55,9 +56,40 @@ class LedgerPostingService
             $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment'];
             
             if (in_array($order->payment_method, $onlinePaymentMethods)) {
-                // NEW: Create invoice approval request instead of direct ledger posting
-                DB::commit(); // Commit any pending changes
-                return $this->createInvoiceApprovalRequest($order);
+                // Online invoice - use configured online bank account and approval levels
+                $toAccount = ConfigModel::getOnlineBankAccount();
+                if (!$toAccount) {
+                    throw new \Exception("Online bank account not configured");
+                }
+
+                $mode = LedgerModel::MODE_ONLINE;
+
+                // Determine required ledger approval level(s) from Invoice Approval category
+                $invoiceCategory = RequestCategoryModel::getByCode('invoice_approval');
+                $approvalStatus = LedgerModel::STATUS_APPROVED;
+
+                if ($invoiceCategory) {
+                    $config = $invoiceCategory->approvalConfig;
+                    $requiresL1 = $invoiceCategory->requiresLevel1();
+                    $requiresL2 = $invoiceCategory->requiresLevel2();
+
+                    // Auto-approve small invoices if threshold is set
+                    if ($config && $config->canAutoApprove((float) $order->total_price)) {
+                        $approvalStatus = LedgerModel::STATUS_APPROVED;
+                    } elseif ($requiresL2) {
+                        // If L2 is required, treat this as a Level 2 pending item
+                        $approvalStatus = LedgerModel::STATUS_PENDING_L2;
+                    } elseif ($requiresL1) {
+                        // Only L1 required
+                        $approvalStatus = LedgerModel::STATUS_PENDING_L1;
+                    } else {
+                        // No approval required
+                        $approvalStatus = LedgerModel::STATUS_APPROVED;
+                    }
+                } else {
+                    // Fallback: require L2 approval for online invoices by default
+                    $approvalStatus = LedgerModel::STATUS_PENDING_L2;
+                }
             } else {
                 // Cash payment - find rider's cash account
                 if ($order->assigned_rider_user_id) {

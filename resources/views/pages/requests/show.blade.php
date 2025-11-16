@@ -406,6 +406,16 @@ function goBackSmart() {
         window.location.href = '{{ route("requests.index") }}';
     }
 }
+
+// If this page is loaded in an iframe (from approvals dashboard), notify parent on successful action
+@if(session('success'))
+if (window.parent && window.parent !== window) {
+    // Give a small delay to ensure user sees the success message
+    setTimeout(function() {
+        window.parent.postMessage({ type: 'approval_complete' }, '*');
+    }, 1500);
+}
+@endif
 </script>
 
 @endsection

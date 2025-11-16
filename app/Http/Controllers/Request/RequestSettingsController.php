@@ -42,8 +42,103 @@ class RequestSettingsController extends Controller
         // Get current approval level assignments
         $level1Roles = RoleApprovalLevelModel::with('role')->active()->level(1)->get();
         $level2Roles = RoleApprovalLevelModel::with('role')->active()->level(2)->get();
+
+        // Load existing routing rules for request categories so the UI can show
+        // per-category, per-level routing rows (L1/L2, per payment source).
+        // We intentionally scope to area_type = 'request_category' only.
+        $categoryCodeById = $categories->pluck('category_code', 'id'); // [id => code]
+        $categoryIdByCode = $categoryCodeById->flip();                 // [code => id]
+
+        $routingRulesByCategory = [];
+
+        if ($categoryCodeById->isNotEmpty()) {
+            // Map ledger transaction types back to request categories for display
+            $ledgerAreaToCategoryCode = [
+                'employee_deposit' => 'employee_deposit',
+                'vendor_payment' => 'vendor_payment',
+                'transfer' => 'account_transfer',
+                'invoice' => 'invoice_approval', // L2 routing for online invoices
+            ];
+
+            $rules = DB::table('t_req_approval_rules as r')
+                ->leftJoin('t_req_approval_rule_assignees as ra', 'ra.rule_id', '=', 'r.id')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'ra.user_id')
+                ->leftJoin('t_fin_accounts as a', 'a.id', '=', 'r.payment_source_account_id')
+                ->where('r.is_active', 1)
+                ->where(function($q) use ($categoryCodeById, $ledgerAreaToCategoryCode) {
+                    // Request-based rules (by category code)
+                    $q->where(function($rq) use ($categoryCodeById) {
+                        $rq->where('r.area_type', 'request_category')
+                           ->whereIn('r.area_identifier', $categoryCodeById->values());
+                    })
+                    // Ledger-based rules that we map back to specific categories
+                    ->orWhere(function($lq) use ($ledgerAreaToCategoryCode) {
+                        $lq->where('r.area_type', 'ledger_transaction')
+                           ->whereIn('r.area_identifier', array_keys($ledgerAreaToCategoryCode));
+                    });
+                })
+                ->select(
+                    'r.id',
+                    'r.area_type',
+                    'r.area_identifier',
+                    'r.approval_level',
+                    'r.payment_source_account_id',
+                    'a.account_name',
+                    'a.account_code',
+                    'ra.user_id',
+                    'ra.is_primary',
+                    'ra.sequence_order',
+                    'u.fullname as user_name'
+                )
+                ->orderBy('r.approval_level')
+                ->orderBy('r.priority')
+                ->orderBy('ra.sequence_order')
+                ->get();
+
+            foreach ($rules as $rule) {
+                // Map back from area_identifier to category_id
+                if ($rule->area_type === 'request_category') {
+                    $categoryCode = $rule->area_identifier;
+                } elseif ($rule->area_type === 'ledger_transaction') {
+                    $categoryCode = $ledgerAreaToCategoryCode[$rule->area_identifier] ?? null;
+                } else {
+                    $categoryCode = null;
+                }
+
+                if (!$categoryCode) {
+                    continue;
+                }
+
+                // $categoryIdByCode is already [category_code => id], so we can use it directly
+                $categoryId = $categoryIdByCode[$categoryCode] ?? null;
+                if (!$categoryId) {
+                    continue;
+                }
+
+                $level = (int) $rule->approval_level;
+
+                $routingRulesByCategory[$categoryId][$level][] = [
+                    'rule_id' => $rule->id,
+                    'area_type' => $rule->area_type,
+                    'area_identifier' => $rule->area_identifier,
+                    'user_id' => $rule->user_id,
+                    'user_name' => $rule->user_name,
+                    'payment_source_account_id' => $rule->payment_source_account_id,
+                    'payment_source_account_name' => $rule->account_name,
+                    'payment_source_account_code' => $rule->account_code,
+                    'is_primary' => (bool) $rule->is_primary,
+                    'sequence_order' => (int) $rule->sequence_order,
+                ];
+            }
+        }
         
-        return view('pages.requests.settings', compact('categories', 'roles', 'level1Roles', 'level2Roles'));
+        return view('pages.requests.settings', compact(
+            'categories',
+            'roles',
+            'level1Roles',
+            'level2Roles',
+            'routingRulesByCategory'
+        ));
     }
 
     /**
@@ -293,6 +388,161 @@ class RequestSettingsController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to create category: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Save routing rules for a specific category (both L1 and L2).
+     * This replaces any existing request_category rules for this category.
+     *
+     * Expected payload:
+     * {
+     *   rules: [
+     *     { "level": 1, "user_id": 5, "payment_source_account_id": 10|null },
+     *     { "level": 1, "user_id": 7, "payment_source_account_id": 12|null },
+     *     { "level": 2, "user_id": 8, "payment_source_account_id": null }
+     *   ]
+     * }
+     */
+    public function saveCategoryRouting(Request $request, $categoryId)
+    {
+        $this->checkPermission();
+
+        $validated = $request->validate([
+            'rules' => 'nullable|array',
+            'rules.*.level' => 'required|integer|in:1,2',
+            'rules.*.user_id' => 'required|exists:t_sys_user,id',
+            'rules.*.payment_source_account_id' => 'nullable|exists:t_fin_accounts,id',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            /** @var RequestCategoryModel $category */
+            $category = RequestCategoryModel::findOrFail($categoryId);
+            $categoryCode = $category->category_code;
+            $userId = auth()->id();
+
+            // Determine corresponding ledger transaction type (if any) for this category.
+            // This lets us treat request+ledger rules for a logical area as a single set
+            // owned by this category in the UI.
+            $ledgerAreaIdentifier = null;
+            switch ($categoryCode) {
+                case 'employee_deposit':
+                    $ledgerAreaIdentifier = \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT;
+                    break;
+                case 'vendor_payment':
+                    $ledgerAreaIdentifier = \App\Models\FIN\LedgerModel::TYPE_VENDOR_PAYMENT;
+                    break;
+                case 'account_transfer':
+                    $ledgerAreaIdentifier = \App\Models\FIN\LedgerModel::TYPE_TRANSFER;
+                    break;
+                case 'invoice_approval':
+                    $ledgerAreaIdentifier = \App\Models\FIN\LedgerModel::TYPE_INVOICE;
+                    break;
+            }
+
+            // Remove existing routing rules for this logical category (both request and ledger views)
+            $existingRuleIds = DB::table('t_req_approval_rules')
+                ->where(function($q) use ($categoryCode, $ledgerAreaIdentifier) {
+                    $q->where(function($rq) use ($categoryCode) {
+                        $rq->where('area_type', 'request_category')
+                           ->where('area_identifier', $categoryCode);
+                    });
+
+                    if ($ledgerAreaIdentifier) {
+                        $q->orWhere(function($lq) use ($ledgerAreaIdentifier) {
+                            $lq->where('area_type', 'ledger_transaction')
+                               ->where('area_identifier', $ledgerAreaIdentifier);
+                        });
+                    }
+                })
+                ->pluck('id');
+
+            if ($existingRuleIds->isNotEmpty()) {
+                DB::table('t_req_approval_rule_assignees')
+                    ->whereIn('rule_id', $existingRuleIds)
+                    ->delete();
+
+                DB::table('t_req_approval_rules')
+                    ->whereIn('id', $existingRuleIds)
+                    ->delete();
+            }
+
+            // Insert new rules (if any)
+            $priorityBase = 100;
+            $i = 0;
+
+            foreach ($validated['rules'] ?? [] as $ruleData) {
+                // Decide area_type and identifier based on category and level
+                $areaType = 'request_category';
+                $areaIdentifier = $categoryCode;
+
+                // Finance categories that map directly to ledger transactions
+                if (in_array($categoryCode, ['employee_deposit', 'vendor_payment', 'account_transfer'])) {
+                    $areaType = 'ledger_transaction';
+                    switch ($categoryCode) {
+                        case 'employee_deposit':
+                            $areaIdentifier = \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT;
+                            break;
+                        case 'vendor_payment':
+                            $areaIdentifier = \App\Models\FIN\LedgerModel::TYPE_VENDOR_PAYMENT;
+                            break;
+                        case 'account_transfer':
+                            $areaIdentifier = \App\Models\FIN\LedgerModel::TYPE_TRANSFER;
+                            break;
+                    }
+                }
+
+                // Invoice Approval: routing for both L1 and L2 is now ledger-based (TYPE_INVOICE).
+                if ($categoryCode === 'invoice_approval') {
+                    $areaType = 'ledger_transaction';
+                    $areaIdentifier = \App\Models\FIN\LedgerModel::TYPE_INVOICE;
+                }
+
+                $ruleId = DB::table('t_req_approval_rules')->insertGetId([
+                    'rule_name' => $category->category_name . ' - L' . $ruleData['level'] . ' Routing',
+                    'area_type' => $areaType,
+                    'area_identifier' => $areaIdentifier,
+                    'approval_level' => $ruleData['level'],
+                    'payment_source_account_id' => $ruleData['payment_source_account_id'] ?? null,
+                    'payment_mode' => null,
+                    'min_amount' => null,
+                    'max_amount' => null,
+                    'assignment_strategy' => 'single_primary',
+                    'priority' => $priorityBase + $i,
+                    'is_active' => 1,
+                    'created_at' => now(),
+                    'created_by' => $userId,
+                ]);
+
+                DB::table('t_req_approval_rule_assignees')->insert([
+                    'rule_id' => $ruleId,
+                    'user_id' => $ruleData['user_id'],
+                    'is_primary' => 1,
+                    'sequence_order' => 0,
+                    'created_at' => now(),
+                ]);
+
+                $i++;
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Routing rules saved successfully',
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Save category routing error: ' . $e->getMessage(), [
+                'category_id' => $categoryId,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save routing rules: ' . $e->getMessage(),
             ], 500);
         }
     }

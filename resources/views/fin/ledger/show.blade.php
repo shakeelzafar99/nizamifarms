@@ -2,6 +2,22 @@
 
 @section('title', 'Transaction Details')
 
+@push('demo1_css')
+<style>
+/* Hide sidebar and adjust layout when in iframe */
+body.in-iframe .kt-sidebar,
+body.in-iframe .kt-header {
+    display: none !important;
+}
+body.in-iframe .kt-wrapper {
+    padding-left: 0 !important;
+}
+body.in-iframe .kt-main {
+    margin-left: 0 !important;
+}
+</style>
+@endpush
+
 @section('content')
 <div class="container mx-auto px-4 py-6 max-w-4xl">
     <!-- Header -->
@@ -105,7 +121,17 @@
 
             <!-- Description & Details -->
             <div class="bg-white border border-gray-200 rounded-lg p-4">
-                <div class="text-sm font-medium text-gray-700 mb-2">{{ $transaction->description ?? 'No description' }}</div>
+                @php
+                    $displayDescription = $transaction->description ?? 'No description';
+                    // For invoices, show customer name and order number instead of "Delivered"
+                    if ($transaction->transaction_type === 'invoice' && $transaction->order) {
+                        // Use order's customer_name attribute which handles name priority correctly
+                        $customerName = $transaction->order->customer_name ?? 'Unknown Customer';
+                        $orderNumber = $transaction->order->order_number ?? '#' . $transaction->order->id;
+                        $displayDescription = "Invoice {$orderNumber} - {$customerName}";
+                    }
+                @endphp
+                <div class="text-sm font-medium text-gray-700 mb-2">{{ $displayDescription }}</div>
                 <div class="flex items-center gap-4 text-xs text-gray-600">
                     @if($transaction->mode)
                         <span class="inline-flex items-center gap-1">
@@ -215,13 +241,16 @@
         </div>
     </div>
 
-    <!-- Approval Actions (Only if pending) -->
-    @if($transaction->approval_status === 'pending')
+    <!-- Approval Actions (Only if pending at any level) -->
+    @if(in_array($transaction->approval_status, ['pending', 'pending_l1', 'pending_l2']))
     <div class="bg-white border-2 border-blue-300 rounded-lg shadow-md p-6">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">⚡ Take Action</h2>
         
         <form id="approvalForm" method="POST" action="{{ route('fin.ledger.approve', $transaction->id) }}">
             @csrf
+            @if(request('origin') === 'approvals')
+                <input type="hidden" name="_origin" value="approvals">
+            @endif
             
             <div class="mb-6">
                 <label for="approval_notes" class="block text-sm font-medium text-gray-700 mb-2">
@@ -234,19 +263,35 @@
 
             <div class="flex gap-4">
                 <button type="submit" 
+                        id="approveBtn"
                         class="flex-1 inline-flex items-center justify-center px-6 py-3 bg-green-600 hover:bg-green-700 text-white text-base font-semibold rounded-lg transition shadow-md hover:shadow-lg">
                     <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
                     </svg>
-                    ✅ Approve Transaction
+                    <span id="approveBtnText">✅ Approve Transaction</span>
+                    <span id="approveBtnLoading" style="display: none;">
+                        <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                    </span>
                 </button>
                 
                 <button type="button" onclick="rejectTransaction()"
+                        id="rejectBtn"
                         class="flex-1 inline-flex items-center justify-center px-6 py-3 bg-red-600 hover:bg-red-700 text-white text-base font-semibold rounded-lg transition shadow-md hover:shadow-lg">
                     <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
                     </svg>
-                    ❌ Reject Transaction
+                    <span id="rejectBtnText">❌ Reject Transaction</span>
+                    <span id="rejectBtnLoading" style="display: none;">
+                        <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                    </span>
                 </button>
             </div>
         </form>
@@ -255,13 +300,120 @@
 </div>
 
 <script>
+// Check if we're in an iframe (from approvals dashboard)
+const isInIframe = window.parent && window.parent !== window;
+
+// Add class to body if in iframe to hide sidebar/header
+if (isInIframe) {
+    document.body.classList.add('in-iframe');
+}
+
+// Handle form submission
+document.getElementById('approvalForm').addEventListener('submit', function(e) {
+    if (isInIframe) {
+        e.preventDefault(); // Prevent normal form submission
+        
+        const form = this;
+        const formData = new FormData(form);
+        const approveBtn = document.getElementById('approveBtn');
+        const approveBtnText = document.getElementById('approveBtnText');
+        const approveBtnLoading = document.getElementById('approveBtnLoading');
+        const rejectBtn = document.getElementById('rejectBtn');
+        
+        // Show loading state
+        approveBtn.disabled = true;
+        rejectBtn.disabled = true;
+        approveBtnText.style.display = 'none';
+        approveBtnLoading.style.display = 'inline-flex';
+        
+        // Submit via AJAX
+        fetch(form.action, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            // Notify parent to close modal and refresh
+            window.parent.postMessage({ 
+                type: 'approval_complete',
+                success: true,
+                message: data.message || 'Transaction approved successfully!'
+            }, '*');
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            // Reset button state
+            approveBtn.disabled = false;
+            rejectBtn.disabled = false;
+            approveBtnText.style.display = 'inline';
+            approveBtnLoading.style.display = 'none';
+            alert('An error occurred. Please try again.');
+        });
+    }
+    // If not in iframe, let form submit normally
+});
+
 function rejectTransaction() {
-    if (confirm('Are you sure you want to REJECT this transaction? This action cannot be undone.')) {
-        const form = document.getElementById('approvalForm');
-        form.action = '{{ route('fin.ledger.reject', $transaction->id) }}';
+    if (!confirm('Are you sure you want to REJECT this transaction? This action cannot be undone.')) {
+        return;
+    }
+    
+    const form = document.getElementById('approvalForm');
+    form.action = '{{ route('fin.ledger.reject', $transaction->id) }}';
+    
+    if (isInIframe) {
+        const formData = new FormData(form);
+        const rejectBtn = document.getElementById('rejectBtn');
+        const rejectBtnText = document.getElementById('rejectBtnText');
+        const rejectBtnLoading = document.getElementById('rejectBtnLoading');
+        const approveBtn = document.getElementById('approveBtn');
+        
+        // Show loading state
+        rejectBtn.disabled = true;
+        approveBtn.disabled = true;
+        rejectBtnText.style.display = 'none';
+        rejectBtnLoading.style.display = 'inline-flex';
+        
+        // Submit via AJAX
+        fetch(form.action, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            // Notify parent to close modal and refresh
+            window.parent.postMessage({ 
+                type: 'approval_complete',
+                success: true,
+                message: data.message || 'Transaction rejected successfully!'
+            }, '*');
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            // Reset button state
+            rejectBtn.disabled = false;
+            approveBtn.disabled = false;
+            rejectBtnText.style.display = 'inline';
+            rejectBtnLoading.style.display = 'none';
+            alert('An error occurred. Please try again.');
+        });
+    } else {
         form.submit();
     }
 }
+
+// If this page is loaded normally (not iframe) and has success message, handle redirect
+@if(session('success'))
+if (!isInIframe) {
+    // Normal redirect handling for non-iframe loads
+}
+@endif
 </script>
 @endsection
 

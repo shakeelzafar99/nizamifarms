@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\InvoiceSettlementModel;
+use App\Models\Request\RequestCategoryModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -427,7 +428,7 @@ class LedgerController extends Controller
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
 
-            if ($ledger->approval_status !== LedgerModel::STATUS_PENDING) {
+            if (!$ledger->isPending()) {
                 throw new \Exception("Transaction is not pending approval");
             }
 
@@ -445,11 +446,56 @@ class LedgerController extends Controller
                 $ledger->comments = ($ledger->comments ?? '') . " | Destination changed from Account ID {$originalTo} to {$request->override_destination_account_id}";
             }
 
-            // Update approval status
-            $ledger->approval_status = LedgerModel::STATUS_APPROVED;
-            $ledger->approved_by = auth()->id();
-            $ledger->approval_date = now()->toDateString();
-            
+            // ================== APPROVAL LEVEL LOGIC ==================
+            // Determine current level from status
+            $currentLevel = 1;
+            if ($ledger->approval_status === LedgerModel::STATUS_PENDING_L2) {
+                $currentLevel = 2;
+            }
+
+            // Determine required levels from Request Settings category config
+            $categoryCode = null;
+            switch ($ledger->transaction_type) {
+                case LedgerModel::TYPE_INVOICE:
+                    $categoryCode = 'invoice_approval';
+                    break;
+                case LedgerModel::TYPE_EMPLOYEE_DEPOSIT:
+                    $categoryCode = 'employee_deposit';
+                    break;
+                case LedgerModel::TYPE_VENDOR_PAYMENT:
+                    $categoryCode = 'vendor_payment';
+                    break;
+                case LedgerModel::TYPE_TRANSFER:
+                    $categoryCode = 'account_transfer';
+                    break;
+            }
+
+            $requiresL1 = true;
+            $requiresL2 = false;
+
+            if ($categoryCode) {
+                $category = RequestCategoryModel::getByCode($categoryCode);
+                if ($category) {
+                    $requiresL1 = $category->requiresLevel1();
+                    $requiresL2 = $category->requiresLevel2();
+                }
+            }
+
+            // Decide new status
+            $finalApproval = false;
+            if ($currentLevel === 1 && $requiresL2) {
+                // Move from L1 -> L2 pending
+                $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
+                $ledger->comments = ($ledger->comments ?? '') .
+                    " | L1 approved by User ID " . auth()->id();
+            } else {
+                // Final approval (either single-level or L2)
+                $ledger->approval_status = LedgerModel::STATUS_APPROVED;
+                $ledger->approved_by = auth()->id();
+                $ledger->approval_date = now()->toDateString();
+                $finalApproval = true;
+            }
+
             // Add approval notes to comments field
             if ($request->approval_notes) {
                 $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
@@ -463,27 +509,30 @@ class LedgerController extends Controller
             $fromAccount = $ledger->fromAccount;
             $toAccount = $ledger->toAccount;
 
-            // From account adjustment
-            // For Asset accounts (Cash, Bank, Employee Cash): Debit increases, Credit decreases
-            // For Liability/Income/Equity: Credit increases, Debit decreases
-            if ($fromAccount->account_type === 'asset') {
-                // Money going OUT from asset account = Decrease
-                $fromAccount->current_balance -= $ledger->amount;
-            } else {
-                // Money going OUT from liability/income/equity = Increase (reducing the liability/increasing expense)
-                $fromAccount->current_balance += $ledger->amount;
-            }
-            $fromAccount->save();
+            // Only adjust balances on final approval
+            if ($finalApproval) {
+                // From account adjustment
+                // For Asset accounts (Cash, Bank, Employee Cash): Debit increases, Credit decreases
+                // For Liability/Income/Equity: Credit increases, Debit decreases
+                if ($fromAccount->account_type === 'asset') {
+                    // Money going OUT from asset account = Decrease
+                    $fromAccount->current_balance -= $ledger->amount;
+                } else {
+                    // Money going OUT from liability/income/equity = Increase (reducing the liability/increasing expense)
+                    $fromAccount->current_balance += $ledger->amount;
+                }
+                $fromAccount->save();
 
-            // To account adjustment
-            if ($toAccount->account_type === 'asset') {
-                // Money coming IN to asset account = Increase
-                $toAccount->current_balance += $ledger->amount;
-            } else {
-                // Money coming IN to liability/income/equity = Decrease (increasing the liability/reducing expense)
-                $toAccount->current_balance -= $ledger->amount;
+                // To account adjustment
+                if ($toAccount->account_type === 'asset') {
+                    // Money coming IN to asset account = Increase
+                    $toAccount->current_balance += $ledger->amount;
+                } else {
+                    // Money coming IN to liability/income/equity = Decrease (increasing the liability/reducing expense)
+                    $toAccount->current_balance -= $ledger->amount;
+                }
+                $toAccount->save();
             }
-            $toAccount->save();
 
             // ========== SETTLEMENT PROCESSING ==========
             // If this is an employee deposit with settlement intent, process it
@@ -554,18 +603,44 @@ class LedgerController extends Controller
 
             DB::commit();
 
+            // Decide success message based on whether this was final approval or L1 only
+            $successMessage = $finalApproval
+                ? 'Transaction approved successfully!'
+                : 'Transaction approved at Level 1 and is now awaiting Level 2 approval!';
+
+            // If AJAX request (from modal), return JSON
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => $successMessage
+                ]);
+            }
+
             // Redirect back to where they came from (if from outstanding invoices page, stay there)
             if ($request->input('_origin') === 'outstanding-invoices' || str_contains(url()->previous(), 'outstanding-invoices')) {
                 return redirect()->route('fin.employee.all-outstanding-invoices')
-                               ->with('success', 'Settlement deposit approved successfully! Invoices have been settled.');
+                               ->with('success', $successMessage);
+            }
+
+            if ($request->input('_origin') === 'approvals' || str_contains(url()->previous(), 'approvals')) {
+                return redirect()->route('approvals.index')
+                               ->with('success', $successMessage);
             }
 
             return redirect()->route('fin.ledger.index')
-                           ->with('success', 'Transaction approved successfully!');
+                           ->with('success', $successMessage);
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error("Error approving transaction: " . $e->getMessage());
+            
+            // If AJAX request, return JSON error
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error approving transaction: ' . $e->getMessage()
+                ], 500);
+            }
             
             if ($request->input('_origin') === 'outstanding-invoices') {
                 return redirect()->route('fin.employee.all-outstanding-invoices')
@@ -588,7 +663,7 @@ class LedgerController extends Controller
         try {
             $ledger = LedgerModel::findOrFail($id);
 
-            if ($ledger->approval_status !== LedgerModel::STATUS_PENDING) {
+            if (!$ledger->isPending()) {
                 throw new \Exception("Transaction is not pending approval");
             }
 
@@ -607,17 +682,40 @@ class LedgerController extends Controller
             // Clean up settlement data from session
             \Session::forget("settlement_pending_{$ledger->id}");
 
+            $successMessage = 'Transaction rejected successfully!';
+
+            // If AJAX request (from modal), return JSON
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => $successMessage
+                ]);
+            }
+
             // Redirect back to where they came from (if from outstanding invoices page, stay there)
             if ($request->input('_origin') === 'outstanding-invoices' || str_contains(url()->previous(), 'outstanding-invoices')) {
                 return redirect()->route('fin.employee.all-outstanding-invoices')
                                ->with('success', 'Settlement deposit rejected successfully.');
             }
 
+            if ($request->input('_origin') === 'approvals' || str_contains(url()->previous(), 'approvals')) {
+                return redirect()->route('approvals.index')
+                               ->with('success', $successMessage);
+            }
+
             return redirect()->route('fin.ledger.index')
-                           ->with('success', 'Transaction rejected successfully!');
+                           ->with('success', $successMessage);
 
         } catch (\Exception $e) {
             Log::error("Error rejecting transaction: " . $e->getMessage());
+            
+            // If AJAX request, return JSON error
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error rejecting transaction: ' . $e->getMessage()
+                ], 500);
+            }
             
             if ($request->input('_origin') === 'outstanding-invoices') {
                 return redirect()->route('fin.employee.all-outstanding-invoices')

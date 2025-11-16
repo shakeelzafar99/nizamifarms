@@ -243,6 +243,32 @@ class RequestController extends Controller
                 $overallStatus = RequestModel::STATUS_APPROVED;
             }
             
+            // Get assignees based on routing rules (if not auto-approved)
+            $assignedToL1 = null;
+            $assignedToL2 = null;
+            if ($level1Status === RequestModel::APPROVAL_STATUS_PENDING) {
+                $assignedToL1 = $this->getAssigneeForApproval(
+                    'request_category',
+                    $category->category_code,
+                    1,
+                    [
+                        'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                        'amount' => $validated['amount'] ?? null
+                    ]
+                );
+            }
+            if ($requiresL2 && $level2Status === RequestModel::APPROVAL_STATUS_PENDING) {
+                $assignedToL2 = $this->getAssigneeForApproval(
+                    'request_category',
+                    $category->category_code,
+                    2,
+                    [
+                        'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                        'amount' => $validated['amount'] ?? null
+                    ]
+                );
+            }
+            
             // Create request
             $requestModel = RequestModel::create([
                 'request_number' => RequestModel::generateRequestNumber(),
@@ -262,9 +288,11 @@ class RequestController extends Controller
                 'requires_level_1' => $requiresL1,
                 'requires_level_2' => $requiresL2,
                 'level_1_status' => $level1Status,
+                'level_1_assigned_to' => $assignedToL1,
                 'level_1_approved_by' => $level1ApprovedBy,
                 'level_1_approved_at' => $level1ApprovedAt,
                 'level_2_status' => $level2Status,
+                'level_2_assigned_to' => $assignedToL2,
                 'level_2_approved_by' => $level2ApprovedBy,
                 'level_2_approved_at' => $level2ApprovedAt,
                 'submitted_at' => now(),
@@ -454,6 +482,72 @@ class RequestController extends Controller
                 'success' => false,
                 'message' => 'Failed to cancel request: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Get assignee based on routing rules
+     */
+    private function getAssigneeForApproval(
+        string $areaType,
+        string $areaIdentifier,
+        int $level,
+        array $context = []
+    ): ?int
+    {
+        try {
+            // Query rules matching the criteria
+            $query = DB::table('t_req_approval_rules')
+                ->where('area_type', $areaType)
+                ->where('area_identifier', $areaIdentifier)
+                ->where('approval_level', $level)
+                ->where('is_active', 1);
+            
+            // Apply contextual filters
+            if (isset($context['payment_source_account_id']) && $context['payment_source_account_id']) {
+                $query->where(function($q) use ($context) {
+                    $q->where('payment_source_account_id', $context['payment_source_account_id'])
+                      ->orWhereNull('payment_source_account_id');
+                });
+            }
+            
+            if (isset($context['amount']) && $context['amount']) {
+                $amount = $context['amount'];
+                $query->where(function($q) use ($amount) {
+                    $q->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('min_amount')
+                             ->orWhere('min_amount', '<=', $amount);
+                    })
+                    ->where(function($subQ) use ($amount) {
+                        $subQ->whereNull('max_amount')
+                             ->orWhere('max_amount', '>=', $amount);
+                    });
+                });
+            }
+            
+            // Get highest priority rule
+            $rule = $query->orderBy('priority', 'asc')->first();
+            
+            if (!$rule) {
+                return null; // No rule found, use default behavior
+            }
+            
+            // Get primary assignee for this rule
+            $assignee = DB::table('t_req_approval_rule_assignees')
+                ->where('rule_id', $rule->id)
+                ->where('is_primary', 1)
+                ->orderBy('sequence_order', 'asc')
+                ->first();
+            
+            return $assignee ? $assignee->user_id : null;
+            
+        } catch (\Exception $e) {
+            Log::error("Error getting assignee for approval", [
+                'error' => $e->getMessage(),
+                'area_type' => $areaType,
+                'area_identifier' => $areaIdentifier
+            ]);
+            return null;
         }
     }
 

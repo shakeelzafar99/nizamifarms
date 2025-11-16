@@ -126,6 +126,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/salary', [\App\Http\Controllers\API\RiderController::class, 'getSalaryInfo']);
     Route::get('/salary/slips/{slipId}', [\App\Http\Controllers\API\RiderController::class, 'getSalarySlipDetails']);
     
+    // Approvals (Admin/Manager users)
+    Route::prefix('approvals')->group(function () {
+        Route::get('/', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'index']);
+        Route::get('/summaries', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'summaries']);
+    });
+    
     // Mobile Permissions
     Route::get('/permissions', [\App\Http\Controllers\API\RiderController::class, 'getMobilePermissions']);
     
@@ -164,6 +170,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/requests/store', [\App\Http\Controllers\Request\RequestController::class, 'store']);
     Route::post('/requests/{id}/approve', [\App\Http\Controllers\Request\RequestApprovalController::class, 'approve']);
     Route::post('/requests/{id}/reject', [\App\Http\Controllers\Request\RequestApprovalController::class, 'reject']);
+    
+    // Ledger Approvals (for mobile app)
+    Route::post('/ledger/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve']);
+    Route::post('/ledger/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject']);
+    Route::post('/ledger/adjustments/{id}/approve', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'approve']);
+    Route::post('/ledger/adjustments/{id}/reject', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'reject']);
     
     // Vendor Management (Store Mode - uses token auth, but NOT under /rider prefix)
     Route::prefix('vendors')->group(function () {

@@ -285,6 +285,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/settings/users/level/{level}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getUsersWithLevel'])->name('requests.settings.users.level');
         Route::put('/settings/categories/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateCategory'])->name('requests.settings.category.update');
         Route::post('/settings/categories', [\App\Http\Controllers\Request\RequestSettingsController::class, 'createCategory'])->name('requests.settings.category.create');
+        Route::post('/settings/categories/{id}/routing', [\App\Http\Controllers\Request\RequestSettingsController::class, 'saveCategoryRouting'])->name('requests.settings.category.routing.save');
         
         // Routing Rules
         Route::get('/settings/routing-rules', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getRoutingRules'])->name('requests.settings.routing-rules.index');
@@ -306,6 +307,28 @@ Route::middleware(['auth'])->group(function () {
 
     // Unified Approvals Dashboard
     Route::get('/approvals', [\App\Http\Controllers\ApprovalController::class, 'index'])->name('approvals.index');
+    
+    // Debug route for testing virtual assignment
+    Route::get('/test-virtual-assignment', function() {
+        $requests = \App\Models\Request\RequestModel::where('status', 'pending')
+            ->with(['category', 'paymentSourceAccount'])
+            ->limit(5)
+            ->get();
+        
+        $results = [];
+        foreach ($requests as $req) {
+            $assignee = \App\Http\Controllers\ApprovalController::testGetVirtualAssignee($req, 1);
+            $results[] = [
+                'request_number' => $req->request_number,
+                'category' => $req->category->category_code ?? 'N/A',
+                'payment_source_id' => $req->payment_source_account_id,
+                'payment_source_name' => $req->paymentSourceAccount->account_name ?? 'N/A',
+                'assigned_to_id' => $assignee,
+            ];
+        }
+        
+        return response()->json($results);
+    });
     
     // Finance & Ledger Routes
     Route::prefix('finance')->name('fin.')->group(function () {
