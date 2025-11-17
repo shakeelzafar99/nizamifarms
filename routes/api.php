@@ -151,6 +151,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // Store Mode - Open Order Quantities
     Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);
     Route::get('/store/open-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantitiesTree']);
+    // Fixed 3-level hierarchy (attribute_1 -> attribute_2 -> attribute_3 -> product -> orders) for mobile
+    Route::get(
+        '/store/open-quantities-tree-fixed',
+        [\App\Http\Controllers\API\OpenQuantitiesFixedController::class, 'getFixedThreeLevelTree']
+    );
     
     // Line Item Status Management (mobile app only - uses token auth)
     Route::post('/orders/{orderId}/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateLineItemStatus']);

@@ -63,7 +63,7 @@
                class="kt-btn kt-btn-sm kt-btn-light flex items-center justify-center gap-2 w-full"
                download>
                 <i class="ki-filled ki-android text-lg"></i>
-                <span>Download Android App (v1.8.2)</span>
+                <span>Download Android App (v1.8.4)</span>
             </a>
             <p class="text-xs text-muted-foreground mt-2">
                 For riders only

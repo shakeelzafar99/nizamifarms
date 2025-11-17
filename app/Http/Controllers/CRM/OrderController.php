@@ -2416,15 +2416,17 @@ class OrderController extends Controller
                 'order_ids.*' => 'required|integer',
                 'preparation_status' => 'nullable|in:preparing',
                 'product_ids' => 'sometimes', // CSV string or array; optional
+                'product_id' => 'sometimes|integer|nullable', // Single product ID; optional
                 'product_name' => 'sometimes|string|nullable'
             ]);
             
             $orderIds = $request->input('order_ids');
             $preparationStatus = $request->input('preparation_status');
             $productIdsInput = $request->input('product_ids');
+            $productIdSingle = $request->input('product_id');
             $productNameFilter = $request->input('product_name');
             
-            // Normalize product ids (accept CSV string or array)
+            // Normalize product ids (accept CSV string, array, or single ID)
             $productIds = [];
             if (!empty($productIdsInput)) {
                 if (is_string($productIdsInput)) {
@@ -2432,6 +2434,11 @@ class OrderController extends Controller
                 } elseif (is_array($productIdsInput)) {
                     $productIds = array_filter(array_map('intval', $productIdsInput));
                 }
+            }
+            // Also accept single product_id parameter
+            if (!empty($productIdSingle)) {
+                $productIds[] = intval($productIdSingle);
+                $productIds = array_unique($productIds);
             }
             
             // If preparation_status is empty string or null, set to null
@@ -2463,14 +2470,27 @@ class OrderController extends Controller
                 
                 // Determine which line items to update:
                 $lineItemsQuery = $order->lineItems()->newQuery();
-                if (!empty($productIds)) {
-                    $lineItemsQuery->whereIn('product_id', $productIds)->orWhereIn('product_id', array_filter($productIds));
+                
+                // Apply product filters with proper AND logic
+                if (!empty($productIds) || !empty($productNameFilter)) {
+                    $lineItemsQuery->where(function($q) use ($productIds, $productNameFilter) {
+                        if (!empty($productIds)) {
+                            $q->whereIn('product_id', $productIds);
+                        }
+                        if (!empty($productNameFilter)) {
+                            // Use AND condition, not OR
+                            if (!empty($productIds)) {
+                                $q->where('name', $productNameFilter);
+                            } else {
+                                $q->where('name', $productNameFilter);
+                            }
+                        }
+                    });
+                    $lineItemsToUpdate = $lineItemsQuery->get();
+                } else {
+                    // If no product filter was provided, update all
+                    $lineItemsToUpdate = $order->lineItems;
                 }
-                if (!empty($productNameFilter)) {
-                    $lineItemsQuery->orWhere('name', $productNameFilter);
-                }
-                // If no product filter was provided, update all
-                $lineItemsToUpdate = (!empty($productIds) || !empty($productNameFilter)) ? $lineItemsQuery->get() : $order->lineItems;
 
                 $updatedInOrder = 0;
                 foreach ($lineItemsToUpdate as $lineItem) {
@@ -2483,6 +2503,14 @@ class OrderController extends Controller
                 }
                 
                 if ($updatedInOrder > 0) {
+                    \Log::debug('Bulk mark prepared - Order processed', [
+                        'order_id' => $orderId,
+                        'order_number' => $order->order_number,
+                        'items_updated' => $updatedInOrder,
+                        'total_items_in_order' => $order->lineItems->count(),
+                        'product_ids_filter' => $productIds,
+                        'product_name_filter' => $productNameFilter,
+                    ]);
                     $totalUpdated += $updatedInOrder;
                     $ordersUpdated++;
                 }

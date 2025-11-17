@@ -2792,12 +2792,19 @@ class RiderController extends Controller
                 $statusFilter = null;
             }
 
-            $hierarchySetting = DB::table('t_crm_open_quantities_settings')
-                ->where('setting_key', 'hierarchy_levels')
-                ->first();
-            $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'];
-            if (!is_array($hierarchy) || empty($hierarchy)) {
-                $hierarchy = ['product_type', 'product_name', 'orders'];
+            // Allow explicit hierarchy override (used by mobile fixed-endpoint),
+            // otherwise fall back to the dynamic settings used by the web app.
+            $overrideHierarchy = $request->get('hierarchy_override');
+            if (is_array($overrideHierarchy) && !empty($overrideHierarchy)) {
+                $hierarchy = $overrideHierarchy;
+            } else {
+                $hierarchySetting = DB::table('t_crm_open_quantities_settings')
+                    ->where('setting_key', 'hierarchy_levels')
+                    ->first();
+                $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'];
+                if (!is_array($hierarchy) || empty($hierarchy)) {
+                    $hierarchy = ['product_type', 'product_name', 'orders'];
+                }
             }
             if (!in_array('orders', $hierarchy, true)) {
                 $hierarchy[] = 'orders';
@@ -2873,6 +2880,18 @@ class RiderController extends Controller
 
             $tree = [];
             $rootMap = [];
+            
+            // Debug: Log hierarchy being used
+            Log::debug('Open Quantities Tree - Starting build', [
+                'hierarchy' => $hierarchy,
+                'total_rows' => count($rows),
+                'first_row_sample' => $rows->isNotEmpty() ? [
+                    'attribute_1' => $rows[0]->attribute_1 ?? 'NULL',
+                    'attribute_2' => $rows[0]->attribute_2 ?? 'NULL',
+                    'attribute_3' => $rows[0]->attribute_3 ?? 'NULL',
+                    'product_title' => $rows[0]->product_title ?? 'NULL',
+                ] : 'NO ROWS',
+            ]);
 
             $addMetrics = function (&$node, $row) {
                 $qty = (float) ($row->line_item_quantity ?? 0);
@@ -2909,12 +2928,42 @@ class RiderController extends Controller
                 $currentFilters = [];
 
                 foreach ($hierarchy as $levelIndex => $field) {
+                    // ALWAYS log to debug the loop
+                    static $loopCount = 0;
+                    if ($loopCount < 20) {
+                        Log::debug("🔄 Tree loop", [
+                            'loop_count' => $loopCount,
+                            'row_id' => $row->line_item_id,
+                            'order_id' => $row->order_id,
+                            'levelIndex' => $levelIndex,
+                            'field' => $field,
+                            'field_value' => $row->{$field} ?? 'NULL',
+                        ]);
+                        $loopCount++;
+                    }
+                    
                     if ($field === 'orders') {
-                        $orderKey = $row->order_id;
+                        // CRITICAL FIX: Order nodes must be unique per product
+                        // Use a composite key: product_name + order_id
+                        $productContext = $currentFilters['product_name'] ?? 'unknown';
+                        $orderKey = $productContext . '_' . $row->order_id;
+                        
                         if (!isset($currentMap[$orderKey])) {
                             $orderLabel = $row->order_number ? 'Order #' . $row->order_number : 'Order ' . $row->order_id;
                             if (!empty($row->customer_name)) {
                                 $orderLabel .= ' - ' . $row->customer_name;
+                            }
+                            
+                            // DEBUG: Log what filters we're under when creating order node
+                            static $orderDebugCount = 0;
+                            if ($orderDebugCount < 2) {
+                                Log::debug("Creating order node", [
+                                    'order_id' => $row->order_id,
+                                    'order_number' => $row->order_number,
+                                    'current_filters' => $currentFilters,
+                                    'product_name_in_row' => $row->line_item_name ?? $row->product_title,
+                                ]);
+                                $orderDebugCount++;
                             }
 
                             $orderNode = [
@@ -2944,14 +2993,60 @@ class RiderController extends Controller
                             $currentMap[$orderKey] = &$currentList[count($currentList) - 1];
                         }
 
-                        $orderNode =& $currentMap[$orderKey];
-                        $addMetrics($orderNode, $row);
+                        // CRITICAL FIX: Don't use reference here, update the array directly
+                        // Get current quantity
+                        $qtyBefore = $currentMap[$orderKey]['quantity'];
+                        
+                        // Add metrics directly to the map entry
+                        $qty = (float) ($row->line_item_quantity ?? 0);
+                        $isLean = (int) ($row->is_lean ?? 0) === 1;
+                        $orderStatus = strtolower((string) ($row->order_status ?? ''));
+                        $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
+                        
+                        $currentMap[$orderKey]['quantity'] += $qty;
+                        if ($isLean) {
+                            $currentMap[$orderKey]['lean_quantity'] += $qty;
+                        } else {
+                            $currentMap[$orderKey]['non_lean_quantity'] += $qty;
+                        }
+                        if ($orderStatus === 'processing') {
+                            $currentMap[$orderKey]['processing_quantity'] += $qty;
+                        }
+                        if ($lineStatus === 'preparing') {
+                            $currentMap[$orderKey]['prepared_quantity'] += $qty;
+                        }
+                        
+                        // Now update the actual array in $currentList
+                        foreach ($currentList as $idx => &$listItem) {
+                            if (isset($listItem['order_id']) && $listItem['order_id'] == $row->order_id) {
+                                $listItem['quantity'] = $currentMap[$orderKey]['quantity'];
+                                $listItem['lean_quantity'] = $currentMap[$orderKey]['lean_quantity'];
+                                $listItem['non_lean_quantity'] = $currentMap[$orderKey]['non_lean_quantity'];
+                                $listItem['processing_quantity'] = $currentMap[$orderKey]['processing_quantity'];
+                                $listItem['prepared_quantity'] = $currentMap[$orderKey]['prepared_quantity'];
+                                break;
+                            }
+                        }
+                        unset($listItem);
+                        
+                        // Log successful update (only first few for debugging)
+                        static $updateLogCount = 0;
+                        if ($updateLogCount < 3) {
+                            Log::debug("✅ Order quantity updated", [
+                                'order_id' => $row->order_id,
+                                'product' => $productContext,
+                                'qty_before' => $qtyBefore,
+                                'qty_added' => $qty,
+                                'qty_after' => $currentMap[$orderKey]['quantity'],
+                            ]);
+                            $updateLogCount++;
+                        }
 
                         if ($row->line_item_product_id) {
-                            $orderNode['_product_ids'][(int) $row->line_item_product_id] = true;
+                            $currentMap[$orderKey]['_product_ids'][(int) $row->line_item_product_id] = true;
                         }
                         if ($row->product_id) {
-                            $orderNode['_product_ids'][(int) $row->product_id] = true;
+                            $currentMap[$orderKey]['_product_ids'][(int) $row->product_id] = true;
                         }
 
                         break;
@@ -2965,7 +3060,8 @@ class RiderController extends Controller
                         $label = $row->line_item_name ?: ($row->product_title ?: 'Uncategorized');
                     } else {
                         $value = $row->{$field} ?? null;
-                        $label = $value !== null && $value !== '' ? $value : 'Uncategorized';
+                        // CRITICAL: Always treat NULL or empty string as "Uncategorized" to ensure tree continues building
+                        $label = ($value !== null && trim((string)$value) !== '') ? $value : 'Uncategorized';
                     }
 
                     $nodeKey = $label;
@@ -2973,7 +3069,7 @@ class RiderController extends Controller
                     if (!isset($currentMap[$nodeKey])) {
                         $nodeFilters = array_merge($currentFilters, [$field => $label]);
 
-                        $node = [
+                        $newNode = [
                             'name' => $label,
                             'field' => $field,
                             'level' => $levelIndex,
@@ -2992,13 +3088,16 @@ class RiderController extends Controller
                         ];
 
                         if ($field === 'product_name') {
-                            $node['product_ids'] = [];
+                            $newNode['product_ids'] = [];
                         }
 
-                        $currentList[] = $node;
-                        $currentMap[$nodeKey] = &$currentList[count($currentList) - 1];
+                        // Add to current list
+                        $currentList[] = $newNode;
+                        // Store a REFERENCE to the node in the map
+                        $currentMap[$nodeKey] =& $currentList[count($currentList) - 1];
                     }
 
+                    // Get reference to the node (BEFORE we change $currentList)
                     $node =& $currentMap[$nodeKey];
                     $addMetrics($node, $row);
 
@@ -3027,13 +3126,35 @@ class RiderController extends Controller
                         }
                     }
 
-                    $currentList =& $node['children'];
-                    $currentMap =& $node['_children_map'];
+                    // CRITICAL FIX: Navigate to next level
+                    // We MUST get references to the node's children BEFORE reassigning $currentList
+                    $nextChildren =& $node['children'];
+                    $nextMap =& $node['_children_map'];
                     $currentFilters = $node['filters'];
+                    
+                    // Now it's safe to reassign these variables
+                    $currentList =& $nextChildren;
+                    $currentMap =& $nextMap;
                 }
             }
 
             $finalizeNode = function (&$node) use (&$finalizeNode) {
+                // DEBUG: Track if this is an order node and log quantity before/after
+                $isOrderNode = ($node['field'] ?? '') === 'orders';
+                $qtyBefore = $node['quantity'] ?? 'N/A';
+                
+                // DEBUG: Log node details BEFORE any modifications
+                static $debugFinalizeCount = 0;
+                if ($debugFinalizeCount < 5 && $isOrderNode) {
+                    Log::debug("🔍 finalizeNode START", [
+                        'order_id' => $node['order_id'] ?? 'N/A',
+                        'quantity_at_start' => $node['quantity'],
+                        'has_children' => !empty($node['children']),
+                        'children_count' => count($node['children'] ?? []),
+                    ]);
+                    $debugFinalizeCount++;
+                }
+                
                 $node['order_count'] = count($node['_order_ids']);
                 $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
 
@@ -3046,16 +3167,66 @@ class RiderController extends Controller
                 }
 
                 if (!empty($node['children'])) {
+                    // Finalize children first (to calculate their quantities)
                     foreach ($node['children'] as &$child) {
                         $finalizeNode($child);
                     }
-
-                    usort($node['children'], function ($a, $b) {
-                        return $b['quantity'] <=> $a['quantity'];
-                    });
+                    unset($child); // Break the reference to avoid issues
+                    
+                    // REMOVED: usort breaks PHP references!
+                    // When we store references like: $currentMap[$key] =& $currentList[...]
+                    // usort() re-indexes the array and breaks those references
+                    // This was causing order node quantities to reset to 0
+                    // 
+                    // usort($node['children'], function ($a, $b) {
+                    //     return $b['quantity'] <=> $a['quantity'];
+                    // });
+                }
+                
+                // DEBUG: Log if order node quantity changed
+                if ($isOrderNode) {
+                    Log::debug('🔧 finalizeNode on order node', [
+                        'order_id' => $node['order_id'] ?? 'N/A',
+                        'order_name' => $node['name'] ?? 'N/A',
+                        'quantity_before' => $qtyBefore,
+                        'quantity_after' => $node['quantity'] ?? 'N/A',
+                        'has_children' => !empty($node['children']),
+                    ]);
                 }
             };
 
+            // DEBUG: Log order nodes BEFORE finalization - check multiple products
+            $orderCheckCount = 0;
+            foreach ($tree as $rootNode) {
+                if (!empty($rootNode['children']) && $orderCheckCount < 5) {
+                    foreach ($rootNode['children'] as $child1) {
+                        if (!empty($child1['children']) && $orderCheckCount < 5) {
+                            foreach ($child1['children'] as $child2) {
+                                if (!empty($child2['children']) && $orderCheckCount < 5) {
+                                    foreach ($child2['children'] as $child3) {
+                                        if (($child3['field'] ?? '') === 'product_name' && !empty($child3['children']) && $orderCheckCount < 5) {
+                                            // Check ALL orders in this product, not just first
+                                            foreach ($child3['children'] as $orderNode) {
+                                                if (($orderNode['field'] ?? '') === 'orders' && $orderCheckCount < 5) {
+                                                    Log::debug("🔎 Order BEFORE finalize", [
+                                                        'product' => $child3['name'],
+                                                        'order_id' => $orderNode['order_id'] ?? 'N/A',
+                                                        'order_name' => $orderNode['name'] ?? 'N/A',
+                                                        'quantity' => $orderNode['quantity'] ?? 'N/A',
+                                                        'check_num' => $orderCheckCount,
+                                                    ]);
+                                                    $orderCheckCount++;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             foreach ($tree as &$rootNode) {
                 $finalizeNode($rootNode);
             }
@@ -3064,21 +3235,27 @@ class RiderController extends Controller
             usort($tree, function ($a, $b) {
                 return $b['quantity'] <=> $a['quantity'];
             });
-
-            // Fallback: if root level appears incorrect (not level 0) or all quantities are zero,
-            // rebuild top of the tree using a grouping approach to ensure L0 matches attribute_1.
-            $needsFallback = empty($tree);
-            if (!$needsFallback) {
-                $hasLevel0 = false;
-                $sumRootQty = 0.0;
-                foreach ($tree as $n) {
-                    if (($n['level'] ?? 99) === 0) {
-                        $hasLevel0 = true;
-                    }
-                    $sumRootQty += (float) ($n['quantity'] ?? 0);
-                }
-                $needsFallback = (!$hasLevel0) || ($sumRootQty <= 0.0);
+            
+            // Debug: Log tree structure after primary builder
+            $treeStats = [
+                'root_count' => count($tree),
+                'root_nodes' => [],
+            ];
+            foreach ($tree as $idx => $node) {
+                $treeStats['root_nodes'][] = [
+                    'name' => $node['name'],
+                    'field' => $node['field'],
+                    'level' => $node['level'],
+                    'quantity' => $node['quantity'],
+                    'children_count' => count($node['children'] ?? []),
+                ];
+                if ($idx >= 2) break; // Only log first 3 nodes
             }
+            Log::debug('Open Quantities Tree - After primary builder', $treeStats);
+
+            // DISABLED: Fallback logic - the primary tree builder handles all hierarchies correctly
+            // including NULL values as "Uncategorized" and builds the full depth.
+            $needsFallback = false;
 
             if ($needsFallback) {
                 try {
@@ -3169,9 +3346,9 @@ class RiderController extends Controller
                                 $child['order_count'] = count($oIds);
                                 $child['product_count'] = count(array_filter(array_keys($pIds)));
 
-                                // Optional level 2 (product_name)
+                                // Optional level 2 (could be attribute_3, product_name, or other)
                                 $field2 = $hierarchy[2] ?? null;
-                                if ($field2 === 'product_name') {
+                                if ($field2 && $field2 !== 'orders') {
                                     $groups2 = [];
                                     foreach ($rows1 as $row2) {
                                         $key2 = $labelFor($row2, $field2);
@@ -3179,7 +3356,7 @@ class RiderController extends Controller
                                         $groups2[$key2][] = $row2;
                                     }
                                     foreach ($groups2 as $label2 => $rows2) {
-                                        $prodNode = [
+                                        $node2 = [
                                             'name' => $label2,
                                             'field' => $field2,
                                             'level' => 2,
@@ -3192,8 +3369,11 @@ class RiderController extends Controller
                                             'product_count' => 0,
                                             'filters' => [$field0 => $label0, $field1 => $label1, $field2 => $label2],
                                             'children' => [],
-                                            'product_ids' => [],
                                         ];
+                                        
+                                        if ($field2 === 'product_name') {
+                                            $node2['product_ids'] = [];
+                                        }
                                         $o2 = []; $p2 = [];
                                         foreach ($rows2 as $r2) {
                                             $addMetrics($prodNode, $r2);
@@ -3275,6 +3455,68 @@ class RiderController extends Controller
                 $orderStatusCounts[$status] = ($orderStatusCounts[$status] ?? 0) + 1;
             }
 
+            // Log detailed tree structure for debugging
+            $treeStats = [
+                'root_nodes' => count($tree),
+                'hierarchy' => $hierarchy,
+                'total_orders' => count($uniqueOrderIds),
+                'total_line_items' => $totalLineItems,
+            ];
+            
+            // Count nodes at each level
+            foreach ($tree as $rootNode) {
+                $treeStats['level_0_count'] = ($treeStats['level_0_count'] ?? 0) + 1;
+                if (!empty($rootNode['children'])) {
+                    foreach ($rootNode['children'] as $l1Node) {
+                        $treeStats['level_1_count'] = ($treeStats['level_1_count'] ?? 0) + 1;
+                        if (!empty($l1Node['children'])) {
+                            foreach ($l1Node['children'] as $l2Node) {
+                                $treeStats['level_2_count'] = ($treeStats['level_2_count'] ?? 0) + 1;
+                                if (!empty($l2Node['children'])) {
+                                    $treeStats['level_3_count'] = ($treeStats['level_3_count'] ?? 0) + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Log::info('Quantities tree built successfully', $treeStats);
+            
+            // DEBUG: Check a sample order node before sending
+            if (!empty($tree)) {
+                foreach ($tree as $l0) {
+                    if (!empty($l0['children'])) {
+                        foreach ($l0['children'] as $l1) {
+                            if (!empty($l1['children'])) {
+                                foreach ($l1['children'] as $l2) {
+                                    if (!empty($l2['children'])) {
+                                        foreach ($l2['children'] as $l3Product) {
+                                            if (!empty($l3Product['children'])) {
+                                                $firstOrder = $l3Product['children'][0];
+                                                $secondOrder = $l3Product['children'][1] ?? null;
+                                                Log::debug('📦 Sample product with orders in final tree', [
+                                                    'product_name' => $l3Product['name'],
+                                                    'product_quantity' => $l3Product['quantity'],
+                                                    'order_count' => count($l3Product['children']),
+                                                    'first_order_name' => $firstOrder['name'] ?? 'N/A',
+                                                    'first_order_quantity' => $firstOrder['quantity'] ?? 'MISSING',
+                                                    'first_order_id' => $firstOrder['order_id'] ?? 'N/A',
+                                                    'second_order_name' => $secondOrder['name'] ?? 'N/A',
+                                                    'second_order_quantity' => $secondOrder['quantity'] ?? 'N/A',
+                                                    'second_order_id' => $secondOrder['order_id'] ?? 'N/A',
+                                                ]);
+                                                break 4; // Exit all loops after first sample
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'generated_at' => Carbon::now()->toIso8601String(),
@@ -3320,11 +3562,19 @@ class RiderController extends Controller
             $filters = json_decode($request->get('filters', '{}'), true) ?: [];
             $statusFilter = $request->get('status_filter'); // Optional status filter
             
-            // Get global settings from database (same as web app)
-            $hierarchySetting = DB::table('t_crm_open_quantities_settings')
-                ->where('setting_key', 'hierarchy_levels')
-                ->first();
-            $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name'];
+            // Allow mobile to override hierarchy (same as tree endpoint)
+            $overrideHierarchy = $request->get('hierarchy_override');
+            if ($overrideHierarchy) {
+                $hierarchy = json_decode($overrideHierarchy, true);
+            }
+            
+            // If no override, get global settings from database (same as web app)
+            if (empty($hierarchy) || !is_array($hierarchy)) {
+                $hierarchySetting = DB::table('t_crm_open_quantities_settings')
+                    ->where('setting_key', 'hierarchy_levels')
+                    ->first();
+                $hierarchy = $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name'];
+            }
             
             $statusSetting = DB::table('t_crm_open_quantities_settings')
                 ->where('setting_key', 'excluded_statuses')
