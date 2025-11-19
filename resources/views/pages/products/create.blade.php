@@ -125,6 +125,25 @@
                         <span class="text-sm font-medium">✅ Active Product</span>
                     </label>
                 </div>
+                
+                <!-- Weight Factor Field -->
+                <div class="flex flex-col gap-2 mt-5 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <label class="form-label text-sm font-medium flex items-center gap-2">
+                        ⚖️ Weight Factor
+                        <span class="text-xs text-gray-500 font-normal">(For invoice quantity adjustment)</span>
+                    </label>
+                    <input type="number" step="0.01" min="0.01" name="weight_factor" class="form-control" 
+                           value="{{ old('weight_factor', '1.00') }}" 
+                           style="max-width: 200px;"
+                           placeholder="1.00">
+                    <div class="text-xs text-gray-600 mt-1">
+                        When editing invoices, entered quantities will be divided by this factor. Default is 1.00 (no change).
+                        Example: If weight factor is 0.75 and you enter 2, actual quantity will be 2.67 (2 ÷ 0.75).
+                    </div>
+                    @error('weight_factor')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
             </div>
         </div>
 

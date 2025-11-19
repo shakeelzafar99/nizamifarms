@@ -40,6 +40,10 @@
                 <i class="ki-filled ki-price-tag text-gray-500 text-sm"></i>
                 <span class="hidden md:inline">Prices</span>
             </button>
+            <button onclick="openBulkWeightFactorModal()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
+                <i class="ki-filled ki-weight text-gray-500 text-sm"></i>
+                <span class="hidden md:inline">Weight Factor</span>
+            </button>
         </div>
     </div>
 </div>
@@ -471,6 +475,83 @@
     </div>
 </div>
 
+<!-- Bulk Set Weight Factor Modal -->
+<div id="bulkWeightFactorModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 90vw; max-height: 90vh; overflow-y: auto; width: 520px;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">⚖️ Bulk Set Weight Factor</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;">Set weight factor for multiple products at once. This affects invoice quantity calculations.</p>
+        </div>
+        <div style="padding: 20px; display: grid; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div>
+                    <label class="form-label">Category</label>
+                    <select id="wfBulkCategory" class="select select-sm weight-factor-filter-cascade">
+                        <option value="">Any</option>
+                        @foreach($productTypes as $type)
+                            <option value="{{ $type }}">{{ $type }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Vendor</label>
+                    <select id="wfBulkVendor" class="select select-sm weight-factor-filter-cascade">
+                        <option value="">Any</option>
+                        @foreach($vendors as $vendor)
+                            <option value="{{ $vendor }}">{{ $vendor }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                <div>
+                    <label class="form-label">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
+                    <select id="wfBulkAttr1" class="select select-sm weight-factor-filter-cascade">
+                        <option value="">Any</option>
+                        @foreach($attribute1s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
+                    <select id="wfBulkAttr2" class="select select-sm weight-factor-filter-cascade">
+                        <option value="">Any</option>
+                        @foreach($attribute2s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
+                    <select id="wfBulkAttr3" class="select select-sm weight-factor-filter-cascade">
+                        <option value="">Any</option>
+                        @foreach($attribute3s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+            <div style="background: #fef3c7; border: 1px solid #fbbf24; border-radius: 6px; padding: 12px;">
+                <label class="checkbox flex items-center gap-2">
+                    <input type="checkbox" id="wfExcludeLean" checked style="margin: 0;">
+                    <span style="font-size: 14px; color: #92400e; font-weight: 500;">🥩 Exclude Lean Products (Recommended)</span>
+                </label>
+                <p style="font-size: 12px; color: #92400e; margin: 6px 0 0 24px;">Products with "lean" in the name or marked as lean will not be affected.</p>
+            </div>
+            <div>
+                <label class="form-label">Weight Factor Value</label>
+                <input type="number" id="wfBulkValue" class="input input-sm" placeholder="e.g., 2.00" step="0.01" min="0.01" value="1.00">
+                <p style="font-size: 12px; color: #6b7280; margin-top: 4px;">Enter the weight factor to apply. Example: 2.00 means quantities will be doubled.</p>
+            </div>
+        </div>
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
+            <button onclick="closeModal('bulkWeightFactorModal')" class="kt-btn kt-btn-light">Cancel</button>
+            <button onclick="submitBulkWeightFactor()" class="kt-btn kt-btn-primary">Apply Weight Factor</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // Open unified import modal
 function openImportModal() {
@@ -703,16 +784,17 @@ const availableColumns = {
     'price_range': { label: 'Price Range', width: 'w-[110px]', order: 10, cssClass: 'col-price' },
     'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
     'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
-    'is_lean': { label: 'Lean', width: 'w-[75px]', order: 13, cssClass: 'col-lean' },
-    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 14, cssClass: 'col-sync' },
-    'actions': { label: 'Actions', width: 'w-[105px]', order: 15, fixed: true, cssClass: 'col-actions' }
+    'weight_factor': { label: 'Weight Factor', width: 'w-[95px]', order: 13, cssClass: 'col-weight-factor' },
+    'is_lean': { label: 'Lean', width: 'w-[75px]', order: 14, cssClass: 'col-lean' },
+    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 15, cssClass: 'col-sync' },
+    'actions': { label: 'Actions', width: 'w-[105px]', order: 16, fixed: true, cssClass: 'col-actions' }
 };
 
 // Default visible columns
 const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || JSON.stringify(defaultColumns));
@@ -1055,6 +1137,11 @@ function getCellContent(columnKey, product) {
             const inventory = product.total_inventory || 0;
             const inventoryPillClass = inventory > 10 ? 'pill success' : inventory > 0 ? 'pill warn' : 'pill neutral';
             return `<span class="${inventoryPillClass}">${inventory}</span>`;
+            
+        case 'weight_factor':
+            const weightFactor = parseFloat(product.weight_factor || 1.00).toFixed(2);
+            const isDefaultFactor = weightFactor === '1.00';
+            return `<span class="${isDefaultFactor ? 'text-gray-500' : 'font-semibold text-blue-600'}">${weightFactor}</span>`;
             
         case 'is_lean':
             if (product.is_lean === 1 || product.is_lean === '1' || product.is_lean === true) {
@@ -1444,6 +1531,127 @@ function generatePriceChangeTable(changes) {
     return html;
 }
 
+// ========================================
+// WEIGHT FACTOR FUNCTIONS
+// ========================================
+
+function openBulkWeightFactorModal() {
+    document.getElementById('bulkWeightFactorModal').style.display = 'block';
+    
+    // Setup cascading filter behavior for weight factor modal
+    setupWeightFactorModalCascadingFilters();
+}
+
+function setupWeightFactorModalCascadingFilters() {
+    // Add event listeners to all weight factor filter dropdowns
+    document.querySelectorAll('.weight-factor-filter-cascade').forEach(select => {
+        select.addEventListener('change', updateWeightFactorModalFilters);
+    });
+}
+
+function updateWeightFactorModalFilters() {
+    const wfCategory = document.getElementById('wfBulkCategory');
+    const wfVendor = document.getElementById('wfBulkVendor');
+    const wfAttr1 = document.getElementById('wfBulkAttr1');
+    const wfAttr2 = document.getElementById('wfBulkAttr2');
+    const wfAttr3 = document.getElementById('wfBulkAttr3');
+    
+    // Build query params based on current selections
+    const params = new URLSearchParams();
+    if (wfCategory.value) params.set('product_type', wfCategory.value);
+    if (wfVendor.value) params.set('vendor', wfVendor.value);
+    if (wfAttr1.value) params.set('attribute_1', wfAttr1.value);
+    if (wfAttr2.value) params.set('attribute_2', wfAttr2.value);
+    if (wfAttr3.value) params.set('attribute_3', wfAttr3.value);
+    
+    // Fetch updated filter options
+    fetch(`/products?${params.toString()}`, {
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.filter_options) {
+            // Update each dropdown preserving current selections
+            updateWeightFactorFilterDropdown(wfCategory, data.filter_options.product_types, wfCategory.value);
+            updateWeightFactorFilterDropdown(wfVendor, data.filter_options.vendors, wfVendor.value);
+            updateWeightFactorFilterDropdown(wfAttr1, data.filter_options.attribute_1s, wfAttr1.value);
+            updateWeightFactorFilterDropdown(wfAttr2, data.filter_options.attribute_2s, wfAttr2.value);
+            updateWeightFactorFilterDropdown(wfAttr3, data.filter_options.attribute_3s, wfAttr3.value);
+        }
+    })
+    .catch(err => console.warn('Could not update weight factor filters:', err));
+}
+
+function updateWeightFactorFilterDropdown(selectElement, options, selectedValue) {
+    const currentLabel = selectElement.options[0].text; // Keep the "Any" label
+    selectElement.innerHTML = `<option value="">${currentLabel}</option>`;
+    
+    if (options && options.length > 0) {
+        options.forEach(option => {
+            const opt = document.createElement('option');
+            opt.value = option;
+            opt.text = option;
+            if (option === selectedValue) opt.selected = true;
+            selectElement.appendChild(opt);
+        });
+    }
+}
+
+function submitBulkWeightFactor() {
+    const weightFactor = parseFloat(document.getElementById('wfBulkValue').value || '0');
+    const excludeLean = document.getElementById('wfExcludeLean').checked;
+    
+    if (!weightFactor || weightFactor <= 0) {
+        alert('Please enter a valid weight factor value greater than 0.');
+        return;
+    }
+    
+    const payload = {
+        weight_factor: weightFactor,
+        exclude_lean: excludeLean ? 1 : 0,
+        product_type: document.getElementById('wfBulkCategory').value || '',
+        vendor: document.getElementById('wfBulkVendor').value || '',
+        attribute_1: document.getElementById('wfBulkAttr1').value || '',
+        attribute_2: document.getElementById('wfBulkAttr2').value || '',
+        attribute_3: document.getElementById('wfBulkAttr3').value || ''
+    };
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                      document.querySelector('input[name="_token"]').value || '';
+
+    fetch('/products/bulk-set-weight-factor', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            closeModal('bulkWeightFactorModal');
+            
+            // Show success message
+            alert(`Success! Updated weight factor for ${data.affected_products} products.`);
+            
+            // Refresh table
+            performSearch();
+        } else {
+            alert('Bulk weight factor update failed: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => {
+        console.error('Bulk weight factor error', err);
+        alert('Network error occurred while updating weight factor.');
+    });
+}
+
 function toggleColumn(columnKey) {
     if (visibleColumns.includes(columnKey)) {
         visibleColumns = visibleColumns.filter(col => col !== columnKey);
@@ -1622,6 +1830,12 @@ function renderProductDetails(product) {
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Variants:</span>
                             <span style="color: #111827; font-size: 14px; font-weight: 500;">${product.variants ? product.variants.length : 0}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Weight Factor:</span>
+                            <span style="color: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '#2563eb' : '#111827'}; font-size: 14px; font-weight: ${(parseFloat(product.weight_factor || 1.00) !== 1.00) ? '600' : '500'};">
+                                ${parseFloat(product.weight_factor || 1.00).toFixed(2)}
+                            </span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Last Sync:</span>

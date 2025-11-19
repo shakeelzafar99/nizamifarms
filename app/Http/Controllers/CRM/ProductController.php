@@ -1033,6 +1033,95 @@ class ProductController extends Controller
         ]);
     }
 
+    /**
+     * Get weight factors for products by name (for invoice editing)
+     */
+    public function getWeightFactors(Request $request)
+    {
+        $validated = $request->validate([
+            'product_names' => 'required|array',
+            'product_names.*' => 'string'
+        ]);
+        
+        $productNames = $validated['product_names'];
+        $weightFactors = [];
+        
+        // Query products and get their weight factors
+        $products = ProductModel::whereIn('title', $productNames)
+            ->select('title', 'weight_factor')
+            ->get();
+        
+        foreach ($products as $product) {
+            $weightFactors[$product->title] = floatval($product->weight_factor ?? 1.0);
+        }
+        
+        // For products not found, default to 1
+        foreach ($productNames as $name) {
+            if (!isset($weightFactors[$name])) {
+                $weightFactors[$name] = 1.0;
+            }
+        }
+        
+        return response()->json([
+            'success' => true,
+            'weight_factors' => $weightFactors
+        ]);
+    }
+
+    /**
+     * Bulk set weight factor for products
+     */
+    public function bulkSetWeightFactor(Request $request)
+    {
+        $validated = $request->validate([
+            'weight_factor' => 'required|numeric|min:0.01',
+            'exclude_lean' => 'nullable|boolean',
+            // Optional filters
+            'product_type' => 'nullable|string',
+            'vendor' => 'nullable|string',
+            'attribute_1' => 'nullable|string',
+            'attribute_2' => 'nullable|string',
+            'attribute_3' => 'nullable|string',
+        ]);
+
+        $query = ProductModel::query();
+        
+        // Apply category filters
+        foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
+            if ($request->$f) $query->where($f, $request->$f);
+        }
+
+        // Exclude lean products if requested
+        if ($validated['exclude_lean'] ?? false) {
+            $query->where(function($q) {
+                $q->where('is_lean', 0)
+                  ->orWhereNull('is_lean');
+            });
+            // Also exclude products with "lean" in the name
+            $query->where('title', 'NOT LIKE', '%lean%');
+        }
+
+        $products = $query->get();
+        $affectedProducts = $products->count();
+
+        // Update all matching products
+        foreach ($products as $product) {
+            $product->weight_factor = $validated['weight_factor'];
+            $product->save();
+        }
+
+        $message = "Updated weight factor to {$validated['weight_factor']} for {$affectedProducts} products";
+        if ($validated['exclude_lean'] ?? false) {
+            $message .= " (lean products excluded)";
+        }
+
+        return response()->json([
+            'success' => true,
+            'affected_products' => $affectedProducts,
+            'message' => $message
+        ]);
+    }
+
     public function show($id)
     {
         try {
@@ -1569,6 +1658,7 @@ class ProductController extends Controller
                 'track_inventory' => 'nullable|boolean',
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
+                'weight_factor' => 'nullable|numeric|min:0.01',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -1686,6 +1776,7 @@ class ProductController extends Controller
                 'track_inventory' => 'nullable|boolean',
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
+                'weight_factor' => 'nullable|numeric|min:0.01',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -1823,6 +1914,7 @@ class ProductController extends Controller
             'total_inventory' => $totalInventory,
             'track_inventory' => filter_var($validated['track_inventory'] ?? true, FILTER_VALIDATE_BOOLEAN),
             'is_lean' => filter_var($validated['is_lean'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            'weight_factor' => $validated['weight_factor'] ?? 1.00,
             
             // SEO
             'seo_title' => $validated['seo_title'] ?? null,

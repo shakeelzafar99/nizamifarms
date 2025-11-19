@@ -2975,17 +2975,24 @@ function loadEditForm(order) {
                 <div id="lineItemsContainer" style="padding: 16px;">
                     ${order.line_items && order.line_items.length > 0 ? 
                         order.line_items.map((item, index) => `
-                        <div class="line-item" data-index="${index}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
+                        <div class="line-item" data-index="${index}" data-product-name="${(item.name || item.title || '').replace(/"/g, '&quot;')}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked (delete to change)</span></label>
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed; color: #6b7280;" readonly>
                                 <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
                             </div>
-                            <div>
-                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
+                            <div style="position: relative;">
+                                <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">
+                                    Quantity
+                                    <span id="weightFactorFeedback_${index}" style="display: none; margin-left: 6px; padding: 2px 6px; background: #dbeafe; border-radius: 3px; font-size: 9px; color: #0369a1; font-weight: 500; white-space: nowrap;"></span>
+                                </label>
                                 <input type="number" step="0.01" name="items[${index}][quantity]" value="${item.quantity || 1}" min="0.01"
-                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${index})">
+                                       data-db-original-value="${item.quantity || 1}"
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
+                                       onfocus="showWeightFactorFeedbackOnFocus(${index})"
+                                       onblur="applyWeightFactorToQuantity(${index})" 
+                                       onchange="updateLineTotal(${index})">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked</span></label>
@@ -3229,6 +3236,183 @@ function loadEditForm(order) {
                 console.warn('Failed to fetch customer notes:', error);
             });
     }
+    
+    // ========================================
+    // WEIGHT FACTOR FUNCTIONALITY (EDIT MODE ONLY)
+    // ========================================
+    // Initialize weight factors for line items
+    initializeWeightFactors(order);
+    
+    // Show weight factor feedback on form load for items that have weight factors
+    setTimeout(() => {
+        if (order.line_items) {
+            order.line_items.forEach((item, index) => {
+                showWeightFactorFeedbackOnLoad(index);
+            });
+        }
+    }, 500); // Wait for weight factors to be loaded
+}
+
+// Global storage for weight factors
+window.lineItemWeightFactors = {};
+window.originalQuantityInputs = {};
+
+function initializeWeightFactors(order) {
+    if (!order.line_items || order.line_items.length === 0) {
+        return;
+    }
+    
+    // Extract unique product names from line items
+    const productNames = [...new Set(order.line_items.map(item => item.name || item.title).filter(Boolean))];
+    
+    if (productNames.length === 0) {
+        return;
+    }
+    
+    // Fetch weight factors for these products
+    fetch('/api/products/weight-factors', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: JSON.stringify({ product_names: productNames })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.weight_factors) {
+            window.lineItemWeightFactors = data.weight_factors;
+            console.log('Weight factors loaded:', window.lineItemWeightFactors);
+        }
+    })
+    .catch(err => {
+        console.warn('Could not load weight factors:', err);
+    });
+}
+
+function showWeightFactorFeedbackOnLoad(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!item) return;
+    
+    const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
+    const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productName = item.getAttribute('data-product-name');
+    
+    if (!quantityInput || !productName || !feedbackSpan) return;
+    
+    // Get the weight factor for this product
+    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    
+    // Only show if weight factor exists and is not 1
+    if (weightFactor !== 1 && weightFactor > 0) {
+        feedbackSpan.style.display = 'inline';
+        feedbackSpan.innerHTML = `⚖️ WF: ${weightFactor}`;
+    }
+}
+
+function showWeightFactorFeedbackOnFocus(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!item) return;
+    
+    const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
+    const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productName = item.getAttribute('data-product-name');
+    
+    if (!quantityInput || !productName || !feedbackSpan) return;
+    
+    // Get the weight factor for this product
+    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    
+    // Only show if weight factor exists and is not 1
+    if (weightFactor !== 1 && weightFactor > 0) {
+        const alreadyAdjusted = quantityInput.getAttribute('data-adjusted') === 'true';
+        const userEntered = quantityInput.getAttribute('data-user-entered') || '';
+        const currentValue = parseFloat(quantityInput.value) || 0;
+        
+        // Show appropriate message based on state
+        if (alreadyAdjusted && userEntered && currentValue > 0) {
+            feedbackSpan.style.display = 'inline';
+            feedbackSpan.innerHTML = `⚖️ ${userEntered}→${currentValue} (÷${weightFactor})`;
+        } else {
+            feedbackSpan.style.display = 'inline';
+            feedbackSpan.innerHTML = `⚖️ WF: ${weightFactor}`;
+        }
+    }
+}
+
+function applyWeightFactorToQuantity(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!item) return;
+    
+    const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
+    const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productName = item.getAttribute('data-product-name');
+    
+    if (!quantityInput || !productName) return;
+    
+    // Get the weight factor for this product
+    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    
+    // Skip if no weight factor
+    if (weightFactor === 1 || weightFactor <= 0) {
+        if (feedbackSpan) {
+            feedbackSpan.style.display = 'none';
+        }
+        updateLineTotal(index);
+        return;
+    }
+    
+    const currentValue = parseFloat(quantityInput.value) || 0;
+    if (currentValue <= 0) {
+        updateLineTotal(index);
+        return;
+    }
+    
+    // Check if this was already adjusted
+    const alreadyAdjusted = quantityInput.getAttribute('data-adjusted') === 'true';
+    const storedAdjustedValue = parseFloat(quantityInput.getAttribute('data-adjusted-value') || 0);
+    
+    // Determine if user entered a new value different from the adjusted one
+    const userChangedFromAdjusted = alreadyAdjusted && Math.abs(currentValue - storedAdjustedValue) > 0.001;
+    
+    if (userChangedFromAdjusted || !alreadyAdjusted) {
+        // Store what the USER ENTERED before we change it
+        const userEnteredValue = currentValue;
+        
+        // Apply weight factor
+        const adjustedValue = parseFloat((currentValue / weightFactor).toFixed(2));
+        
+        if (Math.abs(currentValue - adjustedValue) > 0.001) {
+            // Update the input field
+            quantityInput.value = adjustedValue;
+            
+            // Mark as adjusted and store both values
+            quantityInput.setAttribute('data-adjusted', 'true');
+            quantityInput.setAttribute('data-adjusted-value', adjustedValue);
+            quantityInput.setAttribute('data-user-entered', userEnteredValue);
+            
+            // Show compact inline feedback
+            if (feedbackSpan) {
+                feedbackSpan.style.display = 'inline';
+                feedbackSpan.innerHTML = `⚖️ ${userEnteredValue}→${adjustedValue} (÷${weightFactor})`;
+            }
+        }
+    } else {
+        // Already adjusted and value hasn't changed - keep showing the feedback
+        if (feedbackSpan && alreadyAdjusted) {
+            const userEntered = quantityInput.getAttribute('data-user-entered') || '';
+            const adjustedValue = parseFloat(quantityInput.value) || 0;
+            if (userEntered) {
+                feedbackSpan.style.display = 'inline';
+                feedbackSpan.innerHTML = `⚖️ ${userEntered}→${adjustedValue} (÷${weightFactor})`;
+            }
+        }
+    }
+    
+    // Trigger line total update
+    updateLineTotal(index);
 }
 
 function showEditError(message) {
@@ -3350,9 +3534,12 @@ function removeLineItem(index) {
 function updateLineTotal(index) {
     const item = document.querySelector(`.line-item[data-index="${index}"]`);
     if (item) {
+        // Get quantity from input (already adjusted by applyWeightFactorToQuantity if applicable)
         const quantity = parseFloat(item.querySelector(`input[name="items[${index}][quantity]"]`).value) || 0;
         const price = parseFloat(item.querySelector(`input[name="items[${index}][unit_price]"]`).value) || 0;
-        const total = quantity * price;
+        
+        // Calculate total with proper precision
+        const total = Math.round(quantity * price * 100) / 100;
         
         const totalSpan = item.querySelector('.line-total');
         totalSpan.textContent = formatCurrency(total, 'PKR');

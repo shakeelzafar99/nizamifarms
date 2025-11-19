@@ -34,6 +34,7 @@ class ProductModel extends BaseModel
         'track_inventory',
         'is_lean',
         'is_lean_override',
+        'weight_factor',
         'seo_title',
         'seo_description',
         'featured_image',
@@ -57,6 +58,7 @@ class ProductModel extends BaseModel
         'total_inventory' => 'integer',
         'track_inventory' => 'boolean',
         'is_active' => 'boolean',
+        'weight_factor' => 'decimal:2',
         'images' => 'json',
         'tags' => 'json',
         'options' => 'json'
