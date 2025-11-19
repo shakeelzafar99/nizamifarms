@@ -4427,6 +4427,731 @@ class RiderController extends Controller
     }
 
     /**
+     * STORE ATTENDANCE - Get daily attendance for all employees
+     * Reuses web app attendance logic
+     */
+    public function getStoreAttendanceDaily(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view store attendance'
+                ], 403);
+            }
+            
+            $selectedDate = $request->input('date', now()->toDateString());
+            
+            // Build subquery for leave requests
+            $leaveSub = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', '=', 'leave')
+                ->select(
+                    'r.id',
+                    'r.requester_user_id',
+                    'r.status',
+                    'r.leave_type',
+                    'r.leave_start_date',
+                    'r.leave_end_date'
+                );
+            
+            // Get attendance data for all visible users
+            $query = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_attendance as a', function($join) use ($selectedDate) {
+                    $join->on('u.id', '=', 'a.user_id')
+                         ->whereDate('a.attendance_date', '=', $selectedDate);
+                })
+                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+                ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->leftJoinSub($leaveSub, 'lr', function($join) use ($selectedDate) {
+                    $join->on('lr.requester_user_id', '=', 'u.id')
+                        ->whereIn('lr.status', ['approved', 'pending'])
+                        ->whereRaw('? BETWEEN lr.leave_start_date AND lr.leave_end_date', [$selectedDate]);
+                })
+                ->select(
+                    'u.id as user_id',
+                    'u.fullname',
+                    'u.is_active',
+                    'r.urole_name as role_name',
+                    'a.id as attendance_id',
+                    'a.attendance_date',
+                    'a.login_time',
+                    'a.logout_time',
+                    'a.notes',
+                    DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
+                    DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
+                    'lr.id as leave_request_id',
+                    'lr.status as leave_status',
+                    'lr.leave_type as leave_type_from_req',
+                    DB::raw('COALESCE(av.is_visible, 1) as is_attendance_visible')
+                )
+                ->where(function($q) {
+                    $q->whereNull('av.is_visible')
+                      ->orWhere('av.is_visible', 1);
+                })
+                ->where('u.is_active', 1)
+                ->orderBy('u.fullname')
+                ->limit(100)
+                ->get();
+            
+            // Resolve shifts using ShiftResolutionService
+            $shiftService = new \App\Services\ShiftResolutionService();
+            $formattedData = [];
+            
+            foreach ($query as $row) {
+                $shiftData = $shiftService->getUserShift($row->user_id);
+                
+                // Calculate hours and late/OT status
+                $hours = 0;
+                $isLate = false;
+                $lateMinutes = 0;
+                $isOvertime = false;
+                $overtimeMinutes = 0;
+                
+                if ($row->login_time && $row->logout_time) {
+                    $login = \Carbon\Carbon::parse($row->login_time);
+                    $logout = \Carbon\Carbon::parse($row->logout_time);
+                    $hours = $logout->diffInHours($login, true);
+                    
+                    // Check if late
+                    $shiftStart = \Carbon\Carbon::parse($shiftData['shift_start']);
+                    if ($login->gt($shiftStart)) {
+                        $isLate = true;
+                        $lateMinutes = $login->diffInMinutes($shiftStart);
+                    }
+                    
+                    // Check if overtime
+                    $shiftEnd = \Carbon\Carbon::parse($shiftData['shift_end']);
+                    if ($logout->gt($shiftEnd)) {
+                        $isOvertime = true;
+                        $overtimeMinutes = $logout->diffInMinutes($shiftEnd);
+                    }
+                }
+                
+                $formattedData[] = [
+                    'user_id' => $row->user_id,
+                    'fullname' => $row->fullname,
+                    'role_name' => $row->role_name,
+                    'attendance_id' => $row->attendance_id,
+                    'attendance_date' => $row->attendance_date,
+                    'login_time' => $row->login_time,
+                    'logout_time' => $row->logout_time,
+                    'hours' => round($hours, 2),
+                    'shift_start' => $shiftData['shift_start'],
+                    'shift_end' => $shiftData['shift_end'],
+                    'shift_name' => $shiftData['shift_name'],
+                    'is_late' => $isLate,
+                    'late_minutes' => $lateMinutes,
+                    'is_overtime' => $isOvertime,
+                    'overtime_minutes' => $overtimeMinutes,
+                    'leave_request_id' => $row->leave_request_id,
+                    'leave_status' => $row->leave_status,
+                    'leave_type' => $row->leave_type_from_req,
+                    'notes' => $row->notes,
+                ];
+            }
+            
+            // Calculate summary stats
+            $summary = [
+                'total_employees' => count($formattedData),
+                'present' => count(array_filter($formattedData, fn($e) => $e['login_time'])),
+                'absent' => count(array_filter($formattedData, fn($e) => !$e['login_time'] && !$e['leave_request_id'])),
+                'on_leave' => count(array_filter($formattedData, fn($e) => $e['leave_request_id'])),
+                'late' => count(array_filter($formattedData, fn($e) => $e['is_late'])),
+                'overtime' => count(array_filter($formattedData, fn($e) => $e['is_overtime'])),
+            ];
+            
+            return response()->json([
+                'success' => true,
+                'date' => $selectedDate,
+                'summary' => $summary,
+                'attendance' => $formattedData,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get store attendance: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load attendance: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE ATTENDANCE - Get individual employee attendance details
+     * Reuses web app logic from AttendanceController@employeeDetails
+     */
+    public function getStoreAttendanceEmployeeDetails(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view store attendance'
+                ], 403);
+            }
+            
+            $userId = $request->input('user_id');
+            $month = $request->input('month', now()->format('Y-m'));
+            
+            if (!$userId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'user_id is required'
+                ], 400);
+            }
+            
+            // Calculate date range for the month
+            $startDate = $month . '-01';
+            $endDate = \Carbon\Carbon::parse($startDate)->endOfMonth()->toDateString();
+            
+            // Get user info
+            $userInfo = DB::table('t_sys_user as u')
+                ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+                ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->select('u.id', 'u.fullname', 'r.urole_name as role_name')
+                ->where('u.id', $userId)
+                ->first();
+            
+            if (!$userInfo) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User not found'
+                ], 404);
+            }
+            
+            // Get shift info using ShiftResolutionService
+            $shiftService = new \App\Services\ShiftResolutionService();
+            $shiftInfo = $shiftService->getUserShift($userId, date('Y-m-d'));
+            
+            // Build per-day delivered orders via subquery
+            $deliveredPerDay = DB::table('t_ops_order_rider_history as orh')
+                ->join('t_crm_order_status_history as osh', function($join) {
+                    $join->on('osh.order_id', '=', 'orh.order_id')
+                         ->where('osh.status_code', 'delivered')
+                         ->where('osh.is_current', 1);
+                })
+                ->select(
+                    'orh.rider_user_id as rider_id',
+                    DB::raw('DATE(osh.changed_at) as delivered_date'),
+                    DB::raw('COUNT(DISTINCT osh.order_id) as orders_delivered'),
+                    DB::raw('MIN(TIME(osh.changed_at)) as first_delivery_time'),
+                    DB::raw('MAX(TIME(osh.changed_at)) as last_delivery_time')
+                )
+                ->where('orh.rider_user_id', '=', $userId)
+                ->where('orh.is_current', '=', 1)
+                ->whereBetween(DB::raw('DATE(osh.changed_at)'), [$startDate, $endDate])
+                ->groupBy('orh.rider_user_id', DB::raw('DATE(osh.changed_at)'));
+            
+            // Leave requests subquery
+            $leaveSub = DB::table('t_req_master')
+                ->select(
+                    'requester_user_id',
+                    'id as leave_request_id',
+                    'status as leave_status',
+                    'leave_type',
+                    'leave_start_date',
+                    'leave_end_date'
+                )
+                ->where('category_id', function($q) {
+                    $q->select('id')
+                      ->from('t_req_category')
+                      ->where('category_code', 'leave')
+                      ->limit(1);
+                });
+            
+            // Attendance rows joined with per-day delivered orders and leave requests
+            $query = DB::table('t_ops_attendance as a')
+                ->leftJoinSub($deliveredPerDay, 'd', function($join) {
+                    $join->on('d.rider_id', '=', 'a.user_id')
+                         ->on('d.delivered_date', '=', 'a.attendance_date');
+                })
+                ->leftJoinSub($leaveSub, 'lr', function($join) {
+                    $join->on('lr.requester_user_id', '=', 'a.user_id')
+                         ->whereColumn('a.attendance_date', '>=', 'lr.leave_start_date')
+                         ->whereColumn('a.attendance_date', '<=', 'lr.leave_end_date');
+                })
+                ->where('a.user_id', '=', $userId)
+                ->whereBetween('a.attendance_date', [$startDate, $endDate])
+                ->select(
+                    'a.attendance_date',
+                    'a.login_time',
+                    'a.logout_time',
+                    'a.picture_start',
+                    'a.picture_end',
+                    'lr.leave_request_id',
+                    'lr.leave_status',
+                    'lr.leave_type',
+                    DB::raw('COALESCE(d.orders_delivered, 0) as total_orders_delivered'),
+                    DB::raw("COALESCE(d.first_delivery_time, '-') as first_delivery_time"),
+                    DB::raw("COALESCE(d.last_delivery_time, '-') as last_delivery_time")
+                )
+                ->orderByDesc('a.attendance_date')
+                ->get();
+            
+            // Clean up null values
+            foreach ($query as $record) {
+                if ($record->first_delivery_time === null) {
+                    $record->first_delivery_time = '-';
+                }
+                if ($record->last_delivery_time === null) {
+                    $record->last_delivery_time = '-';
+                }
+            }
+            
+            // Calculate working days
+            $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $endDate);
+            
+            // Calculate statistics
+            $totalDays = $query->count();
+            $presentDays = $query->where('login_time', '!=', null)->count();
+            
+            // Count leave days
+            $onLeaveDays = 0;
+            foreach ($query as $record) {
+                if ($record->leave_request_id && 
+                    in_array(strtolower($record->leave_status ?? ''), ['approved', 'pending'])) {
+                    $onLeaveDays++;
+                }
+            }
+            
+            $absentDays = $workingDays - $presentDays - $onLeaveDays;
+            if ($absentDays < 0) $absentDays = 0;
+            
+            $lateDays = 0;
+            $overtimeDays = 0;
+            $totalHours = 0;
+            $totalOrdersDelivered = 0;
+            
+            foreach ($query as $record) {
+                // Calculate hours worked
+                if ($record->login_time && $record->logout_time) {
+                    $login = strtotime($record->login_time);
+                    $logout = strtotime($record->logout_time);
+                    $hours = ($logout - $login) / 3600;
+                    $totalHours += $hours;
+                    $record->hours_worked = round($hours, 1);
+                } else {
+                    $record->hours_worked = 0;
+                }
+                
+                // Check if late
+                if ($record->login_time && $shiftInfo['shift_start']) {
+                    $shiftStart = strtotime($record->attendance_date . ' ' . $shiftInfo['shift_start']);
+                    $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
+                    if ($actualLogin > $shiftStart) {
+                        $lateDays++;
+                        $record->late_minutes = round(($actualLogin - $shiftStart) / 60);
+                    } else {
+                        $record->late_minutes = 0;
+                    }
+                } else {
+                    $record->late_minutes = 0;
+                }
+                
+                // Check if overtime
+                if ($record->logout_time && $shiftInfo['shift_end']) {
+                    $shiftEnd = strtotime($record->attendance_date . ' ' . $shiftInfo['shift_end']);
+                    $actualLogout = strtotime($record->attendance_date . ' ' . $record->logout_time);
+                    if ($actualLogout > $shiftEnd) {
+                        $overtimeDays++;
+                        $record->overtime_minutes = round(($actualLogout - $shiftEnd) / 60);
+                    } else {
+                        $record->overtime_minutes = 0;
+                    }
+                } else {
+                    $record->overtime_minutes = 0;
+                }
+                
+                // Add order count to total
+                $totalOrdersDelivered += $record->total_orders_delivered;
+                
+                // Format delivery times
+                if ($record->first_delivery_time && $record->first_delivery_time !== '-') {
+                    try {
+                        $record->first_delivery_time = date('H:i', strtotime($record->first_delivery_time));
+                    } catch (\Exception $e) {
+                        $record->first_delivery_time = '-';
+                    }
+                } else {
+                    $record->first_delivery_time = '-';
+                }
+                
+                if ($record->last_delivery_time && $record->last_delivery_time !== '-') {
+                    try {
+                        $record->last_delivery_time = date('H:i', strtotime($record->last_delivery_time));
+                    } catch (\Exception $e) {
+                        $record->last_delivery_time = '-';
+                    }
+                } else {
+                    $record->last_delivery_time = '-';
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'employee' => [
+                    'user_id' => $userInfo->id,
+                    'fullname' => $userInfo->fullname,
+                    'role_name' => $userInfo->role_name,
+                    'shift_start' => $shiftInfo['shift_start'],
+                    'shift_end' => $shiftInfo['shift_end'],
+                    'shift_name' => $shiftInfo['shift_name'],
+                    'working_days' => $workingDays,
+                    'present_days' => $presentDays,
+                    'on_leave_days' => $onLeaveDays,
+                    'absent_days' => $absentDays,
+                    'late_days' => $lateDays,
+                    'overtime_days' => $overtimeDays,
+                    'total_hours' => round($totalHours, 1),
+                    'total_orders_delivered' => $totalOrdersDelivered,
+                ],
+                'daily_records' => $query,
+                'month' => $month,
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get employee attendance details: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load employee details: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE ATTENDANCE - Get monthly attendance summary for all employees
+     */
+    public function getStoreAttendanceMonthly(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view store attendance'
+                ], 403);
+            }
+            
+            $month = $request->input('month', now()->format('Y-m'));
+            $startDate = $month . '-01';
+            $endDate = \Carbon\Carbon::parse($startDate)->endOfMonth()->toDateString();
+            
+            // Get all active visible users
+            $users = DB::table('t_sys_user as u')
+                ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+                ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')
+                ->select(
+                    'u.id as user_id',
+                    'u.fullname',
+                    'r.urole_name as role_name',
+                    DB::raw('COALESCE(rp.shift_start, "09:00") as shift_start'),
+                    DB::raw('COALESCE(rp.shift_end, "17:00") as shift_end')
+                )
+                ->where('u.is_active', 1)
+                ->where(function($q) {
+                    $q->whereNull('av.is_visible')
+                      ->orWhere('av.is_visible', 1);
+                })
+                ->orderBy('u.fullname')
+                ->get();
+            
+            $monthlyData = [];
+            
+            foreach ($users as $user) {
+                // Get attendance records for this user in the month
+                $attendance = DB::table('t_ops_attendance')
+                    ->where('user_id', $user->user_id)
+                    ->whereBetween('attendance_date', [$startDate, $endDate])
+                    ->get();
+                
+                // Get leave requests and calculate leave days manually
+                $leaveRequests = DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', '=', 'leave')
+                    ->where('r.requester_user_id', $user->user_id)
+                    ->whereIn('r.status', ['approved', 'pending'])
+                    ->where(function($q) use ($startDate, $endDate) {
+                        $q->whereBetween('r.leave_start_date', [$startDate, $endDate])
+                          ->orWhereBetween('r.leave_end_date', [$startDate, $endDate])
+                          ->orWhere(function($q2) use ($startDate, $endDate) {
+                              $q2->where('r.leave_start_date', '<=', $startDate)
+                                 ->where('r.leave_end_date', '>=', $endDate);
+                          });
+                    })
+                    ->select('r.leave_start_date', 'r.leave_end_date')
+                    ->get();
+                
+                // Calculate total leave days within the month range
+                $leaveDays = 0;
+                foreach ($leaveRequests as $leave) {
+                    $leaveStart = max($leave->leave_start_date, $startDate);
+                    $leaveEnd = min($leave->leave_end_date, $endDate);
+                    $days = \Carbon\Carbon::parse($leaveStart)->diffInDays(\Carbon\Carbon::parse($leaveEnd)) + 1;
+                    $leaveDays += $days;
+                }
+                
+                // Calculate stats
+                $presentDays = $attendance->filter(fn($a) => $a->login_time)->count();
+                $totalHours = 0;
+                $lateDays = 0;
+                $lateMinutes = 0;
+                $overtimeDays = 0;
+                $overtimeMinutes = 0;
+                
+                $shiftStart = \Carbon\Carbon::parse($user->shift_start);
+                $shiftEnd = \Carbon\Carbon::parse($user->shift_end);
+                
+                foreach ($attendance as $record) {
+                    if ($record->login_time && $record->logout_time) {
+                        $login = \Carbon\Carbon::parse($record->login_time);
+                        $logout = \Carbon\Carbon::parse($record->logout_time);
+                        $totalHours += $logout->diffInHours($login, true);
+                        
+                        if ($login->gt($shiftStart)) {
+                            $lateDays++;
+                            $lateMinutes += $login->diffInMinutes($shiftStart);
+                        }
+                        
+                        if ($logout->gt($shiftEnd)) {
+                            $overtimeDays++;
+                            $overtimeMinutes += $logout->diffInMinutes($shiftEnd);
+                        }
+                    }
+                }
+                
+                // Calculate working days using ShiftResolutionService (same as web app)
+                $shiftService = new \App\Services\ShiftResolutionService();
+                try {
+                    $workingDays = $shiftService->calculateWorkingDays($user->user_id, $startDate, $endDate);
+                } catch (\Exception $e) {
+                    // Fallback to simple weekday calculation
+                    $workingDays = \Carbon\Carbon::parse($startDate)->diffInDaysFiltered(function(\Carbon\Carbon $date) use ($endDate) {
+                        return $date->isWeekday() && $date->lte(\Carbon\Carbon::parse($endDate));
+                    }, \Carbon\Carbon::parse($endDate));
+                }
+                
+                $absentDays = max(0, $workingDays - $presentDays - $leaveDays);
+                
+                $monthlyData[] = [
+                    'user_id' => $user->user_id,
+                    'fullname' => $user->fullname,
+                    'role_name' => $user->role_name,
+                    'shift_name' => $user->shift_start . ' - ' . $user->shift_end,
+                    'present_days' => $presentDays,
+                    'absent_days' => max(0, $absentDays),
+                    'leave_days' => $leaveDays,
+                    'late_days' => $lateDays,
+                    'late_minutes' => $lateMinutes,
+                    'overtime_days' => $overtimeDays,
+                    'overtime_minutes' => $overtimeMinutes,
+                    'total_hours' => round($totalHours, 1),
+                    'working_days' => $workingDays,
+                    'attendance_percentage' => $workingDays > 0 ? round(($presentDays / $workingDays) * 100, 1) : 0,
+                ];
+            }
+            
+            return response()->json([
+                'success' => true,
+                'month' => $month,
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'employees' => $monthlyData,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get monthly attendance: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load monthly attendance: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * NF LEDGER - Get list of accounts for transfer (source or destination)
+     */
+    public function getTransferAccounts(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_nf_ledger')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view NF Ledger'
+                ], 403);
+            }
+            
+            // Get all active accounts (company accounts only - cash and bank)
+            $accounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                ->whereIn('account_category', ['cash', 'bank'])
+                ->orderBy('account_name', 'asc')
+                ->get()
+                ->map(function($account) {
+                    return [
+                        'id' => $account->id,
+                        'account_code' => $account->account_code,
+                        'account_name' => $account->account_name,
+                        'account_category' => $account->account_category,
+                        'account_type' => $account->account_type,
+                        'current_balance' => $account->current_balance,
+                    ];
+                });
+            
+            return response()->json([
+                'success' => true,
+                'accounts' => $accounts,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get transfer accounts: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load accounts: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * NF LEDGER - Process account transfer
+     * Reuses the same logic as web app
+     */
+    public function processTransfer(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_nf_ledger')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to process transfers'
+                ], 403);
+            }
+            
+            // Validate input
+            $validator = \Validator::make($request->all(), [
+                'from_account_id' => 'required|exists:t_fin_accounts,id',
+                'to_account_id' => 'required|exists:t_fin_accounts,id|different:from_account_id',
+                'amount' => 'required|numeric|min:0.01',
+                'transaction_date' => 'required|date',
+                'description' => 'required|string|max:500',
+                'mode' => 'required|in:cash,online'
+            ]);
+            
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+            
+            DB::beginTransaction();
+            
+            $fromAccount = \App\Models\FIN\AccountModel::findOrFail($request->from_account_id);
+            $toAccount = \App\Models\FIN\AccountModel::findOrFail($request->to_account_id);
+            
+            // Check if from account has sufficient balance for asset accounts
+            if ($fromAccount->account_type === 'asset') {
+                if ($fromAccount->current_balance < $request->amount) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Insufficient balance in {$fromAccount->account_name}. Current balance: Rs. " . number_format($fromAccount->current_balance, 2)
+                    ], 400);
+                }
+            }
+            
+            // Determine approval status
+            // Online transfers require approval
+            $approvalStatus = $request->mode === 'online' 
+                ? \App\Models\FIN\LedgerModel::STATUS_PENDING 
+                : \App\Models\FIN\LedgerModel::STATUS_APPROVED;
+            
+            // Create ledger entry
+            $ledger = \App\Models\FIN\LedgerModel::create([
+                'transaction_date' => $request->transaction_date,
+                'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_TRANSFER,
+                'description' => $request->description,
+                'from_account_id' => $fromAccount->id,
+                'to_account_id' => $toAccount->id,
+                'amount' => $request->amount,
+                'mode' => $request->mode,
+                'approval_status' => $approvalStatus,
+                'created_by' => $user->id
+            ]);
+            
+            // Update balances (only if approved or cash)
+            if ($approvalStatus === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                // From account: debit or credit based on account type
+                if ($fromAccount->account_type === 'asset') {
+                    // Money going OUT from asset = Decrease
+                    $fromAccount->current_balance -= $request->amount;
+                } else {
+                    // Money going OUT from liability/income/equity = Increase
+                    $fromAccount->current_balance += $request->amount;
+                }
+                $fromAccount->save();
+                
+                // To account: opposite
+                if ($toAccount->account_type === 'asset') {
+                    // Money coming IN to asset = Increase
+                    $toAccount->current_balance += $request->amount;
+                } else {
+                    // Money coming IN to liability/income/equity = Decrease
+                    $toAccount->current_balance -= $request->amount;
+                }
+                $toAccount->save();
+            }
+            
+            DB::commit();
+            
+            $message = $approvalStatus === \App\Models\FIN\LedgerModel::STATUS_PENDING
+                ? 'Transfer created and pending approval!'
+                : 'Transfer completed successfully!';
+            
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'transfer' => [
+                    'id' => $ledger->id,
+                    'from_account' => $fromAccount->account_name,
+                    'to_account' => $toAccount->account_name,
+                    'amount' => $ledger->amount,
+                    'mode' => $ledger->mode,
+                    'approval_status' => $ledger->approval_status,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Mobile API - Failed to process transfer: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to process transfer: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * NF LEDGER - Get ledger details for a specific account
      * Shows transaction history with filtering options
      */

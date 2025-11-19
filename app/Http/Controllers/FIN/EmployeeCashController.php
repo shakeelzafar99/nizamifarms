@@ -1176,9 +1176,13 @@ class EmployeeCashController extends Controller
                 $pendingAmount = $pendingSettlementAmounts[$invoice->id] ?? 0;
                 $outstandingAmount = $invoice->amount - ($invoice->settled_amount ?? 0) - $pendingAmount;
                 
+                // Get customer name from order (uses OrderModel's customer_name accessor)
+                $customerName = $invoice->order ? $invoice->order->customer_name : null;
+                
                 return [
                     'id' => $invoice->id,
                     'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                    'customer_name' => $customerName, // ✅ Added customer name
                     'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
                     'description' => $invoice->description,
                     'amount' => $invoice->amount,
@@ -1730,6 +1734,7 @@ class EmployeeCashController extends Controller
                         return [
                             'id' => $invoice->id,
                             'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                            'customer_name' => $invoice->order ? $invoice->order->customer_name : null, // ✅ Added customer name
                             'transaction_date' => $invoice->transaction_date,
                             'is_pending_approval' => $isPendingApproval,
                             'pending_settlement_id' => $pendingSettlementId,

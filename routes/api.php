@@ -173,6 +173,13 @@ Route::middleware('auth:sanctum')->group(function () {
     // NF Ledger (Store Mode - requires view_nf_ledger permission)
     Route::get('/nf-ledger/accounts', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerAccounts']);
     Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
+    Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
+    Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
+    
+    // Store Attendance (Store Mode - requires view_store_attendance permission)
+    Route::get('/store-attendance/daily', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceDaily']);
+    Route::get('/store-attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceMonthly']);
+    Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
     }); // Close rider prefix group
     
     // Store Mode - Requests (uses same controller as web for consistency, under /api prefix)

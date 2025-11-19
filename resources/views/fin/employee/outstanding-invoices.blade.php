@@ -244,8 +244,11 @@
                         <tbody class="bg-white divide-y divide-gray-100">
                             @foreach($riderData['invoices'] as $invoice)
                             <tr class="hover:bg-gray-50 transition-colors">
-                            <td class="px-3 py-2 whitespace-nowrap">
-                                <span class="text-xs font-bold text-purple-700">{{ $invoice['order_number'] }}</span>
+                            <td class="px-3 py-2">
+                                <div class="text-xs font-bold text-purple-700">{{ $invoice['order_number'] }}</div>
+                                @if(isset($invoice['customer_name']) && $invoice['customer_name'])
+                                <div class="text-xs text-gray-600 mt-0.5">{{ $invoice['customer_name'] }}</div>
+                                @endif
                             </td>
                             <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-600">
                                 {{ $invoice['transaction_date']->format('M j, Y') }}

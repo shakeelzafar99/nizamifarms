@@ -2169,7 +2169,10 @@ function renderInvoicesTable() {
                        onchange="toggleInvoice(${invoice.id}, this.checked)"
                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
             </td>
-            <td class="px-4 py-3 text-sm font-medium text-gray-900">${invoice.order_number}</td>
+            <td class="px-4 py-3">
+                <div class="text-sm font-medium text-gray-900">${invoice.order_number}</div>
+                ${invoice.customer_name ? `<div class="text-xs text-gray-600 mt-0.5">${invoice.customer_name}</div>` : ''}
+            </td>
             <td class="px-4 py-3 text-sm text-gray-600">${invoice.transaction_date}</td>
             <td class="px-4 py-3 text-sm text-right font-semibold text-gray-900">Rs. ${parseFloat(invoice.outstanding_amount).toFixed(2)}</td>
         `;
@@ -2396,7 +2399,10 @@ function renderShortCashInvoicesTable() {
                        onchange="toggleShortCashInvoice(${invoice.id})"
                        class="rounded border-gray-300 text-orange-600 focus:ring-orange-500">
             </td>
-            <td class="px-3 py-2 text-sm text-gray-900">${invoice.order_number || 'Invoice #' + invoice.id}</td>
+            <td class="px-3 py-2">
+                <div class="text-sm text-gray-900">${invoice.order_number || 'Invoice #' + invoice.id}</div>
+                ${invoice.customer_name ? `<div class="text-xs text-gray-600 mt-0.5">${invoice.customer_name}</div>` : ''}
+            </td>
             <td class="px-3 py-2 text-sm text-gray-600">${invoice.transaction_date}</td>
             <td class="px-3 py-2 text-sm text-gray-900 text-right font-medium">Rs. ${parseFloat(invoice.outstanding_amount).toFixed(2)}</td>
         `;
