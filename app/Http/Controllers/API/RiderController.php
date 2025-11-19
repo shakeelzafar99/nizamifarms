@@ -781,8 +781,23 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Get rider's account (employee_cash category)
-            $account = \App\Models\FIN\AccountModel::where('user_id', $user->id)
+            // CRITICAL FIX: Allow fetching invoices for another user (for NF Ledger settle functionality)
+            // If user_id is provided in request, use that (requires permission check)
+            // Otherwise, use the logged-in user's ID (rider mode)
+            $targetUserId = $request->input('user_id', $user->id);
+            
+            // Security check: Only allow fetching other users' invoices if user has store mode permission
+            if ($targetUserId != $user->id) {
+                if (!$user->hasMobilePermission('view_nf_ledger')) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You do not have permission to view other users\' invoices',
+                    ], 403);
+                }
+            }
+            
+            // Get account for the target user
+            $account = \App\Models\FIN\AccountModel::where('user_id', $targetUserId)
                 ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
                 ->first();
 
@@ -817,8 +832,23 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Get rider's account (employee_cash category)
-            $account = \App\Models\FIN\AccountModel::where('user_id', $user->id)
+            // CRITICAL FIX: Allow settling for another user (for NF Ledger settle functionality)
+            // If user_id is provided in request, use that (requires permission check)
+            // Otherwise, use the logged-in user's ID (rider mode)
+            $targetUserId = $request->input('user_id', $user->id);
+            
+            // Security check: Only allow settling other users' accounts if user has store mode permission
+            if ($targetUserId != $user->id) {
+                if (!$user->hasMobilePermission('view_nf_ledger')) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You do not have permission to settle other users\' accounts',
+                    ], 403);
+                }
+            }
+            
+            // Get account for the target user
+            $account = \App\Models\FIN\AccountModel::where('user_id', $targetUserId)
                 ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
                 ->first();
 
@@ -931,8 +961,23 @@ class RiderController extends Controller
         try {
             $user = Auth::user();
             
-            // Get rider's account (employee_cash category)
-            $account = \App\Models\FIN\AccountModel::where('user_id', $user->id)
+            // CRITICAL FIX: Allow settling for another user (for NF Ledger settle functionality)
+            // If user_id is provided in request, use that (requires permission check)
+            // Otherwise, use the logged-in user's ID (rider mode)
+            $targetUserId = $request->input('user_id', $user->id);
+            
+            // Security check: Only allow settling other users' accounts if user has store mode permission
+            if ($targetUserId != $user->id) {
+                if (!$user->hasMobilePermission('view_nf_ledger')) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You do not have permission to settle other users\' accounts',
+                    ], 403);
+                }
+            }
+            
+            // Get account for the target user
+            $account = \App\Models\FIN\AccountModel::where('user_id', $targetUserId)
                 ->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
                 ->first();
 
@@ -4259,6 +4304,282 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Mobile API - Failed to read attribute priority map: ' . $e->getMessage());
             return [];
+        }
+    }
+
+    /**
+     * NF LEDGER - Get all accounts with balances (for mobile)
+     * Shows both company accounts and employee accounts
+     */
+    public function getNFLedgerAccounts(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_nf_ledger')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view NF Ledger'
+                ], 403);
+            }
+            
+            // Build query for active accounts
+            $query = \App\Models\FIN\AccountModel::where('is_active', 1);
+            
+            // Show both company accounts (cash, bank) and employee accounts
+            $query->where(function($q) {
+                $q->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
+                  ->orWhereIn('account_category', [\App\Models\FIN\AccountModel::CATEGORY_CASH, \App\Models\FIN\AccountModel::CATEGORY_BANK]);
+            });
+            
+            // Load user relationship for employee accounts
+            $query->with('user');
+            
+            // Search filter
+            if ($request->has('search') && $request->search) {
+                $search = $request->search;
+                $query->where('account_name', 'LIKE', "%{$search}%");
+            }
+            
+            // Order: Company accounts first, then employee accounts (alphabetically)
+            $accounts = $query
+                ->orderByRaw("CASE 
+                    WHEN account_category IN ('cash', 'bank') THEN 1 
+                    WHEN account_category = 'employee_cash' THEN 2 
+                    ELSE 3 
+                END")
+                ->orderBy('account_name', 'asc')
+                ->get();
+            
+            // Calculate pending actions for each account
+            foreach ($accounts as $account) {
+                $pendingActions = 0;
+                
+                // For employee accounts: count pending expense requests
+                if ($account->user_id) {
+                    $pendingActions = \App\Models\Request\RequestModel::where('requester_user_id', $account->user_id)
+                        ->where('status', 'pending')
+                        ->whereHas('category', function($q) {
+                            $q->where('category_code', 'expense');
+                        })
+                        ->sum('amount');
+                }
+                // For company accounts: count pending requests to be paid from this account
+                else {
+                    $query = \App\Models\Request\RequestModel::where('status', 'pending')
+                        ->whereHas('category', function($q) {
+                            $q->where('category_code', 'expense');
+                        });
+                    
+                    // If this is the Expense Fund, include requests with NULL payment source
+                    if ($account->account_code === 'EXP_FUND') {
+                        $query->where(function($q) use ($account) {
+                            $q->where('payment_source_account_id', $account->id)
+                              ->orWhereNull('payment_source_account_id');
+                        });
+                    } else {
+                        $query->where('payment_source_account_id', $account->id);
+                    }
+                    
+                    $pendingActions = $query->sum('amount');
+                }
+                
+                $account->pending_actions = $pendingActions ?? 0;
+            }
+            
+            // Separate into company and employee accounts
+            $companyAccounts = [];
+            $employeeAccounts = [];
+            
+            foreach ($accounts as $account) {
+                $accountData = [
+                    'id' => $account->id,
+                    'account_code' => $account->account_code,
+                    'account_name' => $account->account_name,
+                    'account_category' => $account->account_category,
+                    'current_balance' => $account->current_balance,
+                    'pending_actions' => $account->pending_actions,
+                    'user_id' => $account->user_id,
+                    'user_name' => $account->user ? ($account->user->fullname ?? $account->user->name) : null,
+                ];
+                
+                if ($account->account_category === \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH) {
+                    $employeeAccounts[] = $accountData;
+                } else {
+                    $companyAccounts[] = $accountData;
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'company_accounts' => $companyAccounts,
+                'employee_accounts' => $employeeAccounts,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get NF Ledger accounts: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load accounts: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * NF LEDGER - Get ledger details for a specific account
+     * Shows transaction history with filtering options
+     */
+    public function getNFLedgerDetails(Request $request, $accountId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_nf_ledger')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view NF Ledger'
+                ], 403);
+            }
+            
+            // Get the account
+            $account = \App\Models\FIN\AccountModel::with('user')->find($accountId);
+            
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Account not found'
+                ], 404);
+            }
+            
+            // Get filter parameters
+            $period = $request->input('period', 'all_time'); // today, this_week, this_month, all_time
+            
+            // Build ledger query - INCLUDE BOTH APPROVED AND PENDING
+            $ledgerQuery = \App\Models\FIN\LedgerModel::where(function($q) use ($accountId) {
+                $q->where('from_account_id', $accountId)
+                  ->orWhere('to_account_id', $accountId);
+            })
+            ->whereIn('approval_status', [
+                \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+                \App\Models\FIN\LedgerModel::STATUS_PENDING
+            ]);
+            
+            // Apply period filter
+            if ($period === 'today') {
+                $ledgerQuery->whereDate('transaction_date', today());
+            } elseif ($period === 'this_week') {
+                $ledgerQuery->whereBetween('transaction_date', [now()->startOfWeek(), now()->endOfWeek()]);
+            } elseif ($period === 'this_month') {
+                $ledgerQuery->whereBetween('transaction_date', [now()->startOfMonth(), now()->endOfMonth()]);
+            }
+            
+            // Get transactions
+            $transactions = $ledgerQuery
+                ->with(['fromAccount', 'toAccount'])
+                ->orderBy('transaction_date', 'desc')
+                ->orderBy('id', 'desc')
+                ->limit(100)
+                ->get();
+            
+            // Group transactions by date and calculate running balance
+            $groupedTransactions = [];
+            $currentBalance = $account->current_balance;
+            $currentDate = null;
+            $dateGroup = null;
+            
+            foreach ($transactions as $txn) {
+                $txnDate = \Carbon\Carbon::parse($txn->transaction_date)->format('Y-m-d');
+                $isDebit = $txn->from_account_id == $accountId;
+                
+                // Create new date group if date changed
+                if ($txnDate !== $currentDate) {
+                    // Save previous group if exists
+                    if ($dateGroup !== null) {
+                        $groupedTransactions[] = $dateGroup;
+                    }
+                    
+                    // Start new group
+                    $currentDate = $txnDate;
+                    $dateGroup = [
+                        'date' => $txnDate,
+                        'transactions' => [],
+                        'total_in' => 0,
+                        'total_out' => 0,
+                        'net_change' => 0,
+                    ];
+                }
+                
+                // Format transaction
+                $formattedTxn = [
+                    'id' => $txn->id,
+                    'date' => $txn->transaction_date,
+                    'type' => $txn->transaction_type,
+                    'description' => $txn->description,
+                    'amount' => $txn->amount,
+                    'is_debit' => $isDebit,
+                    'approval_status' => $txn->approval_status,
+                    'other_account' => $isDebit ? 
+                        ($txn->toAccount ? $txn->toAccount->account_name : 'Unknown') :
+                        ($txn->fromAccount ? $txn->fromAccount->account_name : 'Unknown'),
+                    'reference_type' => $txn->reference_type,
+                    'reference_id' => $txn->reference_id,
+                ];
+                
+                // Add to date group
+                $dateGroup['transactions'][] = $formattedTxn;
+                
+                // Calculate totals for this date (only approved transactions affect balance)
+                if ($txn->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                    if ($isDebit) {
+                        $dateGroup['total_out'] += $txn->amount;
+                    } else {
+                        $dateGroup['total_in'] += $txn->amount;
+                    }
+                }
+            }
+            
+            // Save last group
+            if ($dateGroup !== null) {
+                $dateGroup['net_change'] = $dateGroup['total_in'] - $dateGroup['total_out'];
+                $groupedTransactions[] = $dateGroup;
+            }
+            
+            // Calculate summary (only approved transactions)
+            $totalIn = \App\Models\FIN\LedgerModel::where('to_account_id', $accountId)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+                ->sum('amount');
+            
+            $totalOut = \App\Models\FIN\LedgerModel::where('from_account_id', $accountId)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+                ->sum('amount');
+            
+            return response()->json([
+                'success' => true,
+                'account' => [
+                    'id' => $account->id,
+                    'account_code' => $account->account_code,
+                    'account_name' => $account->account_name,
+                    'account_category' => $account->account_category,
+                    'current_balance' => $account->current_balance,
+                    'user_id' => $account->user_id,
+                    'user_name' => $account->user ? ($account->user->fullname ?? $account->user->name) : null,
+                ],
+                'summary' => [
+                    'total_in' => $totalIn,
+                    'total_out' => $totalOut,
+                    'current_balance' => $account->current_balance,
+                ],
+                'grouped_transactions' => $groupedTransactions,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to get NF Ledger details: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load ledger details: ' . $e->getMessage()
+            ], 500);
         }
     }
 }

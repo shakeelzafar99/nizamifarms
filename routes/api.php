@@ -169,6 +169,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
+    
+    // NF Ledger (Store Mode - requires view_nf_ledger permission)
+    Route::get('/nf-ledger/accounts', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerAccounts']);
+    Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
     }); // Close rider prefix group
     
     // Store Mode - Requests (uses same controller as web for consistency, under /api prefix)
