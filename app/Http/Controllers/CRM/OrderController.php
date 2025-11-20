@@ -2474,21 +2474,21 @@ class OrderController extends Controller
                 // Apply product filters with proper AND logic
                 if (!empty($productIds) || !empty($productNameFilter)) {
                     $lineItemsQuery->where(function($q) use ($productIds, $productNameFilter) {
-                        if (!empty($productIds)) {
+                if (!empty($productIds)) {
                             $q->whereIn('product_id', $productIds);
-                        }
-                        if (!empty($productNameFilter)) {
+                }
+                if (!empty($productNameFilter)) {
                             // Use AND condition, not OR
                             if (!empty($productIds)) {
                                 $q->where('name', $productNameFilter);
                             } else {
                                 $q->where('name', $productNameFilter);
-                            }
+                }
                         }
                     });
                     $lineItemsToUpdate = $lineItemsQuery->get();
                 } else {
-                    // If no product filter was provided, update all
+                // If no product filter was provided, update all
                     $lineItemsToUpdate = $order->lineItems;
                 }
 

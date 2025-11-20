@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\ConfigModel;
+use App\Models\FIN\InvoiceSettlementModel;
 use App\Models\SysAdmin\UserModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -129,7 +130,7 @@ class EmployeeCashController extends Controller
             $endDate = \Carbon\Carbon::parse($filterEndDate)->endOfDay();
         }
         
-        // === KPI 1: INVOICES DELIVERED (Enhanced with deposits breakdown) ===
+        // === KPI 1: INVOICES DELIVERED (Enhanced with detailed settlement tracking) ===
         // Main value: Total invoices delivered (by delivery date)
         $invoicesQuery = \DB::table('t_crm_order_status_history')
             ->where('status_code', 'delivered')
@@ -145,71 +146,121 @@ class EmployeeCashController extends Controller
             ->whereIn('id', $deliveredOrderIds)
             ->sum('total_price') ?? 0;
         
-        // Cash invoices total (from orders)
-        $invoicesCash = \DB::table('t_crm_prod_order')
-            ->whereIn('id', $deliveredOrderIds)
-            ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD'])
-            ->sum('total_price') ?? 0;
-        
-        // Cash sub-values: Deposits (pure deposits only) + Short Cash (ALL short cash)
-        $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
-        $cashDeposits = 0;
-        $shortCashTotal = 0;
-        
-        if ($nfCashAccount) {
-            // PURE deposits from riders (TYPE_EMPLOYEE_DEPOSIT only - no settlements)
-            $depositsQuery = LedgerModel::where('to_account_id', $nfCashAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
-                ->where('approval_status', LedgerModel::STATUS_APPROVED);
-            
-            if ($startDate && $endDate) {
-                $depositsQuery->whereBetween('transaction_date', [$startDate, $endDate]);
-            }
-            
-            $cashDeposits = $depositsQuery->sum('amount') ?? 0;
-            
-            // Short Cash: ALL short cash from rider balance (settled + unsettled)
-            // Purpose: Show how much of invoice amount was SHORT (used for expenses)
-            // Settlement status doesn't matter - we track that in account balance
-            
-            // Get ALL approved expense requests from rider accounts (regardless of settlement)
-            $shortCashTotal = \App\Models\Request\RequestModel::where('status', 'approved')
-            ->whereHas('category', function($q) {
-                $q->where('category_code', 'expense');
-                })
-                ->whereHas('paymentSourceAccount', function($q) {
-                    $q->where('account_category', 'employee_cash');
+        // === CASH INVOICES: Detailed Breakdown ===
+        // Use invoice ledger entries which have complete tracking
+        $cashInvoiceLedgers = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+            ->whereHas('order', function($q) use ($deliveredOrderIds) {
+                $q->whereIn('id', $deliveredOrderIds)
+                  ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD']);
             });
         
         if ($startDate && $endDate) {
-                $shortCashTotal->whereBetween('created_at', [$startDate, $endDate]);
-            }
-            
-            $shortCashTotal = $shortCashTotal->sum('amount') ?? 0;
+            $cashInvoiceLedgers->whereBetween('transaction_date', [$startDate, $endDate]);
         }
         
-        // Online invoices total (from orders)
-        $invoicesOnline = \DB::table('t_crm_prod_order')
-            ->whereIn('id', $deliveredOrderIds)
-            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
-            ->sum('total_price') ?? 0;
+        $cashInvoiceLedgers = $cashInvoiceLedgers->get();
         
-        // Online sub-values: Approved and Pending (from ledger)
-        $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
-        $onlineApproved = 0;
-        $onlinePending = 0;
-        if ($onlineAccount) {
-            $onlineQuery = LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED); // Exclude reversed transactions
+        // Calculate totals from invoice ledger entries
+        $invoicesCash = $cashInvoiceLedgers->sum('amount');
+        
+        // Use settled_amount field which is the source of truth
+        $cashSettledAmount = $cashInvoiceLedgers->sum('settled_amount');
+        $cashOpenAmount = $invoicesCash - $cashSettledAmount;
+        
+        // Get settlement breakdown using InvoiceSettlementModel so that we
+        // only count the portion of each deposit that actually settles
+        // invoices delivered in this period.
+        $cashInvoiceIds = $cashInvoiceLedgers->pluck('id')->toArray();
+        
+        $cashDeposited = 0;
+        $cashUsedInExpenses = 0;
+        $totalFromSettlements = 0;
+        
+        if (!empty($cashInvoiceIds)) {
+            // Fetch all settlement rows for these invoices with their deposit
+            $invoiceSettlements = InvoiceSettlementModel::whereIn('invoice_ledger_id', $cashInvoiceIds)
+                ->with('settlementDeposit')
+                ->get();
             
-            if ($startDate && $endDate) {
-                $onlineQuery->whereBetween('transaction_date', [$startDate, $endDate]);
+            foreach ($invoiceSettlements as $settlement) {
+                $deposit = $settlement->settlementDeposit;
+                if (!$deposit) {
+                    // No deposit record (legacy data) – treat entire amount as deposit
+                    $cashDeposited += $settlement->settled_amount;
+                    $totalFromSettlements += $settlement->settled_amount;
+                    continue;
+                }
+                
+                $metadata = $deposit->settlement_metadata;
+                $settledAmount = $settlement->settled_amount ?? 0;
+                $totalFromSettlements += $settledAmount;
+                
+                if ($metadata && isset($metadata['is_short_cash_settlement']) && $metadata['is_short_cash_settlement']) {
+                    // Short cash settlement: split this invoice's settled amount
+                    $depositAmount = $metadata['deposit_amount'] ?? 0;
+                    $shortCashAmount = $metadata['short_cash_amount'] ?? 0;
+                    $totalSettlementAmount = $depositAmount + $shortCashAmount;
+                    
+                    if ($totalSettlementAmount > 0) {
+                        $ratioDeposit = $depositAmount / $totalSettlementAmount;
+                        $ratioShort  = $shortCashAmount / $totalSettlementAmount;
+                        
+                        $cashDeposited      += $settledAmount * $ratioDeposit;
+                        $cashUsedInExpenses += $settledAmount * $ratioShort;
+                    } else {
+                        // Fallback: treat as regular deposit
+                        $cashDeposited += $settledAmount;
+                    }
+                } else {
+                    // Regular deposit: entire settled amount counts as deposited
+                    $cashDeposited += $settledAmount;
+                }
             }
-            
-            $onlineApproved = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_APPROVED)->sum('amount') ?? 0;
-            $onlinePending = (clone $onlineQuery)->where('approval_status', LedgerModel::STATUS_PENDING)->sum('amount') ?? 0;
         }
+        
+        // If there are settled invoices that don't have settlement rows
+        // (very old data), treat the difference as fully deposited so that
+        // Settled ≈ Deposited + Short Cash.
+        $unmappedSettled = $cashSettledAmount - $totalFromSettlements;
+        if ($unmappedSettled > 0) {
+            $cashDeposited += $unmappedSettled;
+        }
+        
+        // Pending with rider = invoices not yet settled (open status)
+        $cashPendingWithRider = $cashOpenAmount;
+        
+        // === ONLINE INVOICES: Detailed Breakdown ===
+        // Use invoice ledger entries for online invoices
+        $onlineInvoiceLedgers = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+            ->whereHas('order', function($q) use ($deliveredOrderIds) {
+                $q->whereIn('id', $deliveredOrderIds)
+                  ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment']);
+            });
+        
+        if ($startDate && $endDate) {
+            $onlineInvoiceLedgers->whereBetween('transaction_date', [$startDate, $endDate]);
+        }
+        
+        $onlineInvoiceLedgers = $onlineInvoiceLedgers->get();
+        
+        // Calculate totals from invoice ledger entries
+        $invoicesOnline = $onlineInvoiceLedgers->sum('amount');
+        $onlineApproved = $onlineInvoiceLedgers
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->sum('amount');
+
+        // Pending = any non-approved, non-reversed state (pending, L1, L2)
+        $onlinePending = $onlineInvoiceLedgers
+            ->filter(function ($invoice) {
+                return in_array($invoice->approval_status, [
+                    LedgerModel::STATUS_PENDING,
+                    LedgerModel::STATUS_PENDING_L1,
+                    LedgerModel::STATUS_PENDING_L2,
+                ], true);
+            })
+            ->sum('amount');
         
         // === KPI 2: ALL EXPENSES (from ledger, excluding vendor payments, including salaries) ===
         // Main value: ALL expenses from any account (ledger-based)
@@ -312,11 +363,13 @@ class EmployeeCashController extends Controller
         $profit = $totalInvoices - $totalExpenses - $vendorPurchases;
         
         $summaryKPIs = [
-            // Card 1: Invoices
+            // Card 1: Invoices (Enhanced with detailed breakdown)
             'total_invoices' => $totalInvoices,
             'invoices_cash' => $invoicesCash,
-            'cash_deposits' => $cashDeposits,
-            'short_cash_total' => $shortCashTotal,
+            'cash_settled' => $cashSettledAmount, // NEW: Total settled amount
+            'cash_deposited' => $cashDeposited,
+            'cash_used_in_expenses' => $cashUsedInExpenses,
+            'cash_pending_with_rider' => $cashPendingWithRider,
             'invoices_online' => $invoicesOnline,
             'online_approved' => $onlineApproved,
             'online_pending' => $onlinePending,
@@ -1525,6 +1578,255 @@ class EmployeeCashController extends Controller
             
             return back()->withInput()
                        ->with('error', 'Error recording short cash settlement: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Debug: Find settled invoices without settlement metadata
+     */
+    public function debugMissingMetadata(Request $request)
+    {
+        try {
+            $filterType = $request->input('filter_type', 'month');
+            $filterMonth = $request->input('filter_month');
+            
+            $startDate = null;
+            $endDate = null;
+            
+            if ($filterType === 'month' && $filterMonth) {
+                $startDate = \Carbon\Carbon::parse($filterMonth . '-01')->startOfMonth();
+                $endDate = \Carbon\Carbon::parse($filterMonth . '-01')->endOfMonth();
+            }
+            
+            // Get delivered order IDs
+            $invoicesQuery = \DB::table('t_crm_order_status_history')
+                ->where('status_code', 'delivered')
+                ->where('is_current', 1);
+            
+            if ($startDate && $endDate) {
+                $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+            }
+            
+            $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+            
+            // Get cash invoice ledgers that are settled
+            $settledCashInvoices = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+                ->whereHas('order', function($q) use ($deliveredOrderIds) {
+                    $q->whereIn('id', $deliveredOrderIds)
+                      ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD']);
+                })
+                ->where(function($q) {
+                    $q->where('settled_amount', '>', 0)
+                      ->orWhere('settlement_status', 'settled');
+                })
+                ->with(['order'])
+                ->get();
+            
+            $missingMetadata = [];
+            $hasMetadata = [];
+            
+            foreach ($settledCashInvoices as $invoice) {
+                // Try to find settlement deposit
+                $settlementDeposit = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                    ->whereIn('approval_status', [
+                        LedgerModel::STATUS_APPROVED,
+                        LedgerModel::STATUS_PENDING,
+                        LedgerModel::STATUS_PENDING_L1,
+                        LedgerModel::STATUS_PENDING_L2,
+                    ])
+                    ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id)
+                    ->first();
+                
+                $info = [
+                    'invoice_id' => $invoice->id,
+                    'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                    'amount' => $invoice->amount,
+                    'settled_amount' => $invoice->settled_amount,
+                    'settlement_status' => $invoice->settlement_status,
+                    'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
+                ];
+                
+                if (!$settlementDeposit || !$settlementDeposit->settlement_metadata) {
+                    $missingMetadata[] = $info;
+                } else {
+                    $hasMetadata[] = array_merge($info, [
+                        'deposit_id' => $settlementDeposit->id,
+                        'is_short_cash' => $settlementDeposit->settlement_metadata['is_short_cash_settlement'] ?? false,
+                        'deposit_amount' => $settlementDeposit->settlement_metadata['deposit_amount'] ?? $settlementDeposit->amount,
+                        'expense_amount' => $settlementDeposit->settlement_metadata['short_cash_amount'] ?? 0,
+                    ]);
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'summary' => [
+                    'total_settled' => $settledCashInvoices->count(),
+                    'with_metadata' => count($hasMetadata),
+                    'missing_metadata' => count($missingMetadata),
+                    'total_settled_amount' => $settledCashInvoices->sum('settled_amount'),
+                    'metadata_deposit_total' => collect($hasMetadata)->sum('deposit_amount'),
+                    'metadata_expense_total' => collect($hasMetadata)->sum('expense_amount'),
+                ],
+                'missing_metadata_invoices' => $missingMetadata,
+                'has_metadata_invoices' => $hasMetadata,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error("Error in debugMissingMetadata: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get detailed invoice breakdown for the invoices card modal
+     */
+    public function getInvoiceBreakdown(Request $request)
+    {
+        try {
+            // Get filter parameters
+            $filterType = $request->input('filter_type', 'month'); // day, month, custom
+            $filterDate = $request->input('filter_date');
+            $filterMonth = $request->input('filter_month');
+            $filterStartDate = $request->input('filter_start_date');
+            $filterEndDate = $request->input('filter_end_date');
+            
+            // Modal-specific filters
+            $paymentMethod = $request->input('payment_method', 'all'); // all, cash, online
+            $settlementStatus = $request->input('settlement_status', 'all'); // all, settled, open
+            
+            // Determine date range
+            $startDate = null;
+            $endDate = null;
+            
+            if ($filterType === 'day') {
+                $startDate = \Carbon\Carbon::parse($filterDate)->startOfDay();
+                $endDate = \Carbon\Carbon::parse($filterDate)->endOfDay();
+            } elseif ($filterType === 'month') {
+                $startDate = \Carbon\Carbon::parse($filterMonth . '-01')->startOfMonth();
+                $endDate = \Carbon\Carbon::parse($filterMonth . '-01')->endOfMonth();
+            } elseif ($filterType === 'custom' && $filterStartDate && $filterEndDate) {
+                $startDate = \Carbon\Carbon::parse($filterStartDate)->startOfDay();
+                $endDate = \Carbon\Carbon::parse($filterEndDate)->endOfDay();
+            }
+            
+            // Get delivered order IDs for the period
+            $invoicesQuery = \DB::table('t_crm_order_status_history')
+                ->where('status_code', 'delivered')
+                ->where('is_current', 1);
+            
+            if ($startDate && $endDate) {
+                $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+            }
+            
+            $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+            
+            // Get invoice ledger entries
+            $query = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+                ->whereHas('order', function($q) use ($deliveredOrderIds) {
+                    $q->whereIn('id', $deliveredOrderIds);
+                })
+                ->with(['order.customer', 'toAccount.user']);
+            
+            if ($startDate && $endDate) {
+                $query->whereBetween('transaction_date', [$startDate, $endDate]);
+            }
+            
+            // Apply payment method filter
+            if ($paymentMethod === 'cash') {
+                $query->whereHas('order', function($q) {
+                    $q->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD']);
+                });
+            } elseif ($paymentMethod === 'online') {
+                $query->whereHas('order', function($q) {
+                    $q->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment']);
+                });
+            }
+            
+            // Apply settlement status filter
+            if ($settlementStatus === 'settled') {
+                $query->where('settlement_status', 'settled');
+            } elseif ($settlementStatus === 'open') {
+                $query->whereIn('settlement_status', ['open', 'partial']);
+            }
+            
+            $invoices = $query->orderBy('transaction_date', 'desc')->get();
+            
+            // Enhance each invoice with settlement details
+            $invoices = $invoices->map(function($invoice) {
+                $settlementDetails = null;
+                
+                // Get settlement deposit that settled this invoice
+                $settlementDeposit = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                    ->whereIn('approval_status', [
+                        LedgerModel::STATUS_APPROVED,
+                        LedgerModel::STATUS_PENDING,
+                        LedgerModel::STATUS_PENDING_L1,
+                        LedgerModel::STATUS_PENDING_L2,
+                    ])
+                    ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id)
+                    ->first();
+                
+                if ($settlementDeposit && $settlementDeposit->settlement_metadata) {
+                    $metadata = $settlementDeposit->settlement_metadata;
+                    $settlementDetails = [
+                        'deposit_id' => $settlementDeposit->id,
+                        'deposit_date' => $settlementDeposit->transaction_date,
+                        'approval_status' => $settlementDeposit->approval_status,
+                        'is_short_cash' => $metadata['is_short_cash_settlement'] ?? false,
+                        'deposit_amount' => $metadata['deposit_amount'] ?? $settlementDeposit->amount,
+                        'expense_amount' => $metadata['short_cash_amount'] ?? 0,
+                        'expense_category' => $metadata['expense_category'] ?? null,
+                    ];
+                }
+                
+                return [
+                    'id' => $invoice->id,
+                    'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                    'customer_name' => $invoice->order ? $invoice->order->customer_name : 'N/A',
+                    'rider_name' => $invoice->toAccount && $invoice->toAccount->user ? $invoice->toAccount->user->fullname : 'N/A',
+                    'transaction_date' => $invoice->transaction_date->format('M j, Y'),
+                    'payment_method' => $invoice->order ? $invoice->order->payment_method : 'N/A',
+                    'amount' => $invoice->amount,
+                    'settled_amount' => $invoice->settled_amount ?? 0,
+                    'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0),
+                    'settlement_status' => $invoice->settlement_status,
+                    'approval_status' => $invoice->approval_status,
+                    'settlement_details' => $settlementDetails,
+                ];
+            });
+            
+            // Calculate summary
+            $summary = [
+                'total_count' => $invoices->count(),
+                'total_amount' => $invoices->sum('amount'),
+                'settled_amount' => $invoices->sum('settled_amount'),
+                'outstanding_amount' => $invoices->sum('outstanding_amount'),
+                'cash_count' => $invoices->where('payment_method', 'cash')->count() + $invoices->where('payment_method', 'Cash')->count() + $invoices->where('payment_method', 'COD')->count(),
+                'cash_amount' => $invoices->whereIn('payment_method', ['cash', 'Cash', 'COD', 'cash_on_delivery'])->sum('amount'),
+                'online_count' => $invoices->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])->count(),
+                'online_amount' => $invoices->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])->sum('amount'),
+                'settled_count' => $invoices->where('settlement_status', 'settled')->count(),
+                'open_count' => $invoices->whereIn('settlement_status', ['open', 'partial'])->count(),
+            ];
+            
+            return response()->json([
+                'success' => true,
+                'invoices' => $invoices->values(),
+                'summary' => $summary,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error("Error getting invoice breakdown: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error loading invoice breakdown: ' . $e->getMessage()
+            ], 500);
         }
     }
 

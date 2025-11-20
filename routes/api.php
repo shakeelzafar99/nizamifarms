@@ -110,6 +110,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/ledger/settle', [\App\Http\Controllers\API\RiderController::class, 'settleInvoices']);
         Route::post('/ledger/settle-short-cash', [\App\Http\Controllers\API\RiderController::class, 'settleShortCash']);
         
+        // Overall Ledger
+        Route::get('/overall-ledger', [\App\Http\Controllers\API\RiderController::class, 'getOverallLedger']);
+        
+        // Daily Closing (Invoice Tracker)
+        Route::get('/daily-closing', [\App\Http\Controllers\API\RiderController::class, 'getDailyClosing']);
+        Route::post('/daily-closing/approve/{id}', [\App\Http\Controllers\API\RiderController::class, 'approveDailyClosingSettlement']);
+        Route::post('/daily-closing/reject/{id}', [\App\Http\Controllers\API\RiderController::class, 'rejectDailyClosingSettlement']);
+        
         // Attendance
         Route::get('/attendance/today', [\App\Http\Controllers\API\RiderController::class, 'getTodayAttendance']);
         Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);
@@ -175,6 +183,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
     Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
     Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
+    
+    // Overall Ledger (Store Mode - requires view_nf_ledger permission)
+    Route::get('/overall-ledger', [\App\Http\Controllers\API\RiderController::class, 'getOverallLedger']);
     
     // Store Attendance (Store Mode - requires view_store_attendance permission)
     Route::get('/store-attendance/daily', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceDaily']);

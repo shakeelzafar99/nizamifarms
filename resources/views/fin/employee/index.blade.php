@@ -1,6 +1,111 @@
 @extends('layouts.app')
 
 @section('content')
+
+<!-- Invoice Breakdown Modal - Matching Audit Modal Style -->
+<div id="invoiceBreakdownModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;">
+    <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 1400px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        
+        <!-- Fixed Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #e9d5ff 0%, #ddd6fe 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #a855f7, #7c3aed); display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 2px 8px rgba(168, 85, 247, 0.3);">
+                    📋
+                </div>
+                <div>
+                    <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Invoice Breakdown Details</h3>
+                    <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">Complete invoice tracking with settlement details</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeInvoiceBreakdownModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+        </div>
+        
+        <!-- Filter Section -->
+        <div style="padding: 16px 24px; border-bottom: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0;">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: end;">
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #374151; margin-bottom: 4px;">Payment Method</label>
+                    <select id="modalPaymentMethod" onchange="loadInvoiceBreakdown()" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none; background: white;">
+                        <option value="all">All Methods</option>
+                        <option value="cash">Cash Only</option>
+                        <option value="online">Online Only</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display: block; font-size: 12px; font-weight: 500; color: #374151; margin-bottom: 4px;">Settlement Status</label>
+                    <select id="modalSettlementStatus" onchange="loadInvoiceBreakdown()" style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none; background: white;">
+                        <option value="all">All Statuses</option>
+                        <option value="settled">Settled Only</option>
+                        <option value="open">Open/Partial Only</option>
+                    </select>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button onclick="loadInvoiceBreakdown()" style="padding: 8px 16px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; font-weight: 600; font-size: 13px; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 4px rgba(99, 102, 241, 0.3); transition: all 0.15s;">
+                        🔍 Apply
+                    </button>
+                    <button onclick="resetModalFilters()" style="padding: 8px 16px; background: #e5e7eb; color: #374151; font-weight: 600; font-size: 13px; border: none; border-radius: 8px; cursor: pointer; transition: all 0.15s;">
+                        Clear
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scrollable Content -->
+        <div style="overflow-y: auto; flex: 1; padding: 24px; background: #f9fafb;">
+            
+            <!-- Summary Cards -->
+            <div id="modalSummaryCards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                <!-- Will be populated by JavaScript -->
+            </div>
+
+            <!-- Loading State -->
+            <div id="modalLoading" style="text-align: center; padding: 48px 0;">
+                <div style="display: inline-block; width: 48px; height: 48px; border: 4px solid #e5e7eb; border-top-color: #8b5cf6; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                <p style="margin-top: 16px; font-size: 16px; font-weight: 500; color: #6b7280;">Loading invoice details...</p>
+            </div>
+
+            <!-- Invoice Table -->
+            <div id="modalInvoiceTable" style="display: none; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e5e7eb;">
+                <div style="overflow-x: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <thead style="background: linear-gradient(135deg, #a855f7, #7c3aed); color: white;">
+                            <tr>
+                                <th style="padding: 12px 16px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Order #</th>
+                                <th style="padding: 12px 16px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Customer</th>
+                                <th style="padding: 12px 16px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Rider</th>
+                                <th style="padding: 12px 16px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Date</th>
+                                <th style="padding: 12px 16px; text-align: left; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Method</th>
+                                <th style="padding: 12px 16px; text-align: right; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Amount</th>
+                                <th style="padding: 12px 16px; text-align: right; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Settled</th>
+                                <th style="padding: 12px 16px; text-align: right; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Outstanding</th>
+                                <th style="padding: 12px 16px; text-align: center; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Status</th>
+                                <th style="padding: 12px 16px; text-align: center; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Settlement</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modalInvoiceTableBody" style="background: white;">
+                            <!-- Will be populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- No Results -->
+            <div id="modalNoResults" style="display: none; text-align: center; padding: 64px 0;">
+                <div style="font-size: 64px; margin-bottom: 16px;">📭</div>
+                <h3 style="font-size: 20px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">No Invoices Found</h3>
+                <p style="font-size: 14px; color: #9ca3af;">Try adjusting your filters to see more results.</p>
+            </div>
+        </div>
+        
+        <!-- Fixed Footer -->
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; justify-content: flex-end;">
+            <button onclick="closeInvoiceBreakdownModal()" style="padding: 10px 24px; background: linear-gradient(135deg, #a855f7, #7c3aed); color: white; font-weight: 600; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 4px rgba(168, 85, 247, 0.3); transition: all 0.15s;">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
 <div class="max-w-7xl mx-auto p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-semibold text-gray-900">Employee Cash</h1>
@@ -138,30 +243,42 @@
 
     <!-- Summary KPI Cards (Enhanced - 5 Cards) -->
     <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
-        <!-- Card 1: Invoices Delivered -->
-        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200">
+        <!-- Card 1: Invoices Delivered (Enhanced with detailed settlement tracking) - CLICKABLE -->
+        <div class="bg-white rounded-lg shadow-sm p-3 border border-gray-200 cursor-pointer hover:shadow-md hover:border-blue-300 transition-all" onclick="openInvoiceBreakdownModal()">
             <div class="flex items-center gap-2 mb-2">
                 <span class="text-xl">📄</span>
                 <span class="text-xs font-semibold text-gray-600 uppercase">Invoices</span>
+                <span class="ml-auto text-xs text-blue-600">🔍 Click for details</span>
             </div>
             <div class="text-xl font-bold text-gray-900">Rs. {{ number_format($summaryKPIs['total_invoices'], 0) }}</div>
             <div class="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-500">
-                <div class="font-medium text-gray-700 mb-1">💵 Cash:</div>
+                <!-- Cash Breakdown -->
+                <div class="font-medium text-gray-700 mb-1">💵 Cash: Rs. {{ number_format($summaryKPIs['invoices_cash'], 0) }}</div>
                 <div class="flex justify-between pl-2">
-                    <span>Deposits:</span>
-                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['cash_deposits'], 0) }}</span>
+                    <span>→ Settled:</span>
+                    <span class="font-medium text-green-600">Rs. {{ number_format($summaryKPIs['cash_settled'], 0) }}</span>
                 </div>
-                <div class="flex justify-between pl-2 mt-1">
-                    <span>Short Cash:</span>
-                    <span class="font-medium text-orange-600">Rs. {{ number_format($summaryKPIs['short_cash_total'], 0) }}</span>
+                <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                    <span class="pl-2">• Deposited:</span>
+                    <span class="font-medium text-green-700">Rs. {{ number_format($summaryKPIs['cash_deposited'], 0) }}</span>
                 </div>
-                <div class="font-medium text-gray-700 mb-1 mt-2">💳 Online:</div>
+                <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                    <span class="pl-2">• Short Cash:</span>
+                    <span class="font-medium text-blue-600">Rs. {{ number_format($summaryKPIs['cash_used_in_expenses'], 0) }}</span>
+                </div>
+                <div class="flex justify-between pl-2 mt-0.5">
+                    <span>→ Open:</span>
+                    <span class="font-medium text-orange-600">Rs. {{ number_format($summaryKPIs['cash_pending_with_rider'], 0) }}</span>
+                </div>
+                
+                <!-- Online Breakdown -->
+                <div class="font-medium text-gray-700 mb-1 mt-2">💳 Online: Rs. {{ number_format($summaryKPIs['invoices_online'], 0) }}</div>
                 <div class="flex justify-between pl-2">
-                    <span>✓ Approved:</span>
-                    <span class="font-medium">Rs. {{ number_format($summaryKPIs['online_approved'], 0) }}</span>
+                    <span>→ Approved:</span>
+                    <span class="font-medium text-green-600">Rs. {{ number_format($summaryKPIs['online_approved'], 0) }}</span>
                 </div>
-                <div class="flex justify-between pl-2 mt-1">
-                    <span>⏳ Pending:</span>
+                <div class="flex justify-between pl-2 mt-0.5">
+                    <span>→ Pending:</span>
                     <span class="font-medium text-yellow-600">Rs. {{ number_format($summaryKPIs['online_pending'], 0) }}</span>
                 </div>
             </div>
@@ -785,5 +902,189 @@ function closeAuditModal() {
         </div>
     @endif
 </div>
+
+<script>
+// Store current filter state
+let currentFilterType = '{{ $summaryKPIs['filter_type'] ?? 'month' }}';
+let currentFilterDate = '{{ $summaryKPIs['filter_date'] ?? '' }}';
+let currentFilterMonth = '{{ $summaryKPIs['filter_month'] ?? '' }}';
+let currentFilterStartDate = '{{ $summaryKPIs['filter_start_date'] ?? '' }}';
+let currentFilterEndDate = '{{ $summaryKPIs['filter_end_date'] ?? '' }}';
+
+function openInvoiceBreakdownModal() {
+    const modal = document.getElementById('invoiceBreakdownModal');
+    if (!modal) return;
+
+    // Portalize to body (same pattern as audit modal)
+    if (modal.parentElement !== document.body) {
+        document.body.appendChild(modal);
+    }
+
+    // Show modal with inline styles (matching audit modal)
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    
+    // Load data
+    loadInvoiceBreakdown();
+}
+
+function closeInvoiceBreakdownModal() {
+    const modal = document.getElementById('invoiceBreakdownModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+}
+
+function resetModalFilters() {
+    document.getElementById('modalPaymentMethod').value = 'all';
+    document.getElementById('modalSettlementStatus').value = 'all';
+    loadInvoiceBreakdown();
+}
+
+function loadInvoiceBreakdown() {
+    // Show loading
+    document.getElementById('modalLoading').style.display = 'block';
+    document.getElementById('modalInvoiceTable').style.display = 'none';
+    document.getElementById('modalNoResults').style.display = 'none';
+
+    // Get filter values
+    const paymentMethod = document.getElementById('modalPaymentMethod').value;
+    const settlementStatus = document.getElementById('modalSettlementStatus').value;
+
+    // Build URL with filters
+    const url = new URL('{{ route('fin.employee.invoice-breakdown') }}', window.location.origin);
+    url.searchParams.append('filter_type', currentFilterType);
+    if (currentFilterDate) url.searchParams.append('filter_date', currentFilterDate);
+    if (currentFilterMonth) url.searchParams.append('filter_month', currentFilterMonth);
+    if (currentFilterStartDate) url.searchParams.append('filter_start_date', currentFilterStartDate);
+    if (currentFilterEndDate) url.searchParams.append('filter_end_date', currentFilterEndDate);
+    url.searchParams.append('payment_method', paymentMethod);
+    url.searchParams.append('settlement_status', settlementStatus);
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                renderSummaryCards(data.summary);
+                renderInvoiceTable(data.invoices);
+                
+                // Hide loading
+                document.getElementById('modalLoading').style.display = 'none';
+                
+                if (data.invoices.length > 0) {
+                    document.getElementById('modalInvoiceTable').style.display = 'block';
+                } else {
+                    document.getElementById('modalNoResults').style.display = 'block';
+                }
+            } else {
+                alert('Error loading invoice breakdown: ' + data.message);
+                document.getElementById('modalLoading').style.display = 'none';
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading invoice breakdown');
+            document.getElementById('modalLoading').style.display = 'none';
+        });
+}
+
+function renderSummaryCards(summary) {
+    const container = document.getElementById('modalSummaryCards');
+    container.innerHTML = `
+        <div style="background: linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%); border: 2px solid #e9d5ff; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="font-size: 11px; font-weight: 600; color: #7c3aed; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Total Invoices</div>
+            <div style="font-size: 28px; font-weight: 700; color: #6b21a8; margin-bottom: 4px;">${summary.total_count}</div>
+            <div style="font-size: 13px; font-weight: 600; color: #7c3aed;">Rs. ${formatNumber(summary.total_amount)}</div>
+        </div>
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 2px solid #bbf7d0; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="font-size: 11px; font-weight: 600; color: #059669; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Settled Amount</div>
+            <div style="font-size: 28px; font-weight: 700; color: #065f46; margin-bottom: 4px;">Rs. ${formatNumber(summary.settled_amount)}</div>
+            <div style="font-size: 13px; font-weight: 600; color: #059669;">${Math.round((summary.settled_amount / summary.total_amount) * 100)}% of total</div>
+        </div>
+        <div style="background: linear-gradient(135deg, #fff7ed 0%, #fed7aa 100%); border: 2px solid #fdba74; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="font-size: 11px; font-weight: 600; color: #ea580c; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Outstanding</div>
+            <div style="font-size: 28px; font-weight: 700; color: #9a3412; margin-bottom: 4px;">Rs. ${formatNumber(summary.outstanding_amount)}</div>
+            <div style="font-size: 13px; font-weight: 600; color: #ea580c;">${Math.round((summary.outstanding_amount / summary.total_amount) * 100)}% of total</div>
+        </div>
+        <div style="background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #93c5fd; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div style="font-size: 11px; font-weight: 600; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Cash vs Online</div>
+            <div style="font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: 4px;">💵 ${summary.cash_count} | 💳 ${summary.online_count}</div>
+            <div style="font-size: 11px; font-weight: 600; color: #1e40af;">Rs. ${formatNumber(summary.cash_amount)} | Rs. ${formatNumber(summary.online_amount)}</div>
+        </div>
+    `;
+}
+
+function renderInvoiceTable(invoices) {
+    const tbody = document.getElementById('modalInvoiceTableBody');
+    tbody.innerHTML = '';
+
+    invoices.forEach((invoice, index) => {
+        const statusBadge = getStatusBadge(invoice.settlement_status);
+        const settlementInfo = getSettlementInfo(invoice.settlement_details);
+        const bgColor = index % 2 === 0 ? '#ffffff' : '#f9fafb';
+        const isCash = invoice.payment_method.toLowerCase().includes('cash');
+        
+        const row = `
+            <tr style="background: ${bgColor}; transition: background 0.15s;">
+                <td style="padding: 12px 16px; font-weight: 600; color: #7c3aed;">${invoice.order_number}</td>
+                <td style="padding: 12px 16px; color: #374151;">${invoice.customer_name}</td>
+                <td style="padding: 12px 16px; color: #6b7280;">${invoice.rider_name}</td>
+                <td style="padding: 12px 16px; color: #6b7280;">${invoice.transaction_date}</td>
+                <td style="padding: 12px 16px;">
+                    <span style="padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 12px; background: ${isCash ? '#d1fae5' : '#dbeafe'}; color: ${isCash ? '#065f46' : '#1e40af'};">
+                        ${isCash ? '💵 Cash' : '💳 Online'}
+                    </span>
+                </td>
+                <td style="padding: 12px 16px; text-align: right; font-weight: 600; color: #111827;">Rs. ${formatNumber(invoice.amount)}</td>
+                <td style="padding: 12px 16px; text-align: right; font-weight: 600; color: #059669;">Rs. ${formatNumber(invoice.settled_amount)}</td>
+                <td style="padding: 12px 16px; text-align: right; font-weight: 600; color: #ea580c;">Rs. ${formatNumber(invoice.outstanding_amount)}</td>
+                <td style="padding: 12px 16px; text-align: center;">${statusBadge}</td>
+                <td style="padding: 12px 16px; font-size: 12px;">${settlementInfo}</td>
+            </tr>
+        `;
+        tbody.innerHTML += row;
+    });
+}
+
+function getStatusBadge(status) {
+    const badges = {
+        'settled': '<span style="padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 12px; background: #d1fae5; color: #065f46; display: inline-block;">✅ Settled</span>',
+        'partial': '<span style="padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 12px; background: #fef3c7; color: #92400e; display: inline-block;">🟡 Partial</span>',
+        'open': '<span style="padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 12px; background: #fee2e2; color: #991b1b; display: inline-block;">🔴 Open</span>'
+    };
+    return badges[status] || badges['open'];
+}
+
+function getSettlementInfo(details) {
+    if (!details) return '<span style="color: #9ca3af;">Not settled</span>';
+    
+    if (details.is_short_cash) {
+        return `
+            <div style="text-align: left;">
+                <div style="font-weight: 600; color: #059669; margin-bottom: 2px;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
+                <div style="color: #ea580c; margin-bottom: 2px;">🧾 Rs. ${formatNumber(details.expense_amount)}</div>
+                <div style="font-size: 10px; color: #9ca3af;">${details.expense_category || 'Expense'}</div>
+            </div>
+        `;
+    } else {
+        return `<div style="font-weight: 600; color: #059669;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>`;
+    }
+}
+
+function formatNumber(num) {
+    return new Intl.NumberFormat('en-PK').format(Math.round(num));
+}
+
+// Close modal on escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeInvoiceBreakdownModal();
+    }
+});
+</script>
+
 @endsection
 

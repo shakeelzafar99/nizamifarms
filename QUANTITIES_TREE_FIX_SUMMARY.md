@@ -156,3 +156,4 @@ if (filters && (filters.product_ids || filters.product_id || filters.product_nam
 - The web app uses dynamic hierarchy from settings; mobile uses fixed for performance
 - Smart sync interval can be adjusted in `NizamiFarmsMobile/src/config/sync.js` if needed
 
+

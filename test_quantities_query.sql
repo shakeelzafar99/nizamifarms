@@ -50,3 +50,4 @@ ORDER BY o.order_date DESC;
 -- 4. What values do you see in attribute_2? (Should be: Whole Chicken, Boneless, Wings, etc.)
 -- 5. Are the p.id (product_id) values populated or NULL?
 
+

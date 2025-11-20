@@ -13,6 +13,10 @@ use Carbon\Carbon;
 use App\Models\HR\SalarySlipModel;
 use App\Models\HR\EmployeeLoanModel;
 use App\Models\HR\EmployeeProfileModel;
+use App\Models\FIN\AccountModel;
+use App\Models\FIN\LedgerModel;
+use App\Models\FIN\ConfigModel;
+use App\Models\Request\RequestModel;
 
 class RiderController extends Controller
 {
@@ -671,12 +675,10 @@ class RiderController extends Controller
                 ]);
             }
 
-            // Calculate balance from APPROVED transactions only (match webapp logic)
-            $balance = \App\Models\FIN\LedgerModel::where('from_account_id', $account->id)
-                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
-                ->sum('amount') - \App\Models\FIN\LedgerModel::where('to_account_id', $account->id)
-                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
-                ->sum('amount');
+            // Use the account's current_balance (same as web app)
+            // This is the single source of truth - it includes opening balance
+            // and is automatically updated when transactions are approved/reversed
+            $balance = $account->current_balance;
 
             // Get recent transactions (last 30 days)
             $recentTransactions = \App\Models\FIN\LedgerModel::where(function($q) use ($account) {
@@ -701,9 +703,11 @@ class RiderController extends Controller
             });
 
             // Get outstanding invoices count and total
+            // IMPORTANT: Include both 'open' and 'partial' statuses, exclude REVERSED transactions
             $outstandingInvoices = \App\Models\FIN\LedgerModel::where('to_account_id', $account->id)
                 ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
-                ->where('settlement_status', 'open')
+                ->whereIn('settlement_status', ['open', 'partial'])
+                ->where('approval_status', '!=', \App\Models\FIN\LedgerModel::STATUS_REVERSED)
                 ->get();
 
             $totalOutstanding = $outstandingInvoices->sum(function($invoice) {
@@ -742,20 +746,32 @@ class RiderController extends Controller
     public function getExpenseCategories(Request $request)
     {
         try {
-            // Get categories from existing expenses (like webapp does)
-            $categories = \App\Models\Request\RequestModel::whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance']);
-                })
-                ->whereNotNull('expense_category')
-                ->where('expense_category', '!=', '')
-                ->distinct()
-                ->pluck('expense_category')
-                ->sort()
-                ->values()
-                ->toArray();
+            $user = Auth::user();
+            
+            // Check if user has admin role (super_admin or admin type)
+            $isAdmin = $user->roles()
+                ->whereIn('type', ['super_admin', 'admin'])
+                ->exists();
+            
+            if ($isAdmin) {
+                // Admin users: Get all categories from existing expenses
+                $categories = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                        $q->whereIn('category_code', ['expense', 'salary_advance']);
+                    })
+                    ->whereNotNull('expense_category')
+                    ->where('expense_category', '!=', '')
+                    ->distinct()
+                    ->pluck('expense_category')
+                    ->sort()
+                    ->values()
+                    ->toArray();
 
-            // Add PENDING as a special option at the top for partial payments
-            array_unshift($categories, 'PENDING');
+                // Add PENDING as a special option at the top for partial payments
+                array_unshift($categories, 'PENDING');
+            } else {
+                // Non-admin users: Limited categories only
+                $categories = ['Petrol', 'Maintenance', 'PENDING'];
+            }
 
             return response()->json([
                 'success' => true,
@@ -3069,9 +3085,9 @@ class RiderController extends Controller
                                 $listItem['non_lean_quantity'] = $currentMap[$orderKey]['non_lean_quantity'];
                                 $listItem['processing_quantity'] = $currentMap[$orderKey]['processing_quantity'];
                                 $listItem['prepared_quantity'] = $currentMap[$orderKey]['prepared_quantity'];
-                                break;
+                                    break;
+                                }
                             }
-                        }
                         unset($listItem);
                         
                         // Log successful update (only first few for debugging)
@@ -3230,13 +3246,13 @@ class RiderController extends Controller
                 
                 // DEBUG: Log if order node quantity changed
                 if ($isOrderNode) {
-                    Log::debug('🔧 finalizeNode on order node', [
-                        'order_id' => $node['order_id'] ?? 'N/A',
-                        'order_name' => $node['name'] ?? 'N/A',
-                        'quantity_before' => $qtyBefore,
-                        'quantity_after' => $node['quantity'] ?? 'N/A',
-                        'has_children' => !empty($node['children']),
-                    ]);
+                        Log::debug('🔧 finalizeNode on order node', [
+                            'order_id' => $node['order_id'] ?? 'N/A',
+                            'order_name' => $node['name'] ?? 'N/A',
+                            'quantity_before' => $qtyBefore,
+                            'quantity_after' => $node['quantity'] ?? 'N/A',
+                            'has_children' => !empty($node['children']),
+                        ]);
                 }
             };
 
@@ -3261,8 +3277,8 @@ class RiderController extends Controller
                                                         'check_num' => $orderCheckCount,
                                                     ]);
                                                     $orderCheckCount++;
-                                                }
-                                            }
+                    }
+                }
                                         }
                                     }
                                 }
@@ -3271,7 +3287,7 @@ class RiderController extends Controller
                     }
                 }
             }
-            
+
             foreach ($tree as &$rootNode) {
                 $finalizeNode($rootNode);
             }
@@ -5305,6 +5321,852 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to load ledger details: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Get Overall Ledger Summary (for mobile app)
+     * Reuses same logic as LedgerController for consistency
+     */
+    public function getOverallLedger(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission (reuse view_nf_ledger for now)
+            if (!$user->hasMobilePermission('view_nf_ledger')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view Overall Ledger'
+                ], 403);
+            }
+            
+            // Get date range for filters (default to current month)
+            $startDate = $request->input('start_date', now()->startOfMonth()->format('Y-m-d'));
+            $endDate = $request->input('end_date', now()->endOfMonth()->format('Y-m-d'));
+            
+            // Calculate KPIs (same logic as web app)
+            $kpis = $this->calculateOverallLedgerKPIs($startDate, $endDate);
+            
+            // Get recent transactions (limited to 50 for mobile)
+            $query = \App\Models\FIN\LedgerModel::with(['fromAccount', 'toAccount', 'order']);
+            
+            // Filter by date range
+            if ($startDate && $endDate) {
+                $query->whereBetween('transaction_date', [$startDate, $endDate]);
+            }
+            
+            // Apply filters if provided
+            if ($request->has('type') && $request->input('type')) {
+                $query->where('transaction_type', $request->input('type'));
+            }
+            
+            if ($request->has('mode') && $request->input('mode')) {
+                $query->where('mode', $request->input('mode'));
+            }
+            
+            if ($request->has('status') && $request->input('status')) {
+                $query->where('approval_status', $request->input('status'));
+            }
+            
+            // Special vendor filter
+            if ($request->has('vendor_filter') && $request->input('vendor_filter')) {
+                $query->whereIn('transaction_type', [
+                    \App\Models\FIN\LedgerModel::TYPE_VENDOR_PURCHASE,
+                    \App\Models\FIN\LedgerModel::TYPE_VENDOR_PAYMENT
+                ]);
+            }
+            
+            $transactions = $query->orderBy('transaction_date', 'desc')
+                                  ->orderBy('created_at', 'desc')
+                                  ->limit(50)
+                                  ->get()
+                                  ->map(function($txn) {
+                                      return [
+                                          'id' => $txn->id,
+                                          'date' => $txn->transaction_date->format('Y-m-d'),
+                                          'type' => $txn->transaction_type,
+                                          'type_label' => ucfirst(str_replace('_', ' ', $txn->transaction_type)),
+                                          'from_account' => $txn->fromAccount ? $txn->fromAccount->account_name : 'N/A',
+                                          'to_account' => $txn->toAccount ? $txn->toAccount->account_name : 'N/A',
+                                          'description' => $txn->description,
+                                          'amount' => $txn->amount,
+                                          'amount_formatted' => 'Rs. ' . number_format($txn->amount, 2),
+                                          'mode' => $txn->mode,
+                                          'approval_status' => $txn->approval_status,
+                                      ];
+                                  });
+            
+            return response()->json([
+                'success' => true,
+                'kpis' => $kpis,
+                'transactions' => $transactions,
+                'date_range' => [
+                    'start_date' => $startDate,
+                    'end_date' => $endDate
+                ]
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get overall ledger', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load overall ledger: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Calculate Overall Ledger KPIs (reuses LedgerController logic)
+     */
+    private function calculateOverallLedgerKPIs($startDate, $endDate)
+    {
+        // Get delivered order IDs for the period (using status history table)
+        $invoicesQuery = \DB::table('t_crm_order_status_history')
+            ->where('status_code', 'delivered')
+            ->where('is_current', 1);
+        
+        if ($startDate && $endDate) {
+            $invoicesQuery->whereBetween('changed_at', [$startDate, $endDate]);
+        }
+        
+        $deliveredOrderIds = $invoicesQuery->pluck('order_id');
+        
+        // === KPI 1: INVOICES ===
+        $totalInvoices = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->sum('total_price') ?? 0;
+        
+        $invoicesCash = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['cash', 'cash_on_delivery', 'Cash', 'COD'])
+            ->sum('total_price') ?? 0;
+        
+        $nfCashAccount = \App\Models\FIN\AccountModel::where('account_code', 'NF_CASH')->first();
+        $cashDeposits = 0;
+        $shortCashTotal = 0;
+        
+        if ($nfCashAccount) {
+            $cashDeposits = \App\Models\FIN\LedgerModel::where('to_account_id', $nfCashAccount->id)
+                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+            
+            $shortCashTotal = \App\Models\Request\RequestModel::where('status', 'approved')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->whereHas('paymentSourceAccount', function($q) {
+                    $q->where('account_category', 'employee_cash');
+                })
+                ->whereBetween('created_at', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+        }
+        
+        $invoicesOnline = \DB::table('t_crm_prod_order')
+            ->whereIn('id', $deliveredOrderIds)
+            ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
+            ->sum('total_price') ?? 0;
+        
+        $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')->first();
+        $onlineApproved = 0;
+        $onlinePending = 0;
+        
+        if ($onlineAccount) {
+            $onlineApproved = \App\Models\FIN\LedgerModel::where('to_account_id', $onlineAccount->id)
+                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+            
+            $onlinePending = \App\Models\FIN\LedgerModel::where('to_account_id', $onlineAccount->id)
+                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->sum('amount') ?? 0;
+        }
+        
+        // === KPI 2: EXPENSES ===
+        $ledgerExpenses = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EXPENSE)
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $salaryExpenses = \App\Models\HR\SalarySlipModel::whereIn('slip_status', ['approved', 'paid'])
+            ->whereNotNull('ledger_transaction_id')
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->sum('net_salary') ?? 0;
+        
+        $totalExpenses = $ledgerExpenses + $salaryExpenses;
+        
+        $expensesNeedingSettlement = \App\Models\Request\RequestModel::where('status', 'approved')
+            ->where('settlement_status', 'pending')
+            ->whereHas('category', function($q) {
+                $q->where('category_code', 'expense');
+            })
+            ->whereBetween('created_at', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        // === KPI 3: VENDOR BALANCE ===
+        $vendorPurchases = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_VENDOR_PURCHASE)
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $vendorPayments = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_VENDOR_PAYMENT)
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            ->whereBetween('transaction_date', [$startDate, $endDate])
+            ->sum('amount') ?? 0;
+        
+        $vendorBalance = $vendorPurchases - $vendorPayments;
+        
+        // === KPI 4: NF PROFIT ===
+        $profit = $totalInvoices - $totalExpenses - $vendorPurchases;
+        
+        return [
+            'total_invoices' => round($totalInvoices, 2),
+            'invoices_cash' => round($invoicesCash, 2),
+            'cash_deposits' => round($cashDeposits, 2),
+            'short_cash_total' => round($shortCashTotal, 2),
+            'invoices_online' => round($invoicesOnline, 2),
+            'online_approved' => round($onlineApproved, 2),
+            'online_pending' => round($onlinePending, 2),
+            'total_expenses' => round($totalExpenses, 2),
+            'regular_expenses' => round($ledgerExpenses, 2),
+            'salary_expenses' => round($salaryExpenses, 2),
+            'expenses_needing_settlement' => round($expensesNeedingSettlement, 2),
+            'vendor_balance' => round($vendorBalance, 2),
+            'vendor_purchases' => round($vendorPurchases, 2),
+            'vendor_payments' => round($vendorPayments, 2),
+            'profit' => round($profit, 2),
+        ];
+    }
+
+    /**
+     * Get Daily Closing Summary (Invoice Tracker for mobile app)
+     * Replicates web app's EmployeeCashController::allOutstandingInvoices logic
+     */
+    public function getDailyClosing(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_daily_closing')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view Daily Closing'
+                ], 403);
+            }
+            
+            // Get filter parameters (same as web app)
+            $statusFilter = $request->get('status', 'all'); // all, open, partial, settled
+            $riderFilter = $request->get('rider', 'all');
+            $dateFrom = $request->get('date_from');
+            $dateTo = $request->get('date_to');
+            
+            // Base query for ALL invoices (not just open)
+            // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
+            $invoicesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+                ->with(['toAccount', 'order'])
+                ->whereHas('toAccount', function($q) {
+                    $q->where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH);
+                });
+            
+            // Apply date filters
+            if ($dateFrom) {
+                $invoicesQuery->where('transaction_date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $invoicesQuery->where('transaction_date', '<=', $dateTo);
+            }
+            
+            // Apply rider filter
+            if ($riderFilter !== 'all') {
+                $invoicesQuery->where('to_account_id', $riderFilter);
+            }
+            
+            // Get all invoices
+            $allInvoices = $invoicesQuery->orderBy('transaction_date', 'desc')->get();
+            
+            // Separate into categories (EXACT web app logic)
+            $openInvoices = $allInvoices->filter(function($invoice) {
+                return $invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) == 0;
+            });
+            
+            $partialInvoices = $allInvoices->filter(function($invoice) {
+                return $invoice->settlement_status === 'partial' || 
+                       ($invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) > 0);
+            });
+            
+            $settledInvoices = $allInvoices->filter(function($invoice) {
+                return $invoice->settlement_status === 'settled';
+            });
+            
+            // Get pending settlement deposits (settlements awaiting approval)
+            // Include both "Settlement" and "Partial Payment" descriptions
+            $pendingSettlements = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->where('approval_status', LedgerModel::STATUS_PENDING)
+                ->where(function($q) {
+                    $q->where('description', 'LIKE', '%Settlement%')
+                      ->orWhere('description', 'LIKE', '%Partial Payment%');
+                })
+                ->with(['fromAccount'])
+                ->orderBy('created_at', 'desc')
+                ->get();
+            
+            // Enhance pending settlements with invoice details from metadata
+            $pendingSettlements = $pendingSettlements->map(function($settlement) {
+                // Try ledger metadata first (NEW), fallback to session (OLD)
+                $settlementData = $settlement->settlement_metadata;
+                
+                if ($settlementData && isset($settlementData['invoice_ids'])) {
+                    $settlement->invoice_ids = $settlementData['invoice_ids'];
+                    $settlement->total_outstanding = $settlementData['total_outstanding'];
+                    
+                    // Get the actual invoice records for display
+                    $settlement->invoices = LedgerModel::whereIn('id', $settlementData['invoice_ids'])
+                        ->with('order')
+                        ->orderBy('transaction_date', 'asc')
+                        ->get()
+                        ->map(function($invoice) {
+                            return [
+                                'id' => $invoice->id,
+                                'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                                'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
+                                'description' => $invoice->description,
+                                'amount' => $invoice->amount,
+                                'settled_amount' => $invoice->settled_amount ?? 0,
+                                'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0)
+                            ];
+                        });
+                } else {
+                    $settlement->invoice_ids = [];
+                    $settlement->invoices = collect();
+                    $settlement->total_outstanding = 0;
+                }
+                
+                return $settlement;
+            });
+            
+            // Apply status filter for display
+            $displayInvoices = collect();
+            switch ($statusFilter) {
+                case 'open':
+                    $displayInvoices = $openInvoices;
+                    break;
+                case 'partial':
+                    $displayInvoices = $partialInvoices;
+                    break;
+                case 'settled':
+                    $displayInvoices = $settledInvoices;
+                    break;
+                default:
+                    $displayInvoices = $openInvoices->concat($partialInvoices);
+            }
+            
+            // Create a map of invoice IDs to their pending settlement IDs
+            $invoiceToPendingSettlement = [];
+            foreach ($pendingSettlements as $settlement) {
+                foreach ($settlement->invoice_ids as $invoiceId) {
+                    $invoiceToPendingSettlement[$invoiceId] = $settlement->id;
+                }
+            }
+            
+            // Group pending settlements by rider (from_account_id)
+            $settlementsByRider = $pendingSettlements->groupBy('from_account_id');
+            
+            // Group by rider for display
+            $invoicesByRider = $displayInvoices->groupBy('to_account_id')->map(function($riderInvoices) use ($invoiceToPendingSettlement, $settlementsByRider) {
+                $account = $riderInvoices->first()->toAccount;
+                $totalOutstanding = $riderInvoices->sum(function($invoice) {
+                    return $invoice->amount - ($invoice->settled_amount ?? 0);
+                });
+                
+                // Get pending settlements for this rider
+                $riderSettlements = $settlementsByRider->get($account->id, collect());
+                
+                return [
+                    'account' => [
+                        'id' => $account->id,
+                        'account_name' => $account->account_name,
+                        'account_code' => $account->account_code
+                    ],
+                    'pending_settlements' => $riderSettlements->map(function($settlement) {
+                        return [
+                            'id' => $settlement->id,
+                            'amount' => $settlement->amount,
+                            'created_at' => $settlement->created_at->format('Y-m-d H:i:s'),
+                            'description' => $settlement->description,
+                            'invoice_ids' => $settlement->invoice_ids,
+                            'invoices' => $settlement->invoices,
+                            'total_outstanding' => $settlement->total_outstanding
+                        ];
+                    })->values(),
+                    'invoices' => $riderInvoices->map(function($invoice) use ($invoiceToPendingSettlement) {
+                        $isPendingApproval = isset($invoiceToPendingSettlement[$invoice->id]);
+                        $pendingSettlementId = $isPendingApproval ? $invoiceToPendingSettlement[$invoice->id] : null;
+                        
+                        return [
+                            'id' => $invoice->id,
+                            'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                            'customer_name' => $invoice->order ? $invoice->order->customer_name : null,
+                            'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
+                            'is_pending_approval' => $isPendingApproval,
+                            'pending_settlement_id' => $pendingSettlementId,
+                            'description' => $invoice->description,
+                            'amount' => $invoice->amount,
+                            'settled_amount' => $invoice->settled_amount ?? 0,
+                            'outstanding_amount' => $invoice->amount - ($invoice->settled_amount ?? 0),
+                            'settlement_status' => $invoice->settlement_status,
+                            'settled_at' => $invoice->settled_at ? $invoice->settled_at->format('Y-m-d H:i:s') : null
+                        ];
+                    })->values(),
+                    'total_outstanding' => $totalOutstanding,
+                    'invoice_count' => $riderInvoices->count()
+                ];
+            })->values();
+            
+            // === Calculate Pending Approvals for Expense Requests ===
+            // Use same logic as NF Cash: pending expenses that will affect NF Cash
+            $nfCashAccount = AccountModel::where('account_code', 'NF_CASH')->first();
+            
+            $pendingApprovalsQuery = RequestModel::where('status', 'pending')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                });
+            
+            // NF Cash logic: explicit NF Cash assignments OR paid from any rider balance
+            if ($nfCashAccount) {
+                $pendingApprovalsQuery->where(function($q) use ($nfCashAccount) {
+                    $q->where('payment_source_account_id', $nfCashAccount->id)
+                      ->orWhereHas('paymentSourceAccount', function($subQ) {
+                          $subQ->where('account_category', 'employee_cash');
+                      });
+                });
+            }
+            
+            // Apply date filters if provided
+            if ($dateFrom) {
+                $pendingApprovalsQuery->where('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $pendingApprovalsQuery->where('created_at', '<=', $dateTo);
+            }
+            
+            $pendingApprovalsAmount = $pendingApprovalsQuery->sum('amount') ?? 0;
+            $pendingApprovalsCount = $pendingApprovalsQuery->count();
+            
+            // === Calculate Short Cash ===
+            // Approved expenses paid from rider balance but not yet settled
+            $shortCashQuery = RequestModel::where('status', 'approved')
+                ->where('settlement_status', 'pending')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->whereHas('paymentSourceAccount', function($q) {
+                    $q->where('account_category', 'employee_cash');
+                });
+            
+            // Apply date filters if provided
+            if ($dateFrom) {
+                $shortCashQuery->where('created_at', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $shortCashQuery->where('created_at', '<=', $dateTo);
+            }
+            
+            $shortCashAmount = $shortCashQuery->sum('amount') ?? 0;
+            $shortCashCount = $shortCashQuery->count();
+            
+            // Calculate summary stats (EXACT web app logic)
+            $stats = [
+                'open_count' => $openInvoices->count(),
+                'open_total' => $openInvoices->sum(function($inv) {
+                    return $inv->amount - ($inv->settled_amount ?? 0);
+                }),
+                'partial_count' => $partialInvoices->count(),
+                'partial_total' => $partialInvoices->sum(function($inv) {
+                    return $inv->amount - ($inv->settled_amount ?? 0);
+                }),
+                'pending_settlement_count' => $pendingSettlements->count(),
+                'pending_settlement_total' => $pendingSettlements->sum('amount'),
+                'settled_count' => $settledInvoices->count(),
+                'settled_total' => $settledInvoices->sum('amount'),
+                'total_outstanding' => $openInvoices->sum(function($inv) {
+                    return $inv->amount - ($inv->settled_amount ?? 0);
+                }) + $partialInvoices->sum(function($inv) {
+                    return $inv->amount - ($inv->settled_amount ?? 0);
+                }),
+                'pending_approvals_count' => $pendingApprovalsCount,
+                'pending_approvals_amount' => $pendingApprovalsAmount,
+                'short_cash_count' => $shortCashCount,
+                'short_cash_amount' => $shortCashAmount
+            ];
+            
+            // Get all riders for filter dropdown
+            $allRiders = AccountModel::where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
+                ->where('is_active', 1)
+                ->orderBy('account_name')
+                ->get()
+                ->map(function($rider) {
+                    return [
+                        'id' => $rider->id,
+                        'account_name' => $rider->account_name
+                    ];
+                });
+            
+            return response()->json([
+                'success' => true,
+                'stats' => $stats,
+                'invoices_by_rider' => $invoicesByRider,
+                'pending_settlements' => $pendingSettlements->map(function($settlement) {
+                    return [
+                        'id' => $settlement->id,
+                        'from_account' => $settlement->fromAccount ? $settlement->fromAccount->account_name : 'N/A',
+                        'from_account_id' => $settlement->from_account_id,
+                        'amount' => $settlement->amount,
+                        'created_at' => $settlement->created_at->format('Y-m-d H:i:s'),
+                        'description' => $settlement->description,
+                        'approval_status' => $settlement->approval_status,
+                        'invoice_ids' => $settlement->invoice_ids,
+                        'invoices' => $settlement->invoices,
+                        'total_outstanding' => $settlement->total_outstanding
+                    ];
+                })->values(),
+                'all_riders' => $allRiders,
+                'filters' => [
+                    'status' => $statusFilter,
+                    'rider' => $riderFilter,
+                    'date_from' => $dateFrom,
+                    'date_to' => $dateTo
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get daily closing', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load daily closing: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Approve settlement deposit (Daily Closing)
+     * Reuses LedgerController::approveTransaction logic
+     */
+    public function approveDailyClosingSettlement(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_daily_closing')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to approve settlements'
+                ], 403);
+            }
+            
+            // Find the transaction
+            $transaction = LedgerModel::findOrFail($id);
+            
+            // Verify it's a pending settlement
+            if ($transaction->transaction_type !== LedgerModel::TYPE_EMPLOYEE_DEPOSIT) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This is not a settlement deposit transaction'
+                ], 400);
+            }
+            
+            if ($transaction->approval_status !== LedgerModel::STATUS_PENDING) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This transaction has already been ' . $transaction->approval_status
+                ], 400);
+            }
+            
+            DB::beginTransaction();
+            
+            // Load accounts
+            $transaction->load(['fromAccount', 'toAccount']);
+            $fromAccount = $transaction->fromAccount;
+            $toAccount = $transaction->toAccount;
+            
+            // Update transaction status (EXACT web app logic)
+            $transaction->approval_status = LedgerModel::STATUS_APPROVED;
+            $transaction->approved_by = $user->id;
+            $transaction->approval_date = now()->toDateString(); // ← FIXED: Use approval_date (DATE) not approved_at (DATETIME)
+            $transaction->save();
+            
+            // Update account balances (EXACT web app logic)
+            // From account: Asset accounts decrease on outflow
+            if ($fromAccount->account_type === 'asset') {
+                $fromAccount->current_balance -= $transaction->amount;
+            } else {
+                $fromAccount->current_balance += $transaction->amount;
+            }
+            $fromAccount->save();
+            
+            // To account: Asset accounts increase on inflow
+            if ($toAccount->account_type === 'asset') {
+                $toAccount->current_balance += $transaction->amount;
+            } else {
+                $toAccount->current_balance -= $transaction->amount;
+            }
+            $toAccount->save();
+            
+            // Process settlement metadata if exists (EXACT web app logic)
+            if ($transaction->settlement_metadata && isset($transaction->settlement_metadata['invoice_ids'])) {
+                \Log::info('Processing invoice settlement via mobile', [
+                    'deposit_id' => $transaction->id,
+                    'metadata' => $transaction->settlement_metadata
+                ]);
+                
+                $this->processInvoiceSettlementMobile($transaction, $transaction->settlement_metadata);
+                
+                // If this is a short cash settlement with linked expense request, auto-approve it
+                if (isset($transaction->settlement_metadata['is_short_cash_settlement']) && 
+                    $transaction->settlement_metadata['is_short_cash_settlement'] && 
+                    isset($transaction->settlement_metadata['expense_request_id'])) {
+                    
+                    $expenseRequestId = $transaction->settlement_metadata['expense_request_id'];
+                    
+                    \Log::info('Auto-approving linked short cash expense via mobile', [
+                        'deposit_id' => $transaction->id,
+                        'expense_request_id' => $expenseRequestId
+                    ]);
+                    
+                    // Auto-approve the linked expense request (EXACT web app logic)
+                    $expenseRequest = RequestModel::find($expenseRequestId);
+                    
+                    if ($expenseRequest && $expenseRequest->status === 'pending') {
+                        // Process the approval (level, approverId, action, comments)
+                        $expenseRequest->processApproval(1, $user->id, 'approved', 'Auto-approved with deposit settlement (mobile)');
+                        
+                        \Log::info('Short cash expense auto-approved via mobile', [
+                            'expense_request_id' => $expenseRequestId,
+                            'amount' => $expenseRequest->amount
+                        ]);
+                    }
+                }
+            } else {
+                \Log::warning('No settlement data found for deposit - invoices will not be auto-settled', [
+                    'deposit_id' => $transaction->id,
+                    'description' => $transaction->description
+                ]);
+            }
+            
+            DB::commit();
+            
+            \Log::info('Daily closing settlement approved via mobile', [
+                'settlement_id' => $id,
+                'approved_by' => $user->fullname,
+                'amount' => $transaction->amount
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Settlement approved successfully'
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            \Log::error('Failed to approve daily closing settlement', [
+                'settlement_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to approve settlement: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Reject settlement deposit (Daily Closing)
+     * Reuses LedgerController::rejectTransaction logic
+     */
+    public function rejectDailyClosingSettlement(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_daily_closing')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to reject settlements'
+                ], 403);
+            }
+            
+            // Find the transaction
+            $transaction = LedgerModel::findOrFail($id);
+            
+            // Verify it's a pending settlement
+            if ($transaction->transaction_type !== LedgerModel::TYPE_EMPLOYEE_DEPOSIT) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This is not a settlement deposit transaction'
+                ], 400);
+            }
+            
+            if ($transaction->approval_status !== LedgerModel::STATUS_PENDING) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This transaction has already been ' . $transaction->approval_status
+                ], 400);
+            }
+            
+            DB::beginTransaction();
+            
+            // Mark as rejected (EXACT web app logic)
+            $transaction->approval_status = LedgerModel::STATUS_REJECTED;
+            $transaction->approved_by = $user->id;
+            $transaction->approval_date = now()->toDateString(); // ← FIXED: Use approval_date not approved_at
+            $transaction->save();
+            
+            // Note: Account balances are NOT updated when rejecting (per web app logic)
+            
+            DB::commit();
+            
+            \Log::info('Daily closing settlement rejected via mobile', [
+                'settlement_id' => $id,
+                'rejected_by' => $user->fullname,
+                'amount' => $transaction->amount
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Settlement rejected successfully'
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            \Log::error('Failed to reject daily closing settlement', [
+                'settlement_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to reject settlement: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Process invoice settlement when deposit is approved (Mobile version)
+     * Replicates LedgerController::processInvoiceSettlement logic EXACTLY
+     * 
+     * @param LedgerModel $depositLedger The approved deposit transaction
+     * @param array $settlementData Contains invoice_ids, deposit_amount, total_outstanding
+     */
+    private function processInvoiceSettlementMobile(LedgerModel $depositLedger, array $settlementData)
+    {
+        try {
+            $invoiceIds = $settlementData['invoice_ids'];
+            $depositAmount = $settlementData['deposit_amount'];
+            $totalOutstanding = $settlementData['total_outstanding'];
+            
+            // Check if this is a short cash settlement or partial payment
+            $isShortCash = $settlementData['is_short_cash_settlement'] ?? false;
+            $isPartialPayment = $settlementData['is_partial_payment'] ?? false;
+            $shortCashAmount = $settlementData['short_cash_amount'] ?? 0;
+            
+            // For short cash, the total amount settling invoices = deposit + expense
+            // For partial payment, only the deposit amount is used (remaining stays open)
+            if ($isShortCash) {
+                $totalSettlementAmount = $depositAmount + $shortCashAmount;
+            } else {
+                $totalSettlementAmount = $depositAmount;
+            }
+            
+            \Log::info('Processing invoice settlement (mobile)', [
+                'deposit_id' => $depositLedger->id,
+                'is_short_cash' => $isShortCash,
+                'is_partial_payment' => $isPartialPayment,
+                'deposit_amount' => $depositAmount,
+                'short_cash_amount' => $shortCashAmount,
+                'total_settlement_amount' => $totalSettlementAmount
+            ]);
+            
+            // Get the invoices that need to be settled (in order) - include both open and partial
+            $invoices = LedgerModel::whereIn('id', $invoiceIds)
+                ->whereIn('settlement_status', ['open', 'partial'])
+                ->orderBy('transaction_date', 'asc')
+                ->get();
+            
+            $remainingAmount = $totalSettlementAmount;
+            
+            foreach ($invoices as $invoice) {
+                $outstandingForThisInvoice = $invoice->amount - ($invoice->settled_amount ?? 0);
+                
+                if ($remainingAmount <= 0) {
+                    break; // No more money to allocate
+                }
+                
+                // Calculate how much to settle on this invoice
+                $amountToSettle = min($remainingAmount, $outstandingForThisInvoice);
+                
+                // Update invoice
+                $invoice->settled_amount = ($invoice->settled_amount ?? 0) + $amountToSettle;
+                
+                if ($invoice->settled_amount >= $invoice->amount) {
+                    // Fully settled
+                    $invoice->settlement_status = 'settled';
+                    $invoice->settled_at = now();
+                    $invoice->settled_via_ledger_id = $depositLedger->id;
+                } else {
+                    // Partially settled: keep status 'open' (legacy behavior)
+                    // We infer partial by settled_amount > 0
+                    // Do NOT write 'partial' to settlement_status - it stays 'open'
+                }
+                $invoice->save();
+                
+                // Create audit record (if InvoiceSettlementModel exists)
+                if (class_exists('\App\Models\FIN\InvoiceSettlementModel')) {
+                    \App\Models\FIN\InvoiceSettlementModel::create([
+                        'settlement_deposit_id' => $depositLedger->id,
+                        'invoice_ledger_id' => $invoice->id,
+                        'settled_amount' => $amountToSettle
+                    ]);
+                }
+                
+                $remainingAmount -= $amountToSettle;
+            }
+            
+            \Log::info('Invoice settlement completed (mobile)', [
+                'deposit_id' => $depositLedger->id,
+                'invoices_count' => $invoices->count(),
+                'total_settlement_amount' => $totalSettlementAmount,
+                'amount_allocated' => $totalSettlementAmount - $remainingAmount,
+                'amount_remaining' => $remainingAmount,
+                'is_short_cash' => $isShortCash,
+                'is_partial_payment' => $isPartialPayment
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error processing invoice settlement (mobile): ' . $e->getMessage(), [
+                'deposit_id' => $depositLedger->id,
+                'settlement_data' => $settlementData
+            ]);
+            throw $e;
         }
     }
 }

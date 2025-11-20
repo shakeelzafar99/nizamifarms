@@ -134,3 +134,4 @@ echo "\nUPDATE t_crm_open_quantities_settings \n";
 echo "SET setting_value = '[\"your\",\"column\",\"names\",\"orders\"]' \n";
 echo "WHERE setting_key = 'hierarchy_levels';\n";
 
+
