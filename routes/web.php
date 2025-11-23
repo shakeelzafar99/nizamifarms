@@ -408,6 +408,7 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/outstanding-invoices', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'allOutstandingInvoices'])->name('all-outstanding-invoices');
             Route::get('/invoice-breakdown', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'getInvoiceBreakdown'])->name('invoice-breakdown');
             Route::get('/debug-missing-metadata', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'debugMissingMetadata'])->name('debug-missing-metadata');
+            Route::get('/debug-invoice/{invoiceId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'debugInvoiceSettlement'])->name('debug-invoice-settlement');
             Route::get('/{id}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'show'])->name('show');
             Route::post('/{id}/deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordDeposit'])->name('deposit');
             Route::post('/{id}/settlement-deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordSettlementDeposit'])->name('settlement-deposit');

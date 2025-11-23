@@ -1582,6 +1582,127 @@ class EmployeeCashController extends Controller
     }
 
     /**
+     * Debug: Detailed settlement info for a specific invoice
+     */
+    public function debugInvoiceSettlement($invoiceId)
+    {
+        try {
+            $invoice = LedgerModel::with(['order', 'toAccount.user'])->find($invoiceId);
+            
+            if (!$invoice) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invoice not found'
+                ], 404);
+            }
+            
+            $debug = [
+                'invoice' => [
+                    'id' => $invoice->id,
+                    'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                    'order_id' => $invoice->order_id,
+                    'amount' => $invoice->amount,
+                    'settled_amount' => $invoice->settled_amount,
+                    'settlement_status' => $invoice->settlement_status,
+                    'settled_via_ledger_id' => $invoice->settled_via_ledger_id,
+                    'transaction_date' => $invoice->transaction_date->format('Y-m-d'),
+                    'rider' => $invoice->toAccount && $invoice->toAccount->user ? $invoice->toAccount->user->fullname : 'N/A',
+                ],
+                'settlement_methods' => [],
+            ];
+            
+            // Method 1: Check metadata (NEW method)
+            $metadataDeposits = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoiceId)
+                ->get();
+            
+            if ($metadataDeposits->count() > 0) {
+                $debug['settlement_methods']['metadata'] = $metadataDeposits->map(function($dep) {
+                    return [
+                        'deposit_id' => $dep->id,
+                        'amount' => $dep->amount,
+                        'date' => $dep->transaction_date->format('Y-m-d'),
+                        'approval_status' => $dep->approval_status,
+                        'metadata' => $dep->settlement_metadata,
+                    ];
+                });
+            } else {
+                $debug['settlement_methods']['metadata'] = 'Not found in any deposit metadata';
+            }
+            
+            // Method 2: Check invoice_settlements table (LEGACY)
+            $legacySettlements = \DB::table('t_fin_invoice_settlements')
+                ->where('invoice_ledger_id', $invoiceId)
+                ->get();
+            
+            if ($legacySettlements->count() > 0) {
+                $debug['settlement_methods']['invoice_settlements_table'] = $legacySettlements->map(function($row) {
+                    $ledger = LedgerModel::find($row->settlement_deposit_id);
+                    return [
+                        'settlement_deposit_id' => $row->settlement_deposit_id,
+                        'settled_amount' => $row->settled_amount,
+                        'created_at' => $row->created_at,
+                        'ledger_exists' => $ledger ? 'Yes' : 'No',
+                        'ledger_type' => $ledger ? $ledger->transaction_type : null,
+                        'ledger_amount' => $ledger ? $ledger->amount : null,
+                    ];
+                });
+            } else {
+                $debug['settlement_methods']['invoice_settlements_table'] = 'Not found in invoice_settlements table';
+            }
+            
+            // Method 3: Check settled_via_ledger_id (DIRECT REFERENCE)
+            if ($invoice->settled_via_ledger_id) {
+                $settledVia = LedgerModel::find($invoice->settled_via_ledger_id);
+                $debug['settlement_methods']['settled_via_ledger_id'] = [
+                    'ledger_id' => $invoice->settled_via_ledger_id,
+                    'ledger_exists' => $settledVia ? 'Yes' : 'No',
+                    'ledger_type' => $settledVia ? $settledVia->transaction_type : null,
+                    'ledger_amount' => $settledVia ? $settledVia->amount : null,
+                    'ledger_date' => $settledVia ? $settledVia->transaction_date->format('Y-m-d') : null,
+                    'approval_status' => $settledVia ? $settledVia->approval_status : null,
+                ];
+            } else {
+                $debug['settlement_methods']['settled_via_ledger_id'] = 'Not set';
+            }
+            
+            // Check for any deposits from this rider around the settlement date
+            if ($invoice->settled_at) {
+                $nearbyDeposits = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
+                    ->where('from_account_id', $invoice->to_account_id)
+                    ->whereBetween('transaction_date', [
+                        \Carbon\Carbon::parse($invoice->settled_at)->subDays(3),
+                        \Carbon\Carbon::parse($invoice->settled_at)->addDays(3)
+                    ])
+                    ->get();
+                
+                $debug['nearby_deposits'] = $nearbyDeposits->map(function($dep) {
+                    return [
+                        'id' => $dep->id,
+                        'amount' => $dep->amount,
+                        'date' => $dep->transaction_date->format('Y-m-d'),
+                        'description' => $dep->description,
+                        'approval_status' => $dep->approval_status,
+                        'has_metadata' => !empty($dep->settlement_metadata),
+                    ];
+                });
+            }
+            
+            return response()->json([
+                'success' => true,
+                'debug' => $debug,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error("Error in debugInvoiceSettlement: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Debug: Find settled invoices without settlement metadata
      */
     public function debugMissingMetadata(Request $request)
@@ -1761,7 +1882,8 @@ class EmployeeCashController extends Controller
             $invoices = $invoices->map(function($invoice) {
                 $settlementDetails = null;
                 
-                // Get settlement deposit that settled this invoice
+                // Strategy 1: Try to find deposit with this invoice in metadata (NEW method)
+                // Note: Try both integer and string formats as metadata might store either
                 $settlementDeposit = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
                     ->whereIn('approval_status', [
                         LedgerModel::STATUS_APPROVED,
@@ -1769,7 +1891,10 @@ class EmployeeCashController extends Controller
                         LedgerModel::STATUS_PENDING_L1,
                         LedgerModel::STATUS_PENDING_L2,
                     ])
-                    ->whereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id)
+                    ->where(function($q) use ($invoice) {
+                        $q->whereJsonContains('settlement_metadata->invoice_ids', (int)$invoice->id)
+                          ->orWhereJsonContains('settlement_metadata->invoice_ids', (string)$invoice->id);
+                    })
                     ->first();
                 
                 if ($settlementDeposit && $settlementDeposit->settlement_metadata) {
@@ -1782,7 +1907,59 @@ class EmployeeCashController extends Controller
                         'deposit_amount' => $metadata['deposit_amount'] ?? $settlementDeposit->amount,
                         'expense_amount' => $metadata['short_cash_amount'] ?? 0,
                         'expense_category' => $metadata['expense_category'] ?? null,
+                        'is_legacy' => false,
+                        'account_id' => $settlementDeposit->from_account_id, // For building the link
                     ];
+                } elseif ($invoice->settlement_status === 'settled' && $invoice->settled_amount > 0) {
+                    // Strategy 2: Legacy settlement (OLD method) - check InvoiceSettlementModel
+                    $legacySettlement = \DB::table('t_fin_invoice_settlements')
+                        ->where('invoice_ledger_id', $invoice->id)
+                        ->first();
+                    
+                    if ($legacySettlement) {
+                        // Found in invoice_settlements table
+                        $settlementLedger = LedgerModel::find($legacySettlement->settlement_deposit_id);
+                        
+                        $settlementDetails = [
+                            'deposit_id' => $legacySettlement->settlement_deposit_id,
+                            'deposit_date' => $settlementLedger ? $settlementLedger->transaction_date : null,
+                            'approval_status' => $settlementLedger ? $settlementLedger->approval_status : 'unknown',
+                            'is_short_cash' => false,
+                            'deposit_amount' => $legacySettlement->settled_amount,
+                            'expense_amount' => 0,
+                            'expense_category' => null,
+                            'is_legacy' => true,
+                            'legacy_note' => 'Settled via legacy method (no metadata)',
+                            'account_id' => $settlementLedger ? $settlementLedger->from_account_id : null,
+                        ];
+                    } else {
+                        // Strategy 3: Check if settled_via_ledger_id is set (direct reference)
+                        if ($invoice->settled_via_ledger_id) {
+                            $settlementLedger = LedgerModel::find($invoice->settled_via_ledger_id);
+                            
+                            $settlementDetails = [
+                                'deposit_id' => $invoice->settled_via_ledger_id,
+                                'deposit_date' => $settlementLedger ? $settlementLedger->transaction_date : null,
+                                'approval_status' => $settlementLedger ? $settlementLedger->approval_status : 'unknown',
+                                'is_short_cash' => false,
+                                'deposit_amount' => $invoice->settled_amount,
+                                'expense_amount' => 0,
+                                'expense_category' => null,
+                                'is_legacy' => true,
+                                'legacy_note' => 'Settled via direct ledger reference',
+                                'account_id' => $settlementLedger ? $settlementLedger->from_account_id : null,
+                            ];
+                        } else {
+                            // No settlement info found - mark as unknown
+                            $settlementDetails = [
+                                'is_legacy' => true,
+                                'legacy_note' => 'Settlement method unknown - marked settled but no deposit found',
+                                'deposit_amount' => $invoice->settled_amount,
+                                'expense_amount' => 0,
+                                'account_id' => null,
+                            ];
+                        }
+                    }
                 }
                 
                 return [

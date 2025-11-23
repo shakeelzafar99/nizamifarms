@@ -23,6 +23,15 @@
           <option value="all">All Users</option>
         </select>
       </div>
+      <div class="flex items-center gap-2 ml-2">
+        <label for="locationFilter" class="text-sm text-gray-700">Location:</label>
+        <select id="locationFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm" onchange="filterByLocation()">
+          <option value="all" selected>All</option>
+          <option value="onsite">Onsite</option>
+          <option value="remote">Remote</option>
+          <option value="no_location">No Location</option>
+        </select>
+      </div>
       <button 
         type="button"
         onclick="toggleAddForm()" 
@@ -316,6 +325,7 @@
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expected Shift</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Login</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Logout</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
@@ -914,7 +924,7 @@ function renderAttendanceTable(data) {
   const body = document.getElementById('attBody');
   
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
@@ -923,8 +933,11 @@ function renderAttendanceTable(data) {
     const lateBy = calculateLateBy(r.login_time, r.shift_start);
     const overtime = calculateOvertime(r.logout_time, r.shift_end, r.login_time);
     
+    // Get location status
+    const locationBadge = getLocationBadge(r);
+    
     return `
-      <tr class="hover:bg-gray-50" data-status="${getRowStatus(r, lateBy, overtime)}">
+      <tr class="hover:bg-gray-50" data-status="${getRowStatus(r, lateBy, overtime)}" data-location="${locationBadge.type}">
         <td class="px-4 py-3 text-sm font-medium">
           <button 
             onclick="showEmployeeDetails(${r.user_id}, \`${(r.fullname || '').replace(/`/g, '')}\`, '${r.attendance_date}')"
@@ -940,6 +953,12 @@ function renderAttendanceTable(data) {
         </td>
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-medium' : 'text-gray-900'}">${r.login_time || '-'}</td>
         <td class="px-4 py-3 text-sm text-gray-900">${r.logout_time || '-'}</td>
+        
+        <!-- Location Badge Column -->
+        <td class="px-4 py-3 text-sm">
+          ${locationBadge.html}
+        </td>
+        
         <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
         <td class="px-4 py-3 text-sm ${lateBy.isLate ? 'text-red-600 font-semibold' : 'text-gray-400'}">${lateBy.duration}</td>
         <td class="px-4 py-3 text-sm ${overtime.hasOvertime ? 'text-green-600 font-semibold' : 'text-gray-400'}">${overtime.duration}</td>
@@ -1003,6 +1022,64 @@ function getRowStatus(r, lateBy, overtime) {
   return 'present';
 }
 
+/**
+ * Get location badge HTML based on attendance location data
+ */
+function getLocationBadge(record) {
+  // No check-in = no location data
+  if (!record.login_time) {
+    return {
+      type: 'no_location',
+      html: '<span class="text-gray-400 text-xs">-</span>'
+    };
+  }
+
+  // Has location data
+  if (record.checkin_latitude && record.checkin_longitude) {
+    if (record.is_remote_checkin == 1) {
+      // Remote check-in (>2km from office)
+      const distanceKm = (record.checkin_distance_from_base / 1000).toFixed(1);
+      return {
+        type: 'remote',
+        html: `
+          <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700" title="Checked in remotely">
+            <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
+            </svg>
+            ${distanceKm} km away
+          </span>
+        `
+      };
+    } else {
+      // Onsite check-in (≤2km from office)
+      return {
+        type: 'onsite',
+        html: `
+          <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700" title="Checked in at office">
+            <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+            </svg>
+            At office
+          </span>
+        `
+      };
+    }
+  }
+
+  // Check-in without location (GPS failed or denied)
+  return {
+    type: 'no_location',
+    html: `
+      <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600" title="Location not captured">
+        <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+        </svg>
+        No location
+      </span>
+    `
+  };
+}
+
 function filterTableByStatus() {
   const filter = document.getElementById('statusFilter').value;
   const rows = document.querySelectorAll('#attBody tr[data-status]');
@@ -1015,6 +1092,29 @@ function filterTableByStatus() {
       row.style.display = status === filter ? '' : 'none';
     }
   });
+}
+
+/**
+ * Filter table by location type
+ */
+function filterByLocation() {
+  const filter = document.getElementById('locationFilter').value;
+  const rows = document.querySelectorAll('#attBody tr[data-location]');
+  
+  let visibleCount = 0;
+  
+  rows.forEach(row => {
+    const location = row.getAttribute('data-location');
+    
+    if (filter === 'all' || filter === location) {
+      row.style.display = '';
+      visibleCount++;
+    } else {
+      row.style.display = 'none';
+    }
+  });
+
+  console.log(`Showing ${visibleCount} records with filter: ${filter}`);
 }
 
 function updateSummaryCards(data) {

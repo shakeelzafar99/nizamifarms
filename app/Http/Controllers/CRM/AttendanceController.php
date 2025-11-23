@@ -124,6 +124,13 @@ class AttendanceController extends Controller
                 'a.login_time',
                 'a.logout_time',
                 'a.notes',
+                // Location tracking fields
+                'a.checkin_latitude',
+                'a.checkin_longitude',
+                'a.checkin_distance_from_base',
+                'a.is_remote_checkin',
+                'a.checkout_latitude',
+                'a.checkout_longitude',
                 // Keep legacy shifts for fallback only (will be replaced by ShiftResolutionService)
                 DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                 DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),

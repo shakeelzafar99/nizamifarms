@@ -1061,16 +1061,194 @@ function getStatusBadge(status) {
 function getSettlementInfo(details) {
     if (!details) return '<span style="color: #9ca3af;">Not settled</span>';
     
+    // Build info icon button to show transaction details
+    const infoButton = details.deposit_id 
+        ? `<button onclick="showTransactionDetails(${details.deposit_id})" style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: #3b82f6; color: white; border: none; cursor: pointer; font-size: 11px; font-weight: bold; margin-left: 4px; vertical-align: middle;" title="View transaction details">ℹ️</button>`
+        : '';
+    
     if (details.is_short_cash) {
         return `
-            <div style="text-align: left;">
-                <div style="font-weight: 600; color: #059669; margin-bottom: 2px;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
-                <div style="color: #ea580c; margin-bottom: 2px;">🧾 Rs. ${formatNumber(details.expense_amount)}</div>
-                <div style="font-size: 10px; color: #9ca3af;">${details.expense_category || 'Expense'}</div>
+            <div style="text-align: left; display: flex; align-items: flex-start; gap: 4px;">
+                <div style="flex: 1;">
+                    <div style="font-weight: 600; color: #059669; margin-bottom: 2px;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
+                    <div style="color: #ea580c; margin-bottom: 2px;">🧾 Rs. ${formatNumber(details.expense_amount)}</div>
+                    <div style="font-size: 10px; color: #9ca3af;">${details.expense_category || 'Expense'}</div>
+                </div>
+                ${infoButton}
             </div>
         `;
+    } else if (details.is_legacy) {
+        // Legacy settlement (old method or unknown)
+        if (details.deposit_amount > 0 && details.deposit_id) {
+            return `
+                <div style="text-align: left; display: flex; align-items: flex-start; gap: 4px;">
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; color: #059669; margin-bottom: 2px;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
+                        <div style="font-size: 10px; color: #f59e0b; font-style: italic;">⚠️ Legacy</div>
+                    </div>
+                    ${infoButton}
+                </div>
+            `;
+        } else if (details.deposit_amount > 0) {
+            return `
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #059669; margin-bottom: 2px;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
+                    <div style="font-size: 10px; color: #f59e0b; font-style: italic;">⚠️ Legacy settlement</div>
+                </div>
+            `;
+        } else {
+            return `<div style="font-size: 11px; color: #f59e0b; font-style: italic;">⚠️ ${details.legacy_note || 'Unknown settlement'}</div>`;
+        }
     } else {
-        return `<div style="font-weight: 600; color: #059669;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>`;
+        // Modern settlement with metadata
+        return `
+            <div style="display: flex; align-items: center; gap: 4px;">
+                <div style="font-weight: 600; color: #059669;">💵 Rs. ${formatNumber(details.deposit_amount)}</div>
+                ${infoButton}
+            </div>
+        `;
+    }
+}
+
+function showTransactionDetails(transactionId) {
+    // Fetch transaction details and show in modal
+    fetch(`/finance/ledger/approval-details/${transactionId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showTransactionModal(data.transaction);
+            } else {
+                alert('Could not load transaction details');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading transaction details');
+        });
+}
+
+function showTransactionModal(transaction) {
+    // Create modal HTML (similar to approval details modal)
+    const modalHtml = `
+        <div id="transactionDetailsModal" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 100000; display: flex; align-items: center; justify-content: center; padding: 20px;">
+            <div onclick="event.stopPropagation()" style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 800px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+                
+                <!-- Header -->
+                <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #60a5fa, #818cf8); display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 2px 8px rgba(96, 165, 250, 0.3);">
+                            ℹ️
+                        </div>
+                        <div>
+                            <h3 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0;">Transaction Details</h3>
+                            <p style="font-size: 12px; color: #6b7280; margin: 2px 0 0 0;">${transaction.transaction_type ? transaction.transaction_type.replace('_', ' ').toUpperCase() : 'TRANSACTION'}</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeTransactionModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; line-height: 1; cursor: pointer; padding: 4px 8px;">&times;</button>
+                </div>
+                
+                <!-- Content -->
+                <div style="overflow-y: auto; flex: 1; padding: 24px;">
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px;">
+                        <div>
+                            <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Transaction Type</div>
+                            <div style="font-size: 14px; color: #111827; font-weight: 600;">${transaction.transaction_type ? transaction.transaction_type.replace('_', ' ') : 'N/A'}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Amount</div>
+                            <div style="font-size: 18px; color: #059669; font-weight: 700;">Rs. ${formatNumber(transaction.amount || 0)}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Status</div>
+                            <div style="display: inline-block; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 12px; background: ${transaction.approval_status === 'approved' ? '#d1fae5' : '#fef3c7'}; color: ${transaction.approval_status === 'approved' ? '#065f46' : '#92400e'};">
+                                ${transaction.approval_status === 'approved' ? '✅ Approved' : '⏳ ' + (transaction.approval_status || 'Pending')}
+                            </div>
+                        </div>
+                        <div>
+                            <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Approved Date</div>
+                            <div style="font-size: 14px; color: #111827;">${transaction.approval_date || 'N/A'}</div>
+                        </div>
+                    </div>
+                    
+                    ${transaction.approved_by ? `
+                        <div style="margin-bottom: 20px;">
+                            <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Approved By</div>
+                            <div style="font-size: 14px; color: #111827; font-weight: 600;">${transaction.approved_by}</div>
+                        </div>
+                    ` : ''}
+                    
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-size: 12px; color: #6b7280; font-weight: 500; margin-bottom: 4px;">Description</div>
+                        <div style="font-size: 14px; color: #111827; padding: 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">${transaction.description || 'No description'}</div>
+                    </div>
+                    
+                    ${transaction.invoices && transaction.invoices.length > 0 ? `
+                        <div style="background: #eff6ff; border: 2px solid #93c5fd; border-radius: 12px; padding: 16px; margin-top: 20px;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                                <span style="font-size: 18px;">📦</span>
+                                <h4 style="font-size: 14px; font-weight: 600; color: #1e40af; margin: 0;">Invoices Included in Settlement</h4>
+                                <span style="margin-left: auto; padding: 4px 10px; background: #3b82f6; color: white; font-size: 11px; font-weight: 600; border-radius: 12px;">${transaction.invoices.length} invoice(s)</span>
+                            </div>
+                            <div style="background: white; border-radius: 8px; overflow: hidden; border: 1px solid #93c5fd;">
+                                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                    <thead style="background: #dbeafe;">
+                                        <tr>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #1e40af; font-size: 11px;">#</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #1e40af; font-size: 11px;">Order #</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #1e40af; font-size: 11px;">Date</th>
+                                            <th style="padding: 8px 12px; text-align: right; font-weight: 600; color: #1e40af; font-size: 11px;">Amount</th>
+                                            <th style="padding: 8px 12px; text-align: center; font-weight: 600; color: #1e40af; font-size: 11px;">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${transaction.invoices.map((inv, idx) => `
+                                            <tr style="border-top: 1px solid #e0e7ff;">
+                                                <td style="padding: 8px 12px; color: #6b7280;">${idx + 1}</td>
+                                                <td style="padding: 8px 12px; font-weight: 600; color: #111827;">${inv.order_number}</td>
+                                                <td style="padding: 8px 12px; color: #6b7280;">${inv.date}</td>
+                                                <td style="padding: 8px 12px; text-align: right; font-weight: 600; color: #059669;">Rs. ${formatNumber(inv.amount)}</td>
+                                                <td style="padding: 8px 12px; text-align: center;">
+                                                    <span style="padding: 2px 8px; font-size: 10px; font-weight: 600; border-radius: 10px; background: #d1fae5; color: #065f46;">✓ Settled</span>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top: 12px; padding: 8px 12px; background: #dbeafe; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-size: 12px; font-weight: 600; color: #1e40af;">Total Outstanding at Settlement:</span>
+                                <span style="font-size: 14px; font-weight: 700; color: #1e40af;">Rs. ${formatNumber(transaction.total_outstanding || transaction.invoices.reduce((sum, inv) => sum + inv.amount, 0))}</span>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+                
+                <!-- Footer -->
+                <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; background: #f9fafb; flex-shrink: 0; display: flex; justify-content: flex-end;">
+                    <button onclick="closeTransactionModal()" style="padding: 10px 24px; background: linear-gradient(135deg, #60a5fa, #818cf8); color: white; font-weight: 600; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 4px rgba(96, 165, 250, 0.3); transition: all 0.15s;">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Remove existing modal if any
+    const existingModal = document.getElementById('transactionDetailsModal');
+    if (existingModal) {
+        existingModal.remove();
+    }
+    
+    // Add modal to body
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    document.body.style.overflow = 'hidden';
+}
+
+function closeTransactionModal() {
+    const modal = document.getElementById('transactionDetailsModal');
+    if (modal) {
+        modal.remove();
+        document.body.style.overflow = 'auto';
     }
 }
 

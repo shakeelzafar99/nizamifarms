@@ -17,6 +17,7 @@ use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\ConfigModel;
 use App\Models\Request\RequestModel;
+use App\Services\LocationService;
 
 class RiderController extends Controller
 {
@@ -1220,7 +1221,7 @@ class RiderController extends Controller
 
     /**
      * Check in for today
-     * Optionally accepts meter picture
+     * Optionally accepts meter picture and GPS location
      */
     public function checkIn(Request $request)
     {
@@ -1229,9 +1230,12 @@ class RiderController extends Controller
             $today = now()->format('Y-m-d');
             $currentTime = now()->format('H:i:s');
 
-            // Validate optional meter picture
+            // Validate optional meter picture and location data
             $request->validate([
                 'meter_picture' => 'nullable|image|max:5120', // 5MB max
+                'latitude' => 'nullable|numeric|between:-90,90',
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'accuracy' => 'nullable|numeric',
             ]);
 
             // Check if already checked in today
@@ -1243,6 +1247,9 @@ class RiderController extends Controller
             if ($existing && $existing->login_time) {
                 return response()->json(['success' => false, 'message' => 'Already checked in today'], 400);
             }
+
+            // Process location data for check-in
+            $locationData = $this->processCheckinLocation($request, $user->id);
 
             // Store meter picture if provided
             $picturePath = null;
@@ -1258,6 +1265,10 @@ class RiderController extends Controller
                 ];
                 if ($picturePath) {
                     $updateData['picture_start'] = $picturePath;
+                }
+                // Add location data
+                if ($locationData) {
+                    $updateData = array_merge($updateData, $locationData['db_fields']);
                 }
                 
                 \DB::table('t_ops_attendance')
@@ -1276,15 +1287,35 @@ class RiderController extends Controller
                     $insertData['picture_start'] = $picturePath;
                 }
                 
+                // Add location data
+                if ($locationData) {
+                    $insertData = array_merge($insertData, $locationData['db_fields']);
+                }
+                
                 \DB::table('t_ops_attendance')->insert($insertData);
             }
 
-            return response()->json([
+            // Prepare response message with location info
+            $message = 'Checked in successfully at ' . date('h:i A', strtotime($currentTime));
+            $responseData = [
                 'success' => true,
-                'message' => 'Checked in successfully at ' . date('h:i A', strtotime($currentTime)),
+                'message' => $message,
                 'login_time' => $currentTime,
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
-            ]);
+                'location_captured' => $locationData ? true : false,
+            ];
+
+            if ($locationData) {
+                $responseData['is_remote'] = $locationData['is_remote'];
+                $responseData['distance'] = $locationData['distance'];
+                
+                if ($locationData['is_remote']) {
+                    $distanceFormatted = LocationService::formatDistance($locationData['distance']);
+                    $responseData['message'] = $message . " ⚠️ Remote: {$distanceFormatted} from office";
+                }
+            }
+
+            return response()->json($responseData);
         } catch (\Exception $e) {
             \Log::error('Failed to check in', [
                 'error' => $e->getMessage(),
@@ -1293,6 +1324,60 @@ class RiderController extends Controller
             
             return response()->json(['success' => false, 'message' => 'Failed to check in: ' . $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Process check-in location data and calculate distance from base
+     * 
+     * @param Request $request
+     * @param int $userId
+     * @return array|null Location data or null if not provided
+     */
+    private function processCheckinLocation(Request $request, int $userId)
+    {
+        $latitude = $request->input('latitude');
+        $longitude = $request->input('longitude');
+
+        if (is_null($latitude) || is_null($longitude)) {
+            \Log::warning('Check-in without location', [
+                'user_id' => $userId,
+                'date' => now()->toDateString()
+            ]);
+            return null;
+        }
+
+        // Validate coordinates
+        if (!LocationService::isValidCoordinates($latitude, $longitude)) {
+            \Log::error('Invalid GPS coordinates on check-in', [
+                'user_id' => $userId,
+                'latitude' => $latitude,
+                'longitude' => $longitude
+            ]);
+            return null;
+        }
+
+        // Calculate distance from base
+        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude);
+
+        if ($distanceInfo['error']) {
+            \Log::error('Distance calculation failed', [
+                'user_id' => $userId,
+                'error' => $distanceInfo['error']
+            ]);
+        }
+
+        return [
+            'db_fields' => [
+                'checkin_latitude' => $latitude,
+                'checkin_longitude' => $longitude,
+                'checkin_accuracy' => $request->input('accuracy'),
+                'checkin_distance_from_base' => $distanceInfo['distance_meters'],
+                'checkin_location_captured_at' => now(),
+                'is_remote_checkin' => $distanceInfo['is_remote'] ? 1 : 0,
+            ],
+            'is_remote' => $distanceInfo['is_remote'],
+            'distance' => $distanceInfo['distance_meters'],
+        ];
     }
 
     /**
@@ -1407,7 +1492,7 @@ class RiderController extends Controller
 
     /**
      * Check out for today
-     * Optionally accepts meter picture
+     * Optionally accepts meter picture and GPS location
      */
     public function checkOut(Request $request)
     {
@@ -1416,9 +1501,12 @@ class RiderController extends Controller
             $today = now()->format('Y-m-d');
             $currentTime = now()->format('H:i:s');
 
-            // Validate optional meter picture
+            // Validate optional meter picture and location data
             $request->validate([
                 'meter_picture' => 'nullable|image|max:5120', // 5MB max
+                'latitude' => 'nullable|numeric|between:-90,90',
+                'longitude' => 'nullable|numeric|between:-180,180',
+                'accuracy' => 'nullable|numeric',
             ]);
 
             // Check if checked in today
@@ -1435,19 +1523,26 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Already checked out today'], 400);
             }
 
+            // Process location data for check-out (no distance calculation)
+            $locationData = $this->processCheckoutLocation($request, $user->id);
+
             // Store meter picture if provided
             $picturePath = null;
             if ($request->hasFile('meter_picture')) {
                 $picturePath = $this->storeMeterPicture($request->file('meter_picture'), $user->id, 'checkout');
             }
 
-            // Update with logout time and picture
+            // Update with logout time, picture, and location
             $updateData = [
                 'logout_time' => $currentTime,
                 'updated_at' => now(),
             ];
             if ($picturePath) {
                 $updateData['picture_end'] = $picturePath;
+            }
+            // Add location data
+            if ($locationData) {
+                $updateData = array_merge($updateData, $locationData);
             }
 
             \DB::table('t_ops_attendance')
@@ -1459,6 +1554,7 @@ class RiderController extends Controller
                 'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
                 'logout_time' => $currentTime,
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
+                'location_captured' => $locationData ? true : false,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check out', [
@@ -1468,6 +1564,45 @@ class RiderController extends Controller
             
             return response()->json(['success' => false, 'message' => 'Failed to check out: ' . $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Process check-out location data (no distance calculation needed)
+     * 
+     * @param Request $request
+     * @param int $userId
+     * @return array|null Location data or null if not provided
+     */
+    private function processCheckoutLocation(Request $request, int $userId)
+    {
+        $latitude = $request->input('latitude');
+        $longitude = $request->input('longitude');
+
+        if (is_null($latitude) || is_null($longitude)) {
+            \Log::info('Check-out without location', [
+                'user_id' => $userId,
+                'date' => now()->toDateString()
+            ]);
+            return null;
+        }
+
+        // Validate coordinates
+        if (!LocationService::isValidCoordinates($latitude, $longitude)) {
+            \Log::error('Invalid GPS coordinates on check-out', [
+                'user_id' => $userId,
+                'latitude' => $latitude,
+                'longitude' => $longitude
+            ]);
+            return null;
+        }
+
+        // For check-out: Just capture location, no distance calculation or remote flag
+        return [
+            'checkout_latitude' => $latitude,
+            'checkout_longitude' => $longitude,
+            'checkout_accuracy' => $request->input('accuracy'),
+            'checkout_location_captured_at' => now(),
+        ];
     }
 
     /**
@@ -1585,6 +1720,12 @@ class RiderController extends Controller
                             'notes' => $record->notes,
                             'picture_start' => $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null,
                             'picture_end' => $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null,
+                            'checkin_latitude' => $record->checkin_latitude ?? null,
+                            'checkin_longitude' => $record->checkin_longitude ?? null,
+                            'checkin_distance_from_base' => $record->checkin_distance_from_base ?? null,
+                            'is_remote_checkin' => $record->is_remote_checkin ?? 0,
+                            'checkout_latitude' => $record->checkout_latitude ?? null,
+                            'checkout_longitude' => $record->checkout_longitude ?? null,
                         ];
                     } else {
                         // No attendance record - check if on leave
@@ -4499,6 +4640,12 @@ class RiderController extends Controller
                     'a.login_time',
                     'a.logout_time',
                     'a.notes',
+                    'a.checkin_latitude',
+                    'a.checkin_longitude',
+                    'a.checkin_distance_from_base',
+                    'a.is_remote_checkin',
+                    'a.checkout_latitude',
+                    'a.checkout_longitude',
                     DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                     DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                     'lr.id as leave_request_id',

@@ -613,6 +613,7 @@
                                             $direction = $transaction->to_account_id === $account->id ? 'in' : 'out';
                                         @endphp
                                         <tr class="hover:bg-gray-50" 
+                                            data-transaction-id="{{ $transaction->id }}"
                                             data-transaction-type="{{ $transaction->transaction_type }}"
                                             data-approval-status="{{ $transaction->approval_status ?? 'approved' }}"
                                             data-direction="{{ $direction }}"
@@ -2900,6 +2901,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const urlParams = new URLSearchParams(window.location.search);
     const dateFrom = urlParams.get('date_from');
     const dateTo = urlParams.get('date_to');
+    const highlightId = urlParams.get('highlight');
     
     if (dateFrom && dateTo) {
         // Populate date inputs
@@ -2915,6 +2917,44 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('.quick-filter-btn').forEach(btn => {
             btn.classList.remove('active', 'bg-blue-600', 'text-white');
         });
+    }
+    
+    // Handle transaction highlighting from invoice breakdown modal
+    if (highlightId) {
+        setTimeout(function() {
+            // Find the transaction row by data-transaction-id attribute
+            const transactionRow = document.querySelector(`tr[data-transaction-id="${highlightId}"]`);
+            
+            if (transactionRow) {
+                // First, expand all date groups to ensure the transaction is visible
+                document.querySelectorAll('.date-group').forEach(group => {
+                    const date = group.getAttribute('data-date');
+                    const transactionsDiv = document.getElementById('transactions-' + date);
+                    if (transactionsDiv) {
+                        transactionsDiv.classList.remove('hidden');
+                        const chevron = document.getElementById('chevron-' + date);
+                        if (chevron) chevron.style.transform = 'rotate(90deg)';
+                    }
+                });
+                
+                // Scroll to the transaction
+                transactionRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                
+                // Highlight the transaction with animation
+                transactionRow.style.backgroundColor = '#fef3c7'; // Yellow highlight
+                transactionRow.style.transition = 'background-color 0.3s ease';
+                transactionRow.style.boxShadow = '0 0 0 3px #fbbf24';
+                
+                // Remove highlight after 3 seconds
+                setTimeout(function() {
+                    transactionRow.style.backgroundColor = '';
+                    transactionRow.style.boxShadow = '';
+                }, 3000);
+            } else {
+                // If transaction not found, show a notification
+                console.warn('Transaction #' + highlightId + ' not found on this page');
+            }
+        }, 500); // Wait for page to fully render
     }
 });
 
