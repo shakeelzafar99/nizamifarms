@@ -28,7 +28,7 @@
         </div>
         
         <div class="flex items-center gap-2.5">
-            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-light">
+            <a href="{{ session('products_return_url', route('products.index')) }}" class="kt-btn kt-btn-light">
                 <i class="ki-filled ki-black-left"></i>
                 Back to Products
             </a>
@@ -462,7 +462,7 @@
                     </div>
                     
                     <div class="flex gap-3">
-                        <a href="{{ route('products.index') }}" class="kt-btn kt-btn-light">
+                        <a href="{{ session('products_return_url', route('products.index')) }}" class="kt-btn kt-btn-light">
                             Cancel
                         </a>
                         <button type="submit" class="kt-btn kt-btn-primary">

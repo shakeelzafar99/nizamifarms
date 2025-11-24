@@ -406,6 +406,15 @@ class LedgerController extends Controller
      */
     public function show($id)
     {
+        // Store the previous URL (with filters) in session for "Back to Approvals" button
+        if (url()->previous() !== url()->current()) {
+            $previousUrl = url()->previous();
+            // Only store if it's from the approvals index page
+            if (strpos($previousUrl, route('approvals.index')) !== false || strpos($previousUrl, '/approvals') !== false) {
+                session(['approvals_return_url' => $previousUrl]);
+            }
+        }
+        
         $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'approvedBy', 'order.customer', 'request'])
                                   ->findOrFail($id);
 
@@ -647,6 +656,106 @@ class LedgerController extends Controller
                                ->with('error', 'Error approving transaction: ' . $e->getMessage());
             }
             return back()->with('error', 'Error approving transaction: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Approve transaction at L1 only (for L2 users who want to use proper two-stage approval)
+     * This forces the transaction to move to L2 pending, even if the user has L2 rights
+     */
+    public function approveAtL1Only(Request $request, $id)
+    {
+        $request->validate([
+            'approval_notes' => 'nullable|string|max:500'
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // Validation: Must be at L1 pending stage
+            if (!in_array($ledger->approval_status, [LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1])) {
+                throw new \Exception("Transaction is not at L1 pending stage");
+            }
+
+            // Determine required levels from Request Settings
+            $categoryCode = null;
+            switch ($ledger->transaction_type) {
+                case LedgerModel::TYPE_INVOICE:
+                    $categoryCode = 'invoice_approval';
+                    break;
+                case LedgerModel::TYPE_EMPLOYEE_DEPOSIT:
+                    $categoryCode = 'employee_deposit';
+                    break;
+                case LedgerModel::TYPE_VENDOR_PAYMENT:
+                    $categoryCode = 'vendor_payment';
+                    break;
+                case LedgerModel::TYPE_TRANSFER:
+                    $categoryCode = 'account_transfer';
+                    break;
+            }
+
+            $requiresL2 = false;
+            if ($categoryCode) {
+                $category = RequestCategoryModel::getByCode($categoryCode);
+                if ($category) {
+                    $requiresL2 = $category->requiresLevel2();
+                }
+            }
+
+            // Validation: Must require L2 approval
+            if (!$requiresL2) {
+                throw new \Exception("This transaction does not require L2 approval");
+            }
+
+            // Move to L2 pending (exactly like L1 approval)
+            $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
+            $ledger->comments = ($ledger->comments ?? '') .
+                " | L1 approved by User ID " . auth()->id() . " (L1-only approval)";
+
+            // Add approval notes if provided
+            if ($request->approval_notes) {
+                $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
+                                   "L1 Approval Notes: " . $request->approval_notes;
+            }
+
+            $ledger->save();
+
+            DB::commit();
+
+            $successMessage = "Transaction approved at Level 1. Now pending Level 2 approval.";
+
+            // If AJAX request (from modal), return JSON
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => $successMessage
+                ]);
+            }
+
+            // Redirect based on origin
+            if ($request->input('_origin') === 'approvals' || str_contains(url()->previous(), 'approvals')) {
+                return redirect()->route('approvals.index')
+                               ->with('success', $successMessage);
+            }
+
+            return redirect()->route('fin.ledger.index')
+                           ->with('success', $successMessage);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Error approving transaction at L1: " . $e->getMessage());
+            
+            // If AJAX request, return JSON error
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error: ' . $e->getMessage()
+                ], 500);
+            }
+            
+            return back()->with('error', 'Error: ' . $e->getMessage());
         }
     }
 

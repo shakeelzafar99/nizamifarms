@@ -406,7 +406,7 @@
                     <p class="text-xs text-gray-600 mt-0.5">Automatically organize products by category</p>
                 </div>
             </div>
-            <a href="{{ route('products.index') }}" class="kt-btn kt-btn-light">
+            <a href="{{ session('products_return_url', route('products.index')) }}" class="kt-btn kt-btn-light">
                 <i class="ki-filled ki-black-left"></i>
                 Back to Products
             </a>

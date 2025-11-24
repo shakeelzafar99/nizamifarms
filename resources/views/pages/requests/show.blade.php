@@ -391,7 +391,7 @@ function goBackSmart() {
     
     // Check if coming from approvals page
     if (referrer && referrer.includes('/approvals')) {
-        window.location.href = '{{ route("approvals.index") }}';
+        window.location.href = '{{ session("approvals_return_url", route("approvals.index")) }}';
     }
     // Check if coming from employee cash page
     else if (referrer && referrer.includes('/finance/employee/')) {

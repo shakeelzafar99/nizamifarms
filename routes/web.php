@@ -433,6 +433,7 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\LedgerController::class, 'updateTransaction'])->name('transaction.update');
             Route::get('/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'show'])->name('show');
             Route::post('/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve'])->name('approve');
+            Route::post('/{id}/approve-l1-only', [\App\Http\Controllers\FIN\LedgerController::class, 'approveAtL1Only'])->name('approve-l1-only');
             Route::post('/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject'])->name('reject');
             
             // Ledger Adjustments (for order modifications after delivery)

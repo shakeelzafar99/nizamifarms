@@ -26,7 +26,7 @@ body.in-iframe .kt-main {
             <h1 class="text-2xl font-bold text-gray-900">Transaction Details</h1>
             <p class="text-sm text-gray-600 mt-1">Review and approve/reject this transaction</p>
         </div>
-        <a href="{{ route('approvals.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+        <a href="{{ session('approvals_return_url', route('approvals.index')) }}" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
             ← Back to Approvals
         </a>
     </div>
@@ -243,8 +243,63 @@ body.in-iframe .kt-main {
 
     <!-- Approval Actions (Only if pending at any level) -->
     @if(in_array($transaction->approval_status, ['pending', 'pending_l1', 'pending_l2']))
+    @php
+        // Check if user has L2 rights
+        $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
+        
+        // Check if this is an ONLINE transaction
+        $onlineAccount = \App\Models\FIN\AccountModel::getByCode('ONLINE');
+        $isOnlineTransaction = $onlineAccount && (
+            $transaction->from_account_id == $onlineAccount->id || 
+            $transaction->to_account_id == $onlineAccount->id
+        );
+        
+        // Check if transaction is at L1 pending stage
+        $isL1Pending = in_array($transaction->approval_status, ['pending', 'pending_l1']);
+        
+        // Determine if transaction requires L2
+        $categoryCode = null;
+        switch ($transaction->transaction_type) {
+            case 'invoice':
+                $categoryCode = 'invoice_approval';
+                break;
+            case 'employee_deposit':
+                $categoryCode = 'employee_deposit';
+                break;
+            case 'vendor_payment':
+                $categoryCode = 'vendor_payment';
+                break;
+            case 'transfer':
+                $categoryCode = 'account_transfer';
+                break;
+        }
+        
+        $requiresL2 = false;
+        if ($categoryCode) {
+            $category = \App\Models\Request\RequestCategoryModel::getByCode($categoryCode);
+            if ($category) {
+                $requiresL2 = $category->requiresLevel2();
+            }
+        }
+        
+        // Show L1-only button if:
+        // - User has L2 rights
+        // - Transaction is ONLINE
+        // - Transaction is at L1 pending stage
+        // - Transaction requires L2 approval
+        $showL1OnlyButton = $hasL2Rights && $isOnlineTransaction && $isL1Pending && $requiresL2;
+    @endphp
+    
     <div class="bg-white border-2 border-blue-300 rounded-lg shadow-md p-6">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">⚡ Take Action</h2>
+        
+        @if($showL1OnlyButton)
+        <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+            <p class="text-sm text-blue-800">
+                <strong>💡 Two Approval Options:</strong> As an L2 approver, you can either fully approve this transaction now, or approve it at L1 only (it will then require L2 approval).
+            </p>
+        </div>
+        @endif
         
         <form id="approvalForm" method="POST" action="{{ route('fin.ledger.approve', $transaction->id) }}">
             @csrf
@@ -261,14 +316,14 @@ body.in-iframe .kt-main {
                           placeholder="Add any notes about this approval..."></textarea>
             </div>
 
-            <div class="flex gap-4">
+            <div class="flex gap-3">
                 <button type="submit" 
                         id="approveBtn"
                         class="flex-1 inline-flex items-center justify-center px-6 py-3 bg-green-600 hover:bg-green-700 text-white text-base font-semibold rounded-lg transition shadow-md hover:shadow-lg">
                     <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
                     </svg>
-                    <span id="approveBtnText">✅ Approve Transaction</span>
+                    <span id="approveBtnText">✅ {{ $showL1OnlyButton ? 'Full Approval' : 'Approve Transaction' }}</span>
                     <span id="approveBtnLoading" style="display: none;">
                         <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -278,13 +333,31 @@ body.in-iframe .kt-main {
                     </span>
                 </button>
                 
+                @if($showL1OnlyButton)
+                <button type="button" onclick="approveAtL1Only()"
+                        id="approveL1Btn"
+                        class="flex-1 inline-flex items-center justify-center px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold rounded-lg transition shadow-md hover:shadow-lg">
+                    <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd"/>
+                    </svg>
+                    <span id="approveL1BtnText">⚡ L1 Approval Only</span>
+                    <span id="approveL1BtnLoading" style="display: none;">
+                        <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                    </span>
+                </button>
+                @endif
+                
                 <button type="button" onclick="rejectTransaction()"
                         id="rejectBtn"
                         class="flex-1 inline-flex items-center justify-center px-6 py-3 bg-red-600 hover:bg-red-700 text-white text-base font-semibold rounded-lg transition shadow-md hover:shadow-lg">
                     <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
                     </svg>
-                    <span id="rejectBtnText">❌ Reject Transaction</span>
+                    <span id="rejectBtnText">❌ Reject</span>
                     <span id="rejectBtnLoading" style="display: none;">
                         <svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -356,6 +429,57 @@ document.getElementById('approvalForm').addEventListener('submit', function(e) {
     // If not in iframe, let form submit normally
 });
 
+function approveAtL1Only() {
+    const form = document.getElementById('approvalForm');
+    const formData = new FormData(form);
+    const approveL1Btn = document.getElementById('approveL1Btn');
+    const approveL1BtnText = document.getElementById('approveL1BtnText');
+    const approveL1BtnLoading = document.getElementById('approveL1BtnLoading');
+    const approveBtn = document.getElementById('approveBtn');
+    const rejectBtn = document.getElementById('rejectBtn');
+    
+    // Show loading state
+    approveL1Btn.disabled = true;
+    approveBtn.disabled = true;
+    rejectBtn.disabled = true;
+    approveL1BtnText.style.display = 'none';
+    approveL1BtnLoading.style.display = 'inline-flex';
+    
+    // Submit via AJAX to L1-only endpoint
+    fetch('{{ route('fin.ledger.approve-l1-only', $transaction->id) }}', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (isInIframe) {
+            // Notify parent to close modal and refresh
+            window.parent.postMessage({ 
+                type: 'approval_complete',
+                success: true,
+                message: data.message || 'Transaction approved at L1. Now pending L2 approval.'
+            }, '*');
+        } else {
+            // Show success message and redirect
+            alert(data.message || 'Transaction approved at L1. Now pending L2 approval.');
+            window.location.href = '{{ route('approvals.index') }}';
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        // Reset button state
+        approveL1Btn.disabled = false;
+        approveBtn.disabled = false;
+        rejectBtn.disabled = false;
+        approveL1BtnText.style.display = 'inline';
+        approveL1BtnLoading.style.display = 'none';
+        alert('An error occurred. Please try again.');
+    });
+}
+
 function rejectTransaction() {
     if (!confirm('Are you sure you want to REJECT this transaction? This action cannot be undone.')) {
         return;
@@ -370,10 +494,12 @@ function rejectTransaction() {
         const rejectBtnText = document.getElementById('rejectBtnText');
         const rejectBtnLoading = document.getElementById('rejectBtnLoading');
         const approveBtn = document.getElementById('approveBtn');
+        const approveL1Btn = document.getElementById('approveL1Btn');
         
         // Show loading state
         rejectBtn.disabled = true;
         approveBtn.disabled = true;
+        if (approveL1Btn) approveL1Btn.disabled = true;
         rejectBtnText.style.display = 'none';
         rejectBtnLoading.style.display = 'inline-flex';
         
@@ -399,6 +525,7 @@ function rejectTransaction() {
             // Reset button state
             rejectBtn.disabled = false;
             approveBtn.disabled = false;
+            if (approveL1Btn) approveL1Btn.disabled = false;
             rejectBtnText.style.display = 'inline';
             rejectBtnLoading.style.display = 'none';
             alert('An error occurred. Please try again.');

@@ -200,6 +200,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Ledger Approvals (for mobile app)
     Route::post('/ledger/{id}/approve', [\App\Http\Controllers\FIN\LedgerController::class, 'approve']);
+    Route::post('/ledger/{id}/approve-l1-only', [\App\Http\Controllers\FIN\LedgerController::class, 'approveAtL1Only']);
     Route::post('/ledger/{id}/reject', [\App\Http\Controllers\FIN\LedgerController::class, 'reject']);
     Route::post('/ledger/adjustments/{id}/approve', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'approve']);
     Route::post('/ledger/adjustments/{id}/reject', [\App\Http\Controllers\FIN\LedgerAdjustmentController::class, 'reject']);

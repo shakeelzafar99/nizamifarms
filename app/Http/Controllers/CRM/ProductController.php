@@ -25,6 +25,15 @@ class ProductController extends Controller
      */
     public function attributes()
     {
+        // Store the previous URL (with filters) in session for "Back to Products" button
+        if (url()->previous() !== url()->current()) {
+            $previousUrl = url()->previous();
+            // Only store if it's from the products index page
+            if (strpos($previousUrl, route('products.index')) !== false || strpos($previousUrl, '/products') !== false) {
+                session(['products_return_url' => $previousUrl]);
+            }
+        }
+        
         $labels = $this->readAttributeLabels();
         $activeKey = (int) request()->get('level', 1);
         $auto = $this->readAttributeAutoRules();
@@ -1502,6 +1511,15 @@ class ProductController extends Controller
      */
     public function create()
     {
+        // Store the previous URL (with filters) in session for "Back to Products" button
+        if (url()->previous() !== url()->current()) {
+            $previousUrl = url()->previous();
+            // Only store if it's from the products index page
+            if (strpos($previousUrl, route('products.index')) !== false || strpos($previousUrl, '/products') !== false) {
+                session(['products_return_url' => $previousUrl]);
+            }
+        }
+        
         // Get distinct values for dropdowns (same as index page filters)
         $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort()->values();
         $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort()->values();
@@ -1719,6 +1737,15 @@ class ProductController extends Controller
     public function edit($id)
     {
         try {
+            // Store the previous URL (with filters) in session for "Back to Products" button
+            if (url()->previous() !== url()->current()) {
+                $previousUrl = url()->previous();
+                // Only store if it's from the products index page
+                if (strpos($previousUrl, route('products.index')) !== false || strpos($previousUrl, '/products') !== false) {
+                    session(['products_return_url' => $previousUrl]);
+                }
+            }
+            
             $product = ProductModel::with('variants')->findOrFail($id);
             
             // Get distinct values for dropdowns (same as create page)

@@ -353,6 +353,15 @@ class RequestController extends Controller
      */
     public function show($id)
     {
+        // Store the previous URL (with filters) in session for smart back navigation
+        if (url()->previous() !== url()->current()) {
+            $previousUrl = url()->previous();
+            // Only store if it's from the approvals index page
+            if (strpos($previousUrl, route('approvals.index')) !== false || strpos($previousUrl, '/approvals') !== false) {
+                session(['approvals_return_url' => $previousUrl]);
+            }
+        }
+        
         $request = RequestModel::with([
             'category',
             'requester',
