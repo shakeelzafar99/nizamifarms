@@ -3101,6 +3101,23 @@ class RiderController extends Controller
                 $orderStatus = strtolower((string) ($row->order_status ?? ''));
                 $lineStatus = strtolower((string) ($row->line_item_status ?? ''));
 
+                // ✅ Defensive initialization to avoid \"Undefined array key\" issues
+                if (!isset($node['quantity'])) {
+                    $node['quantity'] = 0.0;
+                }
+                if (!isset($node['lean_quantity'])) {
+                    $node['lean_quantity'] = 0.0;
+                }
+                if (!isset($node['non_lean_quantity'])) {
+                    $node['non_lean_quantity'] = 0.0;
+                }
+                if (!isset($node['processing_quantity'])) {
+                    $node['processing_quantity'] = 0.0;
+                }
+                if (!isset($node['prepared_quantity'])) {
+                    $node['prepared_quantity'] = 0.0;
+                }
+
                 $node['quantity'] += $qty;
                 if ($isLean) {
                     $node['lean_quantity'] += $qty;
@@ -3719,6 +3736,12 @@ class RiderController extends Controller
                 }
             }
 
+            // ✅ CRITICAL: Break all PHP references before JSON encoding
+            // The tree uses references (&) for performance during building,
+            // but these create circular references that break json_encode()
+            // Deep clone via unserialize(serialize()) breaks all references
+            $treeClean = unserialize(serialize($tree));
+            
             return response()->json([
                 'success' => true,
                 'generated_at' => Carbon::now()->toIso8601String(),
@@ -3730,7 +3753,7 @@ class RiderController extends Controller
                     'total_quantity' => round($totalQuantity, 2),
                 ],
                 'order_status_counts' => $orderStatusCounts,
-                'tree' => $tree,
+                'tree' => $treeClean,
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to build open quantities tree', [
