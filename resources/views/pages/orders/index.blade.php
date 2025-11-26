@@ -2819,6 +2819,7 @@ function loadEditForm(order) {
     content.innerHTML = `
         <form id="editOrderForm" style="padding: 0;">
             <input type="hidden" name="order_id" value="${order.id}">
+            <input type="hidden" name="customer_id" id="editCustomerId" value="${order.customer_id || ''}">
             
             <!-- Order Information -->
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
@@ -2856,53 +2857,77 @@ function loadEditForm(order) {
 
                 <!-- Customer Information -->
                 <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
-                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Customer Details</h4>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h4 style="font-weight: 600; color: #374151; margin: 0;">Customer Details</h4>
+                        <button type="button" onclick="showCustomerSelector()" 
+                                style="padding: 6px 12px; background-color: #2563eb; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 500;">
+                            Change Customer
+                        </button>
+                    </div>
+                    
+                    <!-- Customer Selector (Hidden by default) -->
+                    <div id="editCustomerSelector" style="display: none; margin-bottom: 16px; padding: 12px; background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px;">
+                        <div style="margin-bottom: 8px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #1e40af; margin-bottom: 4px;">Search and Select Customer</label>
+                            <div style="position: relative;">
+                                <input type="text" id="editCustomerSearch" placeholder="Search customers by name, phone, or email..." 
+                                       style="width: 100%; padding: 8px; border: 1px solid #3b82f6; border-radius: 4px; font-size: 14px;"
+                                       onkeyup="searchCustomersForEdit(this)" onfocus="showEditCustomerDropdown()">
+                                <div id="editCustomerDropdown" class="customer-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                            </div>
+                        </div>
+                        <button type="button" onclick="hideCustomerSelector()" 
+                                style="padding: 4px 10px; background-color: #e5e7eb; color: #374151; border: none; border-radius: 4px; font-size: 11px; cursor: pointer;">
+                            Cancel
+                        </button>
+                    </div>
+                    
                     <div style="display: flex; flex-direction: column; gap: 16px;">
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">First Name</label>
-                                <input type="text" name="address_first_name" value="${order.address_first_name || ''}" 
+                                <input type="text" name="address_first_name" id="editAddressFirstName" value="${order.address_first_name || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Last Name</label>
-                                <input type="text" name="address_last_name" value="${order.address_last_name || ''}" 
+                                <input type="text" name="address_last_name" id="editAddressLastName" value="${order.address_last_name || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
                         <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Email</label>
-                            <input type="email" name="address_email" value="${order.address_email || ''}" 
+                            <input type="email" name="address_email" id="editAddressEmail" value="${order.address_email || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div>
                             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Phone</label>
-                            <input type="text" name="address_phone" value="${order.address_phone || ''}" 
+                            <input type="text" name="address_phone" id="editAddressPhone" value="${order.address_phone || ''}" 
                                    style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Address Line 1</label>
-                                <input type="text" name="address_line1" value="${order.address_line1 || ''}" 
+                                <input type="text" name="address_line1" id="editAddressLine1" value="${order.address_line1 || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Address Line 2</label>
-                                <input type="text" name="address_line2" value="${order.address_line2 || ''}" 
+                                <input type="text" name="address_line2" id="editAddressLine2" value="${order.address_line2 || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">City</label>
-                                <input type="text" name="address_city" value="${order.address_city || ''}" 
+                                <input type="text" name="address_city" id="editAddressCity" value="${order.address_city || ''}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Country</label>
-                                <input type="text" name="address_country" value="${order.address_country || 'Pakistan'}" 
+                                <input type="text" name="address_country" id="editAddressCountry" value="${order.address_country || 'Pakistan'}" 
                                        style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;">
                             </div>
                             <div>
@@ -4548,8 +4573,62 @@ function saveOrderChanges(orderId) {
     const formData = new FormData(form);
     const submitBtn = form.querySelector('button[type="submit"]');
     
-    submitBtn.textContent = 'Saving...';
-    submitBtn.disabled = true;
+    // Validate customer information if creating new order
+    if (!orderId) {
+        const existingSection = document.getElementById('existingCustomerSection');
+        const newSection = document.getElementById('newCustomerSection');
+        
+        // Check which mode is active by looking at display style
+        const isExistingMode = existingSection && (existingSection.style.display === 'block' || existingSection.style.display === '');
+        const isNewMode = newSection && (newSection.style.display === 'block' || newSection.style.display === '');
+        
+        console.log('Validation check:', { isExistingMode, isNewMode });
+        
+        if (isExistingMode) {
+            // Existing customer mode - must have selected a customer
+            const customerId = document.getElementById('selectedCustomerId')?.value;
+            if (!customerId || customerId === '') {
+                alert('Please select an existing customer or switch to "New Customer" mode to create a new one.');
+                return;
+            }
+        } else if (isNewMode) {
+            // New customer mode - validate required fields
+            const firstName = form.querySelector('input[name="customer_first_name"]')?.value?.trim();
+            const lastName = form.querySelector('input[name="customer_last_name"]')?.value?.trim();
+            const phone = form.querySelector('input[name="customer_phone"]')?.value?.trim();
+            const address1 = form.querySelector('input[name="customer_address1"]')?.value?.trim();
+            
+            if (!firstName) {
+                alert('First Name is required for new customer');
+                form.querySelector('input[name="customer_first_name"]')?.focus();
+                return;
+            }
+            if (!lastName) {
+                alert('Last Name is required for new customer');
+                form.querySelector('input[name="customer_last_name"]')?.focus();
+                return;
+            }
+            if (!phone) {
+                alert('Phone Number is required for new customer');
+                form.querySelector('input[name="customer_phone"]')?.focus();
+                return;
+            }
+            if (!address1) {
+                alert('Address Line 1 is required for new customer');
+                form.querySelector('input[name="customer_address1"]')?.focus();
+                return;
+            }
+        } else {
+            // Neither mode is visible - shouldn't happen, but handle gracefully
+            alert('Please select customer information');
+            return;
+        }
+    }
+    
+    if (submitBtn) {
+        submitBtn.textContent = 'Saving...';
+        submitBtn.disabled = true;
+    }
     
     // Collect line items
     const items = [];
@@ -4588,6 +4667,7 @@ function saveOrderChanges(orderId) {
     const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
     
     const orderData = {
+        customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
         order_status: formData.get('order_status'),
         order_date: formattedOrderDate,
         contact_email: formData.get('contact_email'),
@@ -4614,6 +4694,11 @@ function saveOrderChanges(orderId) {
     // LEDGER ADJUSTMENT CONFIRMATION
     // ================================================================
     // Debug: Log order data
+    console.log('📦 Order Data Being Sent:', {
+        customer_id: orderData.customer_id,
+        order_status: orderData.order_status,
+        total_price: orderData.total_price
+    });
     console.log('🔍 Ledger Adjustment Check:', {
         hasCurrentOrder: !!window.currentOrder,
         ledger_transaction_id: window.currentOrder?.ledger_transaction_id,
@@ -4731,6 +4816,7 @@ function saveAndCloseOrder(orderId) {
     const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
     
     const orderData = {
+        customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
         order_status: formData.get('order_status'),
         order_date: formattedOrderDate,
         contact_email: formData.get('contact_email'),
@@ -7644,12 +7730,12 @@ function createNewOrder() {
                     <div style="margin-bottom: 16px;">
                         <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Customer Selection</label>
                         <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                            <button type="button" id="existingCustomerBtn" onclick="selectCustomerMode('existing')" style="padding: 6px 12px; border: 1px solid #d1d5db; background-color: #f9fafb; color: #374151; border-radius: 4px; font-size: 12px; cursor: pointer;">Existing Customer</button>
-                            <button type="button" id="newCustomerBtn" onclick="selectCustomerMode('new')" style="padding: 6px 12px; border: 1px solid #10b981; background-color: #10b981; color: white; border-radius: 4px; font-size: 12px; cursor: pointer;">New Customer</button>
+                            <button type="button" id="existingCustomerBtn" onclick="selectCustomerMode('existing')" style="padding: 6px 12px; border: 1px solid #10b981; background-color: #10b981; color: white; border-radius: 4px; font-size: 12px; cursor: pointer;">Existing Customer</button>
+                            <button type="button" id="newCustomerBtn" onclick="selectCustomerMode('new')" style="padding: 6px 12px; border: 1px solid #d1d5db; background-color: #f9fafb; color: #374151; border-radius: 4px; font-size: 12px; cursor: pointer;">New Customer</button>
                         </div>
                         
                         <!-- Existing Customer Search -->
-                        <div id="existingCustomerSection" style="display: none;">
+                        <div id="existingCustomerSection" style="display: block;">
                             <div style="position: relative;">
                                 <input type="text" id="customerSearch" placeholder="Search customers by name, phone, or email..." 
                                        style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
@@ -7660,14 +7746,14 @@ function createNewOrder() {
                         </div>
                         
                         <!-- New Customer Fields -->
-                        <div id="newCustomerSection">
+                        <div id="newCustomerSection" style="display: none;">
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
                                 <div>
-                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">First Name</label>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">First Name *</label>
                                     <input type="text" name="customer_first_name" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                                 <div>
-                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Last Name</label>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Last Name *</label>
                                     <input type="text" name="customer_last_name" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                             </div>
@@ -7677,7 +7763,7 @@ function createNewOrder() {
                             </div>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
                                 <div>
-                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Address Line 1</label>
+                                    <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Address Line 1 *</label>
                                     <input type="text" name="customer_address1" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                                 </div>
                                 <div>
@@ -7803,7 +7889,7 @@ function createNewOrder() {
     // Set up form submission for new order
     document.getElementById('editOrderForm').onsubmit = function(e) {
         e.preventDefault();
-        saveNewOrder();
+        saveOrderChanges(null); // Use unified function with validation
     };
     
     modal.style.display = 'block';
@@ -7858,10 +7944,60 @@ function createNewOrder() {
 
 // DUPLICATE FUNCTION REMOVED - Original exists at line 1402
 
-// Save new order
+// Save new order (with validation)
 function saveNewOrder() {
     const form = document.getElementById('editOrderForm');
     const formData = new FormData(form);
+    
+    // VALIDATE CUSTOMER INFORMATION FIRST
+    const existingSection = document.getElementById('existingCustomerSection');
+    const newSection = document.getElementById('newCustomerSection');
+    
+    // Check which mode is active
+    const isExistingMode = existingSection && (existingSection.style.display === 'block' || existingSection.style.display === '');
+    const isNewMode = newSection && (newSection.style.display === 'block' || newSection.style.display === '');
+    
+    console.log('Validation check in saveNewOrder:', { isExistingMode, isNewMode });
+    
+    if (isExistingMode) {
+        // Existing customer mode - must have selected a customer
+        const customerId = document.getElementById('selectedCustomerId')?.value;
+        if (!customerId || customerId === '') {
+            alert('Please select an existing customer or switch to "New Customer" mode to create a new one.');
+            return;
+        }
+    } else if (isNewMode) {
+        // New customer mode - validate required fields
+        const firstName = form.querySelector('input[name="customer_first_name"]')?.value?.trim();
+        const lastName = form.querySelector('input[name="customer_last_name"]')?.value?.trim();
+        const phone = form.querySelector('input[name="customer_phone"]')?.value?.trim();
+        const address1 = form.querySelector('input[name="customer_address1"]')?.value?.trim();
+        
+        if (!firstName) {
+            alert('First Name is required for new customer');
+            form.querySelector('input[name="customer_first_name"]')?.focus();
+            return;
+        }
+        if (!lastName) {
+            alert('Last Name is required for new customer');
+            form.querySelector('input[name="customer_last_name"]')?.focus();
+            return;
+        }
+        if (!phone) {
+            alert('Phone Number is required for new customer');
+            form.querySelector('input[name="customer_phone"]')?.focus();
+            return;
+        }
+        if (!address1) {
+            alert('Address Line 1 is required for new customer');
+            form.querySelector('input[name="customer_address1"]')?.focus();
+            return;
+        }
+    } else {
+        // Neither mode is visible
+        alert('Please select customer information');
+        return;
+    }
     
     // Collect line items (ignore empty ones)
     const items = [];
@@ -8034,6 +8170,148 @@ function hideCustomerDropdown() {
     const dd = document.getElementById('customerDropdown');
     if (dd) dd.style.display = 'none';
 }
+
+// Customer selector for edit mode
+function showCustomerSelector() {
+    const selector = document.getElementById('editCustomerSelector');
+    if (selector) {
+        selector.style.display = 'block';
+        const searchInput = document.getElementById('editCustomerSearch');
+        if (searchInput) searchInput.focus();
+    }
+}
+
+function hideCustomerSelector() {
+    const selector = document.getElementById('editCustomerSelector');
+    if (selector) selector.style.display = 'none';
+    const dd = document.getElementById('editCustomerDropdown');
+    if (dd) dd.style.display = 'none';
+}
+
+function searchCustomersForEdit(inputEl) {
+    const query = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
+    clearTimeout(customerSearchTimeout);
+    if (!query) { hideEditCustomerDropdown(); return; }
+
+    customerSearchTimeout = setTimeout(function() {
+        fetch('/api/customers/search?q=' + encodeURIComponent(query) + '&limit=10', {
+            headers: { 'Accept': 'application/json' }
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            const customers = (data && data.success && data.customers) ? data.customers : [];
+            showEditCustomerResults(customers);
+        })
+        .catch(function() {});
+    }, 250);
+}
+
+function showEditCustomerResults(customers) {
+    const dd = document.getElementById('editCustomerDropdown');
+    if (!dd) return;
+    if (!customers || customers.length === 0) { 
+        dd.innerHTML = '<div style="padding:8px;color:#6b7280;font-size:12px;">No customers found</div>'; 
+        showEditCustomerDropdown(); 
+        return; 
+    }
+
+    // Store customers globally for access
+    window.editCustomerResults = customers;
+
+    let html = '';
+    customers.forEach((c, idx) => {
+        const addressParts = [];
+        if (c.address && c.address.address1) addressParts.push(c.address.address1);
+        if (c.address && c.address.city) addressParts.push(c.address.city);
+        const addressStr = addressParts.length > 0 ? addressParts.join(', ') : 'No address';
+        
+        const safeName = escapeHtml(c.name || '');
+        const safePhone = escapeHtml(c.phone || 'No phone');
+        const safeAddress = escapeHtml(addressStr);
+        
+        html += `
+            <div onclick="selectEditCustomer(${idx})" 
+                 style="padding:10px; cursor:pointer; border-bottom:1px solid #f3f4f6; font-size:13px;">
+                <div style="font-weight:500; color:#111827;">${safeName}</div>
+                <div style="font-size:11px; color:#6b7280; margin-top:2px;">${safePhone} • ${safeAddress}</div>
+            </div>
+        `;
+    });
+    
+    dd.innerHTML = html;
+    showEditCustomerDropdown();
+}
+
+function showEditCustomerDropdown() {
+    const dd = document.getElementById('editCustomerDropdown');
+    if (dd) dd.style.display = 'block';
+}
+
+function hideEditCustomerDropdown() {
+    const dd = document.getElementById('editCustomerDropdown');
+    if (dd) dd.style.display = 'none';
+}
+
+function selectEditCustomer(customerIndex) {
+    try {
+        // Get customer from global storage
+        if (!window.editCustomerResults || !window.editCustomerResults[customerIndex]) {
+            console.error('Customer not found at index:', customerIndex);
+            alert('Error: Customer data not found');
+            return;
+        }
+        
+        const customer = window.editCustomerResults[customerIndex];
+        console.log('Selected customer:', customer);
+        
+        // ✅ CRITICAL: Update customer_id hidden field
+        const customerIdField = document.getElementById('editCustomerId');
+        if (customerIdField) {
+            customerIdField.value = customer.id || '';
+            console.log('Set customer_id to:', customer.id);
+        }
+        
+        // Update all customer fields
+        if (customer.address) {
+            const firstNameField = document.getElementById('editAddressFirstName');
+            const lastNameField = document.getElementById('editAddressLastName');
+            const emailField = document.getElementById('editAddressEmail');
+            const phoneField = document.getElementById('editAddressPhone');
+            const line1Field = document.getElementById('editAddressLine1');
+            const line2Field = document.getElementById('editAddressLine2');
+            const cityField = document.getElementById('editAddressCity');
+            const countryField = document.getElementById('editAddressCountry');
+            
+            if (firstNameField) firstNameField.value = customer.address.first_name || '';
+            if (lastNameField) lastNameField.value = customer.address.last_name || '';
+            if (emailField) emailField.value = customer.address.email || '';
+            if (phoneField) phoneField.value = customer.address.phone || customer.phone || '';
+            if (line1Field) line1Field.value = customer.address.address1 || '';
+            if (line2Field) line2Field.value = customer.address.address2 || '';
+            if (cityField) cityField.value = customer.address.city || '';
+            if (countryField) countryField.value = customer.address.country || 'Pakistan';
+        }
+        
+        // Update customer name field if it exists
+        const customerNameField = document.querySelector('input[name="customer_name"]');
+        if (customerNameField) customerNameField.value = customer.name || '';
+        
+        // Hide the selector
+        hideCustomerSelector();
+        
+        alert('Customer information updated successfully!');
+    } catch (e) {
+        console.error('Error selecting customer:', e);
+        alert('Error updating customer information');
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text || '';
+    return div.innerHTML;
+}
+
 function searchCustomers(inputEl) {
     const query = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     clearTimeout(customerSearchTimeout);

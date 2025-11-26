@@ -112,9 +112,10 @@
 /* ===== TABLE STYLING ===== */
 .products-index .table-products {
     width: 100% !important;
-    table-layout: fixed !important;
+    table-layout: auto !important; /* Changed from fixed to auto for better flexibility */
     border-collapse: separate !important;
     border-spacing: 0 !important;
+    min-width: 1200px !important; /* Ensure minimum width for horizontal scroll */
 }
 
 .products-index .table-products thead th {
@@ -230,11 +231,20 @@
 }
 
 /* ===== COLUMN SPECIFIC STYLES ===== */
-/* Allow product name column to wrap since it needs more space */
+/* Allow product name column to be flexible and wrap */
+.products-index .table-products .col-title,
 .products-index .table-products .col-name {
     white-space: normal !important;
     word-wrap: break-word !important;
-    max-width: 200px !important;
+    min-width: 250px !important; /* Minimum width for readability */
+    max-width: 500px !important; /* Maximum width to prevent too wide */
+}
+
+.products-index .product-title {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    line-height: 1.4 !important;
 }
 
 /* Ensure action buttons don't wrap */
@@ -268,14 +278,36 @@
     }
 }
 
+/* Ensure horizontal scroll works properly on all screen sizes */
+.products-index .overflow-x-auto {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    /* Add subtle scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: #CBD5E1 #F1F5F9;
+}
+
+.products-index .overflow-x-auto::-webkit-scrollbar {
+    height: 8px;
+}
+
+.products-index .overflow-x-auto::-webkit-scrollbar-track {
+    background: #F1F5F9;
+    border-radius: 4px;
+}
+
+.products-index .overflow-x-auto::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 4px;
+}
+
+.products-index .overflow-x-auto::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+}
+
 @media (max-width: 768px) {
-    .products-index .overflow-x-auto {
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-    }
-    
     .products-index .table-products {
-        min-width: 900px !important;
+        min-width: 1200px !important; /* Ensure table doesn't shrink too much */
     }
 }
 

@@ -4,243 +4,309 @@
 
 @push('custom_css')
 <link rel="stylesheet" href="{{ asset('css/products-modern.css') }}?v={{ time() }}">
+<style>
+/* Products Page - Fixed Layout */
+.products-page-wrapper {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+/* Header Bar - Always visible, no horizontal scroll */
+.products-header-bar {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 20px 24px;
+    margin-bottom: 0;
+}
+
+.products-header-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.products-title-section {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.products-title-section h1 {
+    color: white;
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.products-title-section .product-count {
+    color: rgba(255,255,255,0.9);
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.products-action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.products-action-buttons .action-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.15);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.products-action-buttons .action-btn:hover {
+    background: rgba(255,255,255,0.25);
+    border-color: rgba(255,255,255,0.5);
+}
+
+.products-action-buttons .action-btn-primary {
+    background: white;
+    color: #667eea;
+    border-color: white;
+}
+
+.products-action-buttons .action-btn-primary:hover {
+    background: #f0f0f0;
+}
+
+/* Search and Filters Section - Fixed width */
+.products-filters-section {
+    background: white;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.products-search-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.products-search-input {
+    flex: 1;
+    position: relative;
+    max-width: 500px;
+}
+
+.products-search-input input {
+    width: 100%;
+    padding: 12px 16px 12px 44px;
+    border: 2px solid #e5e7eb;
+    border-radius: 10px;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.products-search-input input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.products-search-input .search-icon {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #9ca3af;
+}
+
+.products-filters-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.products-filters-row select {
+    padding: 8px 32px 8px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 13px;
+    background: white;
+    cursor: pointer;
+    min-width: 130px;
+}
+
+.products-filters-row .clear-btn {
+    padding: 8px 16px;
+    background: #f3f4f6;
+    color: #6b7280;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+/* Table Container - Only this scrolls horizontally */
+.products-table-container {
+    overflow-x: auto;
+    background: white;
+}
+</style>
 @endpush
 
 @section('content')
-<div class="products-index" style="max-width: 100%; overflow-x: hidden;">
-<!-- Enhanced Header Section -->
-<div class="container-fixed" style="max-width: 100%;">
-    <div class="flex flex-wrap items-center lg:items-end justify-between gap-3 pb-4">
-        <div class="flex flex-col justify-center gap-3">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
-                    <i class="ki-filled ki-shop text-white text-lg"></i>
+<div class="products-page-wrapper">
+    <!-- Header Bar -->
+    <div class="products-header-bar">
+        <div class="products-header-content">
+            <div class="products-title-section">
+                <div style="width: 44px; height: 44px; background: rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                    <i class="ki-filled ki-shop text-white text-xl"></i>
                 </div>
                 <div>
-                    <h1 class="text-2xl font-bold leading-tight text-gray-900">Products</h1>
-                    <div class="flex items-center gap-2 text-sm font-medium text-gray-600 mt-1">
-                        <i class="ki-filled ki-information-2 text-blue-500"></i>
-                        {{ $products->total() }} products found
-                    </div>
+                    <h1>Products</h1>
+                    <span class="product-count">{{ $products->total() }} products found</span>
                 </div>
             </div>
-        </div>
-        
-        <!-- Enhanced Action Buttons -->
-        <div class="products-toolbar flex flex-wrap items-center gap-2">
-            <button onclick="openColumnSettings()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
-                <i class="ki-filled ki-setting-2 text-gray-500 text-sm"></i>
-                <span class="hidden md:inline">Columns</span>
-            </button>
-            <a href="{{ route('products.attributes') }}" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
-                <i class="ki-filled ki-category text-gray-500 text-sm"></i>
-                <span class="hidden md:inline">Category</span>
-            </a>
-            <button onclick="openBulkAdjustPricesModal()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
-                <i class="ki-filled ki-price-tag text-gray-500 text-sm"></i>
-                <span class="hidden md:inline">Prices</span>
-            </button>
-            <button onclick="openBulkWeightFactorModal()" class="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200">
-                <i class="ki-filled ki-weight text-gray-500 text-sm"></i>
-                <span class="hidden md:inline">Weight Factor</span>
-            </button>
-        </div>
-    </div>
-</div>
-
-<!-- Enhanced Main Content -->
-<div class="container-fixed" style="max-width: 100%;">
-    <div class="grid gap-4">
-        <!-- Modern Card with Enhanced Styling -->
-        <div class="bg-white rounded-2xl shadow-sm overflow-hidden" style="border: none;">
-            <!-- Enhanced Filter Section -->
-            <div class="bg-gradient-to-r from-gray-50 to-white px-6 py-4">
-                    <form method="GET" id="productSearchForm">
-                        <!-- Search Bar Row with Create Button -->
-                        <div class="flex items-center gap-3 mb-4">
-                            <div class="search-input relative" style="flex: 1 1 0%; max-width: 100%;">
-                                <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                                    </svg>
-                                </div>
-                                <input type="text" name="search" value="{{ request('search') }}" 
-                                       placeholder="Search products, SKUs, vendors..." 
-                                       class="w-full pl-12 pr-4 py-3 rounded-xl transition-all duration-200 text-gray-900 placeholder-gray-500"
-                                       id="productSearchInput"
-                                       autocomplete="off">
-                            </div>
-                            <button type="submit" onclick="event.preventDefault(); performSearch();" 
-                                    class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md whitespace-nowrap">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                                </svg>
-                                Search
-                            </button>
-                            <a href="{{ route('products.create') }}" 
-                               class="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-sm hover:shadow-md whitespace-nowrap">
-                                <i class="ki-filled ki-plus text-white"></i>
-                                Create Product
-                            </a>
-                        </div>
-                        
-                        <!-- Filter Pills Row -->
-                        <div class="filters-bar flex flex-wrap items-center gap-2">
-                        <!-- Status Filter -->
-                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
-                                <select name="status" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="statusFilter">
-                            <option value="">All Status</option>
-                            <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                            <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
-                            <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-
-                        <!-- Category Filter -->
-                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
-                                <select name="product_type" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="categoryFilter">
-                            <option value="">All Categories</option>
-                            @foreach($productTypes as $type)
-                                <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>
-                                    {{ $type }}
-                                </option>
-                            @endforeach
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-
-                        <!-- Vendor Filter -->
-                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
-                                <select name="vendor" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="vendorFilter">
-                            <option value="">All Vendors</option>
-                            @foreach($vendors as $vendor)
-                                <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>
-                                    {{ $vendor }}
-                                </option>
-                            @endforeach
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-
-                        <!-- Category Level 1 Filter -->
-                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
-                                <select name="attribute_1" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="attr1Filter">
-                            <option value="">All {{ $attributeLabels['1'] ?? 'Category Level 1' }}</option>
-                            @foreach($attribute1s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-                            
-                            <!-- Category Level 2 Filter -->
-                            <div class="relative" style="min-width: 120px; flex: 0 1 auto;">
-                                <select name="attribute_2" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="attr2Filter">
-                            <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
-                            @foreach($attribute2s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-                            
-                            <!-- Hidden Attribute 3 Filter -->
-                        <select name="attribute_3" class="select select-sm" id="attr3Filter" style="display: none;">
-                            <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
-                            @foreach($attribute3s as $val)
-                                <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>
-                                    {{ $val }}
-                                </option>
-                            @endforeach
-                        </select>
-                        
-                        <!-- Sync Status Filter -->
-                            <div class="relative" style="min-width: 110px; flex: 0 1 auto;">
-                                <select name="sync_status" class="w-full rounded-lg px-2.5 py-2 pr-8 text-xs font-medium text-gray-700 transition-all duration-200 cursor-pointer filter-select" id="syncStatusFilter">
-                            <option value="">All Sources</option>
-                            @foreach($syncStatuses as $syncStatus)
-                                <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>
-                                    {{ ucfirst($syncStatus) }}
-                                </option>
-                            @endforeach
-                        </select>
-                                <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
-                                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </div>
-                            </div>
-                            
-                        @if(request()->hasAny(['search', 'status', 'sync_status','product_type','vendor','attribute_1','attribute_2','attribute_3']))
-                                <button type="button" onclick="event.preventDefault(); clearAllFilters();" 
-                                        class="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-all duration-200" id="clearFiltersBtn" style="flex-shrink: 0;">
-                                    <i class="ki-filled ki-cross-circle text-red-500 text-sm"></i>
-                                    <span class="hidden sm:inline">Clear</span>
-                                </button>
-                        @endif
-                        </div>
-                    </form>
-                </div>
-            </div>
-
-            <!-- Enhanced Table Section -->
-            <div class="px-6 pb-6">
-                <div class="bg-white rounded-xl border border-gray-100 overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="table-products w-full" id="productsTable">
-                            <thead id="tableHead">
-                            <!-- Dynamic headers will be inserted here -->
-                        </thead>
-                            <tbody id="tableBody">
-                            <!-- Dynamic rows will be inserted here -->
-                        </tbody>
-                    </table>
-                    </div>
-                </div>
-
-                <!-- Enhanced Pagination -->
-                <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6 pt-6 border-t border-gray-100">
-                    <div class="flex items-center gap-2 text-sm text-gray-600">
-                        <div class="flex items-center gap-1">
-                            <i class="ki-filled ki-information-2 text-blue-500"></i>
-                            <span class="font-medium">Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }}</span>
-                    </div>
-                        <span>of</span>
-                        <span class="font-semibold text-gray-900">{{ $products->total() }} products</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                    {{ $products->appends(request()->query())->links() }}
-                    </div>
-                </div>
+            <div class="products-action-buttons">
+                <button onclick="openColumnSettings()" class="action-btn">
+                    <i class="ki-filled ki-setting-2"></i>
+                    Columns
+                </button>
+                <a href="{{ route('products.attributes') }}" class="action-btn">
+                    <i class="ki-filled ki-category"></i>
+                    Category
+                </a>
+                <button onclick="openBulkAdjustPricesModal()" class="action-btn">
+                    <i class="ki-filled ki-price-tag"></i>
+                    Prices
+                </button>
+                <button onclick="openBulkWeightFactorModal()" class="action-btn">
+                    <i class="ki-filled ki-weight"></i>
+                    Weight
+                </button>
+                <a href="{{ route('products.create') }}" class="action-btn action-btn-primary">
+                    <i class="ki-filled ki-plus"></i>
+                    Create Product
+                </a>
             </div>
         </div>
     </div>
-</div>
+
+    <!-- Search and Filters Section -->
+    <div class="products-filters-section">
+        <form method="GET" id="productSearchForm">
+            <div class="products-search-row">
+                <div class="products-search-input">
+                    <svg class="search-icon w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input type="text" name="search" value="{{ request('search') }}" 
+                           placeholder="Search products, SKUs, vendors..." 
+                           id="productSearchInput"
+                           autocomplete="off">
+                </div>
+                <button type="submit" onclick="event.preventDefault(); performSearch();" 
+                        style="padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 10px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    Search
+                </button>
+                <button type="button" onclick="clearFilters()" class="clear-btn" style="padding: 12px 20px; background: #f3f4f6; border: none; border-radius: 10px; font-weight: 500; cursor: pointer;">
+                    Clear
+                </button>
+            </div>
+            
+            <div class="products-filters-row">
+                <select name="status" id="statusFilter" onchange="performSearch()">
+                    <option value="">All Status</option>
+                    <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
+                    <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
+                    <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
+                </select>
+
+                <select name="product_type" id="categoryFilter" onchange="performSearch()">
+                    <option value="">All Categories</option>
+                    @foreach($productTypes as $type)
+                        <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
+                    @endforeach
+                </select>
+
+                <select name="vendor" id="vendorFilter" onchange="performSearch()">
+                    <option value="">All Vendors</option>
+                    @foreach($vendors as $vendor)
+                        <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>{{ $vendor }}</option>
+                    @endforeach
+                </select>
+
+                <select name="attribute_1" id="attr1Filter" onchange="performSearch()">
+                    <option value="">All {{ $attributeLabels['1'] ?? 'category level 1' }}</option>
+                    @foreach($attribute1s as $val)
+                        <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>{{ $val }}</option>
+                    @endforeach
+                </select>
+
+                <select name="attribute_2" id="attr2Filter" onchange="performSearch()">
+                    <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
+                    @foreach($attribute2s as $val)
+                        <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>{{ $val }}</option>
+                    @endforeach
+                </select>
+
+                <select name="attribute_3" id="attr3Filter" style="display: none;">
+                    <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
+                    @foreach($attribute3s as $val)
+                        <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>{{ $val }}</option>
+                    @endforeach
+                </select>
+
+                <select name="sync_status" id="syncStatusFilter" onchange="performSearch()">
+                    <option value="">All Sources</option>
+                    @foreach($syncStatuses as $syncStatus)
+                        <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>{{ ucfirst($syncStatus) }}</option>
+                    @endforeach
+                </select>
+            </div>
+        </form>
+    </div>
+
+    <!-- Table Container - Only this scrolls horizontally -->
+    <div class="products-table-container">
+        <div style="overflow-x: auto;">
+            <table class="table-products w-full" id="productsTable">
+                <thead id="tableHead">
+                    <!-- Dynamic headers will be inserted here -->
+                </thead>
+                <tbody id="tableBody">
+                    <!-- Dynamic rows will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Enhanced Pagination -->
+    <div style="padding: 20px 24px; border-top: 1px solid #e5e7eb; background: white;">
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-2 text-sm text-gray-600">
+                <span class="font-medium">Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }}</span>
+                <span>of</span>
+                <span class="font-semibold text-gray-900">{{ $products->total() }} products</span>
+            </div>
+            <div class="flex items-center gap-2">
+                {{ $products->appends(request()->query())->links() }}
+            </div>
+        </div>
+    </div>
+</div><!-- End products-page-wrapper -->
 
 <!-- Import Products Modal -->
 <div id="importProductsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000;">
@@ -1932,5 +1998,4 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 </script>
-</div> <!-- End products-index wrapper -->
 @endsection

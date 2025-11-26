@@ -48,7 +48,7 @@ class ProductController extends Controller
             ->where($column, '!=', '')
             ->groupBy($column)
             ->orderByDesc('cnt')
-            ->limit(20)
+            // Removed limit to show ALL categories, not just top 20
             ->get();
         
         // Get existing categories for the dropdown (for all levels)
@@ -408,33 +408,135 @@ class ProductController extends Controller
             $column = 'attribute_' . $attributeKey;
             $summary = [];
             
-            // Calculate matches for each rule
+            // Sort rules by priority (descending) for effective count calculation
+            $sortedRules = $rules;
+            usort($sortedRules, function($a, $b) {
+                return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0);
+            });
+            
+            // Calculate matches for each rule (raw text match count)
             foreach ($rules as $rule) {
                 $needle = trim((string)($rule['match'] ?? ''));
                 $group = trim((string)($rule['group'] ?? ''));
                 if ($needle === '' || $group === '') continue;
                 
-                // Count products that are ACTUALLY assigned to this category
-                // (not just products that match the search word)
+                // Count products that MATCH the search string (will be categorized when rules are applied)
+                // This shows the POTENTIAL coverage, not just already assigned products
+                // NOTE: Database may have HTML entities (like &amp;) so we search for both versions
                 $count = \DB::table('t_crm_prod_product')
-                    ->where($column, '=', $group)
+                    ->where(function($q) use ($needle) {
+                        $q->where('title', 'LIKE', '%'.$needle.'%');
+                        
+                        // Also search for HTML-encoded version if needle contains special chars
+                        $htmlEncoded = htmlspecialchars($needle, ENT_QUOTES, 'UTF-8');
+                        if ($htmlEncoded !== $needle) {
+                            $q->orWhere('title', 'LIKE', '%'.$htmlEncoded.'%');
+                        }
+                        
+                        // Also search for decoded version if needle contains HTML entities
+                        $htmlDecoded = html_entity_decode($needle, ENT_QUOTES, 'UTF-8');
+                        if ($htmlDecoded !== $needle) {
+                            $q->orWhere('title', 'LIKE', '%'.$htmlDecoded.'%');
+                        }
+                    })
                     ->count();
                 
                 $summary[] = [
                     'match' => $needle,
                     'group' => $group,
                     'priority' => $rule['priority'] ?? 0,
-                    'matching_products' => $count
+                    'matching_products' => $count,
+                    'effective_products' => 0 // Will be calculated below
                 ];
             }
             
-            // Count categorized vs uncategorized
+            // Calculate EFFECTIVE counts (simulating priority-based assignment)
+            // This shows how many products will ACTUALLY be categorized under each rule
+            // after respecting priority order
+            if (!empty($sortedRules)) {
+                // Get all products with their titles
+                $allProducts = \DB::table('t_crm_prod_product')
+                    ->select('id', 'title')
+                    ->get();
+                
+                // Initialize effective counts per rule (keyed by match|||group)
+                $effectiveCounts = [];
+                foreach ($rules as $rule) {
+                    $needle = trim((string)($rule['match'] ?? ''));
+                    $group = trim((string)($rule['group'] ?? ''));
+                    if ($needle !== '' && $group !== '') {
+                        $effectiveCounts[$needle . '|||' . $group] = 0;
+                    }
+                }
+                
+                // For each product, find the highest-priority matching rule
+                foreach ($allProducts as $product) {
+                    $title = $product->title;
+                    $bestMatch = null;
+                    $highestPriority = -999999;
+                    
+                    // Check against all rules (sorted by priority descending)
+                    foreach ($sortedRules as $rule) {
+                        $needle = trim((string)($rule['match'] ?? ''));
+                        $group = trim((string)($rule['group'] ?? ''));
+                        $priority = (int)($rule['priority'] ?? 0);
+                        
+                        if ($needle === '' || $group === '') continue;
+                        
+                        // Check if product title matches this rule (including HTML entity variants)
+                        $matches = false;
+                        if (stripos($title, $needle) !== false) {
+                            $matches = true;
+                        } else {
+                            // Check HTML-encoded version
+                            $htmlEncoded = htmlspecialchars($needle, ENT_QUOTES, 'UTF-8');
+                            if ($htmlEncoded !== $needle && stripos($title, $htmlEncoded) !== false) {
+                                $matches = true;
+                            }
+                            // Check decoded version
+                            $htmlDecoded = html_entity_decode($needle, ENT_QUOTES, 'UTF-8');
+                            if (!$matches && $htmlDecoded !== $needle && stripos($title, $htmlDecoded) !== false) {
+                                $matches = true;
+                            }
+                        }
+                        
+                        if ($matches && $priority > $highestPriority) {
+                            $highestPriority = $priority;
+                            $bestMatch = $needle . '|||' . $group;
+                        }
+                    }
+                    
+                    // Increment count for the winning rule
+                    if ($bestMatch !== null && isset($effectiveCounts[$bestMatch])) {
+                        $effectiveCounts[$bestMatch]++;
+                    }
+                }
+                
+                // Update summary with effective counts
+                foreach ($summary as &$item) {
+                    $key = $item['match'] . '|||' . $item['group'];
+                    $item['effective_products'] = $effectiveCounts[$key] ?? 0;
+                }
+                unset($item);
+            }
+            
+            // Count categorized vs uncategorized FOR THIS SPECIFIC LEVEL
+            // Total products = all products in the database
             $totalProducts = \DB::table('t_crm_prod_product')->count();
+            
+            // Categorized products = products that have a value in this level's column
             $categorizedProducts = \DB::table('t_crm_prod_product')
                 ->whereNotNull($column)
                 ->where($column, '!=', '')
                 ->count();
-            $uncategorizedProducts = $totalProducts - $categorizedProducts;
+            
+            // Uncategorized products = products without a value in this level's column
+            $uncategorizedProducts = \DB::table('t_crm_prod_product')
+                ->where(function($q) use ($column) {
+                    $q->whereNull($column)
+                      ->orWhere($column, '=', '');
+                })
+                ->count();
             
             // Get sample of uncategorized products
             $uncategorizedSample = \DB::table('t_crm_prod_product')
@@ -526,6 +628,85 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'results' => $results]);
     }
 
+    /**
+     * Get products that match a specific rule or are assigned to a category
+     * Used for displaying products in modal when clicking on counts
+     */
+    public function getProductsByRule(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'attribute_key' => 'required|in:1,2,3',
+                'match_string' => 'nullable|string',
+                'category_name' => 'nullable|string',
+                'type' => 'required|in:rule,category' // 'rule' = matching products, 'category' = assigned products
+            ]);
+            
+            $attributeKey = (int) $validated['attribute_key'];
+            $column = 'attribute_' . $attributeKey;
+            $type = $validated['type'];
+            
+            if ($type === 'rule') {
+                // Get products that MATCH the search string (potential coverage)
+                $matchString = trim($validated['match_string'] ?? '');
+                if ($matchString === '') {
+                    return response()->json(['success' => false, 'message' => 'Match string required']);
+                }
+                
+                // NOTE: Database may have HTML entities (like &amp;) so we search for both versions
+                $products = \DB::table('t_crm_prod_product')
+                    ->where(function($q) use ($matchString) {
+                        $q->where('title', 'LIKE', '%'.$matchString.'%');
+                        
+                        // Also search for HTML-encoded version if matchString contains special chars
+                        $htmlEncoded = htmlspecialchars($matchString, ENT_QUOTES, 'UTF-8');
+                        if ($htmlEncoded !== $matchString) {
+                            $q->orWhere('title', 'LIKE', '%'.$htmlEncoded.'%');
+                        }
+                        
+                        // Also search for decoded version if matchString contains HTML entities
+                        $htmlDecoded = html_entity_decode($matchString, ENT_QUOTES, 'UTF-8');
+                        if ($htmlDecoded !== $matchString) {
+                            $q->orWhere('title', 'LIKE', '%'.$htmlDecoded.'%');
+                        }
+                    })
+                    ->select('id', 'title', 'vendor', 'product_type', $column.' as current_category')
+                    ->orderBy('title')
+                    ->limit(500)
+                    ->get();
+                    
+                $title = 'Products Matching: "' . $matchString . '"';
+                
+            } else {
+                // Get products ASSIGNED to this category
+                $categoryName = trim($validated['category_name'] ?? '');
+                if ($categoryName === '') {
+                    return response()->json(['success' => false, 'message' => 'Category name required']);
+                }
+                
+                $products = \DB::table('t_crm_prod_product')
+                    ->where($column, '=', $categoryName)
+                    ->select('id', 'title', 'vendor', 'product_type', $column.' as current_category')
+                    ->orderBy('title')
+                    ->limit(500)
+                    ->get();
+                    
+                $title = 'Products in Category: "' . $categoryName . '"';
+            }
+            
+            return response()->json([
+                'success' => true,
+                'products' => $products,
+                'count' => $products->count(),
+                'title' => $title
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error getting products by rule: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
     public function applySavedRules(Request $request)
     {
         $attributeKey = (int) $request->validate(['attribute_key' => 'required|in:1,2,3'])['attribute_key'];
@@ -546,8 +727,23 @@ class ProductController extends Controller
             if ($needle === '' || $group === '') { continue; }
             
             // Get all products that match this rule
+            // NOTE: Database may have HTML entities (like &amp;) so we search for both versions
             $matchingProducts = \DB::table('t_crm_prod_product')
-                ->where('title', 'LIKE', '%'.$needle.'%')
+                ->where(function($q) use ($needle) {
+                    $q->where('title', 'LIKE', '%'.$needle.'%');
+                    
+                    // Also search for HTML-encoded version if needle contains special chars
+                    $htmlEncoded = htmlspecialchars($needle, ENT_QUOTES, 'UTF-8');
+                    if ($htmlEncoded !== $needle) {
+                        $q->orWhere('title', 'LIKE', '%'.$htmlEncoded.'%');
+                    }
+                    
+                    // Also search for decoded version if needle contains HTML entities
+                    $htmlDecoded = html_entity_decode($needle, ENT_QUOTES, 'UTF-8');
+                    if ($htmlDecoded !== $needle) {
+                        $q->orWhere('title', 'LIKE', '%'.$htmlDecoded.'%');
+                    }
+                })
                 ->pluck('id');
             
             // Update only products that haven't been categorized by a higher priority rule
@@ -565,38 +761,28 @@ class ProductController extends Controller
         }
         
         // IMPORTANT: Clear categories from products that no longer match any rule
-        // This handles the case where a rule was removed (like "Trotters" → "Paya")
-        $allRuleCategories = array_unique(array_column($rset, 'group'));
-        
-        // Find products that have a category from the rules but don't match any current rule
-        if (!empty($allRuleCategories) && !empty($categorizedIds)) {
-            // Clear categories for products that were categorized but are no longer matched by any rule
-            $productsToCheck = \DB::table('t_crm_prod_product')
+        // Behaviour: pressing "Apply Rules to All Products" for a level should fully
+        // recalculate that level's categories and remove any stale assignments.
+        //
+        // Any product that has a value in this level's column but was NOT touched
+        // by the rules in this run (i.e. not in $categorizedIds) will be cleared.
+        $cleared = 0;
+        if (!empty($categorizedIds)) {
+            // Clear categories from products that weren't matched by any rule
+            $cleared = \DB::table('t_crm_prod_product')
                 ->whereNotNull($column)
                 ->where($column, '!=', '')
                 ->whereNotIn('id', $categorizedIds)
-                ->get(['id', 'title', $column]);
-            
-            $cleared = 0;
-            foreach ($productsToCheck as $product) {
-                // Check if this product's current category came from a rule that no longer exists
-                // We'll be conservative: only clear if the category matches a rule pattern that's been removed
-                $shouldMatch = false;
-                foreach ($rset as $rule) {
-                    $needle = trim((string)($rule['match'] ?? ''));
-                    if ($needle !== '' && stripos($product->title, $needle) !== false) {
-                        $shouldMatch = true;
-                        break;
-                    }
-                }
-                
-                // If product should match a rule but wasn't categorized, something's wrong
-                // Or if it has a category but doesn't match any rule anymore, it might be orphaned
-                // For safety, we'll just leave it alone to avoid accidental data loss
-            }
+                ->update([$column => null, 'updated_at' => now()]);
+        } else {
+            // No rules exist or no products matched - clear ALL categories for this level
+            $cleared = \DB::table('t_crm_prod_product')
+                ->whereNotNull($column)
+                ->where($column, '!=', '')
+                ->update([$column => null, 'updated_at' => now()]);
         }
         
-        return response()->json(['success' => true, 'updated' => $updated]);
+        return response()->json(['success' => true, 'updated' => $updated, 'cleared' => $cleared]);
     }
 
     public function index(Request $request)

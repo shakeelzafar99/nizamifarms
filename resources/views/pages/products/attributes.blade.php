@@ -534,11 +534,11 @@
             </div>
         </div>
 
-        <!-- Top Categories Summary Section -->
+        <!-- All Categories Summary Section -->
         <div class="section-card">
             <div class="section-header">
                 <i class="ki-filled ki-chart-line text-2xl"></i>
-                <h2>Top Categories (Top 20)</h2>
+                <h2>All Categories for This Level</h2>
             </div>
             <div class="section-body">
                 <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
@@ -564,9 +564,15 @@
                             </thead>
                             <tbody>
                             @foreach($assignStats as $row)
-                                <tr>
+                                <tr style="transition: background-color 0.15s;" onmouseover="this.style.backgroundColor='#f9fafb'" onmouseout="this.style.backgroundColor=''">
                                     <td><strong>{{ $row->value }}</strong></td>
-                                    <td style="text-align: right; font-weight: 600; color: #667eea;">{{ $row->cnt }}</td>
+                                    <td style="text-align: right;">
+                                        <span onclick="openProductsListModal('category', {categoryName: '{{ addslashes($row->value) }}'})" 
+                                              style="font-weight: 600; color: #667eea; cursor: pointer; text-decoration: underline; transition: color 0.2s;" 
+                                              onmouseover="this.style.color='#5a67d8'" 
+                                              onmouseout="this.style.color='#667eea'"
+                                              title="Click to view assigned products">{{ $row->cnt }}</span>
+                                    </td>
                                 </tr>
                             @endforeach
                             </tbody>
@@ -577,6 +583,66 @@
         </div>
     </div>
 </div>
+
+<!-- Products List Modal (for rules and categories) -->
+<div id="productsListModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.6); z-index: 9999; backdrop-filter: blur(4px);" onclick="if(event.target === this) closeProductsListModal();">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 16px; width: 90%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);" onclick="event.stopPropagation();">
+        <!-- Modal Header -->
+        <div style="padding: 24px 28px; border-bottom: 2px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 16px 16px 0 0;">
+            <div>
+                <h3 id="productsListTitle" style="font-size: 20px; font-weight: 700; color: white; margin: 0 0 4px 0;">
+                    Products
+                </h3>
+                <p id="productsListSubtitle" style="font-size: 14px; color: rgba(255,255,255,0.9); margin: 0;"></p>
+            </div>
+            <button onclick="closeProductsListModal()" style="background: rgba(255,255,255,0.2); border: none; font-size: 28px; color: white; cursor: pointer; padding: 0; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s; font-weight: 300;" onmouseover="this.style.background='rgba(255,255,255,0.3)'" onmouseout="this.style.background='rgba(255,255,255,0.2)'">
+                &times;
+            </button>
+        </div>
+        
+        <!-- Modal Content -->
+        <div style="padding: 24px 28px; overflow-y: auto; flex: 1; background: #f9fafb;">
+            <div id="productsListLoading" style="display: flex; align-items: center; justify-content: center; padding: 60px 20px;">
+                <div style="text-align: center;">
+                    <div style="display: inline-block; width: 48px; height: 48px; border: 4px solid #e5e7eb; border-top-color: #667eea; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                    <p style="margin-top: 16px; color: #6b7280; font-size: 14px;">Loading products...</p>
+                </div>
+            </div>
+            <div id="productsListContent" style="display: none;">
+                <div class="overflow-x-auto" style="background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead style="background: linear-gradient(to bottom, #f9fafb, #f3f4f6); border-bottom: 2px solid #e5e7eb;">
+                            <tr>
+                                <th style="padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">ID</th>
+                                <th style="padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">Product Name</th>
+                                <th style="padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">Vendor</th>
+                                <th style="padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">Type</th>
+                                <th style="padding: 14px 16px; text-align: left; font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">Current Category</th>
+                            </tr>
+                        </thead>
+                        <tbody id="productsListTableBody" style="font-size: 14px;">
+                            <!-- Rows will be inserted here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Modal Footer -->
+        <div style="padding: 20px 28px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; background: white; border-radius: 0 0 16px 16px;">
+            <div id="productsListCount" style="font-size: 14px; color: #6b7280; font-weight: 500;"></div>
+            <button onclick="closeProductsListModal()" style="padding: 10px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.4)'" onmouseout="this.style.transform=''; this.style.boxShadow='0 2px 8px rgba(102, 126, 234, 0.3)'">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+</style>
 
 <!-- Uncategorized Products Modal -->
 <div id="uncategorizedModal" onclick="if(event.target === this) closeUncategorizedModal();" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; align-items: center; justify-content: center;">
@@ -701,7 +767,10 @@ function updateCategoryDropdown() {
 }
 
 // Store rule match counts globally
+// ruleMatchCounts stores raw text matches (how many products match the search term)
+// ruleEffectiveCounts stores effective matches (how many products will actually be categorized here after priority)
 let ruleMatchCounts = {};
+let ruleEffectiveCounts = {};
 
 // Build product IDs from picker + optional CSV fallback
 function getSelectedProductIds(){
@@ -929,16 +998,41 @@ function renderCategoriesTable(){
     
     // Render each category
     categoriesArray.forEach((category, catIndex) => {
-        // Get total product count for this category
-        let totalProducts = 0;
+        // Get EFFECTIVE product count for this category (respecting priority)
+        // This is the count of products that will ACTUALLY be categorized here after priority resolution
+        let effectiveTotal = 0;
+        let matchingTotal = 0;
         category.rules.forEach(rule => {
             const ruleKey = `${rule.match}|||${category.name}`;
-            totalProducts += ruleMatchCounts[ruleKey] || 0;
+            effectiveTotal += ruleEffectiveCounts[ruleKey] || 0;
+            matchingTotal += ruleMatchCounts[ruleKey] || 0;
         });
         
-        const productCountDisplay = totalProducts > 0 ? 
-            `<span style="color: #10b981; font-weight: 700;">${totalProducts}</span>` : 
-            '<span style="color: #9ca3af;">0</span>';
+        // Make count clickable to show MATCHING products based on all rules in this category
+        // Collect all match strings for this category
+        const allMatchStrings = category.rules.map(r => r.match).join('|||');
+        
+        // Show effective count prominently, with matching count in parentheses if different
+        let productCountDisplay;
+        if (effectiveTotal === 0 && matchingTotal === 0) {
+            productCountDisplay = '<span style="color: #9ca3af;">0</span>';
+        } else if (effectiveTotal === matchingTotal) {
+            // Same count - just show one number
+            productCountDisplay = `<span onclick="openProductsListModalMultipleRules('${escapeHtml(category.name).replace(/'/g, "\\'")}', '${escapeHtml(allMatchStrings).replace(/'/g, "\\'")}')" 
+                   style="color: #10b981; font-weight: 700; cursor: pointer; text-decoration: underline; transition: color 0.2s;" 
+                   onmouseover="this.style.color='#059669'" 
+                   onmouseout="this.style.color='#10b981'"
+                   title="Click to view ${effectiveTotal} product${effectiveTotal !== 1 ? 's' : ''} that will be categorized here">${effectiveTotal}</span>`;
+        } else {
+            // Different counts - show effective with matching in parentheses
+            const diff = matchingTotal - effectiveTotal;
+            productCountDisplay = `<span onclick="openProductsListModalMultipleRules('${escapeHtml(category.name).replace(/'/g, "\\'")}', '${escapeHtml(allMatchStrings).replace(/'/g, "\\'")}')" 
+                   style="color: #10b981; font-weight: 700; cursor: pointer; text-decoration: underline; transition: color 0.2s;" 
+                   onmouseover="this.style.color='#059669'" 
+                   onmouseout="this.style.color='#10b981'"
+                   title="${effectiveTotal} product${effectiveTotal !== 1 ? 's' : ''} will be categorized here. ${diff} more match${diff !== 1 ? '' : 'es'} the search but go${diff !== 1 ? '' : 'es'} to higher-priority categories.">${effectiveTotal}</span>
+                   <span style="color: #9ca3af; font-size: 11px; margin-left: 4px;" title="${matchingTotal} products match the search term, but ${diff} go to higher-priority categories">(${matchingTotal})</span>`; 
+        }
         
         // Main category row
         const tr = document.createElement('tr');
@@ -999,17 +1093,48 @@ function renderCategoriesTable(){
                 <td colspan="7" style="padding: 16px 50px;">
                     <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
                         <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">SEARCH WORDS FOR THIS CATEGORY:</div>
-                        ${category.rules.map((rule, ruleIdx) => `
+                        ${category.rules.map((rule, ruleIdx) => {
+                            const ruleKey = `${rule.match}|||${category.name}`;
+                            const matchCount = ruleMatchCounts[ruleKey] || 0;
+                            const effectiveCount = ruleEffectiveCounts[ruleKey] || 0;
+                            
+                            let countDisplay;
+                            if (matchCount === 0) {
+                                countDisplay = `<span style="color: #9ca3af; font-size: 11px; margin-left: 12px;">0 products</span>`;
+                            } else if (effectiveCount === matchCount) {
+                                // Same count - just show one number
+                                countDisplay = `<span onclick="openProductsListModal('rule', {matchString: '${escapeHtml(rule.match).replace(/'/g, "\\'")}'})" 
+                                       style="color: #10b981; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline; margin-left: 12px;" 
+                                       onmouseover="this.style.color='#059669'" 
+                                       onmouseout="this.style.color='#10b981'"
+                                       title="Click to view ${effectiveCount} product${effectiveCount !== 1 ? 's' : ''}">${effectiveCount} product${effectiveCount !== 1 ? 's' : ''}</span>`;
+                            } else {
+                                // Different counts - show effective with matching in parentheses
+                                const diff = matchCount - effectiveCount;
+                                countDisplay = `<span onclick="openProductsListModal('rule', {matchString: '${escapeHtml(rule.match).replace(/'/g, "\\'")}'})" 
+                                       style="color: #10b981; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline; margin-left: 12px;" 
+                                       onmouseover="this.style.color='#059669'" 
+                                       onmouseout="this.style.color='#10b981'"
+                                       title="${effectiveCount} will be categorized here. ${diff} more match but go to higher-priority rules.">${effectiveCount} product${effectiveCount !== 1 ? 's' : ''}</span>
+                                       <span style="color: #9ca3af; font-size: 10px;" title="${matchCount} match the search, ${diff} go to higher-priority rules">(${matchCount} match)</span>`;
+                            }
+                            
+                            return `
                             <div class="rule-item">
-                                <span style="flex: 1;"><strong>"${escapeHtml(rule.match)}"</strong></span>
+                                <span style="flex: 1;"><strong>"${escapeHtml(rule.match)}"</strong>${countDisplay}</span>
                                 <span style="color: #9ca3af; font-size: 11px;">Priority: ${rule.priority}</span>
+                                <button type="button" 
+                                    onclick="editRule('${escapeHtml(category.name)}', ${rule.originalIndex}, '${escapeHtml(rule.match).replace(/'/g, "\\'")}', ${rule.priority})" 
+                                    style="background: #dbeafe; color: #2563eb; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-right: 6px;">
+                                    Edit
+                                </button>
                                 <button type="button" 
                                     onclick="removeRuleFromCategory('${escapeHtml(category.name)}', ${rule.originalIndex})" 
                                     style="background: #fee2e2; color: #dc2626; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">
                                     Remove
                                 </button>
                             </div>
-                        `).join('')}
+                        `}).join('')}
                     </div>
                 </td>
             `;
@@ -1039,24 +1164,37 @@ function toggleCategoryExpand(categoryName, element) {
         const newRow = document.createElement('tr');
         newRow.className = 'rules-detail-row';
         newRow.id = `rules-detail-${categoryName}`;
+        
+        // Build the rules HTML
+        let rulesHtml = categoryRules.map((rule, ruleIdx) => {
+            const originalIndex = rules.findIndex(r => r.match === rule.match && r.group === rule.group);
+            const ruleKey = rule.match + '|||' + categoryName;
+            const matchCount = ruleMatchCounts[ruleKey] || 0;
+            const effectiveCount = ruleEffectiveCounts[ruleKey] || 0;
+            
+            let countDisplay;
+            if (matchCount === 0) {
+                countDisplay = '<span style="color: #9ca3af; font-size: 11px; margin-left: 12px;">0 products</span>';
+            } else if (effectiveCount === matchCount) {
+                countDisplay = '<span onclick="openProductsListModal(\'rule\', {matchString: \'' + escapeHtml(rule.match).replace(/'/g, "\\'") + '\'})" style="color: #10b981; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline; margin-left: 12px;" title="' + effectiveCount + ' products">' + effectiveCount + ' products</span>';
+            } else {
+                const diff = matchCount - effectiveCount;
+                countDisplay = '<span onclick="openProductsListModal(\'rule\', {matchString: \'' + escapeHtml(rule.match).replace(/'/g, "\\'") + '\'})" style="color: #10b981; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline; margin-left: 12px;" title="' + effectiveCount + ' will be here, ' + diff + ' go to higher-priority">' + effectiveCount + ' products</span><span style="color: #9ca3af; font-size: 10px;" title="' + matchCount + ' match, ' + diff + ' go elsewhere">(' + matchCount + ' match)</span>';
+            }
+            
+            return '<div class="rule-item">' +
+                '<span style="flex: 1;"><strong>"' + escapeHtml(rule.match) + '"</strong>' + countDisplay + '</span>' +
+                '<span style="color: #9ca3af; font-size: 11px;">Priority: ' + (rule.priority || 0) + '</span>' +
+                '<button type="button" onclick="editRule(\'' + escapeHtml(categoryName).replace(/'/g, "\\'") + '\', ' + originalIndex + ', \'' + escapeHtml(rule.match).replace(/'/g, "\\'") + '\', ' + (rule.priority || 0) + ')" style="background: #dbeafe; color: #2563eb; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-right: 6px;">Edit</button>' +
+                '<button type="button" onclick="removeRuleFromCategory(\'' + escapeHtml(categoryName).replace(/'/g, "\\'") + '\', ' + originalIndex + ')" style="background: #fee2e2; color: #dc2626; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">Remove</button>' +
+            '</div>';
+        }).join('');
+        
         newRow.innerHTML = `
             <td colspan="7" style="padding: 16px 50px;">
                 <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
                     <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px;">SEARCH WORDS FOR THIS CATEGORY:</div>
-                    ${categoryRules.map((rule, ruleIdx) => {
-                        const originalIndex = rules.findIndex(r => r.match === rule.match && r.group === rule.group);
-                        return `
-                            <div class="rule-item">
-                                <span style="flex: 1;"><strong>"${escapeHtml(rule.match)}"</strong></span>
-                                <span style="color: #9ca3af; font-size: 11px;">Priority: ${rule.priority || 0}</span>
-                                <button type="button" 
-                                    onclick="removeRuleFromCategory('${escapeHtml(categoryName)}', ${originalIndex})" 
-                                    style="background: #fee2e2; color: #dc2626; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">
-                                    Remove
-                                </button>
-                            </div>
-                        `;
-                    }).join('')}
+                    ${rulesHtml}
                 </div>
             </td>
         `;
@@ -1069,6 +1207,44 @@ function toggleCategoryExpand(categoryName, element) {
 // Backward compatibility - keep this for old function calls
 function renderRulesTable() {
     renderCategoriesTable();
+}
+
+// Edit a rule (search term)
+function editRule(categoryName, ruleIndex, currentMatch, currentPriority) {
+    const newMatch = prompt(`Edit search term for "${categoryName}":`, currentMatch);
+    if (newMatch === null) return; // User cancelled
+    
+    const trimmedMatch = newMatch.trim();
+    if (trimmedMatch === '') {
+        alert('Search term cannot be empty');
+        return;
+    }
+    
+    // Confirm the change
+    if (trimmedMatch !== currentMatch) {
+        updateRule(categoryName, ruleIndex, trimmedMatch, currentPriority);
+    }
+}
+
+// Update rule and refresh products in that category
+async function updateRule(categoryName, ruleIndex, newMatch, priority) {
+    const level = document.getElementById('rulesAttribute').value;
+    
+    // Update the rule in state
+    if (rulesState[level] && rulesState[level][ruleIndex]) {
+        rulesState[level][ruleIndex].match = newMatch;
+    }
+    
+    // Re-render and save
+    renderCategoriesTable();
+    await saveRulesInternal(level);
+    await refreshCoverageSummary();
+    
+    // Notify user that they should re-apply rules to update products
+    const shouldApply = confirm(`Rule updated successfully!\n\nWould you like to re-apply all rules to products now?\n\nThis will:\n- Update products matching the new search term\n- Clear categories from products that no longer match any rule`);
+    if (shouldApply) {
+        await applyRules();
+    }
 }
 
 // Remove a specific rule from a category
@@ -1305,10 +1481,14 @@ async function refreshCoverageSummary() {
             uncategorizedProductsData = data.uncategorized_sample || [];
             
             // Store rule match counts for use in the table
+            // matching_products = raw text match count
+            // effective_products = count after priority resolution (what will actually be categorized here)
             ruleMatchCounts = {};
+            ruleEffectiveCounts = {};
             data.summary.forEach(rule => {
                 const ruleKey = `${rule.match}|||${rule.group}`;
                 ruleMatchCounts[ruleKey] = rule.matching_products || 0;
+                ruleEffectiveCounts[ruleKey] = rule.effective_products || 0;
             });
             
             // Render Stats Cards
@@ -1422,6 +1602,209 @@ function closeUncategorizedModal() {
     // Remove keyboard listener
     document.removeEventListener('keydown', uncategorizedModalKeyHandler);
 }
+
+// Products List Modal Functions
+function openProductsListModal(type, data) {
+    const modal = document.getElementById('productsListModal');
+    const loading = document.getElementById('productsListLoading');
+    const content = document.getElementById('productsListContent');
+    const title = document.getElementById('productsListTitle');
+    const subtitle = document.getElementById('productsListSubtitle');
+    
+    // Show modal with loading state
+    modal.style.display = 'block';
+    loading.style.display = 'flex';
+    content.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+    
+    // Get current level from the select dropdown
+    const currentLevel = parseInt(document.getElementById('rulesAttribute').value, 10);
+    
+    // Prepare request data
+    let requestData = {
+        attribute_key: currentLevel,
+        type: type
+    };
+    
+    if (type === 'rule') {
+        requestData.match_string = data.matchString;
+        title.textContent = 'Products Matching Rule';
+        subtitle.textContent = `Search: "${data.matchString}"`;
+    } else {
+        requestData.category_name = data.categoryName;
+        title.textContent = 'Products in Category';
+        subtitle.textContent = `Category: "${data.categoryName}"`;
+    }
+    
+    // Fetch products
+    fetch('{{ route('products.attributes.get_products_by_rule') }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify(requestData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            displayProductsList(data.products, data.count);
+        } else {
+            alert('Error: ' + (data.message || 'Failed to load products'));
+            closeProductsListModal();
+        }
+    })
+    .catch(error => {
+        console.error('Error fetching products:', error);
+        alert('Failed to load products. Please try again.');
+        closeProductsListModal();
+    });
+}
+
+// Function to open modal with multiple rules (for category with multiple search words)
+function openProductsListModalMultipleRules(categoryName, matchStringsJoined) {
+    const modal = document.getElementById('productsListModal');
+    const loading = document.getElementById('productsListLoading');
+    const content = document.getElementById('productsListContent');
+    const title = document.getElementById('productsListTitle');
+    const subtitle = document.getElementById('productsListSubtitle');
+    
+    // Show modal with loading state
+    modal.style.display = 'block';
+    loading.style.display = 'flex';
+    content.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+    
+    // Get current level from the select dropdown
+    const currentLevel = parseInt(document.getElementById('rulesAttribute').value, 10);
+    
+    // Split the match strings
+    const matchStrings = matchStringsJoined.split('|||');
+    
+    title.textContent = 'Products Matching Category Rules';
+    subtitle.textContent = `Category: "${categoryName}" (${matchStrings.length} rule${matchStrings.length !== 1 ? 's' : ''})`;
+    
+    // Fetch products matching ANY of the rules
+    fetchProductsForMultipleRules(currentLevel, matchStrings);
+}
+
+function fetchProductsForMultipleRules(attributeKey, matchStrings) {
+    // Fetch products for each rule and combine
+    const promises = matchStrings.map(matchString => 
+        fetch('{{ route('products.attributes.get_products_by_rule') }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': '{{ csrf_token() }}'
+            },
+            body: JSON.stringify({
+                attribute_key: attributeKey,
+                type: 'rule',
+                match_string: matchString
+            })
+        }).then(response => response.json())
+    );
+    
+    Promise.all(promises)
+        .then(results => {
+            // Combine all products and remove duplicates by ID
+            const allProducts = [];
+            const seenIds = new Set();
+            
+            results.forEach(data => {
+                if (data.success && data.products) {
+                    data.products.forEach(product => {
+                        if (!seenIds.has(product.id)) {
+                            seenIds.add(product.id);
+                            allProducts.push(product);
+                        }
+                    });
+                }
+            });
+            
+            // Sort by title
+            allProducts.sort((a, b) => a.title.localeCompare(b.title));
+            
+            displayProductsList(allProducts, allProducts.length);
+        })
+        .catch(error => {
+            console.error('Error fetching products:', error);
+            alert('Failed to load products. Please try again.');
+            closeProductsListModal();
+        });
+}
+
+function displayProductsList(products, count) {
+    const loading = document.getElementById('productsListLoading');
+    const content = document.getElementById('productsListContent');
+    const tbody = document.getElementById('productsListTableBody');
+    const countEl = document.getElementById('productsListCount');
+    
+    // Hide loading, show content
+    loading.style.display = 'none';
+    content.style.display = 'block';
+    
+    // Update count
+    countEl.textContent = `Showing ${count} product${count !== 1 ? 's' : ''}`;
+    
+    // Clear and populate table
+    tbody.innerHTML = '';
+    
+    if (products.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" style="padding: 40px; text-align: center; color: #9ca3af;">
+                    <div style="font-size: 48px; margin-bottom: 12px;">📦</div>
+                    <div style="font-size: 16px; font-weight: 500; color: #6b7280;">No products found</div>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    products.forEach((product, index) => {
+        const row = document.createElement('tr');
+        row.style.borderBottom = '1px solid #f3f4f6';
+        row.style.transition = 'background-color 0.15s';
+        row.onmouseover = function() { this.style.backgroundColor = '#f9fafb'; };
+        row.onmouseout = function() { this.style.backgroundColor = ''; };
+        
+        row.innerHTML = `
+            <td style="padding: 14px 16px; color: #6b7280; font-weight: 500;">${product.id}</td>
+            <td style="padding: 14px 16px; color: #111827; font-weight: 500; max-width: 400px;">
+                <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${product.title}">
+                    ${product.title}
+                </div>
+            </td>
+            <td style="padding: 14px 16px; color: #6b7280;">${product.vendor || '-'}</td>
+            <td style="padding: 14px 16px; color: #6b7280;">${product.product_type || '-'}</td>
+            <td style="padding: 14px 16px;">
+                ${product.current_category ? 
+                    `<span style="display: inline-block; padding: 4px 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 6px; font-size: 12px; font-weight: 600;">${product.current_category}</span>` : 
+                    `<span style="color: #9ca3af; font-style: italic;">Not assigned</span>`
+                }
+            </td>
+        `;
+        
+        tbody.appendChild(row);
+    });
+}
+
+function closeProductsListModal() {
+    const modal = document.getElementById('productsListModal');
+    modal.style.display = 'none';
+    document.body.style.overflow = '';
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const modal = document.getElementById('productsListModal');
+        if (modal.style.display === 'block') {
+            closeProductsListModal();
+        }
+    }
+});
 
 // Keyboard handler for modal
 function uncategorizedModalKeyHandler(e) {

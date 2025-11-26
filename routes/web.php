@@ -220,6 +220,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products/attributes/coverage', [\App\Http\Controllers\CRM\ProductController::class, 'getCoverageSummary'])->name('products.attributes.coverage');
     Route::post('/products/attributes/apply-saved', [\App\Http\Controllers\CRM\ProductController::class, 'applySavedRules'])->name('products.attributes.apply_saved');
     Route::post('/products/attributes/rename-category', [\App\Http\Controllers\CRM\ProductController::class, 'renameCategory'])->name('products.attributes.rename_category');
+    Route::post('/products/attributes/get-products-by-rule', [\App\Http\Controllers\CRM\ProductController::class, 'getProductsByRule'])->name('products.attributes.get_products_by_rule');
     Route::post('/products/check-sku', [\App\Http\Controllers\CRM\ProductController::class, 'checkSku'])->name('products.check_sku');
     Route::get('/products/create', [\App\Http\Controllers\CRM\ProductController::class, 'create'])->name('products.create');
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');

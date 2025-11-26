@@ -225,21 +225,24 @@
 </div>
 
 <!-- Interactive Map Picker Modal -->
-<div id="mapPickerModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50" style="z-index: 9999;">
-  <div class="flex items-center justify-center min-h-screen p-4">
-    <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl" onclick="event.stopPropagation()">
-      <!-- Header -->
-      <div class="flex justify-between items-center p-6 border-b border-gray-200">
-        <div>
-          <h2 class="text-lg font-semibold text-gray-800">Pick Location on Map</h2>
-          <p class="text-sm text-gray-600 mt-1">Click anywhere on the map or drag the marker to select location</p>
+<div id="mapPickerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999; overflow-y: auto;" onclick="closeMapPickerModal()">
+  <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px;">
+    <div style="background: white; border-radius: 12px; width: 100%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);" onclick="event.stopPropagation()">
+      <!-- Header (Fixed) -->
+      <div class="p-6 border-b border-gray-200">
+        <div class="flex justify-between items-center">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-800">Pick Location on Map</h2>
+            <p class="text-sm text-gray-600 mt-1">Click anywhere on the map or drag the marker to select location</p>
+          </div>
+          <button onclick="closeMapPickerModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
         </div>
-        <button onclick="closeMapPickerModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
       </div>
 
-      <!-- Map Container -->
-      <div class="p-6">
-        <div id="interactiveMap" style="height: 500px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid #e5e7eb;"></div>
+      <!-- Scrollable Content -->
+      <div style="flex: 1; overflow-y: auto; padding: 24px;">
+        <!-- Map Container -->
+        <div id="interactiveMap" style="height: 400px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid #e5e7eb;"></div>
 
         <!-- Selected Coordinates Display -->
         <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
@@ -288,60 +291,69 @@
 </div>
 
 <!-- Manage Users Modal -->
-<div id="usersModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-  <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto">
-    <div class="flex justify-between items-center mb-4">
-      <div>
-        <h2 class="text-lg font-semibold text-gray-800">Manage Users</h2>
-        <p id="usersModalLocationName" class="text-sm text-gray-600"></p>
+<div id="usersModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;" onclick="closeUsersModal()">
+  <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);" onclick="event.stopPropagation()">
+    <!-- Header (Fixed) -->
+    <div class="p-6 border-b border-gray-200">
+      <div class="flex justify-between items-center">
+        <div>
+          <h2 class="text-lg font-semibold text-gray-800">Manage Users</h2>
+          <p id="usersModalLocationName" class="text-sm text-gray-600 mt-1"></p>
+        </div>
+        <button onclick="closeUsersModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
       </div>
-      <button onclick="closeUsersModal()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
     </div>
 
-    <input type="hidden" id="currentLocationId">
+    <!-- Scrollable Content -->
+    <div style="flex: 1; overflow-y: auto; padding: 24px;">
+      <input type="hidden" id="currentLocationId">
 
-    <!-- Add Users Section -->
-    <div class="mb-6 p-4 bg-gray-50 rounded-lg">
-      <h3 class="text-sm font-semibold text-gray-700 mb-3">Assign Users to This Location</h3>
-      <div class="flex gap-2">
-        <select 
-          id="userSelect" 
-          multiple
-          size="5"
-          class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-        >
-          <!-- Loaded via JavaScript -->
-        </select>
-        <button 
-          onclick="assignSelectedUsers()"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition self-start"
-        >
-          Assign →
-        </button>
-      </div>
-      <p class="text-xs text-gray-500 mt-2">Hold Ctrl/Cmd to select multiple users</p>
-    </div>
-
-    <!-- Assigned Users List -->
-    <div>
-      <h3 class="text-sm font-semibold text-gray-700 mb-3">Currently Assigned Users</h3>
-      <div class="border border-gray-200 rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-          <thead class="bg-gray-50">
-            <tr>
-              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Assigned Date</th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
-            </tr>
-          </thead>
-          <tbody id="assignedUsersTableBody" class="bg-white divide-y divide-gray-200">
+      <!-- Add Users Section -->
+      <div class="mb-6 p-4 bg-gray-50 rounded-lg">
+        <h3 class="text-sm font-semibold text-gray-700 mb-3">Assign Users to This Location</h3>
+        <div class="flex gap-2">
+          <select 
+            id="userSelect" 
+            multiple
+            size="8"
+            class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            style="min-height: 200px;"
+          >
             <!-- Loaded via JavaScript -->
-          </tbody>
-        </table>
+          </select>
+          <button 
+            onclick="assignSelectedUsers()"
+            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition self-start font-medium"
+          >
+            Assign →
+          </button>
+        </div>
+        <p class="text-xs text-gray-500 mt-2">Hold Ctrl/Cmd to select multiple users</p>
       </div>
-      <div id="noAssignedUsers" class="hidden text-center py-8 text-gray-500">
-        No users assigned to this location yet.
+
+      <!-- Assigned Users List -->
+      <div>
+        <h3 class="text-sm font-semibold text-gray-700 mb-3">Currently Assigned Users</h3>
+        <div class="border border-gray-200 rounded-lg overflow-hidden">
+          <div style="max-height: 400px; overflow-y: auto;">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50 sticky top-0">
+                <tr>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned Date</th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                </tr>
+              </thead>
+              <tbody id="assignedUsersTableBody" class="bg-white divide-y divide-gray-200">
+                <!-- Loaded via JavaScript -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="noAssignedUsers" class="hidden text-center py-8 text-gray-500">
+          No users assigned to this location yet.
+        </div>
       </div>
     </div>
   </div>
@@ -549,7 +561,8 @@ async function deleteLocation(locationId, locationName) {
 async function openUsersModal(locationId, locationName) {
   document.getElementById('currentLocationId').value = locationId;
   document.getElementById('usersModalLocationName').textContent = locationName;
-  document.getElementById('usersModal').classList.remove('hidden');
+  document.getElementById('usersModal').style.display = 'block';
+  document.body.style.overflow = 'hidden'; // Prevent body scroll
   
   // Load available users and assigned users
   await Promise.all([
@@ -560,7 +573,8 @@ async function openUsersModal(locationId, locationName) {
 
 // Close users modal
 function closeUsersModal() {
-  document.getElementById('usersModal').classList.add('hidden');
+  document.getElementById('usersModal').style.display = 'none';
+  document.body.style.overflow = ''; // Restore body scroll
 }
 
 // Load available users for assignment
@@ -616,13 +630,14 @@ function renderAssignedUsers(users) {
   noUsersDiv.classList.add('hidden');
   tbody.innerHTML = users.map(user => `
     <tr class="hover:bg-gray-50">
-      <td class="px-4 py-2 text-sm text-gray-900">${escapeHtml(user.fullname)}</td>
-      <td class="px-4 py-2 text-sm text-gray-500">${user.role_name ? escapeHtml(user.role_name) : '-'}</td>
-      <td class="px-4 py-2 text-sm text-gray-500">${formatDate(user.assigned_at)}</td>
-      <td class="px-4 py-2 text-sm">
+      <td class="px-4 py-3 text-sm text-gray-900 font-medium">${escapeHtml(user.fullname)}</td>
+      <td class="px-4 py-3 text-sm text-gray-500">${user.role_name ? escapeHtml(user.role_name) : '-'}</td>
+      <td class="px-4 py-3 text-sm text-gray-500">${formatDate(user.assigned_at)}</td>
+      <td class="px-4 py-3 text-sm">
         <button 
-          onclick="removeUserAssignment(${user.assignment_id}, '${escapeHtml(user.fullname)}')"
-          class="text-red-600 hover:text-red-900"
+          onclick="removeUserAssignment(${user.assignment_id})"
+          data-user-name="${escapeHtml(user.fullname)}"
+          class="text-red-600 hover:text-red-900 font-medium"
         >
           Remove
         </button>
@@ -671,7 +686,10 @@ async function assignSelectedUsers() {
 }
 
 // Remove user assignment
-async function removeUserAssignment(assignmentId, userName) {
+async function removeUserAssignment(assignmentId) {
+  // Get user name from button's data attribute
+  const userName = event.target.getAttribute('data-user-name') || 'this user';
+  
   if (!confirm(`Remove ${userName} from this location?`)) {
     return;
   }
@@ -691,6 +709,7 @@ async function removeUserAssignment(assignmentId, userName) {
       const locationId = document.getElementById('currentLocationId').value;
       loadAssignedUsers(locationId);
       loadLocations(); // Refresh counts
+      loadAvailableUsers(); // Refresh available users list
     } else {
       showError(data.message || 'Failed to remove assignment');
     }
@@ -730,7 +749,8 @@ function openMapPicker() {
   const lat = parseFloat(document.getElementById('latitude').value) || 33.70811597;
   const lng = parseFloat(document.getElementById('longitude').value) || 73.08868750;
   
-  document.getElementById('mapPickerModal').classList.remove('hidden');
+  document.getElementById('mapPickerModal').style.display = 'block';
+  document.body.style.overflow = 'hidden'; // Prevent body scroll
   
   // Load Google Maps API if not already loaded
   if (typeof google === 'undefined' || typeof google.maps === 'undefined') {
@@ -749,8 +769,8 @@ function openMapPicker() {
 
 function loadGoogleMapsAPI(callback) {
   const script = document.createElement('script');
-  // Note: Replace with your valid Google Maps API key
-  const apiKey = 'AIzaSyBCPL4stand6rGPdoWOXhcwLwHzYxqxwA';
+  // Google Maps API Key - Verified working on mobile
+  const apiKey = 'AIzaSyBFCBj7ebflrliC1pHq0XhsjuW18Q3iElk';
   script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
   script.async = true;
   script.defer = true;
@@ -839,7 +859,8 @@ function confirmMapSelection() {
 }
 
 function closeMapPickerModal() {
-  document.getElementById('mapPickerModal').classList.add('hidden');
+  document.getElementById('mapPickerModal').style.display = 'none';
+  document.body.style.overflow = ''; // Restore body scroll
   // Clean up map
   if (map) {
     map = null;
@@ -897,23 +918,54 @@ function updateMapPreview() {
 </script>
 
 <style>
-/* Custom scrollbar for modal */
-#usersModal > div {
+/* Custom scrollbar for modals */
+#usersModal div[style*="overflow-y: auto"],
+#locationModal div[style*="overflow-y: auto"],
+#mapPickerModal div[style*="overflow-y: auto"] {
   scrollbar-width: thin;
   scrollbar-color: #cbd5e0 #f7fafc;
 }
 
-#usersModal > div::-webkit-scrollbar {
+#usersModal div[style*="overflow-y: auto"]::-webkit-scrollbar,
+#locationModal div[style*="overflow-y: auto"]::-webkit-scrollbar,
+#mapPickerModal div[style*="overflow-y: auto"]::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
-#usersModal > div::-webkit-scrollbar-track {
+#usersModal div[style*="overflow-y: auto"]::-webkit-scrollbar-track,
+#locationModal div[style*="overflow-y: auto"]::-webkit-scrollbar-track,
+#mapPickerModal div[style*="overflow-y: auto"]::-webkit-scrollbar-track {
   background: #f7fafc;
+  border-radius: 4px;
 }
 
-#usersModal > div::-webkit-scrollbar-thumb {
+#usersModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb,
+#locationModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb,
+#mapPickerModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb {
   background-color: #cbd5e0;
   border-radius: 4px;
+}
+
+#usersModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb:hover,
+#locationModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb:hover,
+#mapPickerModal div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb:hover {
+  background-color: #a0aec0;
+}
+
+/* User select dropdown styling */
+#userSelect {
+  font-size: 14px;
+}
+
+#userSelect option {
+  padding: 8px;
+  margin: 2px 0;
+}
+
+#userSelect option:checked {
+  background: #3B82F6 !important;
+  color: white !important;
 }
 </style>
 @endsection
