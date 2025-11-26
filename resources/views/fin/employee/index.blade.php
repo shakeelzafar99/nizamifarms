@@ -281,6 +281,14 @@
                     <span>→ Pending:</span>
                     <span class="font-medium text-yellow-600">Rs. {{ number_format($summaryKPIs['online_pending'], 0) }}</span>
                 </div>
+                <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                    <span class="pl-2">• Pending L1:</span>
+                    <span class="font-medium text-yellow-700">Rs. {{ number_format($summaryKPIs['online_pending_l1'], 0) }}</span>
+                </div>
+                <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                    <span class="pl-2">• Pending L2:</span>
+                    <span class="font-medium text-orange-600">Rs. {{ number_format($summaryKPIs['online_pending_l2'], 0) }}</span>
+                </div>
             </div>
         </div>
 

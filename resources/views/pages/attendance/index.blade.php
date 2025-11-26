@@ -64,6 +64,12 @@
         <div id="settingsMenu" class="hidden absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50">
           <div class="py-2">
             <a 
+              href="/attendance/locations"
+              class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              📍 Office Locations
+            </a>
+            <a 
               href="/shifts"
               class="block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
             >
@@ -1036,31 +1042,39 @@ function getLocationBadge(record) {
 
   // Has location data
   if (record.checkin_latitude && record.checkin_longitude) {
+    const mapsUrl = `https://www.google.com/maps?q=${record.checkin_latitude},${record.checkin_longitude}`;
+    
     if (record.is_remote_checkin == 1) {
       // Remote check-in (>2km from office)
       const distanceKm = (record.checkin_distance_from_base / 1000).toFixed(1);
       return {
         type: 'remote',
         html: `
-          <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700" title="Checked in remotely">
+          <a href="${mapsUrl}" target="_blank" class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700 hover:bg-red-200 transition cursor-pointer" title="Click to view on Google Maps">
             <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
             </svg>
             ${distanceKm} km away
-          </span>
+          </a>
         `
       };
     } else {
       // Onsite check-in (≤2km from office)
+      const distanceText = record.checkin_distance_from_base 
+        ? (record.checkin_distance_from_base < 1000 
+            ? `${Math.round(record.checkin_distance_from_base)}m` 
+            : `${(record.checkin_distance_from_base / 1000).toFixed(1)}km`)
+        : '';
+      
       return {
         type: 'onsite',
         html: `
-          <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700" title="Checked in at office">
+          <a href="${mapsUrl}" target="_blank" class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 transition cursor-pointer" title="Click to view on Google Maps">
             <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
             </svg>
-            At office
-          </span>
+            At office${distanceText ? ` (${distanceText})` : ''}
+          </a>
         `
       };
     }

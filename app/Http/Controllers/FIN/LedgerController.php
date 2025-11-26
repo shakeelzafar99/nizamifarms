@@ -201,23 +201,41 @@ class LedgerController extends Controller
             ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
             ->sum('total_price') ?? 0;
         
+        // === ONLINE INVOICES: Enhanced with L1/L2 split (matching EmployeeCashController) ===
+        // Get ALL online invoice ledgers
+        // Check ONLINE account (to_account) instead of order payment method for accuracy
         $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
-        $onlineApproved = 0;
-        $onlinePending = 0;
+        $onlineInvoiceLedgersQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+            ->whereBetween('transaction_date', [$startDate, $endDate]);
         
         if ($onlineAccount) {
-            $onlineApproved = LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('approval_status', LedgerModel::STATUS_APPROVED)
-                ->whereBetween('transaction_date', [$startDate, $endDate])
-                ->sum('amount') ?? 0;
-            
-            $onlinePending = LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-                ->where('approval_status', LedgerModel::STATUS_PENDING)
-                ->whereBetween('transaction_date', [$startDate, $endDate])
-                ->sum('amount') ?? 0;
+            $onlineInvoiceLedgersQuery->where('to_account_id', $onlineAccount->id);
         }
+        
+        $onlineInvoiceLedgers = $onlineInvoiceLedgersQuery->get();
+        
+        $onlineApproved = $onlineInvoiceLedgers
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->sum('amount');
+        
+        // Split pending by approval level (L1 vs L2)
+        // Legacy 'pending' status is treated as pending_l1
+        $onlinePendingL1 = $onlineInvoiceLedgers
+            ->filter(function ($invoice) {
+                return in_array($invoice->approval_status, [
+                    LedgerModel::STATUS_PENDING,      // Legacy: treat as L1
+                    LedgerModel::STATUS_PENDING_L1,
+                ], true);
+            })
+            ->sum('amount');
+        
+        $onlinePendingL2 = $onlineInvoiceLedgers
+            ->where('approval_status', LedgerModel::STATUS_PENDING_L2)
+            ->sum('amount');
+        
+        // Total pending (for backward compatibility)
+        $onlinePending = $onlinePendingL1 + $onlinePendingL2;
         
         // === KPI 2: EXPENSES ===
         $ledgerExpenses = LedgerModel::where('transaction_type', LedgerModel::TYPE_EXPENSE)
@@ -283,6 +301,8 @@ class LedgerController extends Controller
             'invoices_online' => $invoicesOnline,
             'online_approved' => $onlineApproved,
             'online_pending' => $onlinePending,
+            'online_pending_l1' => $onlinePendingL1, // NEW: Pending L1 split
+            'online_pending_l2' => $onlinePendingL2, // NEW: Pending L2 split
             'total_expenses' => $totalExpenses,
             'regular_expenses' => $regularExpenses,
             'salary_expenses' => $salaryExpensesForDisplay,

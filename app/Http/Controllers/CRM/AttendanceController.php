@@ -169,12 +169,28 @@ class AttendanceController extends Controller
         
         // Resolve actual shifts using ShiftResolutionService
         $shiftService = new ShiftResolutionService();
+        $locationService = new \App\Services\LocationService();
+        
         foreach ($rows as $row) {
             $shiftData = $shiftService->getUserShift($row->user_id);
             $row->shift_start = $shiftData['shift_start'];
             $row->shift_end = $shiftData['shift_end'];
             $row->shift_name = $shiftData['shift_name'];
             $row->shift_source = $shiftData['source'];
+            
+            // Recalculate distance based on user's current assigned location
+            if ($row->checkin_latitude && $row->checkin_longitude) {
+                $distanceResult = $locationService->calculateDistanceFromBase(
+                    $row->checkin_latitude,
+                    $row->checkin_longitude,
+                    $row->user_id
+                );
+                
+                // Update with recalculated values
+                $row->checkin_distance_from_base = $distanceResult['distance_meters'];
+                $row->is_remote_checkin = $distanceResult['is_remote'] ? 1 : 0;
+                $row->assigned_office_location = $distanceResult['base_location']->location_name ?? null;
+            }
         }
         
         return response()->json(['success' => true, 'data' => $rows]);

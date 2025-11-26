@@ -756,19 +756,19 @@ class RiderController extends Controller
             
             if ($isAdmin) {
                 // Admin users: Get all categories from existing expenses
-                $categories = \App\Models\Request\RequestModel::whereHas('category', function($q) {
-                        $q->whereIn('category_code', ['expense', 'salary_advance']);
-                    })
-                    ->whereNotNull('expense_category')
-                    ->where('expense_category', '!=', '')
-                    ->distinct()
-                    ->pluck('expense_category')
-                    ->sort()
-                    ->values()
-                    ->toArray();
+            $categories = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+                })
+                ->whereNotNull('expense_category')
+                ->where('expense_category', '!=', '')
+                ->distinct()
+                ->pluck('expense_category')
+                ->sort()
+                ->values()
+                ->toArray();
 
-                // Add PENDING as a special option at the top for partial payments
-                array_unshift($categories, 'PENDING');
+            // Add PENDING as a special option at the top for partial payments
+            array_unshift($categories, 'PENDING');
             } else {
                 // Non-admin users: Limited categories only
                 $categories = ['Petrol', 'Maintenance', 'PENDING'];
@@ -1198,6 +1198,24 @@ class RiderController extends Controller
                 ->whereDate('attendance_date', $today)
                 ->first();
 
+            // Get user's assigned office location
+            $assignedLocation = \DB::table('t_ops_user_location_assignment as ula')
+                ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
+                ->where('ula.user_id', $user->id)
+                ->where('ula.is_active', 1)
+                ->where('loc.is_active', 1)
+                ->select('loc.location_name', 'loc.latitude', 'loc.longitude', 'loc.radius_meters')
+                ->first();
+
+            // If no assigned location, get primary location
+            if (!$assignedLocation) {
+                $assignedLocation = \DB::table('t_ops_company_locations')
+                    ->where('is_primary', 1)
+                    ->where('is_active', 1)
+                    ->select('location_name', 'latitude', 'longitude', 'radius_meters')
+                    ->first();
+            }
+
             return response()->json([
                 'success' => true,
                 'attendance' => $attendance ? [
@@ -1208,6 +1226,16 @@ class RiderController extends Controller
                     'notes' => $attendance->notes,
                     'is_checked_in' => $attendance->login_time !== null,
                     'is_checked_out' => $attendance->logout_time !== null,
+                    'checkin_latitude' => $attendance->checkin_latitude ?? null,
+                    'checkin_longitude' => $attendance->checkin_longitude ?? null,
+                    'checkin_distance_from_base' => $attendance->checkin_distance_from_base ?? null,
+                    'is_remote_checkin' => $attendance->is_remote_checkin ?? 0,
+                ] : null,
+                'assigned_location' => $assignedLocation ? [
+                    'name' => $assignedLocation->location_name,
+                    'latitude' => $assignedLocation->latitude,
+                    'longitude' => $assignedLocation->longitude,
+                    'radius_meters' => $assignedLocation->radius_meters,
                 ] : null,
             ]);
         } catch (\Exception $e) {
@@ -3741,7 +3769,7 @@ class RiderController extends Controller
             // but these create circular references that break json_encode()
             // Deep clone via unserialize(serialize()) breaks all references
             $treeClean = unserialize(serialize($tree));
-            
+
             return response()->json([
                 'success' => true,
                 'generated_at' => Carbon::now()->toIso8601String(),
@@ -4739,6 +4767,13 @@ class RiderController extends Controller
                     'leave_status' => $row->leave_status,
                     'leave_type' => $row->leave_type_from_req,
                     'notes' => $row->notes,
+                    // Location data
+                    'checkin_latitude' => $row->checkin_latitude ?? null,
+                    'checkin_longitude' => $row->checkin_longitude ?? null,
+                    'checkin_distance_from_base' => $row->checkin_distance_from_base ?? null,
+                    'is_remote_checkin' => $row->is_remote_checkin ?? 0,
+                    'checkout_latitude' => $row->checkout_latitude ?? null,
+                    'checkout_longitude' => $row->checkout_longitude ?? null,
                 ];
             }
             
@@ -4873,6 +4908,12 @@ class RiderController extends Controller
                     'a.logout_time',
                     'a.picture_start',
                     'a.picture_end',
+                    'a.checkin_latitude',
+                    'a.checkin_longitude',
+                    'a.checkin_distance_from_base',
+                    'a.is_remote_checkin',
+                    'a.checkout_latitude',
+                    'a.checkout_longitude',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -5642,23 +5683,39 @@ class RiderController extends Controller
             ->whereIn('payment_method', ['online', 'Online', 'bank_transfer', 'card', 'online_payment'])
             ->sum('total_price') ?? 0;
         
+        // === ONLINE INVOICES: Enhanced with L1/L2 split (matching web LedgerController) ===
         $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')->first();
-        $onlineApproved = 0;
-        $onlinePending = 0;
+        $onlineInvoiceLedgersQuery = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+            ->where('approval_status', '!=', \App\Models\FIN\LedgerModel::STATUS_REVERSED)
+            ->whereBetween('transaction_date', [$startDate, $endDate]);
         
         if ($onlineAccount) {
-            $onlineApproved = \App\Models\FIN\LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
-                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
-                ->whereBetween('transaction_date', [$startDate, $endDate])
-                ->sum('amount') ?? 0;
-            
-            $onlinePending = \App\Models\FIN\LedgerModel::where('to_account_id', $onlineAccount->id)
-                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
-                ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING)
-                ->whereBetween('transaction_date', [$startDate, $endDate])
-                ->sum('amount') ?? 0;
+            $onlineInvoiceLedgersQuery->where('to_account_id', $onlineAccount->id);
         }
+        
+        $onlineInvoiceLedgers = $onlineInvoiceLedgersQuery->get();
+        
+        $onlineApproved = $onlineInvoiceLedgers
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
+            ->sum('amount');
+        
+        // Split pending by approval level (L1 vs L2)
+        // Legacy 'pending' status is treated as pending_l1
+        $onlinePendingL1 = $onlineInvoiceLedgers
+            ->filter(function ($invoice) {
+                return in_array($invoice->approval_status, [
+                    \App\Models\FIN\LedgerModel::STATUS_PENDING,      // Legacy: treat as L1
+                    \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+                ], true);
+            })
+            ->sum('amount');
+        
+        $onlinePendingL2 = $onlineInvoiceLedgers
+            ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_PENDING_L2)
+            ->sum('amount');
+        
+        // Total pending (for backward compatibility)
+        $onlinePending = $onlinePendingL1 + $onlinePendingL2;
         
         // === KPI 2: EXPENSES ===
         $ledgerExpenses = \App\Models\FIN\LedgerModel::where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_EXPENSE)
@@ -5705,6 +5762,8 @@ class RiderController extends Controller
             'invoices_online' => round($invoicesOnline, 2),
             'online_approved' => round($onlineApproved, 2),
             'online_pending' => round($onlinePending, 2),
+            'online_pending_l1' => round($onlinePendingL1, 2), // NEW: Pending L1 split
+            'online_pending_l2' => round($onlinePendingL2, 2), // NEW: Pending L2 split
             'total_expenses' => round($totalExpenses, 2),
             'regular_expenses' => round($ledgerExpenses, 2),
             'salary_expenses' => round($salaryExpenses, 2),

@@ -64,18 +64,49 @@ class LocationService
     }
 
     /**
+     * Get assigned location for a specific user
+     * Falls back to primary location if no assignment exists
+     * 
+     * @param int $userId User ID
+     * @return object|null Location {id, location_name, latitude, longitude, radius_meters}
+     */
+    public static function getUserAssignedLocation(int $userId)
+    {
+        // First, try to get user's assigned location
+        $assignedLocation = DB::table('t_ops_user_location_assignment as ula')
+            ->join('t_ops_company_locations as loc', 'loc.id', '=', 'ula.location_id')
+            ->where('ula.user_id', $userId)
+            ->where('ula.is_active', 1)
+            ->where('loc.is_active', 1)
+            ->select('loc.id', 'loc.location_name', 'loc.latitude', 'loc.longitude', 'loc.radius_meters')
+            ->first();
+
+        // If user has an assigned location, return it
+        if ($assignedLocation) {
+            return $assignedLocation;
+        }
+
+        // Otherwise, fall back to primary location
+        return self::getPrimaryBaseLocation();
+    }
+
+    /**
      * Calculate distance from primary base location
      * 
      * @param float $latitude User's latitude
      * @param float $longitude User's longitude
+     * @param int|null $userId Optional user ID to check assigned location
      * @return array ['distance_meters' => int, 'is_remote' => bool, 'base_location' => object|null, 'error' => string|null]
      */
-    public static function calculateDistanceFromBase($latitude, $longitude): array
+    public static function calculateDistanceFromBase($latitude, $longitude, $userId = null): array
     {
-        $baseLocation = self::getPrimaryBaseLocation();
+        // Get location based on user assignment or primary location
+        $baseLocation = $userId 
+            ? self::getUserAssignedLocation($userId)
+            : self::getPrimaryBaseLocation();
         
         if (!$baseLocation) {
-            Log::warning('No base location configured for attendance');
+            Log::warning('No base location configured for attendance', ['user_id' => $userId]);
             return [
                 'distance_meters' => null,
                 'is_remote' => false,
@@ -102,6 +133,7 @@ class LocationService
             Log::error('Distance calculation error', [
                 'latitude' => $latitude,
                 'longitude' => $longitude,
+                'user_id' => $userId,
                 'error' => $e->getMessage()
             ]);
             

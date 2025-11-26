@@ -51,3 +51,4 @@ ORDER BY o.order_date DESC;
 -- 5. Are the p.id (product_id) values populated or NULL?
 
 
+

@@ -117,6 +117,17 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/employee-details', [\App\Http\Controllers\CRM\AttendanceController::class, 'employeeDetails'])->name('attendance.employee-details');
     Route::get('/attendance/users-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'getUsersVisibility'])->name('attendance.users-visibility');
     Route::post('/attendance/update-visibility', [\App\Http\Controllers\CRM\AttendanceController::class, 'updateUserVisibility'])->name('attendance.update-visibility');
+    
+    // Company Locations Management (for attendance tracking)
+    Route::get('/attendance/locations', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'index'])->name('attendance.locations');
+    Route::get('/attendance/locations/data', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'getLocations'])->name('attendance.locations.data');
+    Route::post('/attendance/locations', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'store'])->name('attendance.locations.store');
+    Route::put('/attendance/locations/{id}', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'update'])->name('attendance.locations.update');
+    Route::delete('/attendance/locations/{id}', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'destroy'])->name('attendance.locations.destroy');
+    Route::get('/attendance/locations/{id}/users', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'getLocationUsers'])->name('attendance.locations.users');
+    Route::get('/attendance/locations/available-users', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'getAvailableUsers'])->name('attendance.locations.available-users');
+    Route::post('/attendance/locations/{id}/assign-users', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'assignUsers'])->name('attendance.locations.assign-users');
+    Route::delete('/attendance/locations/assignments/{id}', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'removeUserAssignment'])->name('attendance.locations.remove-assignment');
 
     // Shift Management
     Route::get('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'index'])->name('shifts.index');

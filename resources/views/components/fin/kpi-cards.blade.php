@@ -30,12 +30,22 @@
             <div class="font-medium text-gray-700 mb-1 mt-2">💳 Online:</div>
             <div class="flex justify-between pl-2">
                 <span>✓ Approved:</span>
-                <span class="font-medium">Rs. {{ number_format($kpis['online_approved'], 0) }}</span>
+                <span class="font-medium text-green-600">Rs. {{ number_format($kpis['online_approved'], 0) }}</span>
             </div>
-            <div class="flex justify-between pl-2 mt-1">
+            <div class="flex justify-between pl-2 mt-0.5">
                 <span>⏳ Pending:</span>
                 <span class="font-medium text-yellow-600">Rs. {{ number_format($kpis['online_pending'], 0) }}</span>
             </div>
+            @if(isset($kpis['online_pending_l1']) && isset($kpis['online_pending_l2']))
+            <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                <span class="pl-2">• Pending L1:</span>
+                <span class="font-medium text-yellow-700">Rs. {{ number_format($kpis['online_pending_l1'], 0) }}</span>
+            </div>
+            <div class="flex justify-between pl-2 mt-0.5 text-[10px]">
+                <span class="pl-2">• Pending L2:</span>
+                <span class="font-medium text-orange-600">Rs. {{ number_format($kpis['online_pending_l2'], 0) }}</span>
+            </div>
+            @endif
         </div>
     </div>
 
