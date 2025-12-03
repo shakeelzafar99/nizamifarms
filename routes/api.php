@@ -176,6 +176,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
+    Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
     
     // NF Ledger (Store Mode - requires view_nf_ledger permission)
@@ -187,10 +188,34 @@ Route::middleware('auth:sanctum')->group(function () {
     // Overall Ledger (Store Mode - requires view_nf_ledger permission)
     Route::get('/overall-ledger', [\App\Http\Controllers\API\RiderController::class, 'getOverallLedger']);
     
-    // Store Attendance (Store Mode - requires view_store_attendance permission)
-    Route::get('/store-attendance/daily', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceDaily']);
-    Route::get('/store-attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceMonthly']);
-    Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
+        // Store Attendance (Store Mode - requires view_store_attendance permission)
+        Route::get('/store-attendance/daily', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceDaily']);
+        Route::get('/store-attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceMonthly']);
+        Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
+        
+        // ⭐ LOCATION TRACKING: Heartbeat from mobile app (every 5 minutes when checked in)
+        Route::post('/location-heartbeat', [\App\Http\Controllers\API\RiderController::class, 'locationHeartbeat']);
+        
+        // ⭐ LOCATION TRACKING: Get active riders for map (mobile + web)
+        Route::get('/active-riders-map', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap']);
+        Route::get('/location-heartbeat/active-riders', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap']);
+        
+        // ⭐ LOCATION TRACKING: Get detailed map data for a specific rider (mobile + web)
+        Route::get('/rider-map/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderMapData']);
+        Route::get('/location-heartbeat/rider-map/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderMapData']);
+        
+        // ⭐ LOCATION TRACKING: Get rider location history (last N unique locations)
+        Route::get('/rider-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory']);
+        
+        // ⭐ LOCATION TRACKING: Get all open orders for map view
+        Route::get('/all-open-orders-map', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap']);
+        
+        // ⭐ LOCATION TRACKING: Get delivery history for a date
+        Route::get('/delivery-history', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryHistory']);
+        
+        // ⭐ HISTORY: Get riders list and individual rider history
+        Route::get('/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory']);
+        Route::get('/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory']);
     }); // Close rider prefix group
     
     // Store Mode - Requests (uses same controller as web for consistency, under /api prefix)

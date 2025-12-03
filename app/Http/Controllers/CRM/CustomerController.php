@@ -419,4 +419,216 @@ class CustomerController extends Controller
             return redirect()->back()->with('error', 'Error deleting customer: ' . $e->getMessage());
         }
     }
+    
+    /**
+     * Geocode a single customer's address
+     */
+    public function geocode(Request $request, $id)
+    {
+        try {
+            $customer = CustomerModel::findOrFail($id);
+            
+            if (!$customer->address1) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer has no address to geocode'
+                ], 400);
+            }
+            
+            // Force update even if coordinates exist
+            $forceUpdate = $request->boolean('force', false);
+            
+            if (!$forceUpdate && $customer->latitude && $customer->longitude) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Customer already has coordinates',
+                    'coordinates' => [
+                        'latitude' => $customer->latitude,
+                        'longitude' => $customer->longitude,
+                    ]
+                ]);
+            }
+            
+            $result = \App\Services\GeocodingService::geocodeCustomer($id, $forceUpdate);
+            
+            if ($result) {
+                $customer->refresh();
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Address geocoded successfully',
+                    'coordinates' => [
+                        'latitude' => $customer->latitude,
+                        'longitude' => $customer->longitude,
+                    ]
+                ]);
+            } else {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Could not geocode address. The address may be too vague or not found.'
+                ], 400);
+            }
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Geocoding failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Batch geocode customers without coordinates
+     */
+    public function batchGeocode(Request $request)
+    {
+        try {
+            $limit = $request->input('limit', 50);
+            $limit = min($limit, 100); // Cap at 100 to avoid timeout
+            
+            $result = \App\Services\GeocodingService::batchGeocodeCustomers($limit);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Geocoded {$result['success']} of {$result['total']} customers",
+                'result' => $result
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Batch geocoding failed: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Geocode a single customer by ID
+     * Used for on-demand geocoding from the map views
+     */
+    public function geocodeSingle(Request $request, $customerId)
+    {
+        try {
+            $forceUpdate = $request->get('force', false);
+            
+            $customer = \DB::table('t_crm_prod_customer')
+                ->where('id', $customerId)
+                ->first(['id', 'first_name', 'last_name', 'address1', 'city', 'geocoded_latitude', 'geocoded_longitude']);
+            
+            if (!$customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Customer not found'
+                ], 404);
+            }
+            
+            // Skip if already has geocoded coordinates (unless force update)
+            if (!$forceUpdate && $customer->geocoded_latitude && $customer->geocoded_longitude) {
+                return response()->json([
+                    'success' => true,
+                    'already_geocoded' => true,
+                    'location' => [
+                        'latitude' => (float) $customer->geocoded_latitude,
+                        'longitude' => (float) $customer->geocoded_longitude,
+                    ],
+                    'message' => 'Already geocoded'
+                ]);
+            }
+            
+            // Perform geocoding
+            $result = \App\Services\GeocodingService::geocodeCustomer($customerId, $forceUpdate);
+            
+            if ($result) {
+                // Fetch updated coordinates
+                $updated = \DB::table('t_crm_prod_customer')
+                    ->where('id', $customerId)
+                    ->first(['geocoded_latitude', 'geocoded_longitude']);
+                
+                return response()->json([
+                    'success' => true,
+                    'geocoded' => true,
+                    'location' => [
+                        'latitude' => (float) $updated->geocoded_latitude,
+                        'longitude' => (float) $updated->geocoded_longitude,
+                    ],
+                    'customer_name' => trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? '')),
+                    'message' => 'Successfully geocoded'
+                ]);
+            } else {
+                return response()->json([
+                    'success' => false,
+                    'geocoded' => false,
+                    'message' => 'Could not geocode address: ' . ($customer->address1 ?? 'No address')
+                ]);
+            }
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to geocode customer', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to geocode: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Get geocoding statistics
+     */
+    public function geocodeStats()
+    {
+        try {
+            $total = CustomerModel::count();
+            
+            // Verified locations (manually set by rider - high accuracy)
+            $withVerified = CustomerModel::whereNotNull('latitude')
+                ->whereNotNull('longitude')
+                ->count();
+            
+            // Geocoded locations (auto-generated from address - approximate)
+            $withGeocoded = CustomerModel::whereNotNull('geocoded_latitude')
+                ->whereNotNull('geocoded_longitude')
+                ->count();
+            
+            // Either verified or geocoded
+            $withAnyCoords = CustomerModel::where(function($q) {
+                $q->where(function($q2) {
+                    $q2->whereNotNull('latitude')->whereNotNull('longitude');
+                })->orWhere(function($q2) {
+                    $q2->whereNotNull('geocoded_latitude')->whereNotNull('geocoded_longitude');
+                });
+            })->count();
+            
+            $withAddress = CustomerModel::whereNotNull('address1')
+                ->where('address1', '!=', '')
+                ->count();
+            
+            // Needs geocoding: has address but no geocoded coordinates
+            $needsGeocode = CustomerModel::whereNull('geocoded_latitude')
+                ->whereNotNull('address1')
+                ->where('address1', '!=', '')
+                ->count();
+            
+            return response()->json([
+                'success' => true,
+                'stats' => [
+                    'total_customers' => $total,
+                    'with_verified_location' => $withVerified,
+                    'with_geocoded_location' => $withGeocoded,
+                    'with_any_coordinates' => $withAnyCoords,
+                    'with_address' => $withAddress,
+                    'needs_geocoding' => $needsGeocode,
+                    'coverage_percent' => $withAddress > 0 ? round(($withAnyCoords / $withAddress) * 100, 1) : 0,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get stats: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 }

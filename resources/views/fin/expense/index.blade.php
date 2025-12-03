@@ -1456,6 +1456,7 @@ async function openRequestDetailModal(requestId) {
     if (!modal || !content) return;
     
     // Force proper modal display
+    // ⭐ z-index must be higher than pendingApprovalsModal (99999)
     modal.classList.remove('hidden');
     Object.assign(modal.style, {
         display: 'flex',
@@ -1464,7 +1465,7 @@ async function openRequestDetailModal(requestId) {
         left: '0',
         right: '0',
         bottom: '0',
-        zIndex: '10000',
+        zIndex: '999999',
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: 'rgba(0,0,0,0.5)'
@@ -1763,7 +1764,8 @@ console.log('Expense Management JS loaded. Functions:', {
 </div>
 
 <!-- Request Detail Modal (for approving without leaving page) -->
-<div id="requestDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 10000;">
+<!-- ⭐ z-index must be higher than pendingApprovalsModal (99999) so it appears on top when opened from there -->
+<div id="requestDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;">
     <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto relative" onclick="event.stopPropagation()" style="margin: auto;">
         <div id="requestDetailContent" class="relative">
             <!-- Content will be loaded here via AJAX -->

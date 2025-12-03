@@ -91,6 +91,14 @@ class AuthController extends Controller
         $token = $user->createToken('gx-token')->plainTextToken;
         $userLog->session_id = $token;
         $userLog->save();
+        
+        // ⭐ Store app version if provided (mobile app login)
+        $appVersion = $request->input('app_version');
+        if ($appVersion && is_string($appVersion)) {
+            $user->app_version = substr($appVersion, 0, 20);
+            $user->app_version_updated_at = now();
+            $user->save();
+        }
 
         if ($request->expectsJson()) {
             return $this->respondWithToken($token, $user, $credentials['password']);
@@ -128,14 +136,23 @@ class AuthController extends Controller
         if ($request->expectsJson()) {
             // Get the token from the request
             $token = $request->bearerToken();
+            
+            // ⭐ ALWAYS try to delete the user's tokens (for proper "Logged Out" status)
+            $user = $request->user();
+            if ($user) {
+                // Delete ALL tokens for this user (not just current)
+                $user->tokens()->delete();
+                
+                // ⭐ Clear app_version on logout to indicate logged out state
+                $user->update([
+                    'app_version' => null,
+                    'app_version_updated_at' => null,
+                ]);
+            }
+            
+            // Update log status if found
             $userLog = LogModel::where('session_id', $token)->first();
             if ($userLog) {
-                // Revoke the current token
-                if ($request->user()) {
-                    $request->user()->tokens->each(function ($token) {
-                        $token->delete();  // This will revoke all tokens associated with the user
-                    });
-                }
                 $userLog->update(['status' => 'logout']);
             }
 

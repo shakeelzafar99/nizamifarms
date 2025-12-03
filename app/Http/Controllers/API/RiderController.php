@@ -1365,9 +1365,12 @@ class RiderController extends Controller
     {
         $latitude = $request->input('latitude');
         $longitude = $request->input('longitude');
+        $accuracy = $request->input('accuracy');
+        $source = $request->input('source'); // fresh_gps, recent_gps, network_cached
+        $method = $request->input('method'); // 1, 2, or 3
 
         if (is_null($latitude) || is_null($longitude)) {
-            \Log::warning('Check-in without location', [
+            \Log::warning('📍 ATTENDANCE CHECK-IN: No location provided', [
                 'user_id' => $userId,
                 'date' => now()->toDateString()
             ]);
@@ -1376,7 +1379,7 @@ class RiderController extends Controller
 
         // Validate coordinates
         if (!LocationService::isValidCoordinates($latitude, $longitude)) {
-            \Log::error('Invalid GPS coordinates on check-in', [
+            \Log::error('📍 ATTENDANCE CHECK-IN: Invalid GPS coordinates', [
                 'user_id' => $userId,
                 'latitude' => $latitude,
                 'longitude' => $longitude
@@ -1384,11 +1387,43 @@ class RiderController extends Controller
             return null;
         }
 
-        // Calculate distance from base
-        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude);
+        // Calculate distance from base (using user's assigned location)
+        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId);
+
+        // ⭐ Detailed logging for attendance location tracking
+        $methodLabels = [
+            1 => 'Fresh GPS (Method 1 - Best)',
+            2 => 'Recent GPS Cache (Method 2)',
+            3 => 'Network/Fallback (Method 3 - ⚠️ Check GPS)',
+        ];
+        $methodLabel = $methodLabels[$method] ?? "Unknown (Method {$method})";
+        
+        \Log::info('📍 ATTENDANCE CHECK-IN: Location captured', [
+            'user_id' => $userId,
+            'user_name' => \DB::table('t_sys_user')->where('id', $userId)->value('fullname'),
+            'date' => now()->toDateString(),
+            'time' => now()->format('H:i:s'),
+            'location_method' => $methodLabel,
+            'source' => $source ?? 'unknown',
+            'accuracy_meters' => $accuracy,
+            'latitude' => $latitude,
+            'longitude' => $longitude,
+            'distance_from_office' => $distanceInfo['distance_meters'] ? round($distanceInfo['distance_meters']) . 'm' : 'N/A',
+            'is_remote' => $distanceInfo['is_remote'] ? 'YES' : 'NO',
+            'office_location' => $distanceInfo['base_location']->location_name ?? 'N/A',
+        ]);
+
+        // Log warning if fallback method was used (method 3)
+        if ($method == 3) {
+            \Log::warning('📍 ATTENDANCE: Fallback location used - GPS may have been unavailable', [
+                'user_id' => $userId,
+                'accuracy' => $accuracy,
+                'recommendation' => 'User should ensure GPS is enabled and try outdoors'
+            ]);
+        }
 
         if ($distanceInfo['error']) {
-            \Log::error('Distance calculation failed', [
+            \Log::error('📍 ATTENDANCE CHECK-IN: Distance calculation failed', [
                 'user_id' => $userId,
                 'error' => $distanceInfo['error']
             ]);
@@ -1398,7 +1433,7 @@ class RiderController extends Controller
             'db_fields' => [
                 'checkin_latitude' => $latitude,
                 'checkin_longitude' => $longitude,
-                'checkin_accuracy' => $request->input('accuracy'),
+                'checkin_accuracy' => $accuracy,
                 'checkin_distance_from_base' => $distanceInfo['distance_meters'],
                 'checkin_location_captured_at' => now(),
                 'is_remote_checkin' => $distanceInfo['is_remote'] ? 1 : 0,
@@ -1631,6 +1666,1265 @@ class RiderController extends Controller
             'checkout_accuracy' => $request->input('accuracy'),
             'checkout_location_captured_at' => now(),
         ];
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Record rider's location heartbeat
+     * Called every 5 minutes from mobile app when rider is checked in
+     * Also performs daily cleanup of old location data (once per day)
+     */
+    public function locationHeartbeat(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $today = now()->format('Y-m-d');
+
+            // Validate rider is checked in today (has login_time but no logout_time)
+            $attendance = \DB::table('t_ops_attendance')
+                ->where('user_id', $user->id)
+                ->whereDate('attendance_date', $today)
+                ->whereNotNull('login_time')
+                ->whereNull('logout_time')
+                ->first();
+
+            if (!$attendance) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Not checked in or already checked out'
+                ], 400);
+            }
+
+            // Validate coordinates
+            $latitude = $request->input('latitude');
+            $longitude = $request->input('longitude');
+
+            if (is_null($latitude) || is_null($longitude)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Location coordinates required'
+                ], 400);
+            }
+
+            if (!LocationService::isValidCoordinates($latitude, $longitude)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid GPS coordinates'
+                ], 400);
+            }
+
+            // Store location heartbeat
+            $accuracy = $request->input('accuracy');
+            $source = $request->input('source', 'heartbeat');
+            
+            // Ensure accuracy is a valid number or null
+            if ($accuracy !== null && !is_numeric($accuracy)) {
+                $accuracy = null;
+            }
+            
+            // Truncate source to 20 chars (DB column limit)
+            $sourceStr = is_string($source) ? substr($source, 0, 20) : 'heartbeat';
+            
+            \DB::table('t_ops_rider_location')->insert([
+                'user_id' => $user->id,
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'accuracy' => $accuracy,
+                'captured_at' => now(),
+                'source' => $sourceStr,
+                'created_at' => now(),
+            ]);
+
+            // ⭐ SMART DAILY CLEANUP: Only run once per day
+            // Uses cache to track last cleanup date - first heartbeat of the day triggers cleanup
+            $lastCleanup = \Cache::get('rider_location_last_cleanup');
+            if ($lastCleanup !== $today) {
+                $deletedCount = \DB::table('t_ops_rider_location')
+                    ->where('captured_at', '<', now()->subDays(10))
+                    ->delete();
+                
+                \Cache::put('rider_location_last_cleanup', $today, now()->addDays(2));
+                
+                if ($deletedCount > 0) {
+                    \Log::info('Location data cleanup completed', [
+                        'deleted_count' => $deletedCount,
+                        'triggered_by_user' => $user->id
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Location recorded'
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to record location heartbeat', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'user_id' => Auth::id(),
+                'request_data' => $request->all()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to record location: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Get all active riders for map view
+     * Returns riders who are checked in today OR have recent location data
+     * 
+     * @param date - Optional date for viewing history (YYYY-MM-DD)
+     */
+    public function getActiveRidersForMap(Request $request)
+    {
+        try {
+            // Check if viewing history or live
+            $requestedDate = $request->get('date');
+            $isHistory = $requestedDate && $requestedDate !== now()->format('Y-m-d');
+            $targetDate = $requestedDate ?: now()->format('Y-m-d');
+            $today = now()->format('Y-m-d');
+            
+            // Get riders who are:
+            // 1. Checked in on target date (with or without checkout), OR
+            // 2. Have location data on that date (for history) or in last 24 hours (for live)
+            // 3. For history: riders who delivered orders on that date
+            $riders = \DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_attendance as a', function($join) use ($targetDate) {
+                    $join->on('u.id', '=', 'a.user_id')
+                         ->whereDate('a.attendance_date', $targetDate);
+                });
+            
+            if ($isHistory) {
+                // For history, get location data from that specific date
+                $riders->leftJoin(\DB::raw("(
+                    SELECT user_id, 
+                           MAX(captured_at) as last_location_at,
+                           SUBSTRING_INDEX(GROUP_CONCAT(latitude ORDER BY captured_at DESC), ',', 1) as last_lat,
+                           SUBSTRING_INDEX(GROUP_CONCAT(longitude ORDER BY captured_at DESC), ',', 1) as last_lng
+                    FROM t_ops_rider_location 
+                    WHERE DATE(captured_at) = '{$targetDate}'
+                    GROUP BY user_id
+                ) as loc"), 'u.id', '=', 'loc.user_id');
+                
+                // For history, also include riders who delivered orders on that date
+                $riders->leftJoin(\DB::raw("(
+                    SELECT DISTINCT o.assigned_rider_user_id as user_id
+                    FROM t_crm_prod_order o
+                    INNER JOIN t_crm_order_status_history osh ON o.id = osh.order_id
+                    WHERE osh.status_code = 'delivered'
+                    AND DATE(osh.changed_at) = '{$targetDate}'
+                ) as delivered"), 'u.id', '=', 'delivered.user_id');
+            } else {
+                // For live view, get recent location data
+                $riders->leftJoin(\DB::raw('(
+                    SELECT user_id, 
+                           MAX(captured_at) as last_location_at,
+                           SUBSTRING_INDEX(GROUP_CONCAT(latitude ORDER BY captured_at DESC), ",", 1) as last_lat,
+                           SUBSTRING_INDEX(GROUP_CONCAT(longitude ORDER BY captured_at DESC), ",", 1) as last_lng
+                    FROM t_ops_rider_location 
+                    WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                    GROUP BY user_id
+                ) as loc'), 'u.id', '=', 'loc.user_id');
+            }
+            
+            // ⭐ Join to get last sync time from orders (more reliable than location heartbeat)
+            $riders->leftJoin(\DB::raw('(
+                SELECT assigned_rider_user_id as user_id,
+                       MAX(rider_last_sync_at) as last_sync_at
+                FROM t_crm_prod_order 
+                WHERE rider_last_sync_at IS NOT NULL
+                GROUP BY assigned_rider_user_id
+            ) as sync'), 'u.id', '=', 'sync.user_id')
+            // ⭐ Join to get app login status (check if user HAS any tokens)
+            ->leftJoin(\DB::raw('(
+                SELECT tokenable_id as user_id,
+                       COUNT(*) as token_count,
+                       MAX(last_used_at) as token_last_used_at,
+                       MAX(created_at) as token_created_at
+                FROM personal_access_tokens 
+                WHERE tokenable_type = "App\\\\Models\\\\User"
+                GROUP BY tokenable_id
+            ) as tokens'), 'u.id', '=', 'tokens.user_id')
+                ->where('u.is_active', 1);
+            
+            if ($isHistory) {
+                // For history, show riders who checked in OR delivered orders that day
+                $riders->where(function($q) {
+                    $q->whereNotNull('a.login_time')
+                      ->orWhereNotNull('loc.last_location_at')
+                      ->orWhereNotNull('delivered.user_id');
+                });
+            } else {
+                // For live view (today), ONLY show riders who have checked in today
+                // Recent location alone is not enough - they must have attendance for today
+                $riders->whereNotNull('a.login_time');
+            }
+            
+            $riders = $riders->select([
+                    'u.id',
+                    'u.fullname as name',
+                    'u.app_version', // ⭐ Get app_version from user table (set on login)
+                    'a.login_time',
+                    'a.logout_time',
+                    'loc.last_location_at',
+                    'loc.last_lat as latitude',
+                    'loc.last_lng as longitude',
+                    'sync.last_sync_at',
+                    'tokens.token_count', // ⭐ Count of active tokens
+                    'tokens.token_last_used_at',
+                    'tokens.token_created_at',
+                ])
+                ->orderBy('u.fullname')
+                ->get();
+
+            // Get order counts for each rider:
+            // - For live: Open orders (any date) + Delivered today
+            // - For history: Delivered on that date only
+            $riderIds = $riders->pluck('id')->toArray();
+            $orderCounts = [];
+            
+            if (!empty($riderIds)) {
+                if ($isHistory) {
+                    // For history, only show delivered orders on that date
+                    $deliveredCounts = \DB::table('t_crm_prod_order as o')
+                        ->join('t_crm_order_status_history as osh', function($join) use ($targetDate) {
+                            $join->on('o.id', '=', 'osh.order_id')
+                                 ->where('osh.status_code', '=', 'delivered')
+                                 ->whereDate('osh.changed_at', $targetDate);
+                        })
+                        ->whereIn('o.assigned_rider_user_id', $riderIds)
+                        ->select([
+                            'o.assigned_rider_user_id as rider_id',
+                            \DB::raw('COUNT(DISTINCT o.id) as delivered_orders'),
+                        ])
+                        ->groupBy('o.assigned_rider_user_id')
+                        ->get()
+                        ->keyBy('rider_id');
+                    
+                    foreach ($riderIds as $riderId) {
+                        $orderCounts[$riderId] = (object)[
+                            'open_orders' => 0, // No open orders for history view
+                            'delivered_orders' => $deliveredCounts[$riderId]->delivered_orders ?? 0,
+                        ];
+                    }
+                } else {
+                    // For live view, get open orders count (any date, excluding completed statuses)
+                    $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+                    $openCounts = \DB::table('t_crm_prod_order')
+                        ->whereIn('assigned_rider_user_id', $riderIds)
+                        ->whereNotIn('order_status', $excludedStatuses)
+                        ->select([
+                            'assigned_rider_user_id as rider_id',
+                            \DB::raw('COUNT(*) as open_orders'),
+                        ])
+                        ->groupBy('assigned_rider_user_id')
+                        ->get()
+                        ->keyBy('rider_id');
+                
+                    // Get delivered today count (based on status history changed_at)
+                    $deliveredCounts = \DB::table('t_crm_prod_order as o')
+                        ->join('t_crm_order_status_history as osh', function($join) use ($today) {
+                            $join->on('o.id', '=', 'osh.order_id')
+                                 ->where('osh.status_code', '=', 'delivered')
+                                 ->whereDate('osh.changed_at', $today);
+                        })
+                        ->whereIn('o.assigned_rider_user_id', $riderIds)
+                        ->select([
+                            'o.assigned_rider_user_id as rider_id',
+                            \DB::raw('COUNT(DISTINCT o.id) as delivered_today'),
+                        ])
+                        ->groupBy('o.assigned_rider_user_id')
+                        ->get()
+                        ->keyBy('rider_id');
+                    
+                    // Combine counts
+                    foreach ($riderIds as $riderId) {
+                        $openCount = $openCounts[$riderId]->open_orders ?? 0;
+                        $deliveredCount = $deliveredCounts[$riderId]->delivered_today ?? 0;
+                        $orderCounts[$riderId] = (object)[
+                            'total_orders' => $openCount + $deliveredCount,
+                            'delivered_orders' => $deliveredCount,
+                            'open_orders' => $openCount,
+                        ];
+                    }
+                } // End else (live view)
+            } // End if (!empty($riderIds))
+
+            // Format response
+            $formattedRiders = $riders->map(function($rider) use ($orderCounts) {
+                $counts = $orderCounts[$rider->id] ?? (object)['total_orders' => 0, 'delivered_orders' => 0, 'open_orders' => 0];
+                $isCheckedIn = !is_null($rider->login_time);
+                $isCheckedOut = !is_null($rider->logout_time);
+                
+                // Calculate location age in human-readable format
+                $locationAge = null;
+                $locationAgeMinutes = null;
+                if ($rider->last_location_at) {
+                    $lastLocationTime = \Carbon\Carbon::parse($rider->last_location_at);
+                    // Use absolute value to ensure positive minutes
+                    $locationAgeMinutes = abs(now()->diffInMinutes($lastLocationTime));
+                    $locationAge = $lastLocationTime->diffForHumans(); // e.g., "2 minutes ago"
+                }
+                
+                // ⭐ Calculate sync age (more reliable for online status than location)
+                // This is when the mobile app last fetched orders
+                $syncAge = null;
+                $syncAgeMinutes = null;
+                if ($rider->last_sync_at) {
+                    $lastSyncTime = \Carbon\Carbon::parse($rider->last_sync_at);
+                    // Use absolute value to ensure positive minutes
+                    $syncAgeMinutes = abs(now()->diffInMinutes($lastSyncTime));
+                    $syncAge = $lastSyncTime->diffForHumans();
+                }
+                
+                // ⭐ Calculate app login status (from API token existence)
+                // User is "logged in" if they have ANY active tokens
+                $tokenCount = intval($rider->token_count ?? 0);
+                $isAppLoggedIn = $tokenCount > 0;
+                $appLastActiveAt = null;
+                $appLastActiveAge = null;
+                if ($rider->token_last_used_at) {
+                    $lastTokenUse = \Carbon\Carbon::parse($rider->token_last_used_at);
+                    $appLastActiveAt = $rider->token_last_used_at;
+                    $appLastActiveAge = $lastTokenUse->diffForHumans();
+                }
+
+                return [
+                    'id' => $rider->id,
+                    'name' => $rider->name,
+                    'is_checked_in' => $isCheckedIn,
+                    'is_checked_out' => $isCheckedOut,
+                    'status' => $isCheckedOut ? 'checked_out' : ($isCheckedIn ? 'on_duty' : 'has_location'),
+                    'checked_in_at' => $rider->login_time,
+                    'checked_out_at' => $rider->logout_time,
+                    // Last location from GPS heartbeat
+                    'last_location' => $rider->latitude ? [
+                        'latitude' => (float)$rider->latitude,
+                        'longitude' => (float)$rider->longitude,
+                        'captured_at' => $rider->last_location_at,
+                        'age' => $locationAge,
+                        'age_minutes' => $locationAgeMinutes,
+                    ] : null,
+                    // ⭐ Last sync from mobile app (more reliable for online status)
+                    'last_sync' => $rider->last_sync_at ? [
+                        'synced_at' => $rider->last_sync_at,
+                        'age' => $syncAge,
+                        'age_minutes' => $syncAgeMinutes,
+                    ] : null,
+                    // ⭐ App login status (from API token)
+                    'app_status' => [
+                        'is_logged_in' => $isAppLoggedIn,
+                        'last_active_at' => $appLastActiveAt,
+                        'last_active_age' => $appLastActiveAge,
+                        'app_version' => $rider->app_version,
+                    ],
+                    'orders_today' => [
+                        'total' => $counts->total_orders ?? 0,
+                        'delivered' => $counts->delivered_orders ?? 0,
+                        'pending' => $counts->open_orders ?? 0,
+                    ],
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'riders' => $formattedRiders,
+                'is_history' => $isHistory,
+                'target_date' => $targetDate,
+                'timestamp' => now()->toIso8601String()
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get active riders for map', [
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load riders'
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Get detailed map data for a specific rider
+     * Returns rider's location trail and orders with locations
+     * 
+     * @param date - Optional date for viewing history (YYYY-MM-DD)
+     */
+    public function getRiderMapData(Request $request, $riderId)
+    {
+        try {
+            // Check if viewing history or live
+            $requestedDate = $request->get('date');
+            $isHistory = $requestedDate && $requestedDate !== now()->format('Y-m-d');
+            $targetDate = $requestedDate ?: now()->format('Y-m-d');
+            $today = now()->format('Y-m-d');
+            
+            // Get rider info
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname as name')
+                ->first();
+
+            if (!$rider) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rider not found'
+                ], 404);
+            }
+
+            // Get rider's attendance status for target date
+            $attendance = \DB::table('t_ops_attendance')
+                ->where('user_id', $riderId)
+                ->whereDate('attendance_date', $targetDate)
+                ->first();
+
+            // Get rider's location fixes for target date (or last 24 hours for live)
+            $locationQuery = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId);
+            
+            if ($isHistory) {
+                // For history, get all locations from that specific date
+                $locationQuery->whereDate('captured_at', $targetDate);
+            } else {
+                // For live, get last 24 hours
+                $locationQuery->where('captured_at', '>=', now()->subHours(24));
+            }
+            
+            $locationTrail = $locationQuery
+                ->orderBy('captured_at', 'desc')
+                ->limit($isHistory ? 50 : 10) // More points for history
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
+                ->get()
+                ->map(function($loc) {
+                    $capturedAt = \Carbon\Carbon::parse($loc->captured_at);
+                    return [
+                        'latitude' => (float)$loc->latitude,
+                        'longitude' => (float)$loc->longitude,
+                        'accuracy' => $loc->accuracy,
+                        'captured_at' => $loc->captured_at,
+                        'time' => $capturedAt->format('H:i'),
+                        'age' => $capturedAt->diffForHumans(),
+                        'source' => $loc->source,
+                    ];
+                });
+
+            // Current location is the most recent
+            $currentLocation = $locationTrail->first();
+
+            // Get orders for this rider based on view mode
+            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            $ordersQuery = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->leftJoin('t_crm_order_status_history as osh', function($join) {
+                    $join->on('o.id', '=', 'osh.order_id')
+                         ->where('osh.status_code', '=', 'delivered');
+                })
+                ->where('o.assigned_rider_user_id', $riderId);
+            
+            if ($isHistory) {
+                // For history, ONLY show orders delivered on that date
+                $ordersQuery->whereExists(function($sub) use ($targetDate) {
+                    $sub->select(\DB::raw(1))
+                        ->from('t_crm_order_status_history as osh2')
+                        ->whereColumn('osh2.order_id', 'o.id')
+                        ->where('osh2.status_code', 'delivered')
+                        ->whereDate('osh2.changed_at', $targetDate);
+                });
+            } else {
+                // For live view:
+                // 1. All OPEN orders (not delivered/completed/cancelled/refunded) - any date
+                // 2. Orders DELIVERED TODAY (based on status history changed_at)
+                $ordersQuery->where(function($q) use ($excludedStatuses, $today) {
+                    // Open orders (any date)
+                    $q->whereNotIn('o.order_status', $excludedStatuses)
+                    // OR delivered today (based on status history)
+                      ->orWhere(function($q2) use ($today) {
+                          $q2->whereIn('o.order_status', ['delivered', 'completed'])
+                             ->whereExists(function($sub) use ($today) {
+                                 $sub->select(\DB::raw(1))
+                                     ->from('t_crm_order_status_history as osh2')
+                                     ->whereColumn('osh2.order_id', 'o.id')
+                                     ->where('osh2.status_code', 'delivered')
+                                     ->whereDate('osh2.changed_at', $today);
+                             });
+                      });
+                });
+            }
+            
+            $orders = $ordersQuery
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.order_status as status',
+                    'o.total_price',
+                    'o.payment_method',
+                    // Customer info
+                    'c.id as customer_id',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.address1 as address',
+                    'c.city',
+                    // Verified location (customer - manually set, high accuracy)
+                    'c.latitude as verified_lat',
+                    'c.longitude as verified_lng',
+                    'c.verified_location_url',
+                    // Geocoded location (customer - auto from address, approximate)
+                    'c.geocoded_latitude as geocoded_lat',
+                    'c.geocoded_longitude as geocoded_lng',
+                    // Delivery location (from status history - actual GPS when marked delivered)
+                    'osh.delivery_latitude as delivery_lat',
+                    'osh.delivery_longitude as delivery_lng',
+                    'osh.changed_at as delivered_at',
+                ])
+                ->orderBy('o.id', 'desc')
+                ->get();
+
+            // Format orders with location info
+            // Location priority:
+            // 1. Delivery GPS (actual location when marked delivered)
+            // 2. Customer verified location (manually set by rider)
+            // 3. Customer geocoded location (auto from address)
+            $formattedOrders = $orders->map(function($order) {
+                $isDelivered = in_array($order->status, ['delivered', 'completed']);
+                
+                // Determine location source and coordinates with priority
+                $location = null;
+                $locationSource = null;
+                
+                // Priority 1: Actual delivery GPS (only for delivered orders)
+                if ($isDelivered && $order->delivery_lat && $order->delivery_lng) {
+                    $location = [
+                        'latitude' => (float)$order->delivery_lat,
+                        'longitude' => (float)$order->delivery_lng,
+                    ];
+                    $locationSource = 'delivery_gps';
+                }
+                // Priority 2: Customer's verified location (manually confirmed)
+                elseif ($order->verified_lat && $order->verified_lng) {
+                    $location = [
+                        'latitude' => (float)$order->verified_lat,
+                        'longitude' => (float)$order->verified_lng,
+                    ];
+                    $locationSource = 'verified_location';
+                }
+                // Priority 3: Customer's geocoded location (auto from address)
+                elseif ($order->geocoded_lat && $order->geocoded_lng) {
+                    $location = [
+                        'latitude' => (float)$order->geocoded_lat,
+                        'longitude' => (float)$order->geocoded_lng,
+                    ];
+                    $locationSource = 'geocoded_address';
+                }
+
+                // Determine payment type from payment_method
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_id' => $order->customer_id,
+                    'status' => $order->status,
+                    'status_display' => ucfirst(str_replace('_', ' ', $order->status)),
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'address' => $order->address . ($order->city ? ', ' . $order->city : ''),
+                    'total' => 'PKR ' . number_format($order->total_price, 0),
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'location' => $location,
+                    'location_source' => $locationSource,
+                    'delivered_at' => $order->delivered_at,
+                    'google_maps_url' => $order->verified_location_url,
+                ];
+            });
+
+            // Separate delivered and pending orders for counts
+            $deliveredOrders = $formattedOrders->filter(fn($o) => in_array($o['status'], ['delivered', 'completed']))->values();
+            $pendingOrders = $formattedOrders->filter(fn($o) => !in_array($o['status'], ['delivered', 'completed', 'cancelled', 'refunded']))->values();
+
+            return response()->json([
+                'success' => true,
+                'rider' => [
+                    'id' => $rider->id,
+                    'name' => $rider->name,
+                    'status' => $attendance ? 
+                        ($attendance->logout_time ? 'checked_out' : ($attendance->login_time ? 'on_duty' : 'not_checked_in')) 
+                        : 'not_checked_in',
+                    'checked_in_at' => $attendance->login_time ?? null,
+                    'checked_out_at' => $attendance->logout_time ?? null,
+                    // Include location data inside rider object as frontend expects
+                    'current_location' => $currentLocation,
+                    'location_trail' => $locationTrail->slice(0, 5)->values(), // Last 5 for trail
+                ],
+                // Summary for the header
+                'summary' => [
+                    'total_orders' => $formattedOrders->count(),
+                    'delivered' => $deliveredOrders->count(),
+                    'pending' => $pendingOrders->count(),
+                ],
+                // Flat array of all orders (frontend iterates over this)
+                'orders' => $formattedOrders->values(),
+                'timestamp' => now()->toIso8601String()
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get rider map data', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load rider data'
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Get rider's location history (last 2 hours)
+     * Groups nearby locations and shows duration at each location
+     * 
+     * @param riderId - Rider user ID
+     * @param hours - Hours to look back (default 2)
+     */
+    public function getRiderLocationHistory(Request $request, $riderId)
+    {
+        try {
+            $hours = $request->get('hours', 2);
+            $date = $request->get('date'); // Optional specific date
+            
+            $query = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId);
+            
+            if ($date) {
+                $query->whereDate('captured_at', $date);
+            } else {
+                // Last N hours for live view
+                $query->where('captured_at', '>=', now()->subHours($hours));
+            }
+            
+            $locations = $query
+                ->orderBy('captured_at', 'asc') // Oldest first for grouping
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
+                ->get();
+            
+            if ($locations->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'locations' => [],
+                    'total_points' => 0,
+                    'grouped_points' => 0,
+                ]);
+            }
+            
+            // Group nearby locations and calculate duration at each spot
+            // ~50m threshold (roughly 0.0005 degrees)
+            $threshold = 0.0005;
+            $groupedLocations = [];
+            $currentGroup = null;
+            
+            foreach ($locations as $loc) {
+                $lat = (float)$loc->latitude;
+                $lng = (float)$loc->longitude;
+                $capturedAt = \Carbon\Carbon::parse($loc->captured_at);
+                
+                if ($currentGroup === null) {
+                    // Start first group
+                    $currentGroup = [
+                        'latitude' => $lat,
+                        'longitude' => $lng,
+                        'accuracy' => $loc->accuracy,
+                        'first_seen' => $capturedAt,
+                        'last_seen' => $capturedAt,
+                        'point_count' => 1,
+                        'sources' => [$loc->source],
+                    ];
+                } else {
+                    // Check if this point is near the current group
+                    $latDiff = abs($lat - $currentGroup['latitude']);
+                    $lngDiff = abs($lng - $currentGroup['longitude']);
+                    
+                    if ($latDiff < $threshold && $lngDiff < $threshold) {
+                        // Same location - extend the group
+                        $currentGroup['last_seen'] = $capturedAt;
+                        $currentGroup['point_count']++;
+                        if (!in_array($loc->source, $currentGroup['sources'])) {
+                            $currentGroup['sources'][] = $loc->source;
+                        }
+                        // Update to use best accuracy
+                        if ($loc->accuracy && (!$currentGroup['accuracy'] || $loc->accuracy < $currentGroup['accuracy'])) {
+                            $currentGroup['accuracy'] = $loc->accuracy;
+                        }
+                    } else {
+                        // New location - save current group and start new one
+                        $groupedLocations[] = $this->formatLocationGroup($currentGroup);
+                        $currentGroup = [
+                            'latitude' => $lat,
+                            'longitude' => $lng,
+                            'accuracy' => $loc->accuracy,
+                            'first_seen' => $capturedAt,
+                            'last_seen' => $capturedAt,
+                            'point_count' => 1,
+                            'sources' => [$loc->source],
+                        ];
+                    }
+                }
+            }
+            
+            // Don't forget the last group
+            if ($currentGroup !== null) {
+                $groupedLocations[] = $this->formatLocationGroup($currentGroup);
+            }
+            
+            // Reverse so newest is first
+            $groupedLocations = array_reverse($groupedLocations);
+            
+            return response()->json([
+                'success' => true,
+                'locations' => $groupedLocations,
+                'total_points' => $locations->count(),
+                'grouped_points' => count($groupedLocations),
+                'hours' => $hours,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get rider location history', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load location history'
+            ], 500);
+        }
+    }
+    
+    /**
+     * Helper: Format a location group with duration
+     */
+    private function formatLocationGroup($group)
+    {
+        $firstSeen = $group['first_seen'];
+        $lastSeen = $group['last_seen'];
+        $durationMinutes = $firstSeen->diffInMinutes($lastSeen);
+        
+        // Format duration
+        $duration = null;
+        if ($durationMinutes > 0) {
+            if ($durationMinutes >= 60) {
+                $hours = floor($durationMinutes / 60);
+                $mins = $durationMinutes % 60;
+                $duration = $hours . 'h ' . ($mins > 0 ? $mins . 'm' : '');
+            } else {
+                $duration = $durationMinutes . ' min';
+            }
+        }
+        
+        return [
+            'latitude' => $group['latitude'],
+            'longitude' => $group['longitude'],
+            'accuracy' => $group['accuracy'],
+            'captured_at' => $lastSeen->toIso8601String(),
+            'first_seen' => $firstSeen->toIso8601String(),
+            'last_seen' => $lastSeen->toIso8601String(),
+            'time' => $lastSeen->format('h:i A'),
+            'arrival_time' => $firstSeen->format('h:i A'),
+            'age' => $lastSeen->diffForHumans(),
+            'duration' => $duration,
+            'duration_minutes' => $durationMinutes,
+            'point_count' => $group['point_count'],
+            'sources' => implode(', ', $group['sources']),
+        ];
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Get all open orders for map view
+     * Supports filtering by status and rider
+     * 
+     * @param status - Filter by order status (comma-separated, e.g., "processing,out_for_delivery")
+     * @param rider_id - Filter by specific rider (or "all" for all riders)
+     */
+    public function getAllOpenOrdersForMap(Request $request)
+    {
+        try {
+            $statusFilter = $request->get('status'); // comma-separated
+            $riderFilter = $request->get('rider_id'); // specific rider ID or null for all
+            
+            // Build query for open orders
+            $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
+            
+            $ordersQuery = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->whereNotIn('o.order_status', $excludedStatuses);
+            
+            // Apply status filter if provided
+            if ($statusFilter && $statusFilter !== 'all') {
+                $statuses = array_map('trim', explode(',', $statusFilter));
+                $ordersQuery->whereIn('o.order_status', $statuses);
+            }
+            
+            // Apply rider filter if provided
+            if ($riderFilter && $riderFilter !== 'all') {
+                if ($riderFilter === 'unassigned') {
+                    $ordersQuery->whereNull('o.assigned_rider_user_id');
+                } else {
+                    $ordersQuery->where('o.assigned_rider_user_id', $riderFilter);
+                }
+            }
+            
+            $orders = $ordersQuery
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.order_status as status',
+                    'o.total_price',
+                    'o.payment_method',
+                    'o.assigned_rider_user_id as rider_id',
+                    'u.fullname as rider_name',
+                    // Customer info
+                    'c.id as customer_id',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.address1 as address',
+                    'c.city',
+                    // Location sources
+                    'c.latitude as verified_lat',
+                    'c.longitude as verified_lng',
+                    'c.geocoded_latitude as geocoded_lat',
+                    'c.geocoded_longitude as geocoded_lng',
+                ])
+                ->orderBy('o.id', 'desc')
+                ->get();
+            
+            // Format orders with location info
+            $formattedOrders = $orders->map(function($order) {
+                // Determine location with priority
+                $location = null;
+                $locationSource = null;
+                
+                if ($order->verified_lat && $order->verified_lng) {
+                    $location = [
+                        'latitude' => (float)$order->verified_lat,
+                        'longitude' => (float)$order->verified_lng,
+                    ];
+                    $locationSource = 'verified_location';
+                } elseif ($order->geocoded_lat && $order->geocoded_lng) {
+                    $location = [
+                        'latitude' => (float)$order->geocoded_lat,
+                        'longitude' => (float)$order->geocoded_lng,
+                    ];
+                    $locationSource = 'geocoded_address';
+                }
+                
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'status' => $order->status,
+                    'status_display' => ucfirst(str_replace('_', ' ', $order->status)),
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'address' => $order->address . ($order->city ? ', ' . $order->city : ''),
+                    'total' => 'PKR ' . number_format($order->total_price, 0),
+                    'rider_id' => $order->rider_id,
+                    'rider_name' => $order->rider_name ?: 'Unassigned',
+                    'location' => $location,
+                    'location_source' => $locationSource,
+                ];
+            });
+            
+            // Get unique statuses for filter
+            $uniqueStatuses = $orders->pluck('status')->unique()->values();
+            
+            // Get riders with open orders for filter
+            $ridersWithOrders = $orders
+                ->filter(fn($o) => $o->rider_id)
+                ->unique('rider_id')
+                ->map(fn($o) => [
+                    'id' => $o->rider_id,
+                    'name' => $o->rider_name,
+                ])
+                ->values();
+            
+            // Count by status
+            $statusCounts = $orders->groupBy('status')->map->count();
+            
+            // Count by rider (including unassigned)
+            $riderCounts = $orders->groupBy('rider_id')->map->count();
+            
+            // Count unassigned orders
+            $unassignedCount = $orders->filter(fn($o) => !$o->rider_id)->count();
+            
+            return response()->json([
+                'success' => true,
+                'orders' => $formattedOrders->values(),
+                'summary' => [
+                    'total' => $formattedOrders->count(),
+                    'with_location' => $formattedOrders->filter(fn($o) => $o['location'])->count(),
+                    'without_location' => $formattedOrders->filter(fn($o) => !$o['location'])->count(),
+                ],
+                'filters' => [
+                    'statuses' => $uniqueStatuses,
+                    'status_counts' => $statusCounts,
+                    'riders' => $ridersWithOrders,
+                    'rider_counts' => $riderCounts,
+                    'unassigned_count' => $unassignedCount,
+                ],
+                'timestamp' => now()->toIso8601String()
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get all open orders for map', [
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load orders'
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ LOCATION TRACKING: Get delivery history for a specific date
+     * Returns delivered orders grouped by rider with cash/online split
+     * 
+     * @param date - Date to get history for (YYYY-MM-DD)
+     */
+    public function getDeliveryHistory(Request $request)
+    {
+        try {
+            $date = $request->get('date', now()->format('Y-m-d'));
+            
+            // Get all delivered orders for this date
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh', function($join) use ($date) {
+                    $join->on('o.id', '=', 'osh.order_id')
+                         ->where('osh.status_code', '=', 'delivered')
+                         ->whereDate('osh.changed_at', $date);
+                })
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.total_price',
+                    'o.payment_method',
+                    'o.assigned_rider_user_id as rider_id',
+                    'u.fullname as rider_name',
+                    'osh.changed_at as delivered_at',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                ])
+                ->orderBy('osh.changed_at', 'desc')
+                ->get();
+            
+            // Get attendance for riders on this date
+            $attendances = \DB::table('t_ops_attendance')
+                ->whereDate('attendance_date', $date)
+                ->whereNotNull('login_time')
+                ->get()
+                ->keyBy('user_id');
+            
+            // Group by rider
+            $riderGroups = [];
+            foreach ($orders as $order) {
+                $riderId = $order->rider_id ?: 0;
+                $riderName = $order->rider_name ?: 'Unassigned';
+                
+                if (!isset($riderGroups[$riderId])) {
+                    $attendance = $attendances->get($riderId);
+                    $riderGroups[$riderId] = [
+                        'id' => $riderId,
+                        'name' => $riderName,
+                        'check_in_time' => $attendance ? \Carbon\Carbon::parse($attendance->login_time)->format('h:i A') : null,
+                        'check_out_time' => $attendance && $attendance->logout_time ? \Carbon\Carbon::parse($attendance->logout_time)->format('h:i A') : null,
+                        'cash_count' => 0,
+                        'cash_total' => 0,
+                        'online_count' => 0,
+                        'online_total' => 0,
+                        'delivered_count' => 0,
+                        'orders' => [],
+                    ];
+                }
+                
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                $amount = (float)$order->total_price;
+                
+                if ($isCash) {
+                    $riderGroups[$riderId]['cash_count']++;
+                    $riderGroups[$riderId]['cash_total'] += $amount;
+                } else {
+                    $riderGroups[$riderId]['online_count']++;
+                    $riderGroups[$riderId]['online_total'] += $amount;
+                }
+                
+                $riderGroups[$riderId]['delivered_count']++;
+                $riderGroups[$riderId]['orders'][] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'amount' => $amount,
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'delivered_at' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                ];
+            }
+            
+            // Sort riders by delivered count (highest first)
+            $riders = collect($riderGroups)->sortByDesc('delivered_count')->values();
+            
+            // Calculate totals
+            $totalDelivered = $orders->count();
+            $cashTotal = $riders->sum('cash_total');
+            $onlineTotal = $riders->sum('online_total');
+            $cashCount = $riders->sum('cash_count');
+            $onlineCount = $riders->sum('online_count');
+            
+            return response()->json([
+                'success' => true,
+                'date' => $date,
+                'riders' => $riders,
+                'summary' => [
+                    'total_delivered' => $totalDelivered,
+                    'cash_total' => $cashTotal,
+                    'cash_count' => $cashCount,
+                    'online_total' => $onlineTotal,
+                    'online_count' => $onlineCount,
+                    'grand_total' => $cashTotal + $onlineTotal,
+                ],
+                'timestamp' => now()->toIso8601String()
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get delivery history', [
+                'date' => $request->get('date'),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load history'
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ HISTORY: Get list of riders (users with rider role) for history view
+     */
+    public function getRidersForHistory(Request $request)
+    {
+        try {
+            // Get users with rider role (role_id that has delivery permissions)
+            // For now, get all active users who have delivered orders in the last 3 months
+            $threeMonthsAgo = now()->subMonths(3)->format('Y-m-d');
+            
+            $riders = \DB::table('t_sys_user as u')
+                ->join(\DB::raw("(
+                    SELECT DISTINCT o.assigned_rider_user_id as user_id,
+                           COUNT(*) as total_delivered,
+                           SUM(CASE WHEN LOWER(COALESCE(o.payment_method, 'cash')) IN ('cash', 'cash_on_delivery', 'cod') THEN o.total_price ELSE 0 END) as total_cash,
+                           SUM(CASE WHEN LOWER(COALESCE(o.payment_method, 'cash')) NOT IN ('cash', 'cash_on_delivery', 'cod') THEN o.total_price ELSE 0 END) as total_online
+                    FROM t_crm_prod_order o
+                    INNER JOIN t_crm_order_status_history osh ON o.id = osh.order_id AND osh.status_code = 'delivered'
+                    WHERE osh.changed_at >= '{$threeMonthsAgo}'
+                    AND o.assigned_rider_user_id IS NOT NULL
+                    GROUP BY o.assigned_rider_user_id
+                ) as stats"), 'u.id', '=', 'stats.user_id')
+                ->where('u.is_active', 1)
+                ->select([
+                    'u.id',
+                    'u.fullname as name',
+                    'stats.total_delivered',
+                    'stats.total_cash',
+                    'stats.total_online',
+                ])
+                ->orderBy('stats.total_delivered', 'desc')
+                ->get();
+            
+            return response()->json([
+                'success' => true,
+                'riders' => $riders,
+                'period' => [
+                    'start' => $threeMonthsAgo,
+                    'end' => now()->format('Y-m-d'),
+                    'label' => 'Last 3 months',
+                ],
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get riders for history', ['error' => $e->getMessage()]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load riders'
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ HISTORY: Get a specific rider's delivery history grouped by date (last 3 months)
+     * Similar to rider mode's delivered orders view
+     */
+    public function getRiderDeliveryHistory(Request $request, $riderId)
+    {
+        try {
+            $threeMonthsAgo = now()->subMonths(3)->format('Y-m-d');
+            
+            // Get rider info
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->select('id', 'fullname as name')
+                ->first();
+            
+            if (!$rider) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rider not found'
+                ], 404);
+            }
+            
+            // Get all delivered orders for this rider in the last 3 months
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh', function($join) {
+                    $join->on('o.id', '=', 'osh.order_id')
+                         ->where('osh.status_code', '=', 'delivered');
+                })
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $riderId)
+                ->where('osh.changed_at', '>=', $threeMonthsAgo)
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.customer_id',
+                    'o.total_price',
+                    'o.payment_method',
+                    'osh.changed_at as delivered_at',
+                    \DB::raw('DATE(osh.changed_at) as delivery_date'),
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.address1 as address',
+                    'c.city',
+                    'c.latitude as verified_lat',
+                    'c.longitude as verified_lng',
+                    'c.geocoded_latitude as geocoded_lat',
+                    'c.geocoded_longitude as geocoded_lng',
+                    'osh.delivery_latitude',
+                    'osh.delivery_longitude',
+                ])
+                ->orderBy('osh.changed_at', 'desc')
+                ->get();
+            
+            // Group by date
+            $dateGroups = [];
+            foreach ($orders as $order) {
+                $dateKey = $order->delivery_date;
+                
+                if (!isset($dateGroups[$dateKey])) {
+                    $dateGroups[$dateKey] = [
+                        'date' => $dateKey,
+                        'date_display' => \Carbon\Carbon::parse($dateKey)->format('D, M j, Y'),
+                        'cash_count' => 0,
+                        'cash_total' => 0,
+                        'online_count' => 0,
+                        'online_total' => 0,
+                        'total_delivered' => 0,
+                        'orders' => [],
+                    ];
+                }
+                
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                $amount = (float)$order->total_price;
+                
+                if ($isCash) {
+                    $dateGroups[$dateKey]['cash_count']++;
+                    $dateGroups[$dateKey]['cash_total'] += $amount;
+                } else {
+                    $dateGroups[$dateKey]['online_count']++;
+                    $dateGroups[$dateKey]['online_total'] += $amount;
+                }
+                
+                $dateGroups[$dateKey]['total_delivered']++;
+                
+                // Determine location for map
+                $location = null;
+                if ($order->delivery_latitude && $order->delivery_longitude) {
+                    $location = [
+                        'latitude' => (float)$order->delivery_latitude,
+                        'longitude' => (float)$order->delivery_longitude,
+                        'source' => 'delivery_gps',
+                    ];
+                } elseif ($order->verified_lat && $order->verified_lng) {
+                    $location = [
+                        'latitude' => (float)$order->verified_lat,
+                        'longitude' => (float)$order->verified_lng,
+                        'source' => 'verified',
+                    ];
+                } elseif ($order->geocoded_lat && $order->geocoded_lng) {
+                    $location = [
+                        'latitude' => (float)$order->geocoded_lat,
+                        'longitude' => (float)$order->geocoded_lng,
+                        'source' => 'geocoded',
+                    ];
+                }
+                
+                $dateGroups[$dateKey]['orders'][] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_id' => $order->customer_id,
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'address' => trim($order->address . ($order->city ? ', ' . $order->city : '')),
+                    'amount' => $amount,
+                    'amount_formatted' => 'Rs. ' . number_format($amount, 0),
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'delivered_at' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                    'location' => $location,
+                ];
+            }
+            
+            // Sort by date (newest first) and convert to array
+            $dates = collect($dateGroups)->sortByDesc('date')->values();
+            
+            // Calculate totals
+            $totalDelivered = $orders->count();
+            $cashTotal = $dates->sum('cash_total');
+            $onlineTotal = $dates->sum('online_total');
+            $cashCount = $dates->sum('cash_count');
+            $onlineCount = $dates->sum('online_count');
+            
+            return response()->json([
+                'success' => true,
+                'rider' => $rider,
+                'dates' => $dates,
+                'summary' => [
+                    'total_delivered' => $totalDelivered,
+                    'cash_total' => $cashTotal,
+                    'cash_count' => $cashCount,
+                    'online_total' => $onlineTotal,
+                    'online_count' => $onlineCount,
+                    'grand_total' => $cashTotal + $onlineTotal,
+                    'days_active' => $dates->count(),
+                ],
+                'period' => [
+                    'start' => $threeMonthsAgo,
+                    'end' => now()->format('Y-m-d'),
+                ],
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get rider delivery history', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load history'
+            ], 500);
+        }
     }
 
     /**
@@ -4278,16 +5572,27 @@ class RiderController extends Controller
                 ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
             
             // Get pending approvals (real-time, not filtered by month)
+            // Include approvals relationship to check L1/L2 status
             $pendingApprovals = \App\Models\Request\RequestModel::whereHas('category', function($q) {
                     $q->whereIn('category_code', ['expense', 'salary_advance']);
                 })
                 ->where('status', \App\Models\Request\RequestModel::STATUS_PENDING)
-                ->with(['requester', 'paymentSourceAccount', 'category'])
+                ->with(['requester', 'paymentSourceAccount', 'category', 'approvals.approver'])
                 ->orderBy('created_at', 'asc')
                 ->get();
             
-            // Transform pending approvals
-            $pendingApprovalsForDisplay = $pendingApprovals->map(function($request) {
+            // Transform pending approvals with level information
+            $allPendingApprovals = $pendingApprovals->map(function($request) {
+                // ⭐ Check approvals relationship for L1 status
+                $l1Approval = $request->approvals->where('approval_level', 1)->where('status', 'approved')->first();
+                $l2Approval = $request->approvals->where('approval_level', 2)->where('status', 'approved')->first();
+                
+                // Determine which level is pending
+                $pendingLevel = 1; // Default to L1
+                if ($l1Approval) {
+                    $pendingLevel = 2; // L1 done, L2 pending
+                }
+                
                 return [
                     'id' => $request->id,
                     'request_number' => $request->request_number,
@@ -4296,9 +5601,19 @@ class RiderController extends Controller
                     'category' => $request->expense_category ?? ($request->category ? $request->category->category_name : 'Uncategorized'),
                     'amount' => $request->amount,
                     'payment_source' => $request->paymentSourceAccount ? $request->paymentSourceAccount->account_name : 'Unknown',
-                    'status' => $request->status
+                    'status' => $request->status,
+                    'pending_level' => $pendingLevel, // ⭐ Which level needs approval
+                    'l1_approved' => $l1Approval ? true : false,
+                    'l1_approved_by_name' => $l1Approval && $l1Approval->approver ? $l1Approval->approver->fullname : null,
                 ];
             });
+            
+            // ⭐ Separate L1 and L2 pending approvals
+            $pendingL1 = $allPendingApprovals->where('pending_level', 1)->values();
+            $pendingL2 = $allPendingApprovals->where('pending_level', 2)->values();
+            
+            // For backwards compatibility, keep the combined list
+            $pendingApprovalsForDisplay = $allPendingApprovals;
             
             // Calculate top 5 expense categories
             $expensesByCategory = [];
@@ -4342,11 +5657,18 @@ class RiderController extends Controller
                 ->sort()
                 ->values();
             
+            // ⭐ Check user's approval rights
+            $hasL1Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
+            $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+            
             return response()->json([
                 'success' => true,
                 'data' => [
                     'expenses' => $allExpensesForDisplay,
                     'pending_approvals' => $pendingApprovalsForDisplay,
+                    // ⭐ Separated L1/L2 pending approvals for tabbed view
+                    'pending_l1' => $pendingL1,
+                    'pending_l2' => $pendingL2,
                     'kpis' => [
                         'total_expenses' => $totalExpenses,
                         'needs_settlement' => $needsSettlement,
@@ -4354,7 +5676,17 @@ class RiderController extends Controller
                         'fund_balance' => $expenseFund ? $expenseFund->current_balance : 0,
                         'pending_approvals' => $pendingApprovals->sum('amount'),
                         'pending_approvals_count' => $pendingApprovals->count(),
+                        // ⭐ Separate L1/L2 counts and amounts
+                        'pending_l1_count' => $pendingL1->count(),
+                        'pending_l1_amount' => $pendingL1->sum('amount'),
+                        'pending_l2_count' => $pendingL2->count(),
+                        'pending_l2_amount' => $pendingL2->sum('amount'),
                         'top_categories' => $topCategories
+                    ],
+                    // ⭐ User's approval rights
+                    'user_approval_rights' => [
+                        'has_l1' => $hasL1Rights,
+                        'has_l2' => $hasL2Rights,
                     ],
                     'categories' => $categories,
                     'current_month' => $month ?: now()->format('Y-m')
@@ -4391,28 +5723,27 @@ class RiderController extends Controller
                 ], 403);
             }
             
-            $expenseRequest = \App\Models\Request\RequestModel::findOrFail($id);
+            $expenseRequest = \App\Models\Request\RequestModel::with('approvals')->findOrFail($id);
             
-            // Determine which level to approve at (same logic as web app)
-            // Check if user has Level 1 or Level 2 approval rights
-            $approvalLevel = null;
-            if (\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1)) {
-                $approvalLevel = 1;
-            } elseif (\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2)) {
-                $approvalLevel = 2;
+            // ⭐ Determine which level is NEEDED for this request by checking approvals
+            $l1Approval = $expenseRequest->approvals->where('approval_level', 1)->where('status', 'approved')->first();
+            $pendingLevel = 1;
+            if ($l1Approval) {
+                $pendingLevel = 2; // L1 done, needs L2
             }
             
-            if (!$approvalLevel) {
+            // Check if user has the required approval level
+            if (!\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, $pendingLevel)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'You do not have approval rights for this request'
+                    'message' => "This request requires Level {$pendingLevel} approval, which you don't have"
                 ], 403);
             }
             
             // Use the existing approval controller logic
             $approvalController = new \App\Http\Controllers\Request\RequestApprovalController();
             $approvalRequest = new Request([
-                'level' => $approvalLevel,
+                'level' => $pendingLevel, // ⭐ Use the level the request needs
                 'comments' => $request->input('notes', ''),
                 'payment_source_account_id' => $request->input('payment_source_account_id', null)
             ]);
@@ -4433,6 +5764,73 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to approve expense: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Reject a pending expense request
+     */
+    public function rejectExpense(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('approve_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to reject expenses'
+                ], 403);
+            }
+            
+            $expenseRequest = \App\Models\Request\RequestModel::with('approvals')->findOrFail($id);
+            
+            // Determine which level is pending by checking approvals
+            $l1Approval = $expenseRequest->approvals->where('approval_level', 1)->where('status', 'approved')->first();
+            $pendingLevel = 1;
+            if ($l1Approval) {
+                $pendingLevel = 2;
+            }
+            
+            // Check if user has the required approval level
+            if (!\App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, $pendingLevel)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "This request requires Level {$pendingLevel} rights to reject, which you don't have"
+                ], 403);
+            }
+            
+            $notes = $request->input('notes', '');
+            if (empty($notes)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please provide a reason for rejection'
+                ], 400);
+            }
+            
+            // Use the existing approval controller logic
+            $approvalController = new \App\Http\Controllers\Request\RequestApprovalController();
+            $rejectRequest = new Request([
+                'level' => $pendingLevel,
+                'comments' => $notes,
+            ]);
+            
+            $response = $approvalController->reject($rejectRequest, $id);
+            $responseData = $response->getData(true);
+            
+            return response()->json($responseData, $response->status());
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to reject expense', [
+                'expense_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to reject expense: ' . $e->getMessage()
             ], 500);
         }
     }

@@ -73,11 +73,26 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/logs/test', [LogController::class, 'testLogging']);
     // Operations dashboard page (imports, bulk delivery status)
     Route::get('/admin/operations', function () { return view('admin.operations'); })->name('admin.operations');
-    Route::get('/orders', [OrderController::class, 'index']);
+    Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
     Route::get('/orders/filter', [OrderController::class, 'filter'])->name('orders.filter');
     Route::get('/orders/sync-status', [OrderController::class, 'syncStatus'])->name('orders.sync-status'); // ⭐ SMART SYNC (must be before {id})
+    Route::get('/orders/geocode-pending', [OrderController::class, 'geocodePendingCustomers'])->name('orders.geocode-pending'); // ⭐ Background geocoding
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
+    
+    // ⭐ RIDERS MAP: Redirect to orders page with modal auto-open
+    Route::get('/riders-map', function () {
+        return redirect()->route('orders.index', ['view' => 'riders_map']);
+    })->name('riders-map');
+    
+    // ⭐ RIDERS MAP: Location tracking API routes (web app)
+    Route::get('/orders/riders-map/active', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap'])->name('orders.riders-map.active');
+    Route::get('/orders/riders-map/all-open-orders', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap'])->name('orders.riders-map.all-open');
+    Route::get('/orders/riders-map/delivery-history', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryHistory'])->name('orders.riders-map.history');
+    Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
+    Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
+    Route::get('/orders/riders-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory'])->name('orders.riders-map.rider-history');
+    Route::get('/orders/riders-map/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderMapData'])->name('orders.riders-map.rider');
     Route::get('/orders/open-quantities', [OrderController::class, 'openQuantities'])->name('orders.open-quantities');
     Route::get('/orders/open-quantities/data', [OrderController::class, 'openQuantitiesData'])->name('orders.open-quantities.data');
     Route::get('/orders/open-quantities/settings', [OrderController::class, 'getOpenQuantitiesSettings'])->name('orders.open-quantities.settings.get');
@@ -192,11 +207,16 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index'])->name('customers.index');
         Route::get('/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search'])->name('customers.search.alt');
         Route::get('/filter', [\App\Http\Controllers\CRM\CustomerController::class, 'filter'])->name('customers.filter');
+        // Geocoding routes (must be before {id} to avoid conflict)
+        Route::get('/geocode-stats', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeStats'])->name('customers.geocode-stats');
+        Route::post('/batch-geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'batchGeocode'])->name('customers.batch-geocode');
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
         Route::get('/{id}/orders', [\App\Http\Controllers\CRM\CustomerController::class, 'orders'])->name('customers.orders');
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
         Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote'])->name('customers.addNote');
         Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation'])->name('customers.setVerifiedLocation');
+        Route::post('/{id}/geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'geocode'])->name('customers.geocode');
+        Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle'])->name('customers.geocode-single');
         Route::delete('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'destroy'])->name('customers.destroy');
     });
     

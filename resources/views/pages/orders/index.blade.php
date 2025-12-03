@@ -881,6 +881,14 @@ input:focus, select:focus, button:focus {
                             </svg>
                             Bulk Assign Rider
                         </button>
+                        <!-- ⭐ All Riders Map Button -->
+                        <button onclick="openAllRidersMapModal()" class="action-btn" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #f59e0b; color: #92400e;">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            📍 Riders Map
+                        </button>
                         @endif
                     </div>
                 </div>
@@ -1930,9 +1938,9 @@ function viewOrderDetails(orderId) {
                     }
                     
                     html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
-                            '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
-                            '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
-                        '</tr>';
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
+                    '</tr>';
                 }
                 html += '</tbody>';
                 html += '<tfoot>';
@@ -3951,7 +3959,7 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                                 }, 
                                 body: JSON.stringify(payload) 
                             });
-                            const aJson = await aRes.json();
+                        const aJson = await aRes.json();
                             
                             // Check if confirmation is required (ledger will be updated)
                             if (!aJson.success && aJson.requires_confirmation && aJson.confirmation_data) {
@@ -3996,16 +4004,16 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                             showToast(successMsg, 'success');
                             
                             // Close modal
-                            document.getElementById('quickRiderModal').remove();
+                        document.getElementById('quickRiderModal').remove();
                             
                             // Refresh card counts
                             if (window.refreshRiderCards) refreshRiderCards();
                             
-                        } catch(e) {
+                    } catch(e) {
                             alert('Assign rider failed: ' + (e.message || 'Unknown error'));
                             saveBtn.textContent = 'Assign Rider'; 
                             saveBtn.disabled = false;
-                        }
+                    }
                     };
                     
                     // Start the assignment process
@@ -4489,8 +4497,8 @@ function openQuickStatusChange(orderId, currentStatus) {
             // Helper function to actually change the status
             const changeStatus = async function(confirmed = false) {
                 try {
-                    const status_code = document.getElementById('quickStatusSelect').value;
-                    const notes = document.getElementById('quickStatusNotes').value;
+                const status_code = document.getElementById('quickStatusSelect').value;
+                const notes = document.getElementById('quickStatusNotes').value;
                     
                     const payload = { 
                         order_id: orderId, 
@@ -4506,18 +4514,18 @@ function openQuickStatusChange(orderId, currentStatus) {
                     btn.textContent = 'Saving...';
                     btn.disabled = true;
                     
-                    const res = await fetch('/order-status/api/change-status', {
-                        method:'POST',
+                const res = await fetch('/order-status/api/change-status', {
+                    method:'POST',
                         headers:{ 
                             'Accept':'application/json',
                             'Content-Type':'application/json',
                             'X-Requested-With':'XMLHttpRequest',
                             'X-CSRF-TOKEN':document.querySelector('meta[name=\'csrf-token\']').getAttribute('content') 
                         },
-                        credentials:'same-origin',
+                    credentials:'same-origin',
                         body: JSON.stringify(payload)
-                    });
-                    const j = await res.json();
+                });
+                const j = await res.json();
                     
                     // Check if confirmation is required (ledger will be reversed)
                     if (!j.success && j.requires_confirmation && j.confirmation_data) {
@@ -4544,11 +4552,11 @@ function openQuickStatusChange(orderId, currentStatus) {
                     }
                     
                     // Check for other errors
-                    if (j && j.success) {
-                        document.getElementById('quickStatusModal').remove();
-                        location.reload();
-                    } else {
-                        alert(j.message || 'Failed to change status');
+                if (j && j.success) {
+                    document.getElementById('quickStatusModal').remove();
+                    location.reload();
+                } else {
+                    alert(j.message || 'Failed to change status');
                         btn.textContent = 'Save';
                         btn.disabled = false;
                     }
@@ -4626,8 +4634,8 @@ function saveOrderChanges(orderId) {
     }
     
     if (submitBtn) {
-        submitBtn.textContent = 'Saving...';
-        submitBtn.disabled = true;
+    submitBtn.textContent = 'Saving...';
+    submitBtn.disabled = true;
     }
     
     // Collect line items
@@ -10251,5 +10259,1837 @@ function saveVerifiedLocation() {
         </div>
     </div>
 </div>
+
+<!-- ⭐ ALL RIDERS MAP MODAL -->
+<div id="allRidersMapModal" style="display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+    <div id="allRidersMapModalContent" style="background-color: #fefefe; margin: 2% auto; padding: 0; border-radius: 12px; width: 95%; max-width: 1200px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); height: auto; max-height: 95vh; display: flex; flex-direction: column; transition: all 0.3s ease;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 16px 20px; border-radius: 12px 12px 0 0; flex-shrink: 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="allRidersMapTitle" style="margin: 0; font-size: 18px; font-weight: 600;">
+                    📍 All Riders - Live Map
+                </h3>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <!-- View Toggle: Rider Map / Open Orders / History -->
+                    <div style="display: flex; background: rgba(255,255,255,0.2); border-radius: 6px; overflow: hidden;">
+                        <button id="viewRidersBtn" onclick="switchRidersMapView('riders')" 
+                                style="background: rgba(255,255,255,0.3); border: none; color: white; padding: 4px 12px; cursor: pointer; font-size: 12px; font-weight: 500;">
+                            📍 Rider Map
+                        </button>
+                        <button id="viewAllOrdersBtn" onclick="switchRidersMapView('orders')" 
+                                style="background: transparent; border: none; color: white; padding: 4px 12px; cursor: pointer; font-size: 12px; font-weight: 500;">
+                            📦 Open Orders
+                        </button>
+                        <button id="viewHistoryBtn" onclick="switchRidersMapView('history')" 
+                                style="background: transparent; border: none; color: white; padding: 4px 12px; cursor: pointer; font-size: 12px; font-weight: 500;">
+                            📅 History
+                        </button>
+                    </div>
+                    <!-- Date Picker for History (only for riders view) -->
+                    <div id="ridersDatePicker" style="display: flex; align-items: center; gap: 8px;">
+                        <label style="font-size: 13px; font-weight: 500;">Date:</label>
+                        <input type="date" id="ridersMapDate" 
+                               style="padding: 4px 8px; border-radius: 6px; border: none; font-size: 13px; background: rgba(255,255,255,0.9); color: #374151;"
+                               onchange="onRidersMapDateChange(this.value)">
+                        <button onclick="setRidersMapToday()" 
+                                style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500;">
+                            Today
+                        </button>
+                    </div>
+                    <!-- ⭐ Expand/Collapse Button -->
+                    <button id="allRidersMapExpandBtn" onclick="toggleAllRidersMapExpand()" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;" title="Expand/Collapse">
+                        ⛶
+                    </button>
+                    <button onclick="closeAllRidersMapModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Info Banner (shows when viewing history) -->
+        <div id="ridersMapHistoryBanner" style="display: none; padding: 10px 20px; background: #fef3c7; border-bottom: 1px solid #fcd34d; color: #92400e; font-size: 13px;">
+            📅 Viewing history - Shows deliveries for the selected date (no live location)
+        </div>
+        
+        <!-- ⭐ All Open Orders Filters (hidden by default) -->
+        <div id="allOrdersFilters" style="display: none; padding: 12px 20px; background: #f8fafc; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center;">
+                <!-- Status Filter -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="font-size: 13px; font-weight: 500; color: #374151;">Status:</label>
+                    <select id="allOrdersStatusFilter" onchange="applyAllOrdersFilters()" 
+                            style="padding: 6px 10px; border-radius: 6px; border: 1px solid #d1d5db; font-size: 13px; min-width: 150px;">
+                        <option value="all">All Statuses</option>
+                    </select>
+                </div>
+                <!-- Rider Filter -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <label style="font-size: 13px; font-weight: 500; color: #374151;">Rider:</label>
+                    <select id="allOrdersRiderFilter" onchange="applyAllOrdersFilters()" 
+                            style="padding: 6px 10px; border-radius: 6px; border: 1px solid #d1d5db; font-size: 13px; min-width: 150px;">
+                        <option value="all">All Riders</option>
+                    </select>
+                </div>
+                <!-- Summary -->
+                <div id="allOrdersSummary" style="margin-left: auto; font-size: 13px; color: #6b7280;">
+                    Loading...
+                </div>
+            </div>
+        </div>
+        
+        <!-- Content - Rider List -->
+        <div id="ridersMapContentArea" style="padding: 16px; flex: 1; overflow-y: auto;">
+            <div id="allRidersListContainer" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+                <div style="text-align: center; padding: 40px; color: #6b7280;">
+                    <svg class="animate-spin" style="width: 32px; height: 32px; margin: 0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Loading riders...
+                </div>
+            </div>
+            <!-- ⭐ All Orders Map Container (hidden by default) -->
+            <div id="allOrdersMapWrapper" style="display: none;">
+                <div id="allOrdersMapContainer" style="height: 400px; border-radius: 8px; overflow: hidden; margin-bottom: 12px;"></div>
+                <div id="allOrdersListContainer" style="max-height: 250px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: white;"></div>
+            </div>
+            
+            <!-- ⭐ History View Container (hidden by default) -->
+            <div id="historyViewWrapper" style="display: none;">
+                <!-- Level 1: Rider List -->
+                <div id="historyRiderList">
+                    <div style="padding: 12px; background: #f8fafc; border-radius: 8px; margin-bottom: 16px;">
+                        <div style="font-size: 14px; color: #374151; font-weight: 500;">
+                            📊 Select a rider to view their delivery history (Last 3 months)
+                        </div>
+                    </div>
+                    <div id="historyRiderListContainer" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;">
+                        <div style="text-align: center; padding: 40px; color: #6b7280; grid-column: 1 / -1;">
+                            Loading riders...
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Level 2: Rider's Date Groups (hidden by default) -->
+                <div id="historyDateGroups" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px; background: #f8fafc; border-radius: 8px;">
+                        <button onclick="backToHistoryRiderList()" style="background: #6b7280; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                            ← Back
+                        </button>
+                        <div id="historyRiderName" style="font-size: 16px; font-weight: 600; color: #1f2937;"></div>
+                        <div id="historyRiderSummary" style="margin-left: auto; font-size: 13px; color: #6b7280;"></div>
+                    </div>
+                    <div id="historyDateGroupsContainer" style="max-height: 500px; overflow-y: auto;">
+                        <!-- Date groups will be rendered here -->
+                    </div>
+                </div>
+                
+                <!-- Level 3: Date Map View (hidden by default) -->
+                <div id="historyDateMap" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px; background: #f8fafc; border-radius: 8px; flex-wrap: wrap;">
+                        <button onclick="backToHistoryDateGroups()" style="background: #6b7280; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                            ← Back
+                        </button>
+                        <div id="historyMapTitle" style="font-size: 16px; font-weight: 600; color: #1f2937;"></div>
+                        <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+                            <div id="historyMapSummary" style="font-size: 13px; color: #6b7280;"></div>
+                            <button id="historyGeocodeMissingBtn" onclick="geocodeHistoryMissing()" 
+                                    style="background: #f59e0b; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; display: none;">
+                                📍 Geocode Missing
+                            </button>
+                            <button id="historyGeocodeAllBtn" onclick="geocodeHistoryAll()" 
+                                    style="background: #3b82f6; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">
+                                🔄 Refresh All
+                            </button>
+                        </div>
+                    </div>
+                    <div id="historyGeocodeProgress" style="display: none; padding: 8px 12px; background: #fef3c7; border-radius: 6px; margin-bottom: 12px; font-size: 13px;">
+                        <span id="historyGeocodeStatus">Geocoding...</span>
+                    </div>
+                    <div id="historyMapContainer" style="height: 350px; border-radius: 8px; overflow: hidden; margin-bottom: 12px;"></div>
+                    <div id="historyMapOrdersList" style="max-height: 250px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: white;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ⭐ SINGLE RIDER MAP MODAL (with Leaflet) - RESIZABLE -->
+<div id="riderMapModal" style="display: none; position: fixed; z-index: 10001; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+    <div id="riderMapModalContent" style="background-color: #fefefe; margin: 2% auto; padding: 0; border-radius: 12px; width: 95%; max-width: 1000px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); height: auto; max-height: 95vh; display: flex; flex-direction: column; transition: all 0.3s ease;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 16px 20px; border-radius: 12px 12px 0 0; flex-shrink: 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 id="riderMapTitle" style="margin: 0; font-size: 18px; font-weight: 600;">
+                    📍 Rider Map
+                </h3>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button id="locationHistoryBtn" onclick="toggleRiderLocationHistory(currentRiderIdForMap)" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                        📍 Show Trail (2h)
+                    </button>
+                    <button onclick="refreshRiderMap()" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                        🔄 Refresh
+                    </button>
+                    <!-- ⭐ Expand/Collapse Button -->
+                    <button id="riderMapExpandBtn" onclick="toggleRiderMapExpand()" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;" title="Expand/Collapse">
+                        ⛶ Expand
+                    </button>
+                    <button onclick="closeRiderMapModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Summary Bar -->
+        <div id="riderMapSummary" style="padding: 12px 20px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; display: flex; gap: 20px; flex-wrap: wrap; align-items: center; flex-shrink: 0;">
+            <span style="color: #6b7280;">Loading...</span>
+        </div>
+        
+        <!-- Geocode Progress -->
+        <div id="riderMapGeocodeProgress" style="display: none; padding: 8px 20px; background: #fef3c7; font-size: 13px;">
+            <span id="riderMapGeocodeStatus">Geocoding...</span>
+        </div>
+        
+        <!-- Map Container -->
+        <div id="riderMapWrapper" style="flex: 1; min-height: 350px; position: relative;">
+            <div id="riderMapContainer" style="width: 100%; height: 100%; min-height: 350px;"></div>
+        </div>
+        
+        <!-- Orders List - Collapsible -->
+        <div id="riderOrdersSection" style="border-top: 1px solid #e5e7eb; flex-shrink: 0;">
+            <div onclick="toggleRiderOrdersList()" style="padding: 12px 20px; background: #f8fafc; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+                <span>📦 Orders (Open + Delivered Today)</span>
+                <span id="riderOrdersToggle" style="font-size: 12px; color: #6b7280;">▼ Click to expand</span>
+            </div>
+            <div id="riderOrdersList" style="max-height: 250px; overflow-y: auto; padding: 0; display: none; background: white;">
+                <div style="padding: 20px; text-align: center; color: #6b7280;">Loading orders...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<script>
+// ⭐ RIDERS MAP FUNCTIONALITY
+
+let riderMap = null;
+let riderMarkers = [];
+let currentRiderIdForMap = null;
+let currentRidersMapDate = null; // null = today (live), date string = history
+let ridersMapAutoRefreshInterval = null; // Auto-refresh interval
+
+// Open All Riders Map Modal
+async function openAllRidersMapModal() {
+    document.getElementById('allRidersMapModal').style.display = 'block';
+    
+    // Set date picker to today
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('ridersMapDate').value = today;
+    document.getElementById('ridersMapDate').max = today; // Can't select future dates
+    currentRidersMapDate = null; // null means today/live
+    
+    // Update title and hide history banner
+    document.getElementById('allRidersMapTitle').textContent = '📍 All Riders - Live Map';
+    document.getElementById('ridersMapHistoryBanner').style.display = 'none';
+    
+    await loadAllRidersForMap();
+    
+    // ⭐ Start auto-refresh for live view (every 30 seconds)
+    startRidersMapAutoRefresh();
+}
+
+// Close All Riders Map Modal
+function closeAllRidersMapModal() {
+    document.getElementById('allRidersMapModal').style.display = 'none';
+    currentRidersMapDate = null;
+    isAllRidersMapExpanded = false;
+    
+    // ⭐ Stop auto-refresh when modal closes
+    stopRidersMapAutoRefresh();
+}
+
+// ⭐ Track expanded state for all riders map
+let isAllRidersMapExpanded = false;
+
+// ⭐ Toggle all riders map expand/collapse
+function toggleAllRidersMapExpand() {
+    const modal = document.getElementById('allRidersMapModalContent');
+    const btn = document.getElementById('allRidersMapExpandBtn');
+    const contentArea = document.getElementById('ridersMapContentArea');
+    
+    isAllRidersMapExpanded = !isAllRidersMapExpanded;
+    
+    if (isAllRidersMapExpanded) {
+        // Expand to full screen
+        modal.style.width = '98%';
+        modal.style.maxWidth = 'none';
+        modal.style.height = '96vh';
+        modal.style.margin = '2vh auto';
+        contentArea.style.maxHeight = 'none';
+        contentArea.style.flex = '1';
+        btn.textContent = '⛶';
+        btn.title = 'Collapse';
+    } else {
+        // Collapse to default
+        modal.style.width = '95%';
+        modal.style.maxWidth = '1200px';
+        modal.style.height = 'auto';
+        modal.style.maxHeight = '95vh';
+        modal.style.margin = '2% auto';
+        contentArea.style.maxHeight = '';
+        contentArea.style.flex = '1';
+        btn.textContent = '⛶';
+        btn.title = 'Expand';
+    }
+    
+    // Refresh any visible maps to fit new size
+    if (allOrdersMap) {
+        setTimeout(() => allOrdersMap.invalidateSize(), 100);
+    }
+    if (historyMap) {
+        setTimeout(() => historyMap.invalidateSize(), 100);
+    }
+}
+
+// ⭐ Start auto-refresh interval
+function startRidersMapAutoRefresh() {
+    stopRidersMapAutoRefresh(); // Clear any existing interval
+    
+    // Only auto-refresh for live view (not history)
+    if (currentRidersMapDate === null) {
+        console.log('🔄 Starting riders map auto-refresh (every 30s)');
+        ridersMapAutoRefreshInterval = setInterval(() => {
+            console.log('🔄 Auto-refreshing riders list (silent)...');
+            loadAllRidersForMap(true); // ⭐ Silent refresh - no loading spinner
+        }, 30000); // 30 seconds
+    }
+}
+
+// ⭐ Stop auto-refresh interval
+function stopRidersMapAutoRefresh() {
+    if (ridersMapAutoRefreshInterval) {
+        console.log('⏹️ Stopping riders map auto-refresh');
+        clearInterval(ridersMapAutoRefreshInterval);
+        ridersMapAutoRefreshInterval = null;
+    }
+}
+
+// Set riders map to today
+function setRidersMapToday() {
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('ridersMapDate').value = today;
+    currentRidersMapDate = null;
+    document.getElementById('allRidersMapTitle').textContent = '📍 All Riders - Live Map';
+    document.getElementById('ridersMapHistoryBanner').style.display = 'none';
+    loadAllRidersForMap();
+}
+
+// Handle date change
+function onRidersMapDateChange(dateValue) {
+    const today = new Date().toISOString().split('T')[0];
+    
+    if (dateValue === today) {
+        currentRidersMapDate = null;
+        document.getElementById('allRidersMapTitle').textContent = '📍 All Riders - Live Map';
+        document.getElementById('ridersMapHistoryBanner').style.display = 'none';
+        // ⭐ Start auto-refresh for live view
+        startRidersMapAutoRefresh();
+    } else {
+        currentRidersMapDate = dateValue;
+        const dateObj = new Date(dateValue);
+        const formattedDate = dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        document.getElementById('allRidersMapTitle').textContent = `📅 Riders History - ${formattedDate}`;
+        document.getElementById('ridersMapHistoryBanner').style.display = 'block';
+        // ⭐ Stop auto-refresh for history view
+        stopRidersMapAutoRefresh();
+    }
+    
+    loadAllRidersForMap();
+}
+
+// Load all riders for the list
+async function loadAllRidersForMap(silent = false) {
+    const container = document.getElementById('allRidersListContainer');
+    const isHistory = currentRidersMapDate !== null;
+    
+    // Only show loading spinner if not a silent refresh
+    if (!silent) {
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #6b7280; grid-column: 1 / -1;">
+                <svg class="animate-spin" style="width: 32px; height: 32px; margin: 0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Loading ${isHistory ? 'history' : 'riders'}...
+            </div>
+        `;
+    }
+    
+    try {
+        // Build URL with optional date parameter
+        let url = '/orders/riders-map/active';
+        if (currentRidersMapDate) {
+            url += `?date=${currentRidersMapDate}`;
+        }
+        
+        const response = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.riders.length > 0) {
+            console.log('🗺️ Riders data:', data.riders); // Debug
+            const isHistoryView = data.is_history === true;
+            
+            container.innerHTML = data.riders.map(rider => {
+                console.log('👤 Rider:', rider.name, 'last_sync:', rider.last_sync, 'last_location:', rider.last_location); // Debug
+                const hasLocation = rider.last_location !== null;
+                const hasSync = rider.last_sync !== null;
+                const isOnDuty = rider.is_checked_in && !rider.is_checked_out;
+                
+                let statusColor, statusText, statusBadge;
+                
+                if (isHistoryView) {
+                    // For history view, show simpler status based on attendance
+                    if (rider.is_checked_in) {
+                        statusColor = '#10B981';
+                        statusText = rider.is_checked_out ? '✓ Checked Out' : '✓ Was On Duty';
+                        statusBadge = `<div style="background: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">📅 ${rider.orders_today.delivered} delivered</div>`;
+                    } else {
+                        statusColor = '#6B7280';
+                        statusText = '— Not checked in';
+                        statusBadge = `<div style="background: #f3f4f6; color: #6b7280; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">${rider.orders_today.delivered} delivered</div>`;
+                    }
+                } else {
+                    // For live view, show online/offline status
+                    // ⭐ Determine online status based on SYNC time (more reliable than location)
+                    let isOnline = false;
+                    let isAway = false;
+                    let lastSeenText = 'Never';
+                    let lastSeenMinutes = null;
+                    
+                    if (hasSync && rider.last_sync.age_minutes !== null) {
+                        lastSeenMinutes = rider.last_sync.age_minutes;
+                        lastSeenText = rider.last_sync.age || 'Unknown';
+                        isOnline = lastSeenMinutes <= 2;
+                        isAway = lastSeenMinutes > 2 && lastSeenMinutes <= 10;
+                    } else if (hasLocation && rider.last_location.age_minutes !== null) {
+                        lastSeenMinutes = rider.last_location.age_minutes;
+                        lastSeenText = rider.last_location.age || 'Unknown';
+                        isOnline = lastSeenMinutes <= 6;
+                        isAway = lastSeenMinutes > 6 && lastSeenMinutes <= 15;
+                    }
+                    
+                    if (!isOnDuty) {
+                        statusColor = '#6B7280';
+                        statusText = rider.is_checked_out ? '⚫ Checked Out' : '⚫ Offline';
+                    } else if (isOnline) {
+                        statusColor = '#10B981';
+                        statusText = '🟢 Online';
+                    } else if (isAway) {
+                        statusColor = '#f59e0b';
+                        statusText = '🟡 Away';
+                    } else {
+                        statusColor = '#6B7280';
+                        statusText = '⚫ Offline';
+                    }
+                    
+                    if (isOnline) {
+                        statusBadge = `<div style="background: #d1fae5; color: #065f46; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">● Active now</div>`;
+                    } else if (lastSeenMinutes !== null) {
+                        const badgeBg = lastSeenMinutes <= 10 ? '#fef3c7' : '#fee2e2';
+                        const badgeColor = lastSeenMinutes <= 10 ? '#92400e' : '#991b1b';
+                        statusBadge = `<div style="background: ${badgeBg}; color: ${badgeColor}; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">Last: ${lastSeenText}</div>`;
+                    } else {
+                        statusBadge = `<div style="background: #f3f4f6; color: #6b7280; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;">No activity</div>`;
+                    }
+                }
+                
+                // ⭐ Build app status display
+                let appStatusHtml = '';
+                if (!isHistoryView && rider.app_status) {
+                    const appLoggedIn = rider.app_status.is_logged_in;
+                    const appVersion = rider.app_status.app_version;
+                    const appColor = appLoggedIn ? '#10b981' : '#ef4444';
+                    const appIcon = appLoggedIn ? '📱' : '📵';
+                    const appText = appLoggedIn ? 'Logged In' : 'Logged Out';
+                    
+                    appStatusHtml = `
+                        <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11px;">
+                            <span title="App ${appText}">${appIcon}</span>
+                            <span style="color: ${appColor}; font-weight: 500;">${appText}</span>
+                            ${appVersion ? `<span style="color: #9ca3af; margin-left: 4px;" title="App version">v${appVersion}</span>` : ''}
+                        </div>
+                    `;
+                }
+                
+                return `
+                    <div onclick="openRiderMap(${rider.id}, '${rider.name.replace(/'/g, "\\'")}')" 
+                         style="background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.05);"
+                         onmouseover="this.style.borderColor='#3b82f6'; this.style.boxShadow='0 4px 12px rgba(59,130,246,0.15)';"
+                         onmouseout="this.style.borderColor='#e5e7eb'; this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)';">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px;">
+                            <div>
+                                <div style="font-weight: 600; font-size: 16px; color: #1f2937;">${rider.name}</div>
+                                <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                                    <span style="font-size: 12px; color: ${statusColor}; font-weight: 500;">${statusText}</span>
+                                </div>
+                                ${appStatusHtml}
+                            </div>
+                            ${statusBadge}
+                        </div>
+                        <div style="display: flex; gap: 16px; font-size: 13px;">
+                            ${isHistoryView ? `
+                            <div title="Orders delivered on this date">
+                                <span style="color: #10b981;">✓</span>
+                                <span style="font-weight: 600; color: #10b981;">${rider.orders_today.delivered}</span>
+                                <span style="color: #6b7280; font-size: 11px;">Delivered</span>
+                            </div>
+                            ` : `
+                            <div title="Open orders assigned to this rider">
+                                <span style="color: #f59e0b;">⏳</span>
+                                <span style="font-weight: 600; color: #f59e0b;">${rider.orders_today.pending}</span>
+                                <span style="color: #6b7280; font-size: 11px;">Open</span>
+                            </div>
+                            <div title="Orders delivered today">
+                                <span style="color: #10b981;">✓</span>
+                                <span style="font-weight: 600; color: #10b981;">${rider.orders_today.delivered}</span>
+                                <span style="color: #6b7280; font-size: 11px;">Today</span>
+                            </div>
+                            `}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            const emptyMessage = isHistory 
+                ? 'No riders found for this date. No one checked in or delivered orders.'
+                : 'Riders will appear here when they check in or have location data';
+            container.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6b7280; grid-column: 1 / -1;">
+                    <div style="font-size: 48px; margin-bottom: 12px;">${isHistory ? '📅' : '📍'}</div>
+                    <div style="font-weight: 500;">No ${isHistory ? 'activity' : 'active riders'} found</div>
+                    <div style="font-size: 13px; margin-top: 4px;">${emptyMessage}</div>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Failed to load riders:', error);
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #ef4444; grid-column: 1 / -1;">
+                <div style="font-size: 48px; margin-bottom: 12px;">⚠️</div>
+                <div style="font-weight: 500;">Failed to load riders</div>
+                <div style="font-size: 13px; margin-top: 4px;">${error.message}</div>
+            </div>
+        `;
+    }
+}
+
+// Open single rider map
+async function openRiderMap(riderId, riderName) {
+    currentRiderIdForMap = riderId;
+    
+    // Update title based on whether viewing history or live
+    if (currentRidersMapDate) {
+        const dateObj = new Date(currentRidersMapDate);
+        const formattedDate = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        document.getElementById('riderMapTitle').textContent = `📅 ${riderName} - ${formattedDate} Deliveries`;
+    } else {
+        document.getElementById('riderMapTitle').textContent = `📍 ${riderName} - Orders & Deliveries`;
+    }
+    
+    document.getElementById('riderMapModal').style.display = 'block';
+    
+    // Initialize or reset map
+    if (riderMap) {
+        riderMap.remove();
+    }
+    
+    // Clear markers
+    riderMarkers = [];
+    
+    // Create map centered on Islamabad (default)
+    riderMap = L.map('riderMapContainer').setView([33.6844, 73.0479], 12);
+    
+    // Add tile layer
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(riderMap);
+    
+    // Load rider data
+    await loadRiderMapData(riderId);
+}
+
+// Store current rider map orders for geocoding
+let riderMapCurrentOrders = [];
+
+// Load rider map data
+async function loadRiderMapData(riderId) {
+    try {
+        // Build URL with optional date parameter
+        let url = `/orders/riders-map/${riderId}`;
+        if (currentRidersMapDate) {
+            url += `?date=${currentRidersMapDate}`;
+        }
+        
+        const response = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to load data');
+        }
+        
+        // Store orders for geocoding
+        riderMapCurrentOrders = data.orders || [];
+        
+        // Count orders with/without location
+        const withLocation = riderMapCurrentOrders.filter(o => o.location).length;
+        const withoutLocation = riderMapCurrentOrders.length - withLocation;
+        
+        // Update summary
+        const summary = data.summary;
+        const summaryHtml = `
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-weight: 600; color: #1f2937;">📦 ${summary.total_orders}</span>
+                <span style="color: #6b7280;">orders</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: #10b981;">✓</span>
+                <span style="font-weight: 600; color: #10b981;">${summary.delivered}</span>
+                <span style="color: #6b7280;">delivered</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: #f59e0b;">⏳</span>
+                <span style="font-weight: 600; color: #f59e0b;">${summary.pending}</span>
+                <span style="color: #6b7280;">pending</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: #10b981;">📍 ${withLocation}</span>
+                <span style="color: #ef4444;">❌ ${withoutLocation}</span>
+            </div>
+            ${data.rider.current_location ? `
+                <div style="display: flex; align-items: center; gap: 6px; background: #dbeafe; padding: 4px 10px; border-radius: 6px;">
+                    <span style="color: #1d4ed8;">📍 Last seen: ${data.rider.current_location.age}</span>
+                </div>
+            ` : ''}
+            <div style="margin-left: auto; display: flex; gap: 8px;">
+                <button id="riderMapGeocodeMissingBtn" onclick="geocodeRiderMapMissing()" 
+                        style="background: #f59e0b; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; ${withoutLocation > 0 ? '' : 'display: none;'}">
+                    📍 Geocode Missing (${withoutLocation})
+                </button>
+                <button id="riderMapGeocodeAllBtn" onclick="geocodeRiderMapAll()" 
+                        style="background: #3b82f6; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">
+                    🔄 Refresh Geocode
+                </button>
+            </div>
+        `;
+        document.getElementById('riderMapSummary').innerHTML = summaryHtml;
+        document.getElementById('riderMapGeocodeProgress').style.display = 'none';
+        
+        // Clear existing markers
+        riderMarkers.forEach(m => riderMap.removeLayer(m));
+        riderMarkers = [];
+        
+        const bounds = [];
+        
+        // Add rider current location (blue pulsing dot)
+        if (data.rider.current_location) {
+            const riderIcon = L.divIcon({
+                className: 'rider-location-marker',
+                html: `<div style="width: 24px; height: 24px; background: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 2px 8px rgba(59,130,246,0.5); animation: pulse 2s infinite;"></div>`,
+                iconSize: [24, 24],
+                iconAnchor: [12, 12]
+            });
+            
+            const riderMarker = L.marker([data.rider.current_location.latitude, data.rider.current_location.longitude], {icon: riderIcon})
+                .addTo(riderMap)
+                .bindPopup(`<b>🚴 ${data.rider.name}</b><br>Last seen: ${data.rider.current_location.age}<br>Accuracy: ${data.rider.current_location.accuracy || '?'}m`);
+            
+            riderMarkers.push(riderMarker);
+            bounds.push([data.rider.current_location.latitude, data.rider.current_location.longitude]);
+        }
+        
+        // Add rider trail (lighter blue dots)
+        if (data.rider.location_trail && data.rider.location_trail.length > 1) {
+            data.rider.location_trail.slice(1).forEach((loc, idx) => {
+                const opacity = 1 - (idx * 0.2);
+                const trailIcon = L.divIcon({
+                    className: 'trail-marker',
+                    html: `<div style="width: 12px; height: 12px; background: rgba(59,130,246,${opacity}); border: 2px solid white; border-radius: 50%;"></div>`,
+                    iconSize: [12, 12],
+                    iconAnchor: [6, 6]
+                });
+                
+                const trailMarker = L.marker([loc.latitude, loc.longitude], {icon: trailIcon})
+                    .addTo(riderMap)
+                    .bindPopup(`Trail point<br>${loc.time} (${loc.age})`);
+                
+                riderMarkers.push(trailMarker);
+            });
+        }
+        
+        // Helper to format delivery time
+        function formatDeliveryTime(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        }
+        
+        // Add order markers for orders with coordinates
+        data.orders.forEach(order => {
+            if (order.location) {
+                addOrderMarker(order, order.location, bounds);
+            }
+        });
+        
+        // Helper function to add order marker
+        function addOrderMarker(order, location, boundsArray) {
+            if (!location) return;
+            
+            const isDelivered = ['delivered', 'completed'].includes(order.status);
+            const color = isDelivered ? '#10b981' : (order.status === 'out_for_delivery' || order.status === 'out-for-delivery' ? '#f59e0b' : '#6b7280');
+            const deliveryTime = isDelivered && order.delivered_at ? formatDeliveryTime(order.delivered_at) : '';
+            const isGeocoded = order.location_source === 'geocoded_address';
+            
+            // For delivered orders, show checkmark with time; for others show status icon
+            let markerHtml;
+            if (isDelivered) {
+                // Delivered: show time badge with checkmark
+                const timeDisplay = deliveryTime || '';
+                markerHtml = `
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <div style="width: 28px; height: 28px; background: ${color}; border: 2px solid ${isGeocoded ? '#f59e0b' : 'white'}; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);">✓</div>
+                        ${timeDisplay ? `<div style="background: ${color}; color: white; font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-top: 2px; white-space: nowrap; font-weight: 600;">${timeDisplay}</div>` : ''}
+                        ${isGeocoded ? `<div style="background: #fef3c7; color: #92400e; font-size: 8px; padding: 1px 3px; border-radius: 2px; margin-top: 1px;">~approx</div>` : ''}
+                    </div>
+                `;
+            } else {
+                const icon = order.status === 'out_for_delivery' || order.status === 'out-for-delivery' ? '🚴' : '📦';
+                // For geocoded addresses, add a small "~" indicator to show it's approximate
+                const geocodeBadge = isGeocoded ? `<div style="position:absolute;top:-4px;right:-4px;width:12px;height:12px;background:#fef3c7;border:1px solid #f59e0b;border-radius:50%;font-size:8px;display:flex;align-items:center;justify-content:center;color:#92400e;">~</div>` : '';
+                markerHtml = `<div style="position:relative;width: 28px; height: 28px; background: ${color}; border: 2px solid ${isGeocoded ? '#f59e0b' : 'white'}; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);">${icon}${geocodeBadge}</div>`;
+            }
+            
+            const orderIcon = L.divIcon({
+                className: 'order-marker',
+                html: markerHtml,
+                iconSize: isDelivered ? [40, 55] : [28, 28],
+                iconAnchor: isDelivered ? [20, 28] : [14, 14]
+            });
+            
+            // Determine location source text
+            let locationSourceText = 'Unknown';
+            if (order.location_source === 'delivery_gps') {
+                locationSourceText = '✓ Actual delivery GPS';
+            } else if (order.location_source === 'verified_location') {
+                locationSourceText = '✓ Verified address';
+            } else if (order.location_source === 'geocoded_address') {
+                locationSourceText = '⚠️ Approximate (auto from address)';
+            }
+            
+            const orderMarker = L.marker([location.latitude, location.longitude], {icon: orderIcon})
+                .addTo(riderMap)
+                .bindPopup(`
+                    <b>${order.order_number}</b><br>
+                    <b>${order.customer_name}</b><br>
+                    <span style="color: ${color}; font-weight: 500;">${order.status_display}</span>
+                    ${isDelivered && deliveryTime ? `<br>🕐 Delivered at <b>${deliveryTime}</b>` : ''}
+                    <br><small style="color: #6b7280;">${order.address || ''}</small>
+                    <br><small style="color: ${isGeocoded ? '#f59e0b' : '#9ca3af'};">📍 ${locationSourceText}</small>
+                `);
+            
+            riderMarkers.push(orderMarker);
+            boundsArray.push([location.latitude, location.longitude]);
+        }
+        
+        // Fit map to bounds
+        if (bounds.length > 0) {
+            riderMap.fitBounds(bounds, {padding: [50, 50]});
+        }
+        
+        // Update orders list
+        const ordersContainer = document.getElementById('riderOrdersList');
+        if (data.orders.length > 0) {
+            ordersContainer.innerHTML = data.orders.map(order => {
+                const isDelivered = ['delivered', 'completed'].includes(order.status);
+                const statusColor = isDelivered ? '#10b981' : (order.status === 'out_for_delivery' || order.status === 'out-for-delivery' ? '#f59e0b' : '#6b7280');
+                const deliveryTime = isDelivered && order.delivered_at ? formatDeliveryTime(order.delivered_at) : '';
+                
+                // Location badge logic
+                let locationBadge = '';
+                if (order.location) {
+                    if (order.location_source === 'delivery_gps') {
+                        locationBadge = `<span style="background: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-size: 11px;" title="Actual delivery GPS">📍 GPS</span>`;
+                    } else if (order.location_source === 'verified_location') {
+                        locationBadge = `<span style="background: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-size: 11px;" title="Verified address">📍</span>`;
+                    } else if (order.location_source === 'geocoded_address') {
+                        locationBadge = `<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 11px;" title="Approximate (auto from address)">📍~</span>`;
+                    } else {
+                        locationBadge = `<span style="background: #d1fae5; color: #065f46; padding: 2px 6px; border-radius: 4px; font-size: 11px;">📍</span>`;
+                    }
+                } else if (order.address) {
+                    // No coordinates - show link to open in Google Maps
+                    const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.address)}`;
+                    locationBadge = `<a href="${googleMapsUrl}" target="_blank" style="background: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; font-size: 11px; text-decoration: none;" title="No coordinates - click to open in Google Maps">No GPS 🗺️</a>`;
+                } else {
+                    locationBadge = `<span style="background: #fee2e2; color: #991b1b; padding: 2px 6px; border-radius: 4px; font-size: 11px;">No GPS</span>`;
+                }
+                
+                return `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; border-bottom: 1px solid #f3f4f6; background: white;">
+                        <div style="display: flex; gap: 12px; align-items: center;">
+                            <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
+                            <span style="color: #374151;">${order.customer_name}</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span style="color: ${statusColor}; font-weight: 500; font-size: 13px;">${order.status_display}</span>
+                            ${isDelivered && deliveryTime ? `
+                                <span style="background: #d1fae5; color: #065f46; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;">
+                                    🕐 ${deliveryTime}
+                                </span>
+                            ` : ''}
+                            ${locationBadge}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            ordersContainer.innerHTML = `<div style="padding: 20px; text-align: center; color: #6b7280;">No orders assigned</div>`;
+        }
+        
+        // ⭐ Auto-expand orders list after loading
+        ordersContainer.style.display = 'block';
+        document.getElementById('riderOrdersToggle').textContent = '▲ Click to collapse';
+        
+    } catch (error) {
+        console.error('Failed to load rider map data:', error);
+        document.getElementById('riderMapSummary').innerHTML = `<span style="color: #ef4444;">Failed to load: ${error.message}</span>`;
+    }
+}
+
+// Refresh rider map
+function refreshRiderMap() {
+    if (currentRiderIdForMap) {
+        loadRiderMapData(currentRiderIdForMap);
+    }
+}
+
+// Close rider map modal
+function closeRiderMapModal() {
+    document.getElementById('riderMapModal').style.display = 'none';
+    currentRiderIdForMap = null;
+    // Reset expanded state
+    isRiderMapExpanded = false;
+}
+
+// ⭐ Track expanded state
+let isRiderMapExpanded = false;
+
+// ⭐ Toggle rider map expand/collapse
+function toggleRiderMapExpand() {
+    const modal = document.getElementById('riderMapModalContent');
+    const btn = document.getElementById('riderMapExpandBtn');
+    const mapWrapper = document.getElementById('riderMapWrapper');
+    
+    isRiderMapExpanded = !isRiderMapExpanded;
+    
+    if (isRiderMapExpanded) {
+        // Expand to full screen
+        modal.style.width = '98%';
+        modal.style.maxWidth = 'none';
+        modal.style.height = '96vh';
+        modal.style.margin = '2vh auto';
+        mapWrapper.style.minHeight = '500px';
+        btn.textContent = '⛶ Collapse';
+    } else {
+        // Collapse to default
+        modal.style.width = '95%';
+        modal.style.maxWidth = '1000px';
+        modal.style.height = 'auto';
+        modal.style.maxHeight = '95vh';
+        modal.style.margin = '2% auto';
+        mapWrapper.style.minHeight = '350px';
+        btn.textContent = '⛶ Expand';
+    }
+    
+    // Refresh map to fit new size
+    if (riderMap) {
+        setTimeout(() => riderMap.invalidateSize(), 100);
+    }
+}
+
+// ⭐ Toggle orders list visibility
+function toggleRiderOrdersList() {
+    const list = document.getElementById('riderOrdersList');
+    const toggle = document.getElementById('riderOrdersToggle');
+    
+    if (list.style.display === 'none') {
+        list.style.display = 'block';
+        toggle.textContent = '▲ Click to collapse';
+    } else {
+        list.style.display = 'none';
+        toggle.textContent = '▼ Click to expand';
+    }
+}
+
+// ⭐ GEOCODING FUNCTIONS FOR RIDER MAP
+
+async function geocodeRiderMapMissing() {
+    // Geocode only orders without location
+    const ordersToGeocode = riderMapCurrentOrders.filter(o => !o.location && o.customer_id);
+    await geocodeRiderMapOrders(ordersToGeocode, false);
+}
+
+async function geocodeRiderMapAll() {
+    // Geocode all orders (force refresh)
+    const ordersToGeocode = riderMapCurrentOrders.filter(o => o.customer_id);
+    await geocodeRiderMapOrders(ordersToGeocode, true);
+}
+
+async function geocodeRiderMapOrders(orders, forceUpdate = false) {
+    if (orders.length === 0) {
+        alert('No orders to geocode');
+        return;
+    }
+    
+    const progressEl = document.getElementById('riderMapGeocodeProgress');
+    const statusEl = document.getElementById('riderMapGeocodeStatus');
+    
+    progressEl.style.display = 'block';
+    
+    // Disable buttons
+    const missingBtn = document.getElementById('riderMapGeocodeMissingBtn');
+    const allBtn = document.getElementById('riderMapGeocodeAllBtn');
+    if (missingBtn) missingBtn.disabled = true;
+    if (allBtn) allBtn.disabled = true;
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (let i = 0; i < orders.length; i++) {
+        const order = orders[i];
+        statusEl.innerHTML = `Geocoding ${i + 1}/${orders.length}: <b>${order.customer_name}</b>...`;
+        
+        try {
+            const response = await fetch(`/customers/${order.customer_id}/geocode-single?force=${forceUpdate ? 1 : 0}`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (data.success && data.location) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+        } catch (error) {
+            console.error('Geocode error:', error);
+            failCount++;
+        }
+        
+        // Rate limit - wait 1.2 seconds between requests
+        if (i < orders.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+        }
+    }
+    
+    statusEl.innerHTML = `✅ Done! ${successCount} geocoded, ${failCount} failed. Refreshing map...`;
+    
+    // Re-enable buttons
+    if (missingBtn) missingBtn.disabled = false;
+    if (allBtn) allBtn.disabled = false;
+    
+    // Reload the map data to show new locations
+    setTimeout(() => {
+        loadRiderMapData(currentRiderIdForMap);
+    }, 1000);
+}
+
+// Add CSS for pulse animation
+const pulseStyle = document.createElement('style');
+pulseStyle.textContent = `
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+`;
+document.head.appendChild(pulseStyle);
+
+// ⭐ NEW: View switching between Riders, All Open Orders, and History
+let currentRidersMapView = 'riders'; // 'riders', 'orders', or 'history'
+let allOrdersMap = null;
+let allOrdersMarkers = [];
+let allOrdersData = null;
+let historyData = null;
+
+function switchRidersMapView(view) {
+    currentRidersMapView = view;
+    
+    // Update button styles
+    const ridersBtn = document.getElementById('viewRidersBtn');
+    const ordersBtn = document.getElementById('viewAllOrdersBtn');
+    const historyBtn = document.getElementById('viewHistoryBtn');
+    
+    // Reset all buttons
+    ridersBtn.style.background = 'transparent';
+    ordersBtn.style.background = 'transparent';
+    historyBtn.style.background = 'transparent';
+    
+    // Hide all containers
+    document.getElementById('allRidersListContainer').style.display = 'none';
+    document.getElementById('allOrdersMapWrapper').style.display = 'none';
+    document.getElementById('historyViewWrapper').style.display = 'none';
+    document.getElementById('allOrdersFilters').style.display = 'none';
+    document.getElementById('ridersMapHistoryBanner').style.display = 'none';
+    
+    if (view === 'riders') {
+        ridersBtn.style.background = 'rgba(255,255,255,0.3)';
+        document.getElementById('ridersDatePicker').style.display = 'flex';
+        document.getElementById('allRidersListContainer').style.display = 'grid';
+        document.getElementById('allRidersMapTitle').textContent = currentRidersMapDate ? 
+            `📅 Rider Map - History` : '📍 Rider Map - Live';
+        loadAllRidersForMap();
+    } else if (view === 'orders') {
+        ordersBtn.style.background = 'rgba(255,255,255,0.3)';
+        document.getElementById('ridersDatePicker').style.display = 'none';
+        document.getElementById('allOrdersFilters').style.display = 'block';
+        document.getElementById('allOrdersMapWrapper').style.display = 'block';
+        document.getElementById('allRidersMapTitle').textContent = '📦 Open Orders Map';
+        stopRidersMapAutoRefresh();
+        loadAllOpenOrdersForMap();
+    } else if (view === 'history') {
+        historyBtn.style.background = 'rgba(255,255,255,0.3)';
+        document.getElementById('ridersDatePicker').style.display = 'none';
+        document.getElementById('historyViewWrapper').style.display = 'block';
+        document.getElementById('allRidersMapTitle').textContent = '📅 Delivery History';
+        stopRidersMapAutoRefresh();
+        
+        // Load rider list for history
+        loadHistoryRiderList();
+    }
+}
+
+// Load all open orders for map view
+async function loadAllOpenOrdersForMap() {
+    const mapContainer = document.getElementById('allOrdersMapContainer');
+    const listContainer = document.getElementById('allOrdersListContainer');
+    const summaryEl = document.getElementById('allOrdersSummary');
+    
+    summaryEl.textContent = 'Loading...';
+    listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">Loading orders...</div>';
+    
+    try {
+        const statusFilter = document.getElementById('allOrdersStatusFilter').value;
+        const riderFilter = document.getElementById('allOrdersRiderFilter').value;
+        
+        let url = '/orders/riders-map/all-open-orders';
+        const params = [];
+        if (statusFilter && statusFilter !== 'all') params.push(`status=${statusFilter}`);
+        if (riderFilter && riderFilter !== 'all') params.push(`rider_id=${riderFilter}`);
+        if (params.length > 0) url += '?' + params.join('&');
+        
+        const response = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to load orders');
+        }
+        
+        allOrdersData = data;
+        
+        // Populate filters (only on first load or if filters are empty)
+        populateAllOrdersFilters(data.filters);
+        
+        // Update summary
+        summaryEl.innerHTML = `
+            <span style="font-weight: 600;">${data.summary.total}</span> orders 
+            (<span style="color: #10b981;">${data.summary.with_location} with GPS</span>, 
+            <span style="color: #ef4444;">${data.summary.without_location} without</span>)
+        `;
+        
+        // Initialize or reset map
+        if (allOrdersMap) {
+            allOrdersMap.remove();
+        }
+        
+        allOrdersMap = L.map('allOrdersMapContainer').setView([33.6844, 73.0479], 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(allOrdersMap);
+        
+        allOrdersMarkers = [];
+        const bounds = [];
+        
+        // Add markers for orders with location
+        data.orders.forEach(order => {
+            if (!order.location) return;
+            
+            const statusColors = {
+                'processing': '#f59e0b',
+                'confirmed': '#3b82f6',
+                'out_for_delivery': '#8b5cf6',
+                'out-for-delivery': '#8b5cf6',
+                'pending': '#6b7280'
+            };
+            const color = statusColors[order.status] || '#f59e0b';
+            
+            const icon = L.divIcon({
+                className: 'order-marker',
+                html: `<div style="width: 12px; height: 12px; background: ${color}; border: 2px solid white; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+            });
+            
+            const marker = L.marker([order.location.latitude, order.location.longitude], {icon})
+                .addTo(allOrdersMap)
+                .bindPopup(`
+                    <b>${order.order_number}</b><br>
+                    ${order.customer_name}<br>
+                    <span style="color: ${color};">${order.status_display}</span><br>
+                    <small>Rider: ${order.rider_name}</small><br>
+                    <small>${order.total}</small>
+                `);
+            
+            allOrdersMarkers.push(marker);
+            bounds.push([order.location.latitude, order.location.longitude]);
+        });
+        
+        // Fit bounds
+        if (bounds.length > 0) {
+            allOrdersMap.fitBounds(bounds, {padding: [30, 30]});
+        }
+        
+        // Update orders list
+        if (data.orders.length > 0) {
+            listContainer.innerHTML = `
+                <div style="background: #f8fafc; padding: 8px 12px; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb;">
+                    📦 Orders (${data.orders.length})
+                </div>
+                ${data.orders.map(order => {
+                    const statusColors = {
+                        'processing': '#f59e0b',
+                        'confirmed': '#3b82f6',
+                        'out_for_delivery': '#8b5cf6',
+                        'out-for-delivery': '#8b5cf6',
+                        'pending': '#6b7280'
+                    };
+                    const color = statusColors[order.status] || '#6b7280';
+                    const locationIcon = order.location ? 
+                        (order.location_source === 'verified_location' ? '📍' : '📍~') : '❌';
+                    
+                    return `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px;">
+                            <div>
+                                <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
+                                <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span style="color: ${color}; font-size: 12px;">${order.status_display}</span>
+                                <span style="color: #6b7280; font-size: 11px;">${order.rider_name}</span>
+                                <span>${locationIcon}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            `;
+        } else {
+            listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">No open orders found</div>';
+        }
+        
+    } catch (error) {
+        console.error('Failed to load all orders:', error);
+        summaryEl.innerHTML = `<span style="color: #ef4444;">Failed to load: ${error.message}</span>`;
+    }
+}
+
+// Populate filter dropdowns
+function populateAllOrdersFilters(filters) {
+    const statusSelect = document.getElementById('allOrdersStatusFilter');
+    const riderSelect = document.getElementById('allOrdersRiderFilter');
+    
+    // Only populate if empty (first load)
+    if (statusSelect.options.length <= 1) {
+        filters.statuses.forEach(status => {
+            const count = filters.status_counts[status] || 0;
+            const option = document.createElement('option');
+            option.value = status;
+            option.textContent = `${status.replace(/_/g, ' ')} (${count})`;
+            statusSelect.appendChild(option);
+        });
+    }
+    
+    if (riderSelect.options.length <= 1) {
+        // Add Unassigned option first
+        if (filters.unassigned_count > 0) {
+            const unassignedOption = document.createElement('option');
+            unassignedOption.value = 'unassigned';
+            unassignedOption.textContent = `⚠️ Unassigned (${filters.unassigned_count})`;
+            riderSelect.appendChild(unassignedOption);
+        }
+        
+        // Add riders
+        filters.riders.forEach(rider => {
+            const count = filters.rider_counts[rider.id] || 0;
+            const option = document.createElement('option');
+            option.value = rider.id;
+            option.textContent = `${rider.name} (${count})`;
+            riderSelect.appendChild(option);
+        });
+    }
+}
+
+// Apply filters
+function applyAllOrdersFilters() {
+    loadAllOpenOrdersForMap();
+}
+
+// ⭐ HISTORY VIEW FUNCTIONS - New 3-level flow: Rider List → Date Groups → Map
+
+let historySelectedRider = null;
+let historySelectedDate = null;
+let historyRiderData = null;
+let historyMap = null;
+
+// Level 1: Load rider list
+async function loadHistoryRiderList() {
+    const container = document.getElementById('historyRiderListContainer');
+    
+    // Show rider list, hide others
+    document.getElementById('historyRiderList').style.display = 'block';
+    document.getElementById('historyDateGroups').style.display = 'none';
+    document.getElementById('historyDateMap').style.display = 'none';
+    
+    container.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #6b7280; grid-column: 1 / -1;">
+            <svg class="animate-spin" style="width: 32px; height: 32px; margin: 0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Loading riders...
+        </div>
+    `;
+    
+    try {
+        const response = await fetch('/orders/riders-map/riders-for-history', {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to load riders');
+        }
+        
+        if (data.riders && data.riders.length > 0) {
+            container.innerHTML = data.riders.map(rider => {
+                const totalAmount = (parseFloat(rider.total_cash) || 0) + (parseFloat(rider.total_online) || 0);
+                return `
+                    <div style="background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; transition: transform 0.1s;" 
+                         onclick="loadHistoryForRider(${rider.id}, '${rider.name.replace(/'/g, "\\'")}')"
+                         onmouseover="this.style.transform='scale(1.02)'" 
+                         onmouseout="this.style.transform='scale(1)'">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                            <div style="font-size: 16px; font-weight: 600; color: #1f2937;">${rider.name}</div>
+                            <div style="background: #dbeafe; color: #1e40af; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">
+                                📦 ${rider.total_delivered}
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <span style="font-size: 14px;">💵</span>
+                                <span style="font-weight: 600; color: #10b981;">Rs. ${Math.round(rider.total_cash || 0).toLocaleString()}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <span style="font-size: 14px;">💳</span>
+                                <span style="font-weight: 600; color: #3b82f6;">Rs. ${Math.round(rider.total_online || 0).toLocaleString()}</span>
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 12px; color: #6b7280;">
+                            Total: Rs. ${Math.round(totalAmount).toLocaleString()} (Last 3 months)
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            container.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6b7280; grid-column: 1 / -1;">
+                    <div style="font-size: 48px; margin-bottom: 12px;">📦</div>
+                    <div style="font-size: 16px; font-weight: 500;">No delivery history found</div>
+                    <div style="font-size: 13px; margin-top: 4px;">No riders have delivered orders in the last 3 months</div>
+                </div>
+            `;
+        }
+        
+    } catch (error) {
+        console.error('Failed to load riders for history:', error);
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #ef4444; grid-column: 1 / -1;">
+                Failed to load riders: ${error.message}
+            </div>
+        `;
+    }
+}
+
+// Level 2: Load rider's delivery history grouped by date
+async function loadHistoryForRider(riderId, riderName) {
+    historySelectedRider = { id: riderId, name: riderName };
+    
+    // Show date groups, hide others
+    document.getElementById('historyRiderList').style.display = 'none';
+    document.getElementById('historyDateGroups').style.display = 'block';
+    document.getElementById('historyDateMap').style.display = 'none';
+    
+    document.getElementById('historyRiderName').textContent = `📊 ${riderName}`;
+    
+    const container = document.getElementById('historyDateGroupsContainer');
+    container.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #6b7280;">
+            <svg class="animate-spin" style="width: 32px; height: 32px; margin: 0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Loading delivery history...
+        </div>
+    `;
+    
+    try {
+        const response = await fetch(`/orders/riders-map/rider-history/${riderId}`, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to load history');
+        }
+        
+        historyRiderData = data;
+        
+        // Update summary
+        document.getElementById('historyRiderSummary').innerHTML = `
+            <span style="font-weight: 600;">${data.summary.total_delivered}</span> delivered • 
+            <span style="color: #10b981;">Cash: Rs. ${Math.round(data.summary.cash_total).toLocaleString()} (${data.summary.cash_count})</span> • 
+            <span style="color: #3b82f6;">Online: Rs. ${Math.round(data.summary.online_total).toLocaleString()} (${data.summary.online_count})</span>
+        `;
+        
+        // Render date groups
+        if (data.dates && data.dates.length > 0) {
+            container.innerHTML = data.dates.map((dateGroup, idx) => {
+                const totalAmount = dateGroup.cash_total + dateGroup.online_total;
+                // First date group starts expanded
+                const isExpanded = idx === 0;
+                return `
+                    <div style="background: white; border-radius: 12px; margin-bottom: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: #f8fafc; border-bottom: 1px solid #e5e7eb; cursor: pointer;"
+                             onclick="toggleHistoryDateGroup('${dateGroup.date}')"
+                             title="Click to show/hide orders">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span id="historyToggle_${dateGroup.date}" style="font-size: 14px; color: #9ca3af; transition: transform 0.2s; ${isExpanded ? 'transform: rotate(90deg);' : ''}">▶</span>
+                                <div>
+                                    <div style="font-size: 14px; font-weight: 600; color: #1f2937;">📅 ${dateGroup.date_display}</div>
+                                    <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">
+                                        ${dateGroup.total_delivered} orders • Rs. ${Math.round(totalAmount).toLocaleString()} total
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 12px; align-items: center;">
+                                <div style="display: flex; gap: 8px;">
+                                    <span style="background: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;">
+                                        💵 ${dateGroup.cash_count} • Rs. ${Math.round(dateGroup.cash_total).toLocaleString()}
+                                    </span>
+                                    <span style="background: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;">
+                                        💳 ${dateGroup.online_count} • Rs. ${Math.round(dateGroup.online_total).toLocaleString()}
+                                    </span>
+                                </div>
+                                <button onclick="event.stopPropagation(); openHistoryDateMap('${dateGroup.date}', '${dateGroup.date_display}')" 
+                                        style="background: #9333EA; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;"
+                                        title="View on map">
+                                    🗺️ Map
+                                </button>
+                            </div>
+                        </div>
+                        <div id="historyOrders_${dateGroup.date}" style="display: ${isExpanded ? 'block' : 'none'}; max-height: 300px; overflow-y: auto;">
+                            ${dateGroup.orders.map(order => `
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f3f4f6;">
+                                    <div>
+                                        <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
+                                        <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+                                    </div>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <span style="font-weight: 600; color: ${order.payment_type === 'cash' ? '#10b981' : '#3b82f6'};">
+                                            ${order.amount_formatted}
+                                        </span>
+                                        <span style="background: ${order.payment_type === 'cash' ? '#d1fae5' : '#dbeafe'}; color: ${order.payment_type === 'cash' ? '#065f46' : '#1e40af'}; padding: 2px 6px; border-radius: 4px; font-size: 10px;">
+                                            ${order.payment_type === 'cash' ? '💵 Cash' : '💳 Online'}
+                                        </span>
+                                        <span style="color: #6b7280; font-size: 11px;">🕐 ${order.delivered_at}</span>
+                                        <span style="color: ${order.location ? '#10b981' : '#ef4444'};">${order.location ? '📍' : '❌'}</span>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            container.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #6b7280;">
+                    <div style="font-size: 48px; margin-bottom: 12px;">📦</div>
+                    <div style="font-size: 16px; font-weight: 500;">No deliveries found</div>
+                    <div style="font-size: 13px; margin-top: 4px;">This rider has no deliveries in the last 3 months</div>
+                </div>
+            `;
+        }
+        
+    } catch (error) {
+        console.error('Failed to load rider history:', error);
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #ef4444;">
+                Failed to load history: ${error.message}
+            </div>
+        `;
+    }
+}
+
+function toggleHistoryDateGroup(date) {
+    const ordersDiv = document.getElementById(`historyOrders_${date}`);
+    const toggleIcon = document.getElementById(`historyToggle_${date}`);
+    
+    if (ordersDiv.style.display === 'none') {
+        ordersDiv.style.display = 'block';
+        toggleIcon.style.transform = 'rotate(90deg)';
+    } else {
+        ordersDiv.style.display = 'none';
+        toggleIcon.style.transform = 'rotate(0deg)';
+    }
+}
+
+function backToHistoryRiderList() {
+    historySelectedRider = null;
+    historyRiderData = null;
+    document.getElementById('historyRiderList').style.display = 'block';
+    document.getElementById('historyDateGroups').style.display = 'none';
+    document.getElementById('historyDateMap').style.display = 'none';
+}
+
+// Level 3: Show map for a specific date
+let historyCurrentOrders = []; // Store current orders for geocoding
+let historyMarkers = {}; // Store markers by order ID
+
+function openHistoryDateMap(date, dateDisplay) {
+    if (!historyRiderData) return;
+    
+    historySelectedDate = date;
+    const dateGroup = historyRiderData.dates.find(d => d.date === date);
+    if (!dateGroup) return;
+    
+    historyCurrentOrders = dateGroup.orders;
+    historyMarkers = {};
+    
+    // Show map, hide others
+    document.getElementById('historyRiderList').style.display = 'none';
+    document.getElementById('historyDateGroups').style.display = 'none';
+    document.getElementById('historyDateMap').style.display = 'block';
+    document.getElementById('historyGeocodeProgress').style.display = 'none';
+    
+    document.getElementById('historyMapTitle').textContent = `🗺️ ${historySelectedRider.name} - ${dateDisplay}`;
+    
+    // Count orders with/without location
+    const withLocation = dateGroup.orders.filter(o => o.location).length;
+    const withoutLocation = dateGroup.orders.length - withLocation;
+    
+    document.getElementById('historyMapSummary').innerHTML = `
+        ${dateGroup.total_delivered} delivered • 
+        <span style="color: #10b981;">📍 ${withLocation}</span> • 
+        <span style="color: #ef4444;">❌ ${withoutLocation}</span>
+    `;
+    
+    // Show/hide geocode missing button
+    const geocodeMissingBtn = document.getElementById('historyGeocodeMissingBtn');
+    if (withoutLocation > 0) {
+        geocodeMissingBtn.style.display = 'inline-block';
+        geocodeMissingBtn.textContent = `📍 Geocode Missing (${withoutLocation})`;
+    } else {
+        geocodeMissingBtn.style.display = 'none';
+    }
+    
+    // Initialize map
+    if (historyMap) {
+        historyMap.remove();
+    }
+    
+    historyMap = L.map('historyMapContainer').setView([33.6844, 73.0479], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(historyMap);
+    
+    renderHistoryMapMarkers();
+    renderHistoryOrdersList();
+}
+
+function renderHistoryMapMarkers() {
+    if (!historyMap) return;
+    
+    // Clear existing markers
+    Object.values(historyMarkers).forEach(m => historyMap.removeLayer(m));
+    historyMarkers = {};
+    
+    const bounds = [];
+    
+    historyCurrentOrders.forEach((order, idx) => {
+        if (!order.location) return;
+        
+        // Shorten customer name for display
+        const shortName = order.customer_name.length > 12 
+            ? order.customer_name.substring(0, 12) + '...' 
+            : order.customer_name;
+        
+        const icon = L.divIcon({
+            className: 'history-order-marker',
+            html: `<div style="background: #10b981; color: white; padding: 4px 8px; border-radius: 6px; font-size: 10px; white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2); text-align: center;">
+                <div style="font-weight: 600;">🕐 ${order.delivered_at}</div>
+                <div style="font-size: 9px; opacity: 0.9;">${shortName}</div>
+            </div>`,
+            iconSize: [100, 36],
+            iconAnchor: [50, 18]
+        });
+        
+        // Build address for popup
+        const addressHtml = order.address 
+            ? `<div style="color: #6b7280; font-size: 11px; margin-top: 4px;">📍 ${order.address}</div>` 
+            : '';
+        
+        const marker = L.marker([order.location.latitude, order.location.longitude], {icon})
+            .addTo(historyMap)
+            .bindPopup(`
+                <div style="min-width: 180px;">
+                    <b style="font-size: 13px;">${order.order_number}</b><br>
+                    <span style="font-size: 12px;">${order.customer_name}</span>
+                    ${addressHtml}
+                    <div style="margin-top: 6px;">
+                        <span style="color: ${order.payment_type === 'cash' ? '#10b981' : '#3b82f6'}; font-weight: 600;">
+                            ${order.amount_formatted}
+                        </span>
+                        <span style="background: ${order.payment_type === 'cash' ? '#d1fae5' : '#dbeafe'}; color: ${order.payment_type === 'cash' ? '#065f46' : '#1e40af'}; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 4px;">
+                            ${order.payment_type === 'cash' ? 'Cash' : 'Online'}
+                        </span>
+                    </div>
+                    <div style="color: #6b7280; font-size: 11px; margin-top: 4px;">🕐 Delivered at ${order.delivered_at}</div>
+                </div>
+            `);
+        
+        historyMarkers[order.id] = marker;
+        bounds.push([order.location.latitude, order.location.longitude]);
+    });
+    
+    if (bounds.length > 0) {
+        historyMap.fitBounds(bounds, {padding: [50, 50]});
+    }
+}
+
+function renderHistoryOrdersList() {
+    const listContainer = document.getElementById('historyMapOrdersList');
+    listContainer.innerHTML = `
+        <div style="background: #f8fafc; padding: 10px 16px; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb;">
+            📦 Delivered Orders (${historyCurrentOrders.length})
+        </div>
+        ${historyCurrentOrders.map(order => `
+            <div id="historyOrderRow_${order.id}" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f3f4f6;">
+                <div>
+                    <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
+                    <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-weight: 600; color: ${order.payment_type === 'cash' ? '#10b981' : '#3b82f6'};">
+                        ${order.amount_formatted}
+                    </span>
+                    <span style="color: #6b7280; font-size: 11px;">🕐 ${order.delivered_at}</span>
+                    <span id="historyLocStatus_${order.id}" style="color: ${order.location ? '#10b981' : '#ef4444'};">
+                        ${order.location ? '📍' : '❌'}
+                    </span>
+                </div>
+            </div>
+        `).join('')}
+    `;
+}
+
+function backToHistoryDateGroups() {
+    historySelectedDate = null;
+    if (historyMap) {
+        historyMap.remove();
+        historyMap = null;
+    }
+    document.getElementById('historyRiderList').style.display = 'none';
+    document.getElementById('historyDateGroups').style.display = 'block';
+    document.getElementById('historyDateMap').style.display = 'none';
+}
+
+// ⭐ GEOCODING FUNCTIONS FOR HISTORY MAP
+
+async function geocodeHistoryMissing() {
+    // Geocode only orders without location
+    const ordersToGeocode = historyCurrentOrders.filter(o => !o.location && o.customer_id);
+    await geocodeHistoryOrders(ordersToGeocode, false);
+}
+
+async function geocodeHistoryAll() {
+    // Geocode all orders (force refresh)
+    const ordersToGeocode = historyCurrentOrders.filter(o => o.customer_id);
+    await geocodeHistoryOrders(ordersToGeocode, true);
+}
+
+async function geocodeHistoryOrders(orders, forceUpdate = false) {
+    if (orders.length === 0) {
+        alert('No orders to geocode');
+        return;
+    }
+    
+    const progressEl = document.getElementById('historyGeocodeProgress');
+    const statusEl = document.getElementById('historyGeocodeStatus');
+    const missingBtn = document.getElementById('historyGeocodeMissingBtn');
+    const allBtn = document.getElementById('historyGeocodeAllBtn');
+    
+    progressEl.style.display = 'block';
+    missingBtn.disabled = true;
+    allBtn.disabled = true;
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (let i = 0; i < orders.length; i++) {
+        const order = orders[i];
+        statusEl.innerHTML = `Geocoding ${i + 1}/${orders.length}: <b>${order.customer_name}</b>...`;
+        
+        // Highlight current row
+        const row = document.getElementById(`historyOrderRow_${order.id}`);
+        if (row) row.style.background = '#fef3c7';
+        
+        try {
+            const response = await fetch(`/customers/${order.customer_id}/geocode-single?force=${forceUpdate ? 1 : 0}`, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (data.success && data.location) {
+                successCount++;
+                
+                // Update order in our array
+                const orderIdx = historyCurrentOrders.findIndex(o => o.id === order.id);
+                if (orderIdx !== -1) {
+                    historyCurrentOrders[orderIdx].location = {
+                        latitude: data.location.latitude,
+                        longitude: data.location.longitude,
+                        source: 'geocoded'
+                    };
+                }
+                
+                // Update status icon
+                const statusIcon = document.getElementById(`historyLocStatus_${order.id}`);
+                if (statusIcon) {
+                    statusIcon.innerHTML = '📍';
+                    statusIcon.style.color = '#10b981';
+                }
+                
+                if (row) row.style.background = '#d1fae5';
+            } else {
+                failCount++;
+                if (row) row.style.background = '#fee2e2';
+            }
+        } catch (error) {
+            console.error('Geocode error:', error);
+            failCount++;
+            if (row) row.style.background = '#fee2e2';
+        }
+        
+        // Rate limit - wait 1.2 seconds between requests
+        if (i < orders.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+        }
+    }
+    
+    // Re-render map with new locations
+    renderHistoryMapMarkers();
+    
+    // Update summary
+    const withLocation = historyCurrentOrders.filter(o => o.location).length;
+    const withoutLocation = historyCurrentOrders.length - withLocation;
+    
+    document.getElementById('historyMapSummary').innerHTML = `
+        ${historyCurrentOrders.length} delivered • 
+        <span style="color: #10b981;">📍 ${withLocation}</span> • 
+        <span style="color: #ef4444;">❌ ${withoutLocation}</span>
+    `;
+    
+    // Update missing button
+    if (withoutLocation > 0) {
+        missingBtn.style.display = 'inline-block';
+        missingBtn.textContent = `📍 Geocode Missing (${withoutLocation})`;
+    } else {
+        missingBtn.style.display = 'none';
+    }
+    
+    statusEl.innerHTML = `✅ Done! ${successCount} geocoded, ${failCount} failed`;
+    missingBtn.disabled = false;
+    allBtn.disabled = false;
+    
+    // Hide progress after 3 seconds
+    setTimeout(() => {
+        progressEl.style.display = 'none';
+        // Reset row backgrounds
+        historyCurrentOrders.forEach(o => {
+            const row = document.getElementById(`historyOrderRow_${o.id}`);
+            if (row) row.style.background = '';
+        });
+    }, 3000);
+}
+
+// ⭐ NEW: Load rider location history (last 5 unique locations)
+let showingLocationHistory = false;
+let locationHistoryMarkers = [];
+
+async function toggleRiderLocationHistory(riderId) {
+    showingLocationHistory = !showingLocationHistory;
+    
+    const btn = document.getElementById('locationHistoryBtn');
+    if (showingLocationHistory) {
+        btn.textContent = '📍 Hide Trail';
+        btn.style.background = '#3b82f6';
+        await loadRiderLocationHistory(riderId);
+    } else {
+        btn.textContent = '📍 Show Trail (2h)';
+        btn.style.background = 'rgba(255,255,255,0.2)';
+        // Remove history markers
+        locationHistoryMarkers.forEach(m => riderMap.removeLayer(m));
+        locationHistoryMarkers = [];
+    }
+}
+
+async function loadRiderLocationHistory(riderId) {
+    try {
+        // ⭐ Request 2 hours of history
+        let url = `/orders/riders-map/${riderId}/location-history?hours=2`;
+        if (currentRidersMapDate) {
+            url += `&date=${currentRidersMapDate}`;
+        }
+        
+        const response = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.message || 'Failed to load history');
+        }
+        
+        // Remove existing history markers
+        locationHistoryMarkers.forEach(m => riderMap.removeLayer(m));
+        locationHistoryMarkers = [];
+        
+        if (data.locations.length === 0) {
+            alert('No location history found for the last 2 hours');
+            return;
+        }
+        
+        // ⭐ Add markers for each location group with duration info
+        data.locations.forEach((loc, idx) => {
+            const isLatest = idx === 0;
+            const hasDuration = loc.duration && loc.duration_minutes > 0;
+            
+            // Create marker with duration badge if stayed at location
+            const iconHtml = hasDuration 
+                ? `<div style="position: relative;">
+                    <div style="width: 28px; height: 28px; background: ${isLatest ? '#3b82f6' : '#6b7280'}; color: white; border: 2px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">${idx + 1}</div>
+                    <div style="position: absolute; top: -8px; right: -20px; background: #f59e0b; color: white; padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">${loc.duration}</div>
+                  </div>`
+                : `<div style="width: 28px; height: 28px; background: ${isLatest ? '#3b82f6' : '#6b7280'}; color: white; border: 2px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">${idx + 1}</div>`;
+            
+            const icon = L.divIcon({
+                className: 'history-marker',
+                html: iconHtml,
+                iconSize: hasDuration ? [48, 36] : [28, 28],
+                iconAnchor: hasDuration ? [14, 28] : [14, 14]
+            });
+            
+            // Build popup with duration info
+            let popupHtml = `<b>#${idx + 1} - ${loc.time}</b><br>`;
+            if (hasDuration) {
+                popupHtml += `<span style="color: #f59e0b; font-weight: 600;">⏱️ Stayed ${loc.duration}</span><br>`;
+                popupHtml += `<small>Arrived: ${loc.arrival_time}</small><br>`;
+            }
+            popupHtml += `<small>${loc.age}</small><br>`;
+            popupHtml += `<small>Accuracy: ${loc.accuracy || '?'}m</small><br>`;
+            popupHtml += `<small>${loc.point_count} GPS points</small>`;
+            
+            const marker = L.marker([loc.latitude, loc.longitude], {icon})
+                .addTo(riderMap)
+                .bindPopup(popupHtml);
+            
+            locationHistoryMarkers.push(marker);
+        });
+        
+        // Draw line connecting history points
+        if (data.locations.length > 1) {
+            const polyline = L.polyline(
+                data.locations.map(l => [l.latitude, l.longitude]),
+                {color: '#6b7280', weight: 2, dashArray: '5,5', opacity: 0.7}
+            ).addTo(riderMap);
+            locationHistoryMarkers.push(polyline);
+        }
+        
+    } catch (error) {
+        console.error('Failed to load location history:', error);
+        alert('Failed to load location history: ' + error.message);
+    }
+}
+
+// ⭐ Auto-open Riders Map if URL parameter is present
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('view') === 'riders_map') {
+        // Small delay to ensure all scripts are loaded
+        setTimeout(() => {
+            openAllRidersMapModal();
+        }, 500);
+    }
+});
+</script>
 
 @endpush

@@ -936,6 +936,22 @@ class OrderController extends Controller
                 ]);
             }
             
+            // ⭐ AUTO-GEOCODE: If customer has no coordinates, try to geocode their address
+            if ($order->customer_id) {
+                $customer = \App\Models\CRM\CustomerModel::find($order->customer_id);
+                if ($customer && !$customer->latitude && !$customer->longitude) {
+                    // Geocode in background (don't block order creation)
+                    try {
+                        \App\Services\GeocodingService::geocodeCustomer($order->customer_id);
+                    } catch (\Exception $e) {
+                        \Log::warning('Auto-geocoding failed for customer', [
+                            'customer_id' => $order->customer_id,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'message' => 'Order created successfully',
@@ -1463,15 +1479,28 @@ class OrderController extends Controller
                 return $order;
             });
 
-            // ⭐ SMART SYNC: Clear sync flags for rider's fetched orders
-            // This marks orders as synced when the mobile app fetches them
+            // ⭐ SMART SYNC: Update sync timestamp when rider fetches orders
+            // This tracks when the mobile app last communicated with the server
             if ($source === 'other' && auth()->check()) {
                 $riderId = auth()->id();
+                
+                // Clear any pending sync flags
                 \DB::table('t_crm_prod_order')
                     ->where('assigned_rider_user_id', $riderId)
                     ->where('rider_sync_required', true)
                     ->update([
                         'rider_sync_required' => false,
+                        'rider_last_sync_at' => now()
+                    ]);
+                
+                // ⭐ Also update at least one order's sync time to track "last seen"
+                // This ensures we always have a recent timestamp for the rider
+                \DB::table('t_crm_prod_order')
+                    ->where('assigned_rider_user_id', $riderId)
+                    ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])
+                    ->orderBy('id', 'desc')
+                    ->limit(1)
+                    ->update([
                         'rider_last_sync_at' => now()
                     ]);
             }
@@ -2306,6 +2335,103 @@ class OrderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to get sync status: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ GEOCODING: Geocode customers with addresses
+     * Called from Operations page to batch geocode addresses
+     * GET /orders/geocode-pending
+     * 
+     * @param days - How many days back to look for orders (default 30, use 0 for all)
+     * @param limit - How many to process per batch (default 5, max 10)
+     */
+    public function geocodePendingCustomers(Request $request)
+    {
+        try {
+            $limit = min($request->get('limit', 5), 10); // Max 10 per request
+            $daysBack = $request->get('days', 30); // Default last 30 days (0 = all)
+            
+            // Find customers that need geocoding
+            // Skip: already geocoded, no address, or recently attempted (failed)
+            // Priority: most recent orders first
+            $query = \DB::table('t_crm_prod_customer')
+                ->whereNull('geocoded_latitude')
+                ->whereNotNull('address1')
+                ->where('address1', '!=', '')
+                // Skip customers where we attempted geocoding in the last 7 days (to avoid retrying failed ones)
+                ->where(function($q) {
+                    $q->whereNull('geocoded_at')
+                      ->orWhere('geocoded_at', '<', now()->subDays(7));
+                });
+            
+            // Filter by recent orders if days > 0
+            if ($daysBack > 0) {
+                $query->where('last_order_date', '>=', now()->subDays($daysBack));
+            }
+            
+            $customersToGeocode = $query
+                ->select('id', 'address1', 'city', 'last_order_date')
+                ->orderBy('last_order_date', 'desc')
+                ->limit($limit)
+                ->get();
+            
+            $geocoded = 0;
+            $failed = 0;
+            $results = [];
+            
+            foreach ($customersToGeocode as $customer) {
+                try {
+                    $success = \App\Services\GeocodingService::geocodeCustomer($customer->id);
+                    if ($success) {
+                        $geocoded++;
+                        $results[] = ['id' => $customer->id, 'status' => 'success'];
+                    } else {
+                        $failed++;
+                        $results[] = ['id' => $customer->id, 'status' => 'failed'];
+                    }
+                } catch (\Exception $e) {
+                    $failed++;
+                    $results[] = ['id' => $customer->id, 'status' => 'error', 'message' => $e->getMessage()];
+                }
+                
+                // Rate limit - wait 1.1 seconds between requests (Nominatim requirement)
+                if ($geocoded + $failed < count($customersToGeocode)) {
+                    usleep(1100000);
+                }
+            }
+            
+            // Count remaining customers needing geocoding (excluding recently attempted failures)
+            $remainingQuery = \DB::table('t_crm_prod_customer')
+                ->whereNull('geocoded_latitude')
+                ->whereNotNull('address1')
+                ->where('address1', '!=', '')
+                ->where(function($q) {
+                    $q->whereNull('geocoded_at')
+                      ->orWhere('geocoded_at', '<', now()->subDays(7));
+                });
+            
+            if ($daysBack > 0) {
+                $remainingQuery->where('last_order_date', '>=', now()->subDays($daysBack));
+            }
+            
+            $remaining = $remainingQuery->count();
+            
+            return response()->json([
+                'success' => true,
+                'geocoded' => $geocoded,
+                'failed' => $failed,
+                'remaining' => $remaining,
+                'results' => $results
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Geocoding failed', ['error' => $e->getMessage()]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Geocoding failed: ' . $e->getMessage()
             ], 500);
         }
     }

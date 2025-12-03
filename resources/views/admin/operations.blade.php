@@ -219,6 +219,67 @@
             @endif
         </div>
 
+        <!-- ⭐ Customer Address Geocoding Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">📍 Geocode Customer Addresses</h2>
+            </div>
+            
+            <!-- Info -->
+            <div class="mb-4 p-4 bg-purple-50 border border-purple-200 rounded-md">
+                <h3 class="text-sm font-semibold text-purple-800 mb-2">🗺️ Convert Addresses to Map Coordinates</h3>
+                <div class="text-xs text-purple-700 space-y-1">
+                    <p><strong>This will:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Find customers with orders in the last 30 days</li>
+                        <li>Convert their addresses to GPS coordinates</li>
+                        <li>Store separately from verified locations</li>
+                        <li>Enable map display for orders without GPS</li>
+                    </ul>
+                    
+                    <p class="mt-2"><strong>⚠️ Note:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Uses OpenStreetMap (free, 1 request/second)</li>
+                        <li>Some vague addresses may fail</li>
+                        <li>Safe to run multiple times</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <!-- Stats Display -->
+            <div id="geocodingStats" class="p-4 bg-gray-50 rounded-lg mb-4">
+                <div class="text-sm text-gray-600">Loading stats...</div>
+            </div>
+            
+            <!-- Progress Display -->
+            <div id="geocodingProgress" class="hidden mb-4">
+                <div class="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Progress</span>
+                    <span id="geocodingProgressText">0 / 0</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div id="geocodingProgressBar" class="bg-purple-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <div id="geocodingLog" class="mt-3 text-xs text-gray-500 max-h-32 overflow-y-auto"></div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="flex gap-2">
+                <button type="button" 
+                        id="startGeocodingBtn"
+                        onclick="startGeocoding()"
+                        class="flex-1 inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
+                    📍 Start Geocoding
+                </button>
+                <button type="button" 
+                        id="stopGeocodingBtn"
+                        onclick="stopGeocoding()"
+                        class="hidden flex-1 inline-flex items-center justify-center px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md">
+                    ⏹️ Stop
+                </button>
+            </div>
+        </div>
+
         <!-- Ledger Settings Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -530,6 +591,128 @@
             document.getElementById('addExpenseCategoryModal').classList.add('hidden');
             document.getElementById('addExpenseCategoryModal').style.display = 'none';
             document.body.style.overflow = 'auto';
+        }
+        
+        // ⭐ GEOCODING FUNCTIONS
+        let geocodingRunning = false;
+        let geocodingTotal = 0;
+        let geocodingDone = 0;
+        
+        // Load geocoding stats on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadGeocodingStats();
+        });
+        
+        async function loadGeocodingStats() {
+            const statsDiv = document.getElementById('geocodingStats');
+            try {
+                const response = await fetch('/customers/geocode-stats', {
+                    headers: { 'Accept': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success && data.stats) {
+                    const s = data.stats;
+                    statsDiv.innerHTML = `
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span class="text-gray-500">Total Customers:</span>
+                                <span class="font-semibold text-gray-800">${s.total_customers}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Verified GPS:</span>
+                                <span class="font-semibold text-green-600">${s.with_verified_location}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Geocoded:</span>
+                                <span class="font-semibold text-purple-600">${s.with_geocoded_location}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Need Geocoding:</span>
+                                <span class="font-semibold text-orange-600">${s.needs_geocoding}</span>
+                            </div>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">
+                            Coverage: ${s.coverage_percent}% of customers with addresses have coordinates
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                statsDiv.innerHTML = '<div class="text-sm text-red-600">Failed to load stats</div>';
+            }
+        }
+        
+        async function startGeocoding() {
+            if (geocodingRunning) return;
+            
+            geocodingRunning = true;
+            geocodingDone = 0;
+            
+            document.getElementById('startGeocodingBtn').classList.add('hidden');
+            document.getElementById('stopGeocodingBtn').classList.remove('hidden');
+            document.getElementById('geocodingProgress').classList.remove('hidden');
+            document.getElementById('geocodingLog').innerHTML = '';
+            
+            await runGeocodingBatch();
+        }
+        
+        function stopGeocoding() {
+            geocodingRunning = false;
+            document.getElementById('startGeocodingBtn').classList.remove('hidden');
+            document.getElementById('stopGeocodingBtn').classList.add('hidden');
+            addGeocodingLog('⏹️ Stopped by user');
+            loadGeocodingStats();
+        }
+        
+        async function runGeocodingBatch() {
+            if (!geocodingRunning) return;
+            
+            try {
+                // Use days=30 for customers with orders in last 30 days
+                const response = await fetch('/orders/geocode-pending?limit=5&days=30', {
+                    headers: { 'Accept': 'application/json' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    geocodingDone += data.geocoded + data.failed;
+                    geocodingTotal = geocodingDone + data.remaining;
+                    
+                    // Update progress
+                    const percent = geocodingTotal > 0 ? Math.round((geocodingDone / geocodingTotal) * 100) : 0;
+                    document.getElementById('geocodingProgressBar').style.width = percent + '%';
+                    document.getElementById('geocodingProgressText').textContent = `${geocodingDone} / ${geocodingTotal}`;
+                    
+                    // Log results
+                    if (data.geocoded > 0 || data.failed > 0) {
+                        addGeocodingLog(`✓ ${data.geocoded} success, ✗ ${data.failed} failed`);
+                    }
+                    
+                    // Continue if more to process
+                    if (data.remaining > 0 && geocodingRunning) {
+                        setTimeout(runGeocodingBatch, 2000); // Wait 2 seconds between batches
+                    } else {
+                        // Done!
+                        geocodingRunning = false;
+                        document.getElementById('startGeocodingBtn').classList.remove('hidden');
+                        document.getElementById('stopGeocodingBtn').classList.add('hidden');
+                        addGeocodingLog('✅ Geocoding complete!');
+                        loadGeocodingStats();
+                    }
+                } else {
+                    addGeocodingLog('❌ Error: ' + (data.message || 'Unknown error'));
+                    stopGeocoding();
+                }
+            } catch (error) {
+                addGeocodingLog('❌ Connection error: ' + error.message);
+                stopGeocoding();
+            }
+        }
+        
+        function addGeocodingLog(message) {
+            const log = document.getElementById('geocodingLog');
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML = `<div>[${time}] ${message}</div>` + log.innerHTML;
         }
         </script>
     </div>

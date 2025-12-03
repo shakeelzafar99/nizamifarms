@@ -102,6 +102,31 @@
                           </div>
                       </a>
                   </div>
+                  @if($userRole !== 'rider')
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="javascript:void(0)" onclick="openRidersMapFromSidebar()">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-map text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Riders Map
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <script>
+                  function openRidersMapFromSidebar() {
+                      // Check if we're on the orders page and the modal function exists
+                      if (typeof openAllRidersMapModal === 'function') {
+                          openAllRidersMapModal();
+                      } else {
+                          // Redirect to orders page with auto-open parameter
+                          window.location.href = '/orders?view=riders_map';
+                      }
+                  }
+                  </script>
+                  @endif
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/orders?source=shopify">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
