@@ -53,8 +53,10 @@ class ExpenseManagementController extends Controller
             ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
         
         // Apply filters
+        // ⭐ Use expense_date for filtering (falls back to created_at for old records)
         if ($dateFrom && $dateTo) {
-            $expensesQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
+            $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
+                          ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
         }
         
         if ($category) {
@@ -97,8 +99,10 @@ class ExpenseManagementController extends Controller
             ->whereNotNull('ledger_transaction_id');
         
         // Apply date filter to salary slips if provided
+        // ⭐ FIX: Use DATE() to ensure full day is included
         if ($dateFrom && $dateTo) {
-            $salarySlipsQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
+            $salarySlipsQuery->whereRaw('DATE(created_at) >= ?', [$dateFrom])
+                             ->whereRaw('DATE(created_at) <= ?', [$dateTo]);
         }
         
         // If category filter is "Salary", include salary slips; otherwise exclude them
@@ -426,7 +430,7 @@ class ExpenseManagementController extends Controller
                 'amount' => $expenseRequest->amount,
                 'paid_from' => $expenseRequest->paymentSourceAccount ? $expenseRequest->paymentSourceAccount->account_name : 'Unknown',
                 'destination' => $destinationAccount ? $destinationAccount->account_name : 'NF Cash',
-                'date' => $expenseRequest->created_at->format('Y-m-d')
+                'date' => ($expenseRequest->expense_date ?? $expenseRequest->created_at)->format('Y-m-d')
             ]
         ]);
     }

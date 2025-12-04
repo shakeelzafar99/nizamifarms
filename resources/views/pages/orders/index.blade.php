@@ -1471,6 +1471,20 @@ input:focus, select:focus, button:focus {
     100% { transform: rotate(360deg); }
 }
 
+/* History Trail Toggle Button */
+#historyTrailToggleBtn.active {
+    background: #8b5cf6 !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.3);
+}
+#historyTrailToggleBtn:not(.active) {
+    background: #6b7280 !important;
+    opacity: 0.7;
+}
+#historyTrailToggleBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* Pop-out mode enhancements */
 .popout-mode-active {
     overflow: hidden !important;
@@ -10392,6 +10406,12 @@ function saveVerifiedLocation() {
                         <div id="historyMapTitle" style="font-size: 16px; font-weight: 600; color: #1f2937;"></div>
                         <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
                             <div id="historyMapSummary" style="font-size: 13px; color: #6b7280;"></div>
+                            <!-- ⭐ Trail Toggle Button -->
+                            <button id="historyTrailToggleBtn" onclick="toggleHistoryLocationTrail()" 
+                                    class="active"
+                                    style="background: #8b5cf6; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; display: none; transition: all 0.2s;">
+                                📍 Loading trail...
+                            </button>
                             <button id="historyGeocodeMissingBtn" onclick="geocodeHistoryMissing()" 
                                     style="background: #f59e0b; border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; display: none;">
                                 📍 Geocode Missing
@@ -10426,6 +10446,10 @@ function saveVerifiedLocation() {
                     <button id="locationHistoryBtn" onclick="toggleRiderLocationHistory(currentRiderIdForMap)" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
                         📍 Show Trail (2h)
                     </button>
+                    <select id="trailDurationSelect" onchange="changeTrailDuration()" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; display: none;">
+                        <option value="2" style="color: black;">2 Hours</option>
+                        <option value="24" style="color: black;">Full Day</option>
+                    </select>
                     <button onclick="refreshRiderMap()" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;">
                         🔄 Refresh
                     </button>
@@ -11061,6 +11085,11 @@ async function loadRiderMapData(riderId) {
                                 </span>
                             ` : ''}
                             ${locationBadge}
+                            <button onclick="openSetVerifiedLocationModal(${order.customer_id}, '${order.customer_name.replace(/'/g, "\\'")}', ${order.order_id})" 
+                                    style="background: #8b5cf6; color: white; border: none; padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer;"
+                                    title="Set verified location for this customer">
+                                📍 Set
+                            </button>
                         </div>
                     </div>
                 `;
@@ -11219,6 +11248,175 @@ async function geocodeRiderMapOrders(orders, forceUpdate = false) {
     setTimeout(() => {
         loadRiderMapData(currentRiderIdForMap);
     }, 1000);
+}
+
+// ⭐ SET VERIFIED LOCATION MODAL
+let setVerifiedLocationCustomerId = null;
+let setVerifiedLocationOrderId = null;
+let verifiedLocationMap = null;
+let verifiedLocationMarker = null;
+
+function openSetVerifiedLocationModal(customerId, customerName, orderId) {
+    setVerifiedLocationCustomerId = customerId;
+    setVerifiedLocationOrderId = orderId;
+    
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('setVerifiedLocationModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'setVerifiedLocationModal';
+        modal.innerHTML = `
+            <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 999999; display: flex; align-items: center; justify-content: center;">
+                <div style="background: white; border-radius: 12px; width: 90%; max-width: 700px; max-height: 90vh; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.3);">
+                    <div style="background: #8b5cf6; color: white; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center;">
+                        <h3 style="margin: 0; font-size: 16px;">📍 Set Verified Location</h3>
+                        <button onclick="closeSetVerifiedLocationModal()" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">&times;</button>
+                    </div>
+                    <div style="padding: 16px;">
+                        <p style="margin: 0 0 12px 0; color: #374151;">
+                            Customer: <strong id="verifiedLocationCustomerName"></strong>
+                        </p>
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 13px; color: #6b7280;">Google Maps URL (paste a shared location link):</label>
+                            <input type="text" id="verifiedLocationUrl" placeholder="https://maps.google.com/..." 
+                                   style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-top: 4px;">
+                        </div>
+                        <p style="text-align: center; color: #6b7280; margin: 8px 0;">OR click on the map to set location:</p>
+                        <div id="verifiedLocationMapContainer" style="height: 300px; border-radius: 8px; border: 1px solid #e5e7eb;"></div>
+                        <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+                            <span style="color: #6b7280; font-size: 13px;">Selected:</span>
+                            <span id="verifiedLocationCoords" style="font-weight: 500; color: #374151;">Click on map or enter URL</span>
+                        </div>
+                    </div>
+                    <div style="padding: 16px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 8px;">
+                        <button onclick="closeSetVerifiedLocationModal()" style="padding: 10px 20px; border: 1px solid #d1d5db; background: white; border-radius: 6px; cursor: pointer;">Cancel</button>
+                        <button onclick="saveVerifiedLocation()" style="padding: 10px 20px; border: none; background: #8b5cf6; color: white; border-radius: 6px; cursor: pointer; font-weight: 500;">💾 Save Location</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Set customer name
+    document.getElementById('verifiedLocationCustomerName').textContent = customerName;
+    document.getElementById('verifiedLocationUrl').value = '';
+    document.getElementById('verifiedLocationCoords').textContent = 'Click on map or enter URL';
+    
+    modal.style.display = 'block';
+    
+    // Initialize map after a short delay
+    setTimeout(() => {
+        initVerifiedLocationMap();
+    }, 100);
+}
+
+function closeSetVerifiedLocationModal() {
+    const modal = document.getElementById('setVerifiedLocationModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    if (verifiedLocationMap) {
+        verifiedLocationMap.remove();
+        verifiedLocationMap = null;
+    }
+    verifiedLocationMarker = null;
+}
+
+function initVerifiedLocationMap() {
+    const container = document.getElementById('verifiedLocationMapContainer');
+    if (!container) return;
+    
+    // Clear any existing map
+    container.innerHTML = '';
+    
+    // Default to Islamabad center
+    const defaultLat = 33.6844;
+    const defaultLng = 73.0479;
+    
+    verifiedLocationMap = L.map(container).setView([defaultLat, defaultLng], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(verifiedLocationMap);
+    
+    // Add click handler
+    verifiedLocationMap.on('click', function(e) {
+        const lat = e.latlng.lat.toFixed(6);
+        const lng = e.latlng.lng.toFixed(6);
+        
+        // Remove existing marker
+        if (verifiedLocationMarker) {
+            verifiedLocationMap.removeLayer(verifiedLocationMarker);
+        }
+        
+        // Add new marker
+        verifiedLocationMarker = L.marker([lat, lng]).addTo(verifiedLocationMap);
+        
+        // Update display
+        document.getElementById('verifiedLocationCoords').textContent = `${lat}, ${lng}`;
+        document.getElementById('verifiedLocationUrl').value = `https://www.google.com/maps?q=${lat},${lng}`;
+    });
+}
+
+async function saveVerifiedLocation() {
+    const urlInput = document.getElementById('verifiedLocationUrl').value.trim();
+    
+    // Try to extract coordinates from URL or use marker position
+    let lat = null, lng = null;
+    
+    if (verifiedLocationMarker) {
+        const pos = verifiedLocationMarker.getLatLng();
+        lat = pos.lat;
+        lng = pos.lng;
+    } else if (urlInput) {
+        // Try to parse coordinates from URL
+        const coordMatch = urlInput.match(/[-]?\d+\.\d+/g);
+        if (coordMatch && coordMatch.length >= 2) {
+            lat = parseFloat(coordMatch[0]);
+            lng = parseFloat(coordMatch[1]);
+            // Swap if lat is out of range (common with Google Maps URLs)
+            if (Math.abs(lat) > 90) {
+                [lat, lng] = [lng, lat];
+            }
+        }
+    }
+    
+    if (!lat || !lng) {
+        alert('Please click on the map or enter a valid Google Maps URL');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/customers/${setVerifiedLocationCustomerId}/set-verified-location`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify({
+                latitude: lat,
+                longitude: lng,
+                url: urlInput || `https://www.google.com/maps?q=${lat},${lng}`
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✅ Verified location saved successfully!');
+            closeSetVerifiedLocationModal();
+            // Refresh the rider map to show the new location
+            if (currentRiderIdForMap) {
+                loadRiderMapData(currentRiderIdForMap);
+            }
+        } else {
+            alert('❌ Failed to save: ' + (data.message || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Save verified location error:', error);
+        alert('❌ Failed to save location: ' + error.message);
+    }
 }
 
 // Add CSS for pulse animation
@@ -11704,6 +11902,10 @@ function backToHistoryRiderList() {
 // Level 3: Show map for a specific date
 let historyCurrentOrders = []; // Store current orders for geocoding
 let historyMarkers = {}; // Store markers by order ID
+let historyLocationTrail = []; // Store location trail data
+let historyTrailLayer = null; // Leaflet layer for trail
+let historyTrailMarkers = []; // Trail point markers
+let historyShowTrail = true; // Toggle for showing trail
 
 function openHistoryDateMap(date, dateDisplay) {
     if (!historyRiderData) return;
@@ -11714,6 +11916,9 @@ function openHistoryDateMap(date, dateDisplay) {
     
     historyCurrentOrders = dateGroup.orders;
     historyMarkers = {};
+    historyLocationTrail = [];
+    historyTrailMarkers = [];
+    historyShowTrail = true;
     
     // Show map, hide others
     document.getElementById('historyRiderList').style.display = 'none';
@@ -11754,6 +11959,154 @@ function openHistoryDateMap(date, dateDisplay) {
     
     renderHistoryMapMarkers();
     renderHistoryOrdersList();
+    
+    // ⭐ Fetch and display location trail for this date
+    fetchHistoryLocationTrail(historySelectedRider.id, date);
+}
+
+// ⭐ Fetch location trail for the selected date
+async function fetchHistoryLocationTrail(riderId, date) {
+    try {
+        const trailToggleBtn = document.getElementById('historyTrailToggleBtn');
+        if (trailToggleBtn) {
+            trailToggleBtn.innerHTML = '⏳ Loading trail...';
+            trailToggleBtn.disabled = true;
+        }
+        
+        const response = await fetch(`/orders/riders-map/${riderId}/location-history?date=${date}&hours=24`);
+        const data = await response.json();
+        
+        if (data.success && data.locations && data.locations.length > 0) {
+            historyLocationTrail = data.locations;
+            renderHistoryLocationTrail();
+            
+            if (trailToggleBtn) {
+                trailToggleBtn.innerHTML = `📍 Trail (${data.grouped_points} pts)`;
+                trailToggleBtn.disabled = false;
+                trailToggleBtn.style.display = 'inline-block';
+                trailToggleBtn.classList.add('active');
+            }
+        } else {
+            historyLocationTrail = [];
+            if (trailToggleBtn) {
+                trailToggleBtn.innerHTML = '📍 No Trail Data';
+                trailToggleBtn.disabled = true;
+                trailToggleBtn.style.display = 'inline-block';
+            }
+        }
+    } catch (error) {
+        console.error('Failed to fetch location trail:', error);
+        const trailToggleBtn = document.getElementById('historyTrailToggleBtn');
+        if (trailToggleBtn) {
+            trailToggleBtn.innerHTML = '📍 Trail Error';
+            trailToggleBtn.disabled = true;
+        }
+    }
+}
+
+// ⭐ Render the location trail on the map
+function renderHistoryLocationTrail() {
+    if (!historyMap || historyLocationTrail.length === 0) return;
+    
+    // Clear existing trail
+    clearHistoryLocationTrail();
+    
+    if (!historyShowTrail) return;
+    
+    // Draw polyline connecting all points
+    const trailPoints = historyLocationTrail.map(loc => [loc.latitude, loc.longitude]);
+    historyTrailLayer = L.polyline(trailPoints, {
+        color: '#8b5cf6', // Purple for trail
+        weight: 3,
+        opacity: 0.7,
+        dashArray: '5, 10'
+    }).addTo(historyMap);
+    
+    // Add markers for each location with duration info
+    historyLocationTrail.forEach((loc, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === historyLocationTrail.length - 1;
+        
+        // Determine marker color based on duration (longer stays = darker)
+        let markerColor = '#a78bfa'; // Light purple default
+        let markerSize = 8;
+        
+        if (loc.duration_minutes >= 30) {
+            markerColor = '#7c3aed'; // Darker purple for 30+ mins
+            markerSize = 14;
+        } else if (loc.duration_minutes >= 15) {
+            markerColor = '#8b5cf6';
+            markerSize = 12;
+        } else if (loc.duration_minutes >= 5) {
+            markerColor = '#a78bfa';
+            markerSize = 10;
+        }
+        
+        // Special colors for first/last
+        if (isFirst) {
+            markerColor = '#22c55e'; // Green for start
+            markerSize = 14;
+        }
+        if (isLast) {
+            markerColor = '#ef4444'; // Red for end
+            markerSize = 14;
+        }
+        
+        const icon = L.divIcon({
+            className: 'history-trail-marker',
+            html: `<div style="
+                width: ${markerSize}px; 
+                height: ${markerSize}px; 
+                background: ${markerColor}; 
+                border: 2px solid white; 
+                border-radius: 50%; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            "></div>`,
+            iconSize: [markerSize, markerSize],
+            iconAnchor: [markerSize/2, markerSize/2]
+        });
+        
+        const marker = L.marker([loc.latitude, loc.longitude], {icon})
+            .addTo(historyMap)
+            .bindPopup(`
+                <div style="min-width: 150px;">
+                    <div style="font-weight: 600; color: #7c3aed; margin-bottom: 4px;">
+                        ${isFirst ? '🚀 Started' : isLast ? '🏁 Last Location' : '📍 Location Point'}
+                    </div>
+                    <div style="font-size: 12px; color: #374151;">
+                        <div>🕐 ${loc.time_display || loc.first_seen}</div>
+                        ${loc.duration_minutes > 0 ? `<div style="margin-top: 4px;">⏱️ Stayed: <strong>${loc.duration_display || loc.duration_minutes + ' mins'}</strong></div>` : ''}
+                        ${loc.point_count > 1 ? `<div style="margin-top: 4px; font-size: 10px; color: #6b7280;">${loc.point_count} readings</div>` : ''}
+                    </div>
+                </div>
+            `);
+        
+        historyTrailMarkers.push(marker);
+    });
+}
+
+// ⭐ Clear the location trail from map
+function clearHistoryLocationTrail() {
+    if (historyTrailLayer) {
+        historyMap.removeLayer(historyTrailLayer);
+        historyTrailLayer = null;
+    }
+    historyTrailMarkers.forEach(m => historyMap.removeLayer(m));
+    historyTrailMarkers = [];
+}
+
+// ⭐ Toggle location trail visibility
+function toggleHistoryLocationTrail() {
+    historyShowTrail = !historyShowTrail;
+    
+    const btn = document.getElementById('historyTrailToggleBtn');
+    if (historyShowTrail) {
+        renderHistoryLocationTrail();
+        btn.classList.add('active');
+    } else {
+        clearHistoryLocationTrail();
+        btn.classList.remove('active');
+    }
 }
 
 function renderHistoryMapMarkers() {
@@ -11985,23 +12338,40 @@ async function toggleRiderLocationHistory(riderId) {
     showingLocationHistory = !showingLocationHistory;
     
     const btn = document.getElementById('locationHistoryBtn');
+    const durationSelect = document.getElementById('trailDurationSelect');
     if (showingLocationHistory) {
         btn.textContent = '📍 Hide Trail';
         btn.style.background = '#3b82f6';
+        durationSelect.style.display = 'inline-block';
         await loadRiderLocationHistory(riderId);
     } else {
-        btn.textContent = '📍 Show Trail (2h)';
+        const duration = durationSelect.value || '2';
+        btn.textContent = `📍 Show Trail (${duration}h)`;
         btn.style.background = 'rgba(255,255,255,0.2)';
+        durationSelect.style.display = 'none';
         // Remove history markers
         locationHistoryMarkers.forEach(m => riderMap.removeLayer(m));
         locationHistoryMarkers = [];
     }
 }
 
+// ⭐ Change trail duration
+async function changeTrailDuration() {
+    if (showingLocationHistory && currentRiderIdForMap) {
+        // Remove old markers
+        locationHistoryMarkers.forEach(m => riderMap.removeLayer(m));
+        locationHistoryMarkers = [];
+        // Reload with new duration
+        await loadRiderLocationHistory(currentRiderIdForMap);
+    }
+}
+
 async function loadRiderLocationHistory(riderId) {
     try {
-        // ⭐ Request 2 hours of history
-        let url = `/orders/riders-map/${riderId}/location-history?hours=2`;
+        // ⭐ Get selected duration (default 2 hours)
+        const durationSelect = document.getElementById('trailDurationSelect');
+        const hours = durationSelect ? durationSelect.value : '2';
+        let url = `/orders/riders-map/${riderId}/location-history?hours=${hours}`;
         if (currentRidersMapDate) {
             url += `&date=${currentRidersMapDate}`;
         }

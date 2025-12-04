@@ -371,7 +371,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->created_at->format('M d, Y') }}
+                                    {{ ($expense->expense_date ?? $expense->created_at)->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                     {{ $expense->requester->fullname ?? 'Unknown' }}
@@ -459,7 +459,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @forelse($pendingSettlement as $expense)
-                            <tr class="hover:bg-gray-50 {{ \Carbon\Carbon::parse($expense->created_at)->diffInDays(now()) > 7 ? 'bg-yellow-50' : '' }}">
+                            <tr class="hover:bg-gray-50 {{ \Carbon\Carbon::parse($expense->expense_date ?? $expense->created_at)->diffInDays(now()) > 7 ? 'bg-yellow-50' : '' }}">
                                 <td class="px-6 py-4">
                                     <input type="checkbox" class="expense-checkbox rounded" value="{{ $expense->id }}" onchange="updateBulkButton()">
                                 </td>
@@ -469,7 +469,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     </a>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->created_at->format('M d, Y') }}
+                                    {{ ($expense->expense_date ?? $expense->created_at)->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                     {{ $expense->requester->fullname ?? 'Unknown' }}
@@ -486,7 +486,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     </span>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ \Carbon\Carbon::parse($expense->created_at)->diffInDays(now()) }} days
+                                    {{ \Carbon\Carbon::parse($expense->expense_date ?? $expense->created_at)->diffInDays(now()) }} days
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                                     <button onclick="openSettlementModal({{ $expense->id }})" 
@@ -531,7 +531,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     {{ $expense->request_number }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->created_at->format('M d, Y') }}
+                                    {{ ($expense->expense_date ?? $expense->created_at)->format('M d, Y') }}
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                     {{ $expense->requester->fullname ?? 'Unknown' }}
@@ -593,18 +593,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 @php
                     // Check if user can create requests for others
                     $canCreateForOthers = false;
+                    $expenseBackdateDays = 0; // ⭐ Default: current date only
+                    
                     if (auth()->check()) {
                         $userRoles = \DB::table('t_sys_user_role as ur')
                             ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
                             ->where('ur.user_id', auth()->id())
-                            ->select('r.type', 'r.urole_name')
+                            ->select('r.type', 'r.urole_name', 'r.expense_backdate_days')
                             ->get();
                         
                         foreach ($userRoles as $roleInfo) {
                             if (in_array(strtolower($roleInfo->type ?? ''), ['admin', 'manager', 'supervisor'])) {
                                 $canCreateForOthers = true;
-                                break;
                             }
+                            // ⭐ Get the maximum backdate days from any of user's roles
+                            $expenseBackdateDays = max($expenseBackdateDays, (int)($roleInfo->expense_backdate_days ?? 0));
                         }
                     }
                     
@@ -728,6 +731,30 @@ document.addEventListener('DOMContentLoaded', function() {
                            <input type="number" name="amount" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium shadow-sm" placeholder="0.00" step="0.01" min="0">
                        </div>
 
+                       <!-- ⭐ Expense Date (shows when backdate is allowed) -->
+                       <div id="quick-expense-date-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>📅 Expense Date</span>
+                               @if($expenseBackdateDays > 0)
+                               <span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Up to {{ $expenseBackdateDays }} days back allowed</span>
+                               @endif
+                           </label>
+                           @if($expenseBackdateDays > 0)
+                           <input type="date" name="expense_date" id="quick_expense_date" 
+                                  class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium shadow-sm"
+                                  value="{{ date('Y-m-d') }}"
+                                  max="{{ date('Y-m-d') }}"
+                                  min="{{ date('Y-m-d', strtotime('-' . $expenseBackdateDays . ' days')) }}">
+                           <p class="text-xs text-gray-500 mt-1">You can select dates from {{ date('M d, Y', strtotime('-' . $expenseBackdateDays . ' days')) }} to today</p>
+                           @else
+                           <input type="date" name="expense_date" id="quick_expense_date" 
+                                  class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-base font-medium shadow-sm bg-gray-50"
+                                  value="{{ date('Y-m-d') }}"
+                                  readonly>
+                           <p class="text-xs text-gray-500 mt-1">Expense will be recorded for today's date</p>
+                           @endif
+                       </div>
+
                        <!-- Description -->
                        <div class="mb-6">
                            <label class="block text-base font-semibold text-gray-800 mb-3" id="quick-description-label">Description</label>
@@ -849,6 +876,9 @@ function handleQuickCategoryChange() {
     leaveFields.style.display = 'none';
     amountField.style.display = 'none';
     expenseCategoryField.style.display = 'none';
+    // ⭐ Hide expense date field by default
+    const expenseDateField = document.getElementById('quick-expense-date-field');
+    if (expenseDateField) expenseDateField.style.display = 'none';
     form.querySelector('[name="leave_start_date"]').required = false;
     form.querySelector('[name="leave_end_date"]').required = false;
     form.querySelector('[name="amount"]').required = false;
@@ -869,6 +899,9 @@ function handleQuickCategoryChange() {
         descriptionField.required = true;
         descriptionField.placeholder = 'Required: Provide details about this expense';
         hiddenTitle.value = 'expense';
+        // ⭐ Show expense date field for expenses
+        const expenseDateField = document.getElementById('quick-expense-date-field');
+        if (expenseDateField) expenseDateField.style.display = 'block';
     } else if (categoryCode === 'salary_advance') {
         amountField.style.display = 'block';
         form.querySelector('[name="amount"]').required = true;

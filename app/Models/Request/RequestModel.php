@@ -25,6 +25,7 @@ class RequestModel extends BaseModel
         'description',
         'amount',
         'expense_category',
+        'expense_date', // ⭐ Backdated expense date
         'payment_source_account_id',
         'leave_start_date',
         'leave_end_date',
@@ -54,6 +55,7 @@ class RequestModel extends BaseModel
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'expense_date' => 'date', // ⭐ Expense date for backdated entries
         'leave_start_date' => 'date',
         'leave_end_date' => 'date',
         'leave_days' => 'integer',

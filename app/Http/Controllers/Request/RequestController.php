@@ -124,12 +124,43 @@ class RequestController extends Controller
             'description' => 'nullable|string',
             'amount' => 'nullable|numeric|min:0',
             'expense_category' => 'nullable|string|max:255', // For expense requests
+            'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
             'leave_type' => 'nullable|string',
             'priority' => 'nullable|in:low,normal,high,urgent'
         ]);
+        
+        // ⭐ Validate expense_date is within allowed backdate range
+        if ($request->filled('expense_date')) {
+            $loggedInUser = auth()->user();
+            $expenseDate = \Carbon\Carbon::parse($validated['expense_date']);
+            $today = \Carbon\Carbon::today();
+            
+            // Get user's max backdate days from their roles
+            $maxBackdateDays = DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $loggedInUser->id)
+                ->max('r.expense_backdate_days') ?? 0;
+            
+            // Check if date is in the future
+            if ($expenseDate->gt($today)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense date cannot be in the future'
+                ], 422);
+            }
+            
+            // Check if date is too far in the past
+            $daysDiff = $today->diffInDays($expenseDate);
+            if ($daysDiff > $maxBackdateDays) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "You can only backdate expenses up to {$maxBackdateDays} days. Selected date is {$daysDiff} days ago."
+                ], 422);
+            }
+        }
 
         try {
             DB::beginTransaction();
@@ -278,6 +309,7 @@ class RequestController extends Controller
                 'description' => ($validated['description'] ?? '') . $createdByNote,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
+                'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,

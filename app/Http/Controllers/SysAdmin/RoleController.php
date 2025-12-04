@@ -38,7 +38,8 @@ class RoleController extends Controller
         $request->validate([
             'urole_name' => 'required|string|max:255|unique:t_sys_role,urole_name',
             'type' => 'required|string',
-            'description' => 'nullable|string|max:500'
+            'description' => 'nullable|string|max:500',
+            'expense_backdate_days' => 'nullable|integer|min:0|max:30'
         ]);
 
         try {
@@ -47,6 +48,7 @@ class RoleController extends Controller
                 'type' => $request->type,
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
+                'expense_backdate_days' => $request->expense_backdate_days ?? 0,
                 'is_default' => 0,
                 'company_id' => 1, // Default company for now
                 'created_by' => auth()->id()
@@ -63,7 +65,8 @@ class RoleController extends Controller
         $request->validate([
             'urole_name' => 'required|string|max:255|unique:t_sys_role,urole_name,' . $id,
             'type' => 'required|string',
-            'description' => 'nullable|string|max:500'
+            'description' => 'nullable|string|max:500',
+            'expense_backdate_days' => 'nullable|integer|min:0|max:30'
         ]);
 
         try {
@@ -74,6 +77,7 @@ class RoleController extends Controller
                 'type' => $request->type,
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
+                'expense_backdate_days' => $request->expense_backdate_days ?? 0,
                 'updated_by' => auth()->id()
             ]);
 

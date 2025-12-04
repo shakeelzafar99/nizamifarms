@@ -309,7 +309,8 @@ class EmployeeCashController extends Controller
             });
         
         if ($startDate && $endDate) {
-            $expensesNeedingSettlement->whereBetween('created_at', [$startDate, $endDate]);
+            // ⭐ Use expense_date for filtering (falls back to created_at for old records)
+            $expensesNeedingSettlement->whereRaw('DATE(COALESCE(expense_date, created_at)) BETWEEN ? AND ?', [$startDate, $endDate]);
         }
         
         $expensesNeedingSettlement = $expensesNeedingSettlement->sum('amount') ?? 0;
@@ -943,11 +944,12 @@ class EmployeeCashController extends Controller
             });
 
         // Apply date filters to expense requests
+        // ⭐ Use expense_date for filtering (falls back to created_at for old records)
         if ($dateFrom && $dateTo) {
-            $expenseRequestsQuery->whereBetween('created_at', [$dateFrom, $dateTo]);
+            $expenseRequestsQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) BETWEEN ? AND ?', [$dateFrom, $dateTo]);
         }
 
-        $expenseRequests = $expenseRequestsQuery->orderBy('created_at', 'desc')->get();
+        $expenseRequests = $expenseRequestsQuery->orderBy(\DB::raw('COALESCE(expense_date, created_at)'), 'desc')->get();
 
         // Calculate expense request summary with payment source split
         // Key distinction: Expenses FROM rider's balance vs expenses paid by other sources

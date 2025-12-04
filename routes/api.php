@@ -178,6 +178,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
+    Route::delete('/expenses/{id}', [\App\Http\Controllers\API\RiderController::class, 'deleteExpense']); // L2 only
+    Route::post('/expenses/{id}/delete', [\App\Http\Controllers\API\RiderController::class, 'deleteExpense']); // L2 only - POST alternative
     
     // NF Ledger (Store Mode - requires view_nf_ledger permission)
     Route::get('/nf-ledger/accounts', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerAccounts']);

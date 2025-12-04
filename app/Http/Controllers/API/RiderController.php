@@ -1082,6 +1082,7 @@ class RiderController extends Controller
                     'title' => "Short Cash - {$request->expense_category}",
                     'amount' => $shortCashAmount,
                     'expense_category' => $request->expense_category,
+                    'expense_date' => now()->toDateString(), // ⭐ Always set expense_date
                     'description' => "Short cash from invoice settlement - " . $request->expense_category . ($request->description ? " - {$request->description}" : ""),
                     'payment_source_account_id' => $account->id,
                     'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
@@ -3305,10 +3306,40 @@ class RiderController extends Controller
                 'description' => 'nullable|string',
                 'amount' => 'nullable|numeric|min:0',
                 'expense_category' => 'nullable|string|max:255',
+                'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
                 'leave_start_date' => 'nullable|date',
                 'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
                 'leave_type' => 'nullable|string',
             ]);
+
+            // ⭐ Validate expense_date is within allowed backdate range
+            if ($request->filled('expense_date')) {
+                $expenseDate = \Carbon\Carbon::parse($validated['expense_date']);
+                $today = \Carbon\Carbon::today();
+                
+                // Get user's max backdate days from their roles
+                $maxBackdateDays = DB::table('t_sys_user_role as ur')
+                    ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                    ->where('ur.user_id', $user->id)
+                    ->max('r.expense_backdate_days') ?? 0;
+                
+                // Check if date is in the future
+                if ($expenseDate->gt($today)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Expense date cannot be in the future'
+                    ], 422);
+                }
+                
+                // Check if date is too far in the past
+                $daysDiff = $today->diffInDays($expenseDate);
+                if ($daysDiff > $maxBackdateDays) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "You can only backdate expenses up to {$maxBackdateDays} days. Selected date is {$daysDiff} days ago."
+                    ], 422);
+                }
+            }
 
             // Verify category is allowed for riders
             $category = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
@@ -3334,6 +3365,7 @@ class RiderController extends Controller
                 'description' => $validated['description'] ?? null,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
+                'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
@@ -3594,18 +3626,26 @@ class RiderController extends Controller
             // Get all mobile permissions for this user
             $permissions = $user->getMobilePermissions();
             
+            // ⭐ Get expense backdate days from user's roles
+            $expenseBackdateDays = \DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $user->id)
+                ->max('r.expense_backdate_days') ?? 0;
+            
             \Log::info('Mobile permissions fetched', [
                 'user_id' => $user->id,
                 'user_name' => $user->fullname,
                 'roles_count' => $user->roles->count(),
                 'permissions' => $permissions,
-                'has_store_mode' => in_array('access_store_mode', $permissions)
+                'has_store_mode' => in_array('access_store_mode', $permissions),
+                'expense_backdate_days' => $expenseBackdateDays
             ]);
             
             return response()->json([
                 'success' => true,
                 'permissions' => $permissions,
-                'has_store_mode' => in_array('access_store_mode', $permissions)
+                'has_store_mode' => in_array('access_store_mode', $permissions),
+                'expense_backdate_days' => (int)$expenseBackdateDays // ⭐ Include backdate days
             ]);
             
         } catch (\Exception $e) {
@@ -5467,6 +5507,13 @@ class RiderController extends Controller
             $category = $request->input('category');
             $settlementStatus = $request->input('settlement_status');
             
+            \Log::debug('Expense filter params received', [
+                'month' => $month,
+                'category' => $category,
+                'settlement_status' => $settlementStatus,
+                'all_params' => $request->all()
+            ]);
+            
             // Build base query for expenses and salary advances
             $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) {
                     $q->whereIn('category_code', ['expense', 'salary_advance']);
@@ -5475,11 +5522,22 @@ class RiderController extends Controller
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
             
-            // Apply date filter only if month is provided
-            if ($month) {
+            // Apply date filter only if month is provided AND is valid format
+            if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
                 $dateFrom = $month . '-01';
                 $dateTo = date('Y-m-t', strtotime($dateFrom)); // Last day of month
-                $expensesQuery->whereBetween('created_at', [$dateFrom . ' 00:00:00', $dateTo . ' 23:59:59']);
+                
+                \Log::debug('Expense date filter applied', [
+                    'month' => $month,
+                    'date_from' => $dateFrom,
+                    'date_to' => $dateTo
+                ]);
+                
+                // ⭐ Filter by expense_date (falls back to created_at for old records)
+                $expensesQuery->whereRaw('DATE(COALESCE(expense_date, created_at)) >= ?', [$dateFrom])
+                              ->whereRaw('DATE(COALESCE(expense_date, created_at)) <= ?', [$dateTo]);
+            } else if ($month) {
+                \Log::warning('Invalid month format received', ['month' => $month]);
             }
             
             // Apply category filter
@@ -5509,16 +5567,28 @@ class RiderController extends Controller
             
             $allExpenses = $expensesQuery->orderBy('created_at', 'desc')->get();
             
+            // Debug: Log the dates of returned expenses
+            \Log::debug('Expenses returned', [
+                'count' => $allExpenses->count(),
+                'month_filter' => $month,
+                'date_range' => $allExpenses->count() > 0 ? [
+                    'first' => $allExpenses->first()->created_at->format('Y-m-d'),
+                    'last' => $allExpenses->last()->created_at->format('Y-m-d'),
+                ] : 'no records',
+                'all_dates' => $allExpenses->pluck('created_at')->map(fn($d) => $d->format('Y-m-d'))->toArray()
+            ]);
+            
             // Get salary slips
             $salarySlipsQuery = SalarySlipModel::with(['employee'])
                 ->whereIn('slip_status', ['approved', 'paid'])
                 ->whereNotNull('ledger_transaction_id');
             
             // Apply date filter to salary slips if month is provided
-            if ($month) {
+            if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
                 $dateFrom = $month . '-01';
                 $dateTo = date('Y-m-t', strtotime($dateFrom));
-                $salarySlipsQuery->whereBetween('created_at', [$dateFrom . ' 00:00:00', $dateTo . ' 23:59:59']);
+                $salarySlipsQuery->whereRaw('DATE(created_at) >= ?', [$dateFrom])
+                                 ->whereRaw('DATE(created_at) <= ?', [$dateTo]);
             }
             
             $includeSalarySlips = !$category || strtolower($category) === 'salary';
@@ -5547,7 +5617,7 @@ class RiderController extends Controller
                     'id' => $expense->id,
                     'type' => 'expense',
                     'request_number' => $expense->request_number,
-                    'date' => $expense->created_at->format('Y-m-d'),
+                    'date' => ($expense->expense_date ?? $expense->created_at)->format('Y-m-d'),
                     'employee' => $expense->requester ? $expense->requester->fullname : 'Unknown',
                     'category' => $expense->expense_category ?? ($expense->category ? $expense->category->category_name : 'Uncategorized'),
                     'amount' => $expense->amount,
@@ -5871,6 +5941,164 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to settle expense: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Delete an approved expense (L2 only)
+     * Reverses ledger entry and account balances
+     */
+    public function deleteExpense(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            \Log::info('Delete expense attempt', [
+                'expense_id' => $id,
+                'user_id' => $user->id,
+                'user_name' => $user->fullname
+            ]);
+            
+            // ⭐ Check if user has L2 approval rights (required for delete)
+            $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+            
+            \Log::info('L2 rights check', [
+                'user_id' => $user->id,
+                'has_l2_rights' => $hasL2Rights
+            ]);
+            
+            if (!$hasL2Rights) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only Level 2 approvers can delete expenses'
+                ], 403);
+            }
+            
+            $expenseRequest = \App\Models\Request\RequestModel::with(['paymentSourceAccount', 'category'])
+                ->findOrFail($id);
+            
+            // Check if expense is approved
+            if ($expenseRequest->status !== 'approved') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only approved expenses can be deleted'
+                ], 400);
+            }
+            
+            $notes = $request->input('notes', '');
+            
+            \DB::beginTransaction();
+            
+            // ⭐ If expense has ledger entry, reverse it
+            if ($expenseRequest->ledger_transaction_id) {
+                $ledger = \App\Models\FIN\LedgerModel::find($expenseRequest->ledger_transaction_id);
+                
+                if ($ledger && $ledger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                    // Reverse account balances
+                    $fromAccount = $ledger->fromAccount;
+                    $toAccount = $ledger->toAccount;
+                    
+                    if ($fromAccount) {
+                        // Add amount back to from_account (was deducted)
+                        $fromAccount->current_balance += $ledger->amount;
+                        $fromAccount->save();
+                        
+                        \Log::info("Reversed from_account balance", [
+                            'account_id' => $fromAccount->id,
+                            'account_name' => $fromAccount->account_name,
+                            'amount_added' => $ledger->amount,
+                            'new_balance' => $fromAccount->current_balance
+                        ]);
+                    }
+                    
+                    if ($toAccount) {
+                        // Subtract amount from to_account (was added)
+                        $toAccount->current_balance -= $ledger->amount;
+                        $toAccount->save();
+                        
+                        \Log::info("Reversed to_account balance", [
+                            'account_id' => $toAccount->id,
+                            'account_name' => $toAccount->account_name,
+                            'amount_subtracted' => $ledger->amount,
+                            'new_balance' => $toAccount->current_balance
+                        ]);
+                    }
+                    
+                    // Mark ledger entry as reversed (using valid status)
+                    $ledger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+                    $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . 
+                        "DELETED by {$user->fullname} on " . now()->format('Y-m-d H:i:s') . 
+                        ($notes ? " - Reason: {$notes}" : '');
+                    $ledger->save();
+                }
+            }
+            
+            // ⭐ If expense has settlement transaction, reverse it too
+            if ($expenseRequest->settlement_transaction_id) {
+                $settlementLedger = \App\Models\FIN\LedgerModel::find($expenseRequest->settlement_transaction_id);
+                
+                if ($settlementLedger && $settlementLedger->approval_status === \App\Models\FIN\LedgerModel::STATUS_APPROVED) {
+                    // Reverse settlement balances
+                    $fromAccount = $settlementLedger->fromAccount;
+                    $toAccount = $settlementLedger->toAccount;
+                    
+                    if ($fromAccount) {
+                        $fromAccount->current_balance += $settlementLedger->amount;
+                        $fromAccount->save();
+                    }
+                    
+                    if ($toAccount) {
+                        $toAccount->current_balance -= $settlementLedger->amount;
+                        $toAccount->save();
+                    }
+                    
+                    $settlementLedger->approval_status = \App\Models\FIN\LedgerModel::STATUS_REVERSED;
+                    $settlementLedger->comments = ($settlementLedger->comments ? $settlementLedger->comments . "\n" : '') . 
+                        "DELETED (settlement reversal) by {$user->fullname} on " . now()->format('Y-m-d H:i:s');
+                    $settlementLedger->save();
+                    
+                    \Log::info("Reversed settlement transaction", [
+                        'settlement_ledger_id' => $settlementLedger->id,
+                        'amount' => $settlementLedger->amount
+                    ]);
+                }
+            }
+            
+            // Mark request as deleted/cancelled
+            $expenseRequest->status = 'cancelled';
+            $expenseRequest->rejection_reason = "DELETED by {$user->fullname} on " . now()->format('Y-m-d H:i:s') . 
+                ($notes ? " - Reason: {$notes}" : '');
+            $expenseRequest->updated_by = $user->id;
+            $expenseRequest->save();
+            
+            \DB::commit();
+            
+            \Log::info('Expense deleted successfully', [
+                'expense_id' => $id,
+                'request_number' => $expenseRequest->request_number,
+                'amount' => $expenseRequest->amount,
+                'deleted_by' => $user->id,
+                'ledger_reversed' => $expenseRequest->ledger_transaction_id ? true : false,
+                'settlement_reversed' => $expenseRequest->settlement_transaction_id ? true : false
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Expense #{$expenseRequest->request_number} deleted successfully. Ledger entries reversed."
+            ]);
+            
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Failed to delete expense', [
+                'expense_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete expense: ' . $e->getMessage()
             ], 500);
         }
     }

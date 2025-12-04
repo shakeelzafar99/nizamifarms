@@ -30,6 +30,7 @@ class RoleModel extends BaseModel
         'description',
         'is_default',
         'is_active',
+        'expense_backdate_days', // ⭐ Number of days allowed for backdating expense entries
         'created_at',
         'created_by',
         'updated_at',

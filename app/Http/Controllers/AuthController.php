@@ -133,30 +133,57 @@ class AuthController extends Controller
      */
     public function logout(Request $request)
     {
-        if ($request->expectsJson()) {
-            // Get the token from the request
-            $token = $request->bearerToken();
+        // ⭐ Handle API logout (always process if we have a bearer token)
+        $token = $request->bearerToken();
+        $user = $request->user();
+        
+        \Log::info('Logout attempt', [
+            'has_token' => !empty($token),
+            'has_user' => !empty($user),
+            'user_id' => $user ? $user->id : null,
+            'user_name' => $user ? $user->fullname : null,
+            'expects_json' => $request->expectsJson(),
+        ]);
+        
+        // If we have a user (from bearer token), process API logout
+        if ($user) {
+            // Count tokens before deletion
+            $tokensBefore = $user->tokens()->count();
             
-            // ⭐ ALWAYS try to delete the user's tokens (for proper "Logged Out" status)
-            $user = $request->user();
-            if ($user) {
-                // Delete ALL tokens for this user (not just current)
-                $user->tokens()->delete();
-                
-                // ⭐ Clear app_version on logout to indicate logged out state
-                $user->update([
-                    'app_version' => null,
-                    'app_version_updated_at' => null,
-                ]);
-            }
+            // Delete ALL tokens for this user
+            $user->tokens()->delete();
+            
+            // Count tokens after deletion
+            $tokensAfter = $user->tokens()->count();
+            
+            // Clear app_version on logout
+            $user->update([
+                'app_version' => null,
+                'app_version_updated_at' => null,
+            ]);
+            
+            \Log::info('Logout successful', [
+                'user_id' => $user->id,
+                'user_name' => $user->fullname,
+                'tokens_before' => $tokensBefore,
+                'tokens_after' => $tokensAfter,
+            ]);
             
             // Update log status if found
-            $userLog = LogModel::where('session_id', $token)->first();
-            if ($userLog) {
-                $userLog->update(['status' => 'logout']);
+            if ($token) {
+                $userLog = LogModel::where('session_id', $token)->first();
+                if ($userLog) {
+                    $userLog->update(['status' => 'logout']);
+                }
             }
 
-            return response()->json(['message' => 'Successfully logged out']);
+            return response()->json(['message' => 'Successfully logged out', 'tokens_deleted' => $tokensBefore]);
+        }
+        
+        // Fallback for requests without user
+        if ($request->expectsJson()) {
+            \Log::warning('Logout called but no user found', ['token' => substr($token ?? '', 0, 20) . '...']);
+            return response()->json(['message' => 'No active session to logout']);
         }
         Auth::logout();
         $request->session()->invalidate();
@@ -204,6 +231,12 @@ class AuthController extends Controller
         // Determine default view: 'store' if user has store access, otherwise 'rider'
         $defaultView = $hasStoreAccess ? 'store' : 'rider';
         
+        // ⭐ Get expense backdate days from user's roles (take maximum)
+        $expenseBackdateDays = \DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $user->id)
+            ->max('r.expense_backdate_days') ?? 0;
+        
         $response = [
             'isError' => false,
             'access_token' => $token, // Mobile app expects this key
@@ -220,6 +253,7 @@ class AuthController extends Controller
             'mobile_permissions' => $mobilePermissions, // All mobile permissions
             'has_store_access' => $hasStoreAccess, // Quick check for store access
             'default_view' => $defaultView, // Default starting view for mobile app
+            'expense_backdate_days' => (int)$expenseBackdateDays, // ⭐ Expense backdate days allowed
         ];
         
         // Add password to response if provided (for mobile app to store securely)

@@ -219,6 +219,24 @@
                               style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; resize: vertical;"></textarea>
                 </div>
                 
+                <!-- Expense Backdate Days Setting -->
+                <div style="margin-bottom: 20px; padding: 16px; background-color: #fef3c7; border-radius: 8px; border: 1px solid #f59e0b;">
+                    <label style="display: block; font-size: 14px; font-weight: 600; color: #92400e; margin-bottom: 8px;">
+                        📅 Expense Backdate Days
+                    </label>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <input type="number" name="expense_backdate_days" id="expense_backdate_days" 
+                               min="0" max="30" value="0"
+                               style="width: 80px; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; text-align: center;">
+                        <span style="font-size: 13px; color: #78350f;">
+                            days allowed for backdating expense entries (0 = current date only)
+                        </span>
+                    </div>
+                    <p style="margin: 8px 0 0 0; font-size: 12px; color: #92400e;">
+                        💡 Set this to allow users with this role to enter expenses with past dates (e.g., 4 = up to 4 days back)
+                    </p>
+                </div>
+                
                 <div style="display: flex; justify-content: flex-end; gap: 12px;">
                     <button type="button" onclick="closeModal('roleFormModal')" 
                             style="padding: 10px 20px; border: 1px solid #d1d5db; border-radius: 6px; color: #374151; background-color: white; cursor: pointer; font-size: 14px;">
@@ -270,6 +288,7 @@ function openAddRoleModal() {
     form.reset();
     form.action = '{{ route("roles.store") }}';
     document.getElementById('roleFormMethod').value = '';
+    document.getElementById('expense_backdate_days').value = 0; // Default to 0
     
     // Update title
     title.textContent = 'Add New Role';
@@ -329,6 +348,14 @@ function viewRoleDetails(roleId) {
                                 <p style="margin: 4px 0 0 0;">
                                     <span style="display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; ${role.is_active ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fee2e2; color: #dc2626;'}">
                                         ${role.is_active ? 'Active' : 'Inactive'}
+                                    </span>
+                                </p>
+                            </div>
+                            <div style="margin-top: 12px;">
+                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">📅 Expense Backdate Days</label>
+                                <p style="margin: 4px 0 0 0;">
+                                    <span style="display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; background-color: #fef3c7; color: #92400e;">
+                                        ${role.expense_backdate_days || 0} days
                                     </span>
                                 </p>
                             </div>
@@ -429,6 +456,7 @@ function editRoleDetails(roleId) {
             document.getElementById('type').value = role.type || '';
             document.getElementById('description').value = role.description || '';
             document.getElementById('is_active').value = role.is_active ? '1' : '0';
+            document.getElementById('expense_backdate_days').value = role.expense_backdate_days || 0;
             
             modal.style.display = 'block';
         } else {

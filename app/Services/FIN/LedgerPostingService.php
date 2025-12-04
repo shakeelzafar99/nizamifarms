@@ -272,8 +272,9 @@ class LedgerPostingService
             }
             
             // Create ledger entry
+            // ⭐ Use expense_date for backdated expenses, otherwise approved_at or now
             $ledger = LedgerModel::create([
-                'transaction_date' => $request->approved_at ?? now(),
+                'transaction_date' => $request->expense_date ?? $request->approved_at ?? now(),
                 'transaction_type' => LedgerModel::TYPE_EXPENSE,
                 'description' => $description,
                 'from_account_id' => $fundingAccount->id,
