@@ -283,7 +283,7 @@
         </div>
     </div>
 
-    <!-- Table Container -->
+        <!-- Table Container -->
     <div class="bg-white rounded-lg shadow-md border border-gray-200">
         <!-- Table Header -->
         <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center gap-4">
@@ -294,6 +294,31 @@
                 </p>
             </div>
             <div class="flex items-center gap-3">
+                <!-- ⭐ Search Bar -->
+                <div class="flex items-center gap-2">
+                    <div class="relative">
+                        <input type="text" 
+                               id="searchInput" 
+                               placeholder="🔍 Search customer..."
+                               class="pl-3 pr-8 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-[180px]"
+                               onkeyup="onSearchInput(event)">
+                        <button type="button" 
+                                id="clearSearchBtn" 
+                                onclick="clearSearch()" 
+                                class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 hidden"
+                                title="Clear search">✕</button>
+                    </div>
+                </div>
+                <!-- ⭐ Sort option (only visible for Online area) -->
+                <div class="flex items-center gap-2" id="sortContainer" style="display: none;">
+                    <label for="sortFilter" class="text-xs font-medium text-gray-600">Sort:</label>
+                    <select id="sortFilter"
+                            class="kt-select kt-select-sm min-w-[140px]"
+                            onchange="onSortChange()">
+                        <option value="date">📅 By Date</option>
+                        <option value="name">👤 By Customer</option>
+                    </select>
+                </div>
                 <!-- Assignee filter (My assignments / specific user / all) -->
                 <div class="flex items-center gap-2">
                     <label for="assigneeFilter" class="text-xs font-medium text-gray-600">Assignee:</label>
@@ -359,7 +384,8 @@
         level: null,
         area: null,
         search: '',
-        assignee_id: null
+        assignee_id: null,
+        sort: 'date' // ⭐ Default sort by date
     };
 
     // Summaries from backend
@@ -480,13 +506,30 @@
             level: null,
             area: null,
             search: '',
-            assignee_id: null
+            assignee_id: null,
+            sort: 'date'
         };
 
         // Reset assignee dropdown
         const assigneeSelect = document.getElementById('assigneeFilter');
         if (assigneeSelect) {
             assigneeSelect.value = '';
+        }
+        
+        // Reset search input
+        const searchInput = document.getElementById('searchInput');
+        const clearBtn = document.getElementById('clearSearchBtn');
+        if (searchInput) {
+            searchInput.value = '';
+        }
+        if (clearBtn) {
+            clearBtn.classList.add('hidden');
+        }
+        
+        // Reset sort dropdown
+        const sortSelect = document.getElementById('sortFilter');
+        if (sortSelect) {
+            sortSelect.value = 'date';
         }
 
         // Remove all active states
@@ -583,6 +626,69 @@
         window.filteredSummaries = filteredSummaries;
     }
 
+    // ⭐ Handle search input
+    let searchTimeout = null;
+    function onSearchInput(event) {
+        const searchInput = document.getElementById('searchInput');
+        const clearBtn = document.getElementById('clearSearchBtn');
+        const value = searchInput.value.trim();
+        
+        // Show/hide clear button
+        if (value) {
+            clearBtn.classList.remove('hidden');
+        } else {
+            clearBtn.classList.add('hidden');
+        }
+        
+        // Debounce search - wait 300ms after typing stops
+        if (searchTimeout) {
+            clearTimeout(searchTimeout);
+        }
+        
+        // If Enter key pressed, search immediately
+        if (event.key === 'Enter') {
+            window.approvalFilters.search = value;
+            loadTableData();
+            return;
+        }
+        
+        searchTimeout = setTimeout(() => {
+            window.approvalFilters.search = value;
+            loadTableData();
+        }, 300);
+    }
+    
+    function clearSearch() {
+        const searchInput = document.getElementById('searchInput');
+        const clearBtn = document.getElementById('clearSearchBtn');
+        searchInput.value = '';
+        clearBtn.classList.add('hidden');
+        window.approvalFilters.search = '';
+        loadTableData();
+    }
+    
+    // ⭐ Handle sort change
+    function onSortChange() {
+        const select = document.getElementById('sortFilter');
+        if (select) {
+            window.approvalFilters.sort = select.value;
+            loadTableData();
+        }
+    }
+    
+    // ⭐ Show/hide sort container based on area
+    function updateSortVisibility() {
+        const sortContainer = document.getElementById('sortContainer');
+        if (sortContainer) {
+            // Show sort option only for online area
+            if (window.approvalFilters.area === 'online') {
+                sortContainer.style.display = 'flex';
+            } else {
+                sortContainer.style.display = 'none';
+            }
+        }
+    }
+
     // Render table
     function renderTable(items, count, totalAmount) {
         // Update title
@@ -610,6 +716,9 @@
         document.getElementById('tableTitle').textContent = title;
         document.getElementById('itemCount').textContent = count;
         document.getElementById('totalAmount').textContent = totalAmount.toLocaleString();
+        
+        // ⭐ Update sort visibility
+        updateSortVisibility();
 
         // Render rows
         const tbody = document.getElementById('tableBody');
@@ -623,40 +732,129 @@
             `;
             return;
         }
+        
+        // ⭐ For ONLINE area, group items by customer name (requester)
+        const isOnlineArea = window.approvalFilters.area === 'online';
+        const sortBy = window.approvalFilters.sort || 'date';
+        
+        if (isOnlineArea) {
+            // Sort items based on selected sort option
+            let sortedItems = [...items];
+            if (sortBy === 'name') {
+                // Sort by customer name (requester)
+                sortedItems.sort((a, b) => {
+                    const nameA = (a.requester || '').toLowerCase();
+                    const nameB = (b.requester || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+            } else {
+                // Sort by date (newest first)
+                sortedItems.sort((a, b) => {
+                    const dateA = new Date(a.date || '1970-01-01');
+                    const dateB = new Date(b.date || '1970-01-01');
+                    return dateB - dateA;
+                });
+            }
+            
+            // Group by customer name
+            const grouped = {};
+            sortedItems.forEach(item => {
+                const name = item.requester || 'Unknown';
+                if (!grouped[name]) {
+                    grouped[name] = {
+                        items: [],
+                        totalAmount: 0
+                    };
+                }
+                grouped[name].items.push(item);
+                grouped[name].totalAmount += (item.amount || 0);
+            });
+            
+            // Render grouped table
+            let html = '';
+            const customerNames = Object.keys(grouped);
+            
+            // Sort customer names if sorting by name, otherwise keep order from sorted items
+            if (sortBy === 'name') {
+                customerNames.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+            }
+            
+            customerNames.forEach((name, groupIndex) => {
+                const group = grouped[name];
+                const itemCount = group.items.length;
+                const bgColor = groupIndex % 2 === 0 ? '#f0f9ff' : '#fef3c7'; // Alternate blue/yellow
+                
+                // Customer group header
+                html += `
+                    <tr style="background: ${bgColor}; border-top: 2px solid #3b82f6;">
+                        <td colspan="8" style="padding: 10px 16px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <span style="font-size: 20px;">👤</span>
+                                    <span style="font-weight: 700; font-size: 15px; color: #1e40af;">${name}</span>
+                                    <span style="background: #3b82f6; color: white; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">
+                                        ${itemCount} invoice${itemCount > 1 ? 's' : ''}
+                                    </span>
+                                </div>
+                                <div style="font-weight: 700; color: #059669; font-size: 14px;">
+                                    Rs. ${group.totalAmount.toLocaleString()}
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+                
+                // Items in this group
+                group.items.forEach(item => {
+                    html += renderItemRow(item, true);
+                });
+            });
+            
+            tbody.innerHTML = html;
+        } else {
+            // Regular rendering (non-grouped)
+            tbody.innerHTML = items.map(item => renderItemRow(item, false)).join('');
+        }
+    }
+    
+    // ⭐ Helper function to render a single item row
+    function renderItemRow(item, isGrouped) {
+        const areaLabels = {
+            'exp_fund': '💰 EXP FUND',
+            'nf_cash': '💵 NF CASH',
+            'online': '🏦 ONLINE',
+            'others': '📦 OTHERS'
+        };
 
-        tbody.innerHTML = items.map(item => {
-            const areaLabels = {
-                'exp_fund': '💰 EXP FUND',
-                'nf_cash': '💵 NF CASH',
-                'online': '🏦 ONLINE',
-                'others': '📦 OTHERS'
-            };
+        const levelBadge = item.level ? 
+            `<span class="badge badge-${item.level === 1 ? 'yellow' : 'blue'}">L${item.level}</span>` : 
+            '<span class="badge badge-gray">-</span>';
+        
+        // For grouped items (online), don't repeat the requester name
+        const requesterCell = isGrouped ? 
+            `<td class="text-gray-400 text-xs">↳</td>` : 
+            `<td>${item.requester}</td>`;
 
-            const levelBadge = item.level ? 
-                `<span class="badge badge-${item.level === 1 ? 'yellow' : 'blue'}">L${item.level}</span>` : 
-                '<span class="badge badge-gray">-</span>';
-
-            return `
-                <tr class="hover:bg-gray-50">
-                    <td class="font-medium text-blue-600">${item.number}</td>
-                    <td>${item.requester}</td>
-                    <td>${item.category}</td>
-                    <td class="text-sm">${areaLabels[item.area] || item.area}</td>
-                    <td class="text-right font-semibold">
-                        ${item.amount > 0 ? 'Rs. ' + item.amount.toLocaleString() : 
-                          item.leave_days > 0 ? item.leave_days + ' days' : '-'}
-                    </td>
-                    <td class="text-center">${levelBadge}</td>
-                    <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
-                    <td class="text-center">
-                        <button onclick="openApprovalModal('${item.view_url}')" 
-                           class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">
-                            View & Approve
-                        </button>
-                    </td>
-                </tr>
-            `;
-        }).join('');
+        return `
+            <tr class="hover:bg-gray-50">
+                <td class="font-medium text-blue-600">${item.number}</td>
+                ${requesterCell}
+                <td>${item.category}</td>
+                <td class="text-sm">${areaLabels[item.area] || item.area}</td>
+                <td class="text-right font-semibold">
+                    ${item.amount > 0 ? 'Rs. ' + item.amount.toLocaleString() : 
+                      item.leave_days > 0 ? item.leave_days + ' days' : '-'}
+                </td>
+                <td class="text-center">${levelBadge}</td>
+                <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
+                <td class="text-center">
+                    <button onclick="openApprovalModal('${item.view_url}')" 
+                       class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">
+                        View & Approve
+                    </button>
+                </td>
+            </tr>
+        `;
     }
 
     // Initialize on page load

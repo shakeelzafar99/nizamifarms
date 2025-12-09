@@ -61,6 +61,7 @@ class OrderModel extends BaseModel
     ];
 
     protected $casts = [
+        'order_date' => 'datetime',
         'subtotal_price' => 'decimal:2',
         'discount_total' => 'decimal:2',
         'shipping_total' => 'decimal:2',

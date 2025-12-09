@@ -1870,6 +1870,14 @@ function renderProductDetails(product) {
                             <span style="color: #111827; font-size: 14px;">${product.attribute_1 || '-'}</span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Category Level 2:</span>
+                            <span style="color: #111827; font-size: 14px;">${product.attribute_2 || '-'}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Category Level 3:</span>
+                            <span style="color: #111827; font-size: 14px;">${product.attribute_3 || '-'}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Handle:</span>
                             <span style="color: #111827; font-size: 14px;">${product.shopify_handle || '-'}</span>
                         </div>

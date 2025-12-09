@@ -254,4 +254,45 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Payment source accounts (for vendor payments in mobile)
     Route::get('/finance/accounts/payment-sources', [\App\Http\Controllers\FIN\AccountController::class, 'getPaymentSources']);
+    
+    // ============================
+    // Products (Mobile Store Mode)
+    // ============================
+    Route::prefix('products')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\ProductController::class, 'index']);
+        Route::get('/search', [\App\Http\Controllers\CRM\ProductController::class, 'search']);
+        Route::get('/dropdown-options', [\App\Http\Controllers\CRM\ProductController::class, 'getDropdownOptions']);
+        Route::get('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show']);
+        Route::put('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update']);
+        Route::post('/', [\App\Http\Controllers\CRM\ProductController::class, 'store']);
+        Route::post('/bulk-adjust-prices/preview', [\App\Http\Controllers\CRM\ProductController::class, 'previewBulkAdjustPrices']);
+        Route::post('/bulk-adjust-prices', [\App\Http\Controllers\CRM\ProductController::class, 'bulkAdjustPrices']);
+        Route::post('/bulk-set-weight-factor', [\App\Http\Controllers\CRM\ProductController::class, 'bulkSetWeightFactor']);
+        Route::get('/attributes/list', [\App\Http\Controllers\CRM\ProductController::class, 'attributes']);
+        Route::post('/attributes/apply', [\App\Http\Controllers\CRM\ProductController::class, 'applyAttributeRules']);
+    });
+    
+    // ============================
+    // Customers (Mobile Store Mode)
+    // ============================
+    Route::prefix('customers')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index']);
+        Route::get('/filter', [\App\Http\Controllers\CRM\CustomerController::class, 'filter']);
+        Route::get('/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search']);
+        // History order details route (must be before {id} to avoid conflict)
+        Route::get('/history-order/{historyOrderId}', [\App\Http\Controllers\CRM\CustomerController::class, 'historyOrderDetails']);
+        Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show']);
+        Route::get('/{id}/orders', [\App\Http\Controllers\CRM\CustomerController::class, 'orders']);
+        Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update']);
+        Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote']);
+        Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation']);
+        Route::post('/{id}/geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'geocode']);
+        Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle']);
+    });
+    
+    // ============================
+    // Orders (Mobile Store Mode)
+    // ============================
+    Route::post('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'store']);
+    Route::get('/orders/{id}', [\App\Http\Controllers\CRM\OrderController::class, 'show']);
 }); // Close auth:sanctum middleware group

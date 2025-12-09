@@ -192,16 +192,16 @@ window.viewCustomer = function(id) {
             
             html += `
                 <div style="margin-top: 24px;">
-                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Statistics</h4>
+                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Statistics <span style="font-size: 11px; font-weight: 400; color: #9ca3af;">(delivered orders only)</span></h4>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
                             <div>
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Total Orders</label>
+                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Delivered Orders</label>
                                 <p style="margin: 4px 0 0 0; font-size: 18px; font-weight: 600; color: #2563eb;">${customer.total_orders || 0}</p>
                             </div>
                             <div>
-                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Total Spent</label>
-                                <p style="margin: 4px 0 0 0; font-size: 18px; font-weight: 600; color: #059669;">PKR ${(customer.total_spent || 0).toLocaleString()}</p>
+                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Total Revenue</label>
+                                <p style="margin: 4px 0 0 0; font-size: 18px; font-weight: 600; color: #059669;">PKR ${Math.round(customer.total_spent || 0).toLocaleString()}</p>
                             </div>
                             <div>
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Last Order</label>
@@ -218,8 +218,32 @@ window.viewCustomer = function(id) {
                     </div>
                 </div>
                 
+                <!-- Merge Customer Section -->
                 <div style="margin-top: 24px;">
-                    <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Recent Orders (Last 10)</h4>
+                    <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 16px; border-radius: 8px; border: 1px solid #fbbf24;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h4 style="font-weight: 600; color: #92400e; margin: 0 0 4px 0;">🔄 Merge with Another Customer</h4>
+                                <p style="margin: 0; font-size: 12px; color: #b45309;">Transfer all orders from another customer into this one</p>
+                            </div>
+                            <button onclick="openMergeIntoModal(${customer.id}, '${(customer.first_name || '').replace(/'/g, "\\'")} ${(customer.last_name || '').replace(/'/g, "\\'")}')" 
+                                    style="padding: 8px 16px; background: #f59e0b; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">
+                                <i class="fas fa-compress-arrows-alt"></i> Merge Into This
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 24px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h4 style="font-weight: 600; color: #374151; margin: 0;">Recent Orders ${customer.orders && customer.orders.length >= 10 ? '(Last 10)' : ''}</h4>
+                        <button onclick="viewCustomerOrders(${customer.id}, '${(customer.first_name || '').replace(/'/g, "\\'")} ${(customer.last_name || '').replace(/'/g, "\\'")}')" 
+                                style="padding: 6px 12px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                                onmouseover="this.style.background='#1d4ed8'" 
+                                onmouseout="this.style.background='#2563eb'">
+                            📋 View All Orders
+                        </button>
+                    </div>
                     <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                         ${customer.orders && customer.orders.length > 0 ? `
                             <div style="overflow-x: auto;">
@@ -237,11 +261,16 @@ window.viewCustomer = function(id) {
                                     <tbody>
                                         ${customer.orders.map(order => {
                                             const statusColor = order.order_status === 'completed' ? '#059669' : 
+                                                              order.order_status === 'delivered' ? '#059669' :
                                                               order.order_status === 'pending' ? '#d97706' : 
                                                               order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
-                                            const sourceColor = order.external_source === 'shopify' ? '#7c3aed' :
+                                            // Handle both source_type (history/production) and external_source
+                                            const isHistoryOrder = order.source_type === 'history';
+                                            const sourceColor = isHistoryOrder ? '#9333ea' : // Purple for history
+                                                              order.external_source === 'shopify' ? '#7c3aed' :
                                                               order.external_source === 'woocommerce' ? '#2563eb' :
                                                               order.external_source === 'webapp' ? '#059669' : '#6b7280';
+                                            const sourceLabel = isHistoryOrder ? 'history' : (order.external_source || 'direct');
                                             return `
                                                 <tr style="border-bottom: 1px solid #e5e7eb; hover:background-color: #ffffff;">
                                                     <td style="padding: 10px 8px; font-weight: 600; color: #1f2937; font-size: 13px;">#${order.order_number || order.id}</td>
@@ -253,23 +282,32 @@ window.viewCustomer = function(id) {
                                                     </td>
                                                     <td style="padding: 10px 8px; font-size: 13px;">
                                                         <span style="display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 12px; font-size: 11px; font-weight: 500; background-color: ${sourceColor}20; color: ${sourceColor};">
-                                                            ${order.external_source || 'Direct'}
+                                                            ${sourceLabel}
                                                         </span>
                                                     </td>
-                                                    <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: #1f2937; font-size: 13px;">PKR ${(order.total_price || 0).toLocaleString()}</td>
+                                                    <td style="padding: 10px 8px; text-align: right; font-weight: 600; color: #1f2937; font-size: 13px;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
                                                     <td style="padding: 10px 8px; text-align: center;">
-                                                        <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
-                                                                style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 4px;"
-                                                                onmouseover="this.style.background='#2563eb'" 
-                                                                onmouseout="this.style.background='#3b82f6'">
-                                                            View
-                                                        </button>
-                                                        <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" 
-                                                                style="padding: 4px 8px; background: #059669; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
-                                                                onmouseover="this.style.background='#047857'" 
-                                                                onmouseout="this.style.background='#059669'">
-                                                            Invoice
-                                                        </button>
+                                                        ${isHistoryOrder ? `
+                                                            <button onclick="viewHistoryOrderDetails(${order.id}, '${order.order_number}')" 
+                                                                    style="padding: 4px 8px; background: #9333ea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
+                                                                    onmouseover="this.style.background='#7c3aed'" 
+                                                                    onmouseout="this.style.background='#9333ea'">
+                                                                View
+                                                            </button>
+                                                        ` : `
+                                                            <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
+                                                                    style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; margin-right: 4px;"
+                                                                    onmouseover="this.style.background='#2563eb'" 
+                                                                    onmouseout="this.style.background='#3b82f6'">
+                                                                View
+                                                            </button>
+                                                            <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" 
+                                                                    style="padding: 4px 8px; background: #059669; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;"
+                                                                    onmouseover="this.style.background='#047857'" 
+                                                                    onmouseout="this.style.background='#059669'">
+                                                                Invoice
+                                                            </button>
+                                                        `}
                                                     </td>
                                                 </tr>
                                             `;
@@ -510,6 +548,14 @@ window.closeModal = function(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
         modal.style.display = 'none';
+    }
+};
+
+window.openModal = function(modalId) {
+    console.log('openModal called with:', modalId);
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'flex';
     }
 };
 
@@ -887,7 +933,7 @@ function getCustomerCellContent(customer, columnId) {
             return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(' + customer.id + ', \'' + customer.first_name + ' ' + customer.last_name + '\')" title="Click to view customer orders">' + (customer.total_orders || 0) + '</span>';
             
         case 'total_spent':
-            return '<span class="text-sm font-medium text-gray-900">PKR ' + (customer.total_spent || 0).toLocaleString() + '</span>';
+            return '<span class="text-sm font-medium text-gray-900">PKR ' + Math.round(customer.total_spent || 0).toLocaleString() + '</span>';
             
         case 'status':
             const isActive = customer.is_active;
@@ -1152,12 +1198,44 @@ window.viewCustomerOrders = function(customerId, customerName) {
                 
                 orders.forEach(order => {
                     const statusColor = order.order_status === 'completed' ? '#059669' : 
+                                      order.order_status === 'delivered' ? '#059669' :
                                       order.order_status === 'pending' ? '#d97706' : 
                                       order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
                     
+                    // Check if this is a history order
+                    const isHistoryOrder = order.source_type === 'history';
+                    const sourceColor = isHistoryOrder ? '#9333ea' : '#3b82f6';
+                    const sourceLabel = isHistoryOrder ? 'Legacy' : 'Production';
+                    
+                    // Different action buttons for history vs production orders
+                    const actionButtons = isHistoryOrder ? `
+                        <button onclick="viewHistoryOrderDetails(${order.id}, '${order.order_number}')" 
+                                style="padding: 6px 12px; background: #9333ea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px;"
+                                onmouseover="this.style.background='#7c3aed'" 
+                                onmouseout="this.style.background='#9333ea'">
+                            View
+                        </button>
+                    ` : `
+                        <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
+                                style="padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 4px;"
+                                onmouseover="this.style.background='#2563eb'" 
+                                onmouseout="this.style.background='#3b82f6'">
+                            View
+                        </button>
+                        <button onclick="editOrderFromCustomer(${order.id})" 
+                                style="padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px;"
+                                onmouseover="this.style.background='#047857'" 
+                                onmouseout="this.style.background='#059669'">
+                            Edit
+                        </button>
+                    `;
+                    
                     html += `
                         <tr style="border-bottom: 1px solid #f3f4f6; hover:background-color: #f9fafb;">
-                            <td style="padding: 12px; font-weight: 600; color: #1f2937;">#${order.order_number || order.id}</td>
+                            <td style="padding: 12px; font-weight: 600; color: #1f2937;">
+                                #${order.order_number || order.id}
+                                ${isHistoryOrder ? '<span style="margin-left: 6px; padding: 2px 6px; background: #f3e8ff; color: #9333ea; font-size: 10px; border-radius: 4px;">Legacy</span>' : ''}
+                            </td>
                             <td style="padding: 12px; color: #6b7280;">${window.formatDateLocal(order.order_date)}</td>
                             <td style="padding: 12px;">
                                 <span style="display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; background-color: ${statusColor}20; color: ${statusColor};">
@@ -1165,31 +1243,42 @@ window.viewCustomerOrders = function(customerId, customerName) {
                                 </span>
                             </td>
                             <td style="padding: 12px; color: #6b7280;">${order.line_items_count || 0} items</td>
-                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${(order.total_price || 0).toLocaleString()}</td>
+                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</td>
                             <td style="padding: 12px; text-align: center;">
-                                <button onclick="viewOrderDetailsFromCustomer(${order.id})" 
-                                        style="padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 4px;"
-                                        onmouseover="this.style.background='#2563eb'" 
-                                        onmouseout="this.style.background='#3b82f6'">
-                                    View
-                                </button>
-                                <button onclick="editOrderFromCustomer(${order.id})" 
-                                        style="padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px;"
-                                        onmouseover="this.style.background='#047857'" 
-                                        onmouseout="this.style.background='#059669'">
-                                    Edit
-                                </button>
+                                ${actionButtons}
                             </td>
                         </tr>
                     `;
                 });
                 
+                // Calculate totals
+                const totalSpent = orders.reduce((sum, order) => sum + (order.total_price || 0), 0);
+                const prodOrders = orders.filter(o => o.source_type !== 'history').length;
+                const historyOrders = orders.filter(o => o.source_type === 'history').length;
+                
                 html += `
                             </tbody>
                         </table>
                     </div>
-                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 14px;">
-                        Total: ${orders.length} orders • Total Spent: PKR ${orders.reduce((sum, order) => sum + (order.total_price || 0), 0).toLocaleString()}
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                        <div style="display: flex; gap: 16px; font-size: 13px;">
+                            <span style="color: #6b7280;">
+                                <strong style="color: #1f2937;">${orders.length}</strong> total orders
+                            </span>
+                            ${prodOrders > 0 ? `
+                            <span style="color: #3b82f6;">
+                                <strong>${prodOrders}</strong> production
+                            </span>
+                            ` : ''}
+                            ${historyOrders > 0 ? `
+                            <span style="color: #9333ea;">
+                                <strong>${historyOrders}</strong> legacy
+                            </span>
+                            ` : ''}
+                        </div>
+                        <div style="font-size: 14px; font-weight: 600; color: #059669;">
+                            Total: PKR ${totalSpent.toLocaleString()}
+                        </div>
                     </div>
                 `;
                 
@@ -1232,6 +1321,224 @@ window.editOrderFromCustomer = function(orderId) {
         // Fallback: redirect to orders page
         window.location.href = `/orders?search=${orderId}`;
     }
+};
+
+// ============================================
+// HISTORY ORDER DETAILS VIEWER
+// ============================================
+window.viewHistoryOrderDetails = function(historyOrderId, orderNumber) {
+    // Close customer modal if open
+    window.closeModal('viewCustomerModal');
+    
+    // Show loading in a new modal
+    const modal = document.getElementById('historyOrderModal');
+    const content = document.getElementById('historyOrderContent');
+    
+    if (!modal || !content) {
+        console.error('History order modal not found');
+        alert('Unable to view history order details');
+        return;
+    }
+    
+    content.innerHTML = `
+        <div style="text-align: center; padding: 40px;">
+            <div style="display: inline-block; width: 40px; height: 40px; border: 3px solid #e5e7eb; border-top-color: #9333ea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+            <p style="margin-top: 16px; color: #6b7280;">Loading order #${orderNumber}...</p>
+        </div>
+    `;
+    
+    window.openModal('historyOrderModal');
+    
+    // Fetch history order details
+    fetch(`/customers/history-order/${historyOrderId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const order = data.order;
+                const lineItems = data.line_items;
+                const customer = data.customer;
+                
+                // Format date
+                const orderDate = order.order_date ? new Date(order.order_date).toLocaleDateString('en-US', {
+                    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                }) : 'N/A';
+                
+                const deliveryDate = order.delivered_at ? new Date(order.delivered_at).toLocaleDateString('en-US', {
+                    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                }) : 'N/A';
+                
+                // Status badge color
+                const statusColor = order.order_status === 'delivered' ? '#059669' : 
+                                   order.order_status === 'cancelled' ? '#dc2626' : '#6b7280';
+                
+                // Build line items table
+                let lineItemsHtml = '';
+                if (lineItems && lineItems.length > 0) {
+                    lineItemsHtml = `
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 12px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid #e5e7eb; background: #f9fafb;">
+                                    <th style="padding: 10px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">ITEM</th>
+                                    <th style="padding: 10px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">SKU</th>
+                                    <th style="padding: 10px; text-align: center; font-size: 12px; font-weight: 600; color: #374151;">QTY</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 12px; font-weight: 600; color: #374151;">UNIT PRICE</th>
+                                    <th style="padding: 10px; text-align: right; font-size: 12px; font-weight: 600; color: #374151;">TOTAL</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${lineItems.map(item => `
+                                    <tr style="border-bottom: 1px solid #e5e7eb;">
+                                        <td style="padding: 10px; color: #1f2937; font-size: 13px;">${item.name || 'Unknown Item'}</td>
+                                        <td style="padding: 10px; color: #6b7280; font-size: 12px;">${item.sku || '-'}</td>
+                                        <td style="padding: 10px; text-align: center; color: #1f2937; font-size: 13px;">${item.quantity || 1}</td>
+                                        <td style="padding: 10px; text-align: right; color: #6b7280; font-size: 13px;">PKR ${Math.round(item.unit_price || 0).toLocaleString()}</td>
+                                        <td style="padding: 10px; text-align: right; color: #1f2937; font-weight: 500; font-size: 13px;">PKR ${Math.round(item.line_total || item.line_subtotal || 0).toLocaleString()}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    lineItemsHtml = '<p style="color: #6b7280; padding: 20px; text-align: center;">No line items found</p>';
+                }
+                
+                content.innerHTML = `
+                    <div style="padding: 24px;">
+                        <!-- Header -->
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e5e7eb;">
+                            <div>
+                                <h3 style="font-size: 20px; font-weight: 600; color: #1f2937; margin: 0;">
+                                    <span style="color: #9333ea;">Legacy Order</span> #${order.order_number}
+                                </h3>
+                                <p style="color: #6b7280; margin: 4px 0 0 0; font-size: 13px;">Imported from historical data</p>
+                            </div>
+                            <span style="padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 500; background-color: ${statusColor}20; color: ${statusColor};">
+                                ${order.order_status ? order.order_status.charAt(0).toUpperCase() + order.order_status.slice(1) : 'Unknown'}
+                            </span>
+                        </div>
+                        
+                        <!-- Order Info Grid -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                            <!-- Customer & Dates -->
+                            <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
+                                <h4 style="font-size: 14px; font-weight: 600; color: #374151; margin: 0 0 12px 0;">📋 Order Details</h4>
+                                <div style="display: grid; gap: 8px;">
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Order Date:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${orderDate}</span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Delivered:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${deliveryDate}</span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Payment:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${order.payment_method || 'N/A'}</span>
+                                    </div>
+                                    ${order.coupon_code ? `
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Coupon:</span>
+                                        <span style="color: #9333ea; font-size: 13px; font-weight: 500;">${order.coupon_code}</span>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                            
+                            <!-- Customer Info -->
+                            <div style="background: #f9fafb; padding: 16px; border-radius: 8px;">
+                                <h4 style="font-size: 14px; font-weight: 600; color: #374151; margin: 0 0 12px 0;">👤 Customer</h4>
+                                <div style="display: grid; gap: 8px;">
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Name:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${order.name || (order.address_first_name + ' ' + order.address_last_name) || 'N/A'}</span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">Phone:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${order.address_phone || 'N/A'}</span>
+                                    </div>
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <span style="color: #6b7280; font-size: 13px;">City:</span>
+                                        <span style="color: #1f2937; font-size: 13px; font-weight: 500;">${order.address_city || 'N/A'}</span>
+                                    </div>
+                                    ${order.address_line1 ? `
+                                    <div style="margin-top: 4px;">
+                                        <span style="color: #6b7280; font-size: 12px;">Address:</span>
+                                        <p style="color: #1f2937; font-size: 12px; margin: 2px 0 0 0;">${order.address_line1}</p>
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Line Items -->
+                        <div style="margin-bottom: 24px;">
+                            <h4 style="font-size: 14px; font-weight: 600; color: #374151; margin: 0 0 12px 0;">📦 Line Items (${lineItems.length})</h4>
+                            <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                                ${lineItemsHtml}
+                            </div>
+                        </div>
+                        
+                        <!-- Order Totals -->
+                        <div style="background: #f0fdf4; padding: 16px; border-radius: 8px; border: 1px solid #86efac;">
+                            <div style="display: grid; gap: 8px;">
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: #6b7280; font-size: 13px;">Subtotal:</span>
+                                    <span style="color: #1f2937; font-size: 13px;">PKR ${Math.round(order.subtotal_price || 0).toLocaleString()}</span>
+                                </div>
+                                ${order.discount_total > 0 ? `
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: #dc2626; font-size: 13px;">Discount:</span>
+                                    <span style="color: #dc2626; font-size: 13px;">- PKR ${order.discount_total.toLocaleString()}</span>
+                                </div>
+                                ` : ''}
+                                ${order.shipping_total > 0 ? `
+                                <div style="display: flex; justify-content: space-between;">
+                                    <span style="color: #6b7280; font-size: 13px;">Shipping:</span>
+                                    <span style="color: #1f2937; font-size: 13px;">PKR ${order.shipping_total.toLocaleString()}</span>
+                                </div>
+                                ` : ''}
+                                <div style="display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid #86efac; margin-top: 4px;">
+                                    <span style="color: #059669; font-size: 16px; font-weight: 600;">Total:</span>
+                                    <span style="color: #059669; font-size: 16px; font-weight: 600;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        ${order.note ? `
+                        <!-- Notes -->
+                        <div style="margin-top: 16px; background: #fef3c7; padding: 12px 16px; border-radius: 8px; border: 1px solid #fcd34d;">
+                            <h4 style="font-size: 12px; font-weight: 600; color: #92400e; margin: 0 0 4px 0;">📝 Order Notes</h4>
+                            <p style="color: #78350f; font-size: 13px; margin: 0;">${order.note}</p>
+                        </div>
+                        ` : ''}
+                        
+                        <!-- Footer -->
+                        <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; text-align: center;">
+                            <p style="color: #9ca3af; font-size: 11px; margin: 0;">
+                                Legacy order imported on ${order.created_at ? new Date(order.created_at).toLocaleDateString() : 'N/A'}
+                                ${order.import_batch_id ? ` • Batch: ${order.import_batch_id}` : ''}
+                            </p>
+                        </div>
+                    </div>
+                `;
+            } else {
+                content.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #ef4444;">
+                        <p>Error loading history order details</p>
+                        <p style="font-size: 13px; color: #6b7280;">${data.message || 'Unknown error'}</p>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching history order:', error);
+            content.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #ef4444;">
+                    <p>Error loading history order details</p>
+                    <p style="font-size: 13px; color: #6b7280;">${error.message}</p>
+                </div>
+            `;
+        });
 };
 
 // Add the viewOrderDetails function from orders page
@@ -1348,8 +1655,8 @@ window.viewOrderDetails = function(orderId) {
                                 </div>
                             </td>
                             <td style="padding: 12px; text-align: center; color: #6b7280;">${item.quantity || 0}</td>
-                            <td style="padding: 12px; text-align: right; color: #6b7280;">PKR ${((item.unit_price || item.price || 0)).toLocaleString()}</td>
-                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${(item.line_total || ((item.quantity || 0) * (item.unit_price || item.price || 0))).toLocaleString()}</td>
+                            <td style="padding: 12px; text-align: right; color: #6b7280;">PKR ${Math.round(item.unit_price || item.price || 0).toLocaleString()}</td>
+                            <td style="padding: 12px; text-align: right; font-weight: 600; color: #1f2937;">PKR ${Math.round(item.line_total || ((item.quantity || 0) * (item.unit_price || item.price || 0))).toLocaleString()}</td>
                         </tr>
                     `;
                 });
@@ -1380,7 +1687,7 @@ window.viewOrderDetails = function(orderId) {
                         <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                             <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                                 <span style="color: #6b7280;">Subtotal:</span>
-                                <span style="font-weight: 500;">PKR ${(order.subtotal_price || order.total_price || 0).toLocaleString()}</span>
+                                <span style="font-weight: 500;">PKR ${Math.round(order.subtotal_price || order.total_price || 0).toLocaleString()}</span>
                             </div>
                             <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                                 <span style="color: #6b7280;">Tax:</span>
@@ -1392,7 +1699,7 @@ window.viewOrderDetails = function(orderId) {
                             </div>
                             <div style="display: flex; justify-content: space-between; padding-top: 8px; border-top: 1px solid #e5e7eb;">
                                 <span style="font-weight: 600; color: #1f2937;">Total:</span>
-                                <span style="font-weight: 600; color: #1f2937; font-size: 18px;">PKR ${(order.total_price || 0).toLocaleString()}</span>
+                                <span style="font-weight: 600; color: #1f2937; font-size: 18px;">PKR ${Math.round(order.total_price || 0).toLocaleString()}</span>
                             </div>
                         </div>
                     </div>
@@ -1486,6 +1793,9 @@ window.viewOrderDetails = function(orderId) {
                 <h3 class="card-title font-medium text-sm">All Customers</h3>
                 
                 <div class="flex items-center gap-2 ml-auto">
+                    <button onclick="openDuplicatesModal()" class="kt-btn kt-btn-sm kt-btn-outline" title="Find and merge duplicate customers">
+                        <i class="ki-filled ki-people"></i> Manage Duplicates
+                    </button>
                     <button onclick="openColumnSettings()" class="kt-btn kt-btn-sm kt-btn-outline">
                         <i class="ki-filled ki-setting-2"></i> Columns
                     </button>
@@ -1753,6 +2063,28 @@ window.viewOrderDetails = function(orderId) {
         </div>
     </div>
 </div>
+
+<!-- History Order Details Modal -->
+<div id="historyOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1002; align-items: center; justify-content: center;">
+    <div style="background: white; border-radius: 12px; width: 95%; max-width: 900px; max-height: 90vh; overflow-y: auto; margin: auto;">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #9333ea 0%, #7c3aed 100%); border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: white;">📜 Legacy Order Details</h3>
+                <button onclick="closeModal('historyOrderModal')" 
+                        style="background: rgba(255,255,255,0.2); border: none; font-size: 20px; color: white; cursor: pointer; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">&times;</button>
+            </div>
+        </div>
+        <div id="historyOrderContent" style="max-height: calc(90vh - 80px); overflow-y: auto;">
+            <!-- Content will be populated by JavaScript -->
+        </div>
+    </div>
+</div>
+
+<style>
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+</style>
 
 <!-- Add Note Modal -->
 <div id="addNoteModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1000;">
@@ -3032,6 +3364,524 @@ function saveVerifiedLocation() {
     </div>
 </div>
 
+<!-- Merge Into Customer Modal -->
+<div id="mergeIntoModal" style="display: none; position: fixed; z-index: 1003; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5);">
+    <div style="background-color: #fefefe; margin: 10% auto; padding: 0; border-radius: 12px; width: 95%; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);">
+        <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 20px; font-weight: 600;">
+                    <i class="fas fa-compress-arrows-alt"></i> Merge Into Customer
+                </h3>
+                <button onclick="closeMergeIntoModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+            </div>
+            <p id="mergeIntoPrimaryName" style="margin: 8px 0 0 0; font-size: 13px; opacity: 0.9;">Primary Customer: Loading...</p>
+        </div>
+        <div style="padding: 20px;">
+            <p style="margin: 0 0 16px 0; color: #6b7280; font-size: 14px;">
+                Search for a customer to merge INTO the primary customer. All orders from the selected customer will be transferred.
+            </p>
+            
+            <!-- Search Box -->
+            <div style="position: relative; margin-bottom: 16px;">
+                <input type="text" id="mergeSearchInput" placeholder="Search by name, phone, or email..." 
+                       oninput="searchCustomersForMerge(this.value)"
+                       style="width: 100%; padding: 12px 12px 12px 40px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+                <i class="fas fa-search" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #9ca3af;"></i>
+            </div>
+            
+            <!-- Search Results -->
+            <div id="mergeSearchResults" style="max-height: 300px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; display: none;">
+                <!-- Results will be populated here -->
+            </div>
+            
+            <!-- Selected Customer -->
+            <div id="selectedMergeCustomer" style="display: none; margin-top: 16px; padding: 16px; background: #f0fdf4; border: 1px solid #10b981; border-radius: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong id="selectedMergeCustomerName" style="color: #065f46;"></strong>
+                        <p id="selectedMergeCustomerDetails" style="margin: 4px 0 0 0; font-size: 12px; color: #059669;"></p>
+                    </div>
+                    <button onclick="clearSelectedMergeCustomer()" style="background: none; border: none; color: #dc2626; cursor: pointer; font-size: 16px;">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div style="margin-top: 20px; display: flex; gap: 12px;">
+                <button onclick="closeMergeIntoModal()" style="flex: 1; padding: 12px; background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer;">
+                    Cancel
+                </button>
+                <button id="confirmMergeBtn" onclick="confirmMergeInto()" disabled 
+                        style="flex: 2; padding: 12px; background: #9ca3af; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: not-allowed;">
+                    <i class="fas fa-compress-arrows-alt"></i> Merge Selected Into Primary
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Manage Duplicates Modal -->
+<div id="duplicatesModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4);">
+    <div style="background-color: #fefefe; margin: 5% auto; padding: 0; border-radius: 12px; width: 95%; max-width: 900px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); max-height: 85vh; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0; font-size: 20px; font-weight: 600;">
+                    <i class="fas fa-users"></i> Manage Duplicate Customers
+                </h3>
+                <button onclick="closeDuplicatesModal()" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+            </div>
+            <p style="margin: 8px 0 0 0; font-size: 13px; opacity: 0.9;">Find and merge customers with same name but different phone numbers</p>
+        </div>
+        <div id="duplicatesContent" style="padding: 20px; overflow-y: auto; flex: 1;">
+            <div style="text-align: center; padding: 40px;">
+                <i class="fas fa-spinner fa-spin" style="font-size: 32px; color: #8b5cf6;"></i>
+                <p style="margin-top: 12px; color: #6b7280;">Loading potential duplicates...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Duplicates Management - Store grouped data globally for search filtering
+window.duplicatesGroupedData = {};
+
+window.openDuplicatesModal = function() {
+    const modal = document.getElementById('duplicatesModal');
+    const content = document.getElementById('duplicatesContent');
+    modal.style.display = 'block';
+    
+    // Fetch duplicates
+    fetch('/customers/find-duplicates')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                if (data.count === 0) {
+                    content.innerHTML = `
+                        <div style="text-align: center; padding: 60px 20px;">
+                            <i class="fas fa-check-circle" style="font-size: 48px; color: #10b981;"></i>
+                            <h4 style="margin: 16px 0 8px 0; font-size: 18px; color: #374151;">No Duplicates Found</h4>
+                            <p style="color: #6b7280;">All customers have unique name-phone combinations.</p>
+                        </div>
+                    `;
+                } else {
+                    // Group by customer name
+                    const grouped = {};
+                    data.duplicates.forEach(d => {
+                        const key = `${d.first_name} ${d.last_name}`;
+                        if (!grouped[key]) {
+                            grouped[key] = [];
+                        }
+                        // Add both customers with last order date
+                        if (!grouped[key].find(c => c.id === d.customer1_id)) {
+                            grouped[key].push({
+                                id: d.customer1_id,
+                                phone: d.phone1,
+                                city: d.city1,
+                                orders: d.orders1,
+                                lastOrder: d.last_order1
+                            });
+                        }
+                        if (!grouped[key].find(c => c.id === d.customer2_id)) {
+                            grouped[key].push({
+                                id: d.customer2_id,
+                                phone: d.phone2,
+                                city: d.city2,
+                                orders: d.orders2,
+                                lastOrder: d.last_order2
+                            });
+                        }
+                    });
+                    
+                    // Store for search filtering
+                    window.duplicatesGroupedData = grouped;
+                    
+                    // Render with search box
+                    let html = `
+                        <div style="margin-bottom: 16px; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">
+                            <strong style="color: #16a34a;">📋 Found ${data.count} potential duplicate groups</strong>
+                            <p style="margin: 4px 0 0 0; font-size: 13px; color: #15803d;">Select a primary customer to keep, then click "Merge" to combine records.</p>
+                        </div>
+                        <div style="margin-bottom: 16px; position: sticky; top: 0; background: white; padding: 8px 0; z-index: 10;">
+                            <div style="position: relative;">
+                                <input type="text" id="duplicateSearchInput" placeholder="Search by name, phone, or city..." 
+                                       oninput="filterDuplicates(this.value)"
+                                       style="width: 100%; padding: 10px 12px 10px 36px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+                                <i class="fas fa-search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af;"></i>
+                            </div>
+                        </div>
+                        <div id="duplicatesListContainer" style="display: flex; flex-direction: column; gap: 16px;">
+                    `;
+                    
+                    html += renderDuplicateGroups(grouped);
+                    html += '</div>';
+                    content.innerHTML = html;
+                }
+            } else {
+                content.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc2626;">
+                        <i class="fas fa-exclamation-triangle" style="font-size: 32px;"></i>
+                        <p style="margin-top: 12px;">Error: ${data.message}</p>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            content.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #dc2626;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 32px;"></i>
+                    <p style="margin-top: 12px;">Failed to load duplicates: ${error.message}</p>
+                </div>
+            `;
+        });
+};
+
+// Render duplicate groups as HTML
+window.renderDuplicateGroups = function(grouped, searchTerm = '') {
+    let html = '';
+    let idx = 0;
+    
+    Object.entries(grouped).forEach(([name, customers]) => {
+        // Filter by search term
+        if (searchTerm) {
+            const term = searchTerm.toLowerCase();
+            const nameMatch = name.toLowerCase().includes(term);
+            const phoneMatch = customers.some(c => (c.phone || '').includes(term));
+            const cityMatch = customers.some(c => (c.city || '').toLowerCase().includes(term));
+            
+            if (!nameMatch && !phoneMatch && !cityMatch) {
+                return; // Skip this group
+            }
+        }
+        
+        // Sort customers by last order date (most recent first) to help selection
+        customers.sort((a, b) => {
+            if (!a.lastOrder && !b.lastOrder) return 0;
+            if (!a.lastOrder) return 1;
+            if (!b.lastOrder) return -1;
+            return new Date(b.lastOrder) - new Date(a.lastOrder);
+        });
+        
+        html += `
+            <div class="duplicate-group" data-name="${name.toLowerCase()}" style="border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                <div style="background: #f9fafb; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong style="font-size: 16px; color: #374151;">${name}</strong>
+                        <span style="margin-left: 8px; background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 12px; font-size: 12px;">${customers.length} records</span>
+                    </div>
+                </div>
+                <div style="padding: 16px;">
+                    <table style="width: 100%; font-size: 13px;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #e5e7eb;">
+                                <th style="text-align: left; padding: 8px; color: #6b7280; font-weight: 500;">Primary</th>
+                                <th style="text-align: left; padding: 8px; color: #6b7280; font-weight: 500;">ID</th>
+                                <th style="text-align: left; padding: 8px; color: #6b7280; font-weight: 500;">Phone</th>
+                                <th style="text-align: left; padding: 8px; color: #6b7280; font-weight: 500;">City</th>
+                                <th style="text-align: right; padding: 8px; color: #6b7280; font-weight: 500;">Orders</th>
+                                <th style="text-align: right; padding: 8px; color: #6b7280; font-weight: 500;">Last Order</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        `;
+        
+        customers.forEach((c, i) => {
+            const radioName = `primary_${idx}`;
+            const lastOrderFormatted = c.lastOrder ? new Date(c.lastOrder).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '-';
+            const isRecent = c.lastOrder && (new Date() - new Date(c.lastOrder)) < (90 * 24 * 60 * 60 * 1000); // Within 90 days
+            html += `
+                <tr style="border-bottom: 1px solid #f3f4f6;">
+                    <td style="padding: 8px;">
+                        <input type="radio" name="${radioName}" value="${c.id}" data-group="${idx}" ${i === 0 ? 'checked' : ''}>
+                    </td>
+                    <td style="padding: 8px; font-family: monospace; color: #6b7280;">#${c.id}</td>
+                    <td style="padding: 8px; font-weight: 500;">${c.phone || '-'}</td>
+                    <td style="padding: 8px;">${c.city || '-'}</td>
+                    <td style="padding: 8px; text-align: right; font-weight: 600; color: #3b82f6;">${c.orders || 0}</td>
+                    <td style="padding: 8px; text-align: right; font-weight: 500; color: ${isRecent ? '#059669' : '#6b7280'};">${lastOrderFormatted}</td>
+                </tr>
+            `;
+        });
+        
+        const customerIds = customers.map(c => c.id).join(',');
+        html += `
+                        </tbody>
+                    </table>
+                    <div style="margin-top: 12px; text-align: right;">
+                        <button onclick="mergeCustomerGroup(${idx}, '${customerIds}')" 
+                                id="mergeBtn_${idx}"
+                                style="padding: 8px 16px; background: #8b5cf6; color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500;">
+                            <i class="fas fa-compress-arrows-alt"></i> Merge into Primary
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        idx++;
+    });
+    
+    return html;
+};
+
+window.closeDuplicatesModal = function() {
+    document.getElementById('duplicatesModal').style.display = 'none';
+};
+
+// Filter duplicates by search term
+window.filterDuplicates = function(searchTerm) {
+    const container = document.getElementById('duplicatesListContainer');
+    if (!container) return;
+    
+    // Re-render with filtered data
+    container.innerHTML = renderDuplicateGroups(window.duplicatesGroupedData, searchTerm);
+    
+    // Show message if no results
+    if (container.innerHTML.trim() === '') {
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #6b7280;">
+                <i class="fas fa-search" style="font-size: 32px; opacity: 0.5;"></i>
+                <p style="margin-top: 12px;">No duplicates found matching "${searchTerm}"</p>
+            </div>
+        `;
+    }
+};
+
+window.updateMergeSelection = function(groupIdx) {
+    // Just updates UI if needed
+};
+
+window.mergeCustomerGroup = function(groupIdx, customerIdsStr) {
+    const customerIds = customerIdsStr.split(',').map(id => parseInt(id));
+    const selectedRadio = document.querySelector(`input[name="primary_${groupIdx}"]:checked`);
+    
+    if (!selectedRadio) {
+        alert('Please select a primary customer');
+        return;
+    }
+    
+    const primaryId = parseInt(selectedRadio.value);
+    const duplicateIds = customerIds.filter(id => id !== primaryId);
+    
+    if (duplicateIds.length === 0) {
+        alert('No duplicates to merge');
+        return;
+    }
+    
+    if (!confirm(`Merge ${duplicateIds.length} duplicate customer(s) into #${primaryId}?\n\nThis will:\n• Move all orders to the primary customer\n• Hide duplicate records\n• Recalculate statistics`)) {
+        return;
+    }
+    
+    const btn = document.getElementById(`mergeBtn_${groupIdx}`);
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Merging...';
+    
+    fetch('/customers/merge', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({
+            primary_customer_id: primaryId,
+            duplicate_customer_ids: duplicateIds
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Show success and remove this group from the list
+            btn.closest('[style*="border: 1px solid"]').innerHTML = `
+                <div style="padding: 20px; text-align: center; background: #f0fdf4;">
+                    <i class="fas fa-check-circle" style="font-size: 24px; color: #10b981;"></i>
+                    <p style="margin: 8px 0 0 0; color: #16a34a; font-weight: 500;">${data.message}</p>
+                </div>
+            `;
+            
+            // Refresh the page after a short delay to show updated customer list
+            setTimeout(() => {
+                window.location.reload();
+            }, 2000);
+        } else {
+            alert('Error: ' + data.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-compress-arrows-alt"></i> Merge into Primary';
+        }
+    })
+    .catch(error => {
+        alert('Failed to merge: ' + error.message);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-compress-arrows-alt"></i> Merge into Primary';
+    });
+};
+
+// Close modal on outside click
+window.addEventListener('click', function(event) {
+    if (event.target.id === 'duplicatesModal') {
+        closeDuplicatesModal();
+    }
+    if (event.target.id === 'mergeIntoModal') {
+        closeMergeIntoModal();
+    }
+});
+
+// ========================================
+// Merge Into Customer Functions
+// ========================================
+window.mergeIntoPrimaryId = null;
+window.selectedMergeCustomerId = null;
+let mergeSearchTimeout = null;
+
+window.openMergeIntoModal = function(primaryId, primaryName) {
+    window.mergeIntoPrimaryId = primaryId;
+    window.selectedMergeCustomerId = null;
+    
+    document.getElementById('mergeIntoPrimaryName').textContent = `Primary Customer: ${primaryName} (#${primaryId})`;
+    document.getElementById('mergeSearchInput').value = '';
+    document.getElementById('mergeSearchResults').style.display = 'none';
+    document.getElementById('mergeSearchResults').innerHTML = '';
+    document.getElementById('selectedMergeCustomer').style.display = 'none';
+    
+    const btn = document.getElementById('confirmMergeBtn');
+    btn.disabled = true;
+    btn.style.background = '#9ca3af';
+    btn.style.cursor = 'not-allowed';
+    
+    document.getElementById('mergeIntoModal').style.display = 'block';
+    document.getElementById('mergeSearchInput').focus();
+};
+
+window.closeMergeIntoModal = function() {
+    document.getElementById('mergeIntoModal').style.display = 'none';
+    window.mergeIntoPrimaryId = null;
+    window.selectedMergeCustomerId = null;
+};
+
+window.searchCustomersForMerge = function(searchTerm) {
+    clearTimeout(mergeSearchTimeout);
+    
+    const resultsDiv = document.getElementById('mergeSearchResults');
+    
+    if (searchTerm.length < 2) {
+        resultsDiv.style.display = 'none';
+        return;
+    }
+    
+    mergeSearchTimeout = setTimeout(() => {
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
+        
+        fetch(`/customers/search-for-merge?q=${encodeURIComponent(searchTerm)}&current_customer_id=${window.mergeIntoPrimaryId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.customers.length > 0) {
+                    let html = '';
+                    data.customers.forEach(c => {
+                        html += `
+                            <div onclick="selectCustomerForMerge(${c.id}, '${c.name.replace(/'/g, "\\'")}', '${(c.phone || '').replace(/'/g, "\\'")}', '${(c.city || '').replace(/'/g, "\\'")}', ${c.orders})" 
+                                 style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; cursor: pointer; transition: background 0.2s;"
+                                 onmouseover="this.style.background='#f3f4f6'" 
+                                 onmouseout="this.style.background='white'">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        <strong style="color: #374151;">${c.name}</strong>
+                                        <span style="margin-left: 8px; font-size: 12px; color: #6b7280;">#${c.id}</span>
+                                    </div>
+                                    <span style="background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500;">
+                                        ${c.orders} orders
+                                    </span>
+                                </div>
+                                <div style="margin-top: 4px; font-size: 12px; color: #6b7280;">
+                                    📞 ${c.phone || 'No phone'} ${c.city ? ' • 📍 ' + c.city : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    resultsDiv.innerHTML = html;
+                } else {
+                    resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #6b7280;">No customers found</div>';
+                }
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #dc2626;">Error searching customers</div>';
+            });
+    }, 300);
+};
+
+window.selectCustomerForMerge = function(id, name, phone, city, orders) {
+    window.selectedMergeCustomerId = id;
+    
+    document.getElementById('mergeSearchResults').style.display = 'none';
+    document.getElementById('mergeSearchInput').value = '';
+    
+    document.getElementById('selectedMergeCustomerName').textContent = `${name} (#${id})`;
+    document.getElementById('selectedMergeCustomerDetails').textContent = `📞 ${phone || 'No phone'} • 📍 ${city || 'Unknown'} • 📦 ${orders} orders`;
+    document.getElementById('selectedMergeCustomer').style.display = 'block';
+    
+    const btn = document.getElementById('confirmMergeBtn');
+    btn.disabled = false;
+    btn.style.background = '#f59e0b';
+    btn.style.cursor = 'pointer';
+};
+
+window.clearSelectedMergeCustomer = function() {
+    window.selectedMergeCustomerId = null;
+    document.getElementById('selectedMergeCustomer').style.display = 'none';
+    
+    const btn = document.getElementById('confirmMergeBtn');
+    btn.disabled = true;
+    btn.style.background = '#9ca3af';
+    btn.style.cursor = 'not-allowed';
+};
+
+window.confirmMergeInto = function() {
+    if (!window.mergeIntoPrimaryId || !window.selectedMergeCustomerId) {
+        alert('Please select a customer to merge');
+        return;
+    }
+    
+    if (!confirm(`Are you sure you want to merge customer #${window.selectedMergeCustomerId} into #${window.mergeIntoPrimaryId}?\n\nThis will:\n• Move all orders to the primary customer\n• Hide the duplicate customer record\n• This action can be undone by admin`)) {
+        return;
+    }
+    
+    const btn = document.getElementById('confirmMergeBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Merging...';
+    
+    fetch('/customers/merge', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+        },
+        body: JSON.stringify({
+            primary_customer_id: window.mergeIntoPrimaryId,
+            duplicate_customer_ids: [window.selectedMergeCustomerId]
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            closeMergeIntoModal();
+            // Refresh to show updated data
+            window.location.reload();
+        } else {
+            alert('Error: ' + data.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-compress-arrows-alt"></i> Merge Selected Into Primary';
+            btn.style.background = '#f59e0b';
+            btn.style.cursor = 'pointer';
+        }
+    })
+    .catch(error => {
+        alert('Failed to merge: ' + error.message);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-compress-arrows-alt"></i> Merge Selected Into Primary';
+        btn.style.background = '#f59e0b';
+        btn.style.cursor = 'pointer';
+    });
+};
 </script>
 
 @endsection

@@ -1251,8 +1251,8 @@ input:focus, select:focus, button:focus {
 
 </div>
 
-<!-- View Order Modal -->
-<div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999;">
+<!-- View Order Modal (z-index higher than riders map modal which is 10000) -->
+<div id="viewOrderModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10100;">
     <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
         <!-- Modal Header -->
         <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center;">
@@ -11564,11 +11564,37 @@ async function loadAllOpenOrdersForMap() {
             const marker = L.marker([order.location.latitude, order.location.longitude], {icon})
                 .addTo(allOrdersMap)
                 .bindPopup(`
-                    <b>${order.order_number}</b><br>
-                    ${order.customer_name}<br>
-                    <span style="color: ${color};">${order.status_display}</span><br>
-                    <small>Rider: ${order.rider_name}</small><br>
-                    <small>${order.total}</small>
+                    <div style="min-width: 220px; max-width: 280px;">
+                        <div style="font-weight: 600; color: #3b82f6; font-size: 14px; margin-bottom: 4px;">
+                            <a href="javascript:void(0)" onclick="viewOrderDetails(${order.id})" style="text-decoration: underline; cursor: pointer;">${order.order_number}</a>
+                        </div>
+                        <div style="font-size: 13px; color: #374151; margin-bottom: 4px;">${order.customer_name}</div>
+                        ${order.address ? `<div style="font-size: 11px; color: #6b7280; margin-bottom: 6px; line-height: 1.3;">📍 ${order.address}</div>` : ''}
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="color: ${color}; font-size: 12px; font-weight: 500;">${order.status_display}</span>
+                            <span style="font-weight: 600; color: #059669;">${order.total}</span>
+                        </div>
+                        <div style="font-size: 11px; color: #6b7280; margin-bottom: 6px;">🛵 ${order.rider_name}</div>
+                        <div style="font-size: 10px; color: ${order.location_source === 'verified_location' ? '#10b981' : '#f59e0b'}; margin-bottom: 8px;">
+                            ${order.location_source === 'verified_location' ? '✓ Verified Location' : '⚠ Geocoded (approximate)'}
+                        </div>
+                        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                            <button onclick="viewOrderDetails(${order.id})" 
+                                    style="flex: 1; padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer;">
+                                View Details
+                            </button>
+                            ${order.location_source !== 'verified_location' && order.customer_id ? `
+                            <button onclick="openVerifyLocationFromMap(${order.customer_id}, ${order.id}, '${(order.customer_name || '').replace(/'/g, "\\'")}', '${(order.address || '').replace(/'/g, "\\'")}')" 
+                                    style="padding: 4px 8px; background: #10b981; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer;"
+                                    title="Set verified location">📌 Verify</button>
+                            ` : ''}
+                            ${order.customer_id ? `
+                            <button onclick="geocodeCustomerFromMap(${order.customer_id}, '${(order.customer_name || '').replace(/'/g, "\\'")}')" 
+                                    style="padding: 4px 8px; background: #f59e0b; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer;"
+                                    title="Re-geocode address">🔄</button>
+                            ` : ''}
+                        </div>
+                    </div>
                 `);
             
             allOrdersMarkers.push(marker);
@@ -11580,13 +11606,16 @@ async function loadAllOpenOrdersForMap() {
             allOrdersMap.fitBounds(bounds, {padding: [30, 30]});
         }
         
-        // Update orders list
+        // Store orders data globally for click handlers
+        window.allOpenOrdersData = data.orders;
+        
+        // Update orders list with click-to-focus and order details popup
         if (data.orders.length > 0) {
             listContainer.innerHTML = `
                 <div style="background: #f8fafc; padding: 8px 12px; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb;">
                     📦 Orders (${data.orders.length})
                 </div>
-                ${data.orders.map(order => {
+                ${data.orders.map((order, index) => {
                     const statusColors = {
                         'processing': '#f59e0b',
                         'confirmed': '#3b82f6',
@@ -11595,19 +11624,44 @@ async function loadAllOpenOrdersForMap() {
                         'pending': '#6b7280'
                     };
                     const color = statusColors[order.status] || '#6b7280';
-                    const locationIcon = order.location ? 
-                        (order.location_source === 'verified_location' ? '📍' : '📍~') : '❌';
+                    const hasLocation = order.location !== null;
+                    const isVerified = order.location_source === 'verified_location';
+                    const locationIcon = hasLocation ? (isVerified ? '📍' : '📍~') : '❌';
+                    const locationTitle = hasLocation ? (isVerified ? 'Verified location' : 'Geocoded (approximate)') : 'No location';
+                    
+                    // Show set verified location button if customer has no verified location
+                    const verifyBtn = !isVerified && order.customer_id ? 
+                        `<button onclick="event.stopPropagation(); openVerifyLocationFromMap(${order.customer_id}, ${order.id}, '${(order.customer_name || '').replace(/'/g, "\\'")}', '${(order.address || '').replace(/'/g, "\\'")}')" 
+                                 style="padding: 2px 6px; background: #10b981; color: white; border: none; border-radius: 4px; font-size: 10px; cursor: pointer;" 
+                                 title="Set verified location">📌</button>` : '';
+                    
+                    // Geocode button (for orders with address but no verified location)
+                    const geocodeBtn = order.customer_id && !isVerified ? 
+                        `<button onclick="event.stopPropagation(); geocodeCustomerFromMap(${order.customer_id}, '${(order.customer_name || '').replace(/'/g, "\\'")}', '${(order.address || '').replace(/'/g, "\\'")}')" 
+                                 style="padding: 2px 6px; background: #f59e0b; color: white; border: none; border-radius: 4px; font-size: 10px; cursor: pointer;" 
+                                 title="Re-geocode address">🔄</button>` : '';
                     
                     return `
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px;">
-                            <div>
-                                <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
-                                <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+                        <div onclick="focusOrderOnMap(${index})" 
+                             style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; cursor: pointer; transition: background 0.15s;"
+                             onmouseover="this.style.background='#f0f9ff'" 
+                             onmouseout="this.style.background='transparent'"
+                             data-order-index="${index}">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span onclick="event.stopPropagation(); viewOrderDetails(${order.id})" 
+                                          style="font-weight: 600; color: #3b82f6; cursor: pointer; text-decoration: underline;"
+                                          title="Click to view order details">${order.order_number}</span>
+                                    <span style="color: #374151;">${order.customer_name}</span>
+                                </div>
+                                ${order.address ? `<div style="font-size: 11px; color: #9ca3af; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${order.address}">📍 ${order.address}</div>` : ''}
                             </div>
-                            <div style="display: flex; gap: 8px; align-items: center;">
+                            <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
                                 <span style="color: ${color}; font-size: 12px;">${order.status_display}</span>
                                 <span style="color: #6b7280; font-size: 11px;">${order.rider_name}</span>
-                                <span>${locationIcon}</span>
+                                <span title="${locationTitle}">${locationIcon}</span>
+                                ${verifyBtn}
+                                ${geocodeBtn}
                             </div>
                         </div>
                     `;
@@ -11662,6 +11716,139 @@ function populateAllOrdersFilters(filters) {
 // Apply filters
 function applyAllOrdersFilters() {
     loadAllOpenOrdersForMap();
+}
+
+// ⭐ Focus on order when clicking in the list
+function focusOrderOnMap(orderIndex) {
+    const orders = window.allOpenOrdersData;
+    if (!orders || !orders[orderIndex]) {
+        console.log('Order not found at index:', orderIndex);
+        return;
+    }
+    
+    const order = orders[orderIndex];
+    
+    if (order.location && order.location.latitude && order.location.longitude) {
+        // Pan to order location and zoom in
+        allOrdersMap.setView([order.location.latitude, order.location.longitude], 16, {
+            animate: true,
+            duration: 0.5
+        });
+        
+        // Find and open the marker popup
+        const marker = allOrdersMarkers[orderIndex];
+        if (marker) {
+            marker.openPopup();
+        }
+        
+        // Highlight the row
+        document.querySelectorAll('[data-order-index]').forEach(el => {
+            el.style.background = 'transparent';
+        });
+        const row = document.querySelector(`[data-order-index="${orderIndex}"]`);
+        if (row) {
+            row.style.background = '#dbeafe';
+        }
+    } else {
+        // No location - show alert with option to set verified location
+        if (order.customer_id) {
+            const setLocation = confirm(`Order #${order.order_number} has no location.\n\nWould you like to set a verified location for ${order.customer_name}?`);
+            if (setLocation) {
+                openVerifyLocationFromMap(order.customer_id, order.id, order.customer_name, order.address || '');
+            }
+        } else {
+            alert(`Order #${order.order_number} has no location data.`);
+        }
+    }
+}
+
+// ⭐ Open verify location modal from map view
+function openVerifyLocationFromMap(customerId, orderId, customerName, address) {
+    // Close the riders map modal temporarily
+    document.getElementById('allRidersMapModal').style.display = 'none';
+    
+    // Open the existing verify location modal
+    if (typeof openVerifyLocationModal === 'function') {
+        openVerifyLocationModal(customerId, customerName, address, function() {
+            // Callback when location is saved - reopen map and refresh
+            document.getElementById('allRidersMapModal').style.display = 'block';
+            loadAllOpenOrdersForMap();
+        });
+    } else {
+        // Fallback: Use a simple prompt for Google Maps URL
+        const url = prompt(`Enter Google Maps URL for ${customerName}:`, '');
+        if (url && url.trim()) {
+            saveVerifiedLocationFromUrl(customerId, url.trim(), function() {
+                document.getElementById('allRidersMapModal').style.display = 'block';
+                loadAllOpenOrdersForMap();
+            });
+        } else {
+            document.getElementById('allRidersMapModal').style.display = 'block';
+        }
+    }
+}
+
+// ⭐ Save verified location from URL
+function saveVerifiedLocationFromUrl(customerId, googleMapsUrl, callback) {
+    fetch(`/customers/${customerId}/set-verified-location`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify({
+            google_maps_url: googleMapsUrl
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('✅ Verified location saved successfully!');
+            if (callback) callback();
+        } else {
+            alert('❌ Failed to save location: ' + (data.message || 'Unknown error'));
+            if (callback) callback();
+        }
+    })
+    .catch(error => {
+        console.error('Error saving location:', error);
+        alert('❌ Error saving location');
+        if (callback) callback();
+    });
+}
+
+// ⭐ Geocode customer address from map view
+function geocodeCustomerFromMap(customerId, customerName) {
+    if (!confirm(`Re-geocode address for ${customerName}?\n\nThis will update the location based on the stored address.`)) {
+        return;
+    }
+    
+    // Show loading
+    const originalMapContent = document.getElementById('allOrdersMapContainer').innerHTML;
+    
+    fetch(`/customers/${customerId}/geocode-single`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(`✅ Geocoded successfully!\n\nLocation: ${data.latitude}, ${data.longitude}`);
+            // Refresh the map
+            loadAllOpenOrdersForMap();
+        } else {
+            alert('❌ Geocoding failed: ' + (data.message || 'Address could not be geocoded'));
+        }
+    })
+    .catch(error => {
+        console.error('Error geocoding:', error);
+        alert('❌ Error geocoding address');
+    });
 }
 
 // ⭐ HISTORY VIEW FUNCTIONS - New 3-level flow: Rider List → Date Groups → Map
@@ -12031,13 +12218,16 @@ function renderHistoryLocationTrail() {
         let markerColor = '#a78bfa'; // Light purple default
         let markerSize = 8;
         
-        if (loc.duration_minutes >= 30) {
+        // Round duration to whole minutes
+        const durationMins = Math.round(loc.duration_minutes || 0);
+        
+        if (durationMins >= 30) {
             markerColor = '#7c3aed'; // Darker purple for 30+ mins
             markerSize = 14;
-        } else if (loc.duration_minutes >= 15) {
+        } else if (durationMins >= 15) {
             markerColor = '#8b5cf6';
             markerSize = 12;
-        } else if (loc.duration_minutes >= 5) {
+        } else if (durationMins >= 5) {
             markerColor = '#a78bfa';
             markerSize = 10;
         }
@@ -12066,6 +12256,17 @@ function renderHistoryLocationTrail() {
             iconAnchor: [markerSize/2, markerSize/2]
         });
         
+        // Format the time nicely (handle ISO format)
+        let displayTime = loc.time_display || '';
+        if (!displayTime && loc.first_seen) {
+            try {
+                const dt = new Date(loc.first_seen);
+                displayTime = dt.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', hour12: true});
+            } catch(e) {
+                displayTime = loc.first_seen;
+            }
+        }
+        
         const marker = L.marker([loc.latitude, loc.longitude], {icon})
             .addTo(historyMap)
             .bindPopup(`
@@ -12074,8 +12275,8 @@ function renderHistoryLocationTrail() {
                         ${isFirst ? '🚀 Started' : isLast ? '🏁 Last Location' : '📍 Location Point'}
                     </div>
                     <div style="font-size: 12px; color: #374151;">
-                        <div>🕐 ${loc.time_display || loc.first_seen}</div>
-                        ${loc.duration_minutes > 0 ? `<div style="margin-top: 4px;">⏱️ Stayed: <strong>${loc.duration_display || loc.duration_minutes + ' mins'}</strong></div>` : ''}
+                        <div>🕐 ${displayTime}</div>
+                        ${durationMins > 0 ? `<div style="margin-top: 4px;">⏱️ Stayed: <strong>${durationMins} min</strong></div>` : ''}
                         ${loc.point_count > 1 ? `<div style="margin-top: 4px; font-size: 10px; color: #6b7280;">${loc.point_count} readings</div>` : ''}
                     </div>
                 </div>
@@ -12371,9 +12572,17 @@ async function loadRiderLocationHistory(riderId) {
         // ⭐ Get selected duration (default 2 hours)
         const durationSelect = document.getElementById('trailDurationSelect');
         const hours = durationSelect ? durationSelect.value : '2';
-        let url = `/orders/riders-map/${riderId}/location-history?hours=${hours}`;
-        if (currentRidersMapDate) {
-            url += `&date=${currentRidersMapDate}`;
+        let url;
+        
+        // For "Full Day" (24), use today's date instead of 24 hours back
+        if (hours === '24' && !currentRidersMapDate) {
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            url = `/orders/riders-map/${riderId}/location-history?date=${today}&hours=24`;
+        } else {
+            url = `/orders/riders-map/${riderId}/location-history?hours=${hours}`;
+            if (currentRidersMapDate) {
+                url += `&date=${currentRidersMapDate}`;
+            }
         }
         
         const response = await fetch(url, {
@@ -12401,13 +12610,16 @@ async function loadRiderLocationHistory(riderId) {
         // ⭐ Add markers for each location group with duration info
         data.locations.forEach((loc, idx) => {
             const isLatest = idx === 0;
-            const hasDuration = loc.duration && loc.duration_minutes > 0;
+            // ⭐ Only show duration badge if stayed 5+ minutes
+            const durationMins = Math.round(loc.duration_minutes || 0);
+            const showDurationBadge = durationMins >= 5;
+            const durationText = durationMins + ' min';
             
-            // Create marker with duration badge if stayed at location
-            const iconHtml = hasDuration 
+            // Create marker with duration badge if stayed at location 5+ mins
+            const iconHtml = showDurationBadge 
                 ? `<div style="position: relative;">
                     <div style="width: 28px; height: 28px; background: ${isLatest ? '#3b82f6' : '#6b7280'}; color: white; border: 2px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">${idx + 1}</div>
-                    <div style="position: absolute; top: -8px; right: -20px; background: #f59e0b; color: white; padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">${loc.duration}</div>
+                    <div style="position: absolute; top: -8px; right: -20px; background: #f59e0b; color: white; padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">${durationText}</div>
                   </div>`
                 : `<div style="width: 28px; height: 28px; background: ${isLatest ? '#3b82f6' : '#6b7280'}; color: white; border: 2px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">${idx + 1}</div>`;
             

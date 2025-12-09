@@ -14,6 +14,9 @@ class CustomerController extends Controller
     {
         $query = CustomerModel::query();
         
+        // Exclude merged customers (they are hidden after merge)
+        $query->whereNull('merged_into_customer_id');
+        
         // Search functionality
         if ($request->has('search') && $request->search) {
             $searchTerm = $request->search;
@@ -41,6 +44,24 @@ class CustomerController extends Controller
                           ->orderBy('created_at', 'desc')
                           ->paginate(15);
         
+        // =========================================
+        // HYBRID APPROACH: Add combined stats to paginated results
+        // =========================================
+        $customerIds = $customers->pluck('id')->toArray();
+        if (!empty($customerIds)) {
+            $combinedStats = $this->getCombinedCustomerStats($customerIds);
+            
+            // Transform paginator items to include combined stats
+            $customers->getCollection()->transform(function($customer) use ($combinedStats) {
+                $stats = $combinedStats[$customer->id] ?? null;
+                if ($stats) {
+                    $customer->total_orders = $stats->combined_order_count;
+                    $customer->total_spent = $stats->combined_total_spent;
+                }
+                return $customer;
+            });
+        }
+        
         // Get unique cities for filter dropdown
         $cities = CustomerModel::whereNotNull('city')
                               ->where('city', '!=', '')
@@ -66,9 +87,78 @@ class CustomerController extends Controller
     public function show(Request $request, $id)
     {
         try {
-            $customer = CustomerModel::with(['orders' => function($query) {
-                $query->orderBy('order_date', 'desc')->limit(10);
-            }])->findOrFail($id);
+            $customer = CustomerModel::findOrFail($id);
+            
+            // =========================================
+            // Get COMBINED orders (Production + History)
+            // =========================================
+            
+            // 1. Get production orders (non-Shopify)
+            $prodOrders = DB::table('t_crm_prod_order')
+                ->where('customer_id', $id)
+                ->where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->select(
+                    'id', 'order_number', 'order_date', 'order_status', 
+                    'external_source', 'total_price',
+                    DB::raw("'production' as source_type")
+                )
+                ->get();
+            
+            // 2. Get history orders (if table exists)
+            $historyOrders = collect();
+            if (DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+                $historyOrders = DB::table('t_crm_history_order')
+                    ->where('customer_id', $id)
+                    ->select(
+                        'id', 'order_number', 'order_date', 'order_status',
+                        'external_source', 'total_price',
+                        DB::raw("'history' as source_type")
+                    )
+                    ->get();
+            }
+            
+            // 3. Combine and sort by date (newest first), take last 10
+            $allOrders = $prodOrders->concat($historyOrders)
+                ->sortByDesc('order_date')
+                ->take(10)
+                ->values();
+            
+            // =========================================
+            // Calculate COMBINED stats (Prod + History)
+            // =========================================
+            
+            // Production stats (non-Shopify, delivered/completed)
+            $prodStats = DB::table('t_crm_prod_order')
+                ->where('customer_id', $id)
+                ->where(function($query) {
+                    $query->where('external_source', '!=', 'shopify')
+                          ->orWhereNull('external_source');
+                })
+                ->whereIn('order_status', ['delivered', 'completed'])
+                ->selectRaw('COUNT(*) as order_count, COALESCE(SUM(total_price), 0) as total_spent')
+                ->first();
+            
+            // History stats (delivered only)
+            $historyStats = (object)['order_count' => 0, 'total_spent' => 0];
+            if (DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+                $historyStats = DB::table('t_crm_history_order')
+                    ->where('customer_id', $id)
+                    ->where('order_status', 'delivered')
+                    ->selectRaw('COUNT(*) as order_count, COALESCE(SUM(total_price), 0) as total_spent')
+                    ->first();
+            }
+            
+            // Combined totals
+            $combinedOrderCount = ($prodStats->order_count ?? 0) + ($historyStats->order_count ?? 0);
+            $combinedTotalSpent = ($prodStats->total_spent ?? 0) + ($historyStats->total_spent ?? 0);
+            
+            // Override customer stats with combined values for display
+            $customer->total_orders = $combinedOrderCount;
+            $customer->total_spent = $combinedTotalSpent;
+            $customer->orders = $allOrders; // Set combined orders for the modal
             
             // Add verified location metadata
             $verifiedLocation = null;
@@ -91,13 +181,24 @@ class CustomerController extends Controller
             return response()->json([
                 'success' => true,
                 'customer' => $customer,
-                'verified_location' => $verifiedLocation
+                'verified_location' => $verifiedLocation,
+                // Additional stats breakdown (optional, for debugging/display)
+                'stats_breakdown' => [
+                    'production' => [
+                        'order_count' => $prodStats->order_count ?? 0,
+                        'total_spent' => $prodStats->total_spent ?? 0
+                    ],
+                    'history' => [
+                        'order_count' => $historyStats->order_count ?? 0,
+                        'total_spent' => $historyStats->total_spent ?? 0
+                    ]
+                ]
             ]);
             
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Customer not found'
+                'message' => 'Customer not found: ' . $e->getMessage()
             ], 404);
         }
     }
@@ -109,6 +210,7 @@ class CustomerController extends Controller
             $limit = $request->get('limit', 10);
             
             $customers = \App\Models\CRM\CustomerModel::query()
+                ->whereNull('merged_into_customer_id') // Exclude merged customers
                 ->where(function($q) use ($query) {
                     $q->where('first_name', 'LIKE', "%{$query}%")
                       ->orWhere('last_name', 'LIKE', "%{$query}%")
@@ -168,6 +270,9 @@ class CustomerController extends Controller
             // Start with base query
             $query = CustomerModel::query();
             
+            // Exclude merged customers (they are hidden after merge)
+            $query->whereNull('merged_into_customer_id');
+            
             // Apply search filter
             if (!empty($search)) {
                 $query->where(function($q) use ($search) {
@@ -198,6 +303,28 @@ class CustomerController extends Controller
                              ->limit(100)
                              ->get();
             
+            // =========================================
+            // HYBRID APPROACH: Fetch combined stats efficiently
+            // Physical table data + calculated order stats
+            // =========================================
+            $customerIds = $customers->pluck('id')->toArray();
+            
+            if (!empty($customerIds)) {
+                // Get combined stats from both production and history in ONE query
+                $combinedStats = $this->getCombinedCustomerStats($customerIds);
+                
+                // Merge combined stats into customer objects
+                $customers = $customers->map(function($customer) use ($combinedStats) {
+                    $stats = $combinedStats[$customer->id] ?? null;
+                    if ($stats) {
+                        // Override stored values with combined values
+                        $customer->total_orders = $stats->combined_order_count;
+                        $customer->total_spent = $stats->combined_total_spent;
+                    }
+                    return $customer;
+                });
+            }
+            
             return response()->json([
                 'success' => true,
                 'customers' => $customers
@@ -210,25 +337,121 @@ class CustomerController extends Controller
             ], 500);
         }
     }
+    
+    /**
+     * Get combined order stats (production + history) for multiple customers
+     * Uses efficient single query to avoid N+1
+     */
+    private function getCombinedCustomerStats(array $customerIds): array
+    {
+        // Check if history table exists
+        $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
+        
+        if ($hasHistoryTable) {
+            // Combined query with UNION for both tables
+            $stats = DB::select("
+                SELECT 
+                    customer_id,
+                    SUM(order_count) as combined_order_count,
+                    SUM(total_spent) as combined_total_spent
+                FROM (
+                    -- Production orders (non-Shopify, delivered/completed)
+                    SELECT 
+                        customer_id,
+                        COUNT(*) as order_count,
+                        COALESCE(SUM(total_price), 0) as total_spent
+                    FROM t_crm_prod_order
+                    WHERE customer_id IN (" . implode(',', array_fill(0, count($customerIds), '?')) . ")
+                      AND (external_source != 'shopify' OR external_source IS NULL)
+                      AND order_status IN ('delivered', 'completed')
+                    GROUP BY customer_id
+                    
+                    UNION ALL
+                    
+                    -- History orders (delivered only)
+                    SELECT 
+                        customer_id,
+                        COUNT(*) as order_count,
+                        COALESCE(SUM(total_price), 0) as total_spent
+                    FROM t_crm_history_order
+                    WHERE customer_id IN (" . implode(',', array_fill(0, count($customerIds), '?')) . ")
+                      AND order_status = 'delivered'
+                    GROUP BY customer_id
+                ) combined
+                GROUP BY customer_id
+            ", array_merge($customerIds, $customerIds));
+        } else {
+            // Only production orders if no history table
+            $stats = DB::select("
+                SELECT 
+                    customer_id,
+                    COUNT(*) as combined_order_count,
+                    COALESCE(SUM(total_price), 0) as combined_total_spent
+                FROM t_crm_prod_order
+                WHERE customer_id IN (" . implode(',', array_fill(0, count($customerIds), '?')) . ")
+                  AND (external_source != 'shopify' OR external_source IS NULL)
+                  AND order_status IN ('delivered', 'completed')
+                GROUP BY customer_id
+            ", $customerIds);
+        }
+        
+        // Key by customer_id for easy lookup
+        $result = [];
+        foreach ($stats as $stat) {
+            $result[$stat->customer_id] = $stat;
+        }
+        
+        return $result;
+    }
 
     public function orders($id)
     {
         try {
             $customer = CustomerModel::findOrFail($id);
             
-            // Get customer orders with line items count (only non-Shopify orders to match customer statistics)
-            $orders = OrderModel::where('customer_id', $id)
-                              ->where(function($query) {
-                                  $query->where('external_source', '!=', 'shopify')
-                                        ->orWhereNull('external_source');
-                              })
-                              ->withCount('lineItems')
-                              ->orderBy('order_date', 'desc')
-                              ->get();
+            // =========================================
+            // Get COMBINED orders (Production + History)
+            // =========================================
+            
+            // 1. Get production orders (non-Shopify) with line item count
+            $prodOrders = DB::table('t_crm_prod_order as o')
+                ->leftJoin(DB::raw('(SELECT order_id, COUNT(*) as line_items_count FROM t_crm_prod_order_line_item GROUP BY order_id) as li'), 'o.id', '=', 'li.order_id')
+                ->where('o.customer_id', $id)
+                ->where(function($query) {
+                    $query->where('o.external_source', '!=', 'shopify')
+                          ->orWhereNull('o.external_source');
+                })
+                ->select(
+                    'o.id', 'o.order_number', 'o.order_date', 'o.order_status',
+                    'o.total_price', 'o.external_source', 'o.payment_method', 'o.note',
+                    DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
+                    DB::raw("'production' as source_type")
+                )
+                ->get();
+            
+            // 2. Get history orders with line item count (if table exists)
+            $historyOrders = collect();
+            if (DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+                $historyOrders = DB::table('t_crm_history_order as o')
+                    ->leftJoin(DB::raw('(SELECT order_id, COUNT(*) as line_items_count FROM t_crm_history_order_line_item GROUP BY order_id) as li'), 'o.id', '=', 'li.order_id')
+                    ->where('o.customer_id', $id)
+                    ->select(
+                        'o.id', 'o.order_number', 'o.order_date', 'o.order_status',
+                        'o.total_price', 'o.external_source', 'o.payment_method', 'o.note',
+                        DB::raw('COALESCE(li.line_items_count, 0) as line_items_count'),
+                        DB::raw("'history' as source_type")
+                    )
+                    ->get();
+            }
+            
+            // 3. Combine and sort by date (newest first)
+            $allOrders = $prodOrders->concat($historyOrders)
+                ->sortByDesc('order_date')
+                ->values();
             
             return response()->json([
                 'success' => true, 
-                'orders' => $orders->map(function($order) {
+                'orders' => $allOrders->map(function($order) {
                     return [
                         'id' => $order->id,
                         'order_number' => $order->order_number,
@@ -236,16 +459,114 @@ class CustomerController extends Controller
                         'order_status' => $order->order_status,
                         'total_price' => $order->total_price,
                         'line_items_count' => $order->line_items_count,
-                        'external_source' => $order->external_source,
+                        'external_source' => $order->external_source ?? 'csv_import',
                         'payment_method' => $order->payment_method,
-                        'notes' => $order->notes
+                        'notes' => $order->note ?? null,
+                        'source_type' => $order->source_type // 'production' or 'history'
                     ];
-                })
+                }),
+                'summary' => [
+                    'production_orders' => $prodOrders->count(),
+                    'history_orders' => $historyOrders->count(),
+                    'total_orders' => $allOrders->count()
+                ]
             ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false, 
                 'message' => 'Error fetching customer orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Get history order details with line items
+     * For viewing legacy/history orders from customer modal
+     */
+    public function historyOrderDetails($historyOrderId)
+    {
+        try {
+            // Check if history table exists
+            if (!DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'History tables not available'
+                ], 404);
+            }
+            
+            // Get order details
+            $order = DB::table('t_crm_history_order')
+                ->where('id', $historyOrderId)
+                ->first();
+            
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'History order not found'
+                ], 404);
+            }
+            
+            // Get line items
+            $lineItems = DB::table('t_crm_history_order_line_item')
+                ->where('order_id', $historyOrderId)
+                ->get();
+            
+            // Get customer info if available
+            $customer = null;
+            if ($order->customer_id) {
+                $customer = DB::table('t_crm_prod_customer')
+                    ->where('id', $order->customer_id)
+                    ->select('id', 'first_name', 'last_name', 'phone', 'email', 'city')
+                    ->first();
+            }
+            
+            return response()->json([
+                'success' => true,
+                'order' => [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'order_status' => $order->order_status,
+                    'order_date' => $order->order_date,
+                    'delivered_at' => $order->delivered_at,
+                    'name' => $order->name,
+                    'contact_email' => $order->contact_email,
+                    'currency' => $order->currency ?? 'PKR',
+                    'subtotal_price' => $order->subtotal_price,
+                    'discount_total' => $order->discount_total,
+                    'shipping_total' => $order->shipping_total,
+                    'total_price' => $order->total_price,
+                    'address_first_name' => $order->address_first_name,
+                    'address_last_name' => $order->address_last_name,
+                    'address_email' => $order->address_email,
+                    'address_phone' => $order->address_phone,
+                    'address_line1' => $order->address_line1,
+                    'address_city' => $order->address_city,
+                    'coupon_code' => $order->coupon_code,
+                    'payment_method' => $order->payment_method,
+                    'note' => $order->note,
+                    'external_source' => 'history',
+                    'import_batch_id' => $order->import_batch_id,
+                    'created_at' => $order->created_at
+                ],
+                'line_items' => $lineItems->map(function($item) {
+                    return [
+                        'id' => $item->id,
+                        'sku' => $item->sku,
+                        'name' => $item->name,
+                        'quantity' => $item->quantity,
+                        'unit_price' => $item->unit_price,
+                        'line_subtotal' => $item->line_subtotal,
+                        'discount_amount' => $item->discount_amount,
+                        'line_total' => $item->line_total ?? $item->line_subtotal
+                    ];
+                }),
+                'customer' => $customer
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error fetching history order: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -323,6 +644,279 @@ class CustomerController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error adding note: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Merge duplicate customers into a primary customer
+     * - Updates all orders (prod + history) to point to primary customer
+     * - Marks duplicate customers as merged (hidden from normal queries)
+     * - Preserves full traceability
+     */
+    public function mergeCustomers(Request $request)
+    {
+        $validated = $request->validate([
+            'primary_customer_id' => 'required|integer|exists:t_crm_prod_customer,id',
+            'duplicate_customer_ids' => 'required|array|min:1',
+            'duplicate_customer_ids.*' => 'integer|exists:t_crm_prod_customer,id',
+        ]);
+        
+        try {
+            $primaryId = $validated['primary_customer_id'];
+            $duplicateIds = $validated['duplicate_customer_ids'];
+            
+            // Cannot merge primary into itself
+            if (in_array($primaryId, $duplicateIds)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Primary customer cannot be in the duplicate list'
+                ], 400);
+            }
+            
+            // Get primary customer
+            $primary = CustomerModel::findOrFail($primaryId);
+            
+            // Cannot merge already-merged customers
+            if ($primary->merged_into_customer_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Primary customer is already merged into another customer'
+                ], 400);
+            }
+            
+            DB::beginTransaction();
+            
+            $stats = [
+                'prod_orders_updated' => 0,
+                'history_orders_updated' => 0,
+                'customers_merged' => 0,
+            ];
+            
+            foreach ($duplicateIds as $duplicateId) {
+                $duplicate = CustomerModel::find($duplicateId);
+                if (!$duplicate) continue;
+                
+                // Cannot merge already-merged customers
+                if ($duplicate->merged_into_customer_id) {
+                    continue;
+                }
+                
+                // Update production orders
+                $prodUpdated = DB::table('t_crm_prod_order')
+                    ->where('customer_id', $duplicateId)
+                    ->update(['customer_id' => $primaryId, 'updated_at' => now()]);
+                $stats['prod_orders_updated'] += $prodUpdated;
+                
+                // Update history orders (if table exists)
+                if (DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+                    $historyUpdated = DB::table('t_crm_history_order')
+                        ->where('customer_id', $duplicateId)
+                        ->update(['customer_id' => $primaryId, 'updated_at' => now()]);
+                    $stats['history_orders_updated'] += $historyUpdated;
+                }
+                
+                // Mark duplicate as merged
+                $duplicate->update([
+                    'merged_into_customer_id' => $primaryId,
+                    'merged_at' => now(),
+                    'merged_by' => auth()->id(),
+                    'notes' => ($duplicate->notes ? $duplicate->notes . "\n\n" : '') . 
+                               "[" . now()->format('Y-m-d H:i:s') . "] Merged into customer #$primaryId by " . auth()->user()->fullname
+                ]);
+                
+                $stats['customers_merged']++;
+            }
+            
+            // Recalculate primary customer statistics
+            $primary->recalculateStatistics();
+            
+            // Add merge note to primary customer
+            $primary->update([
+                'notes' => ($primary->notes ? $primary->notes . "\n\n" : '') . 
+                           "[" . now()->format('Y-m-d H:i:s') . "] Merged " . $stats['customers_merged'] . 
+                           " duplicate customer(s) into this record by " . auth()->user()->fullname
+            ]);
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Successfully merged {$stats['customers_merged']} customer(s). " .
+                             "{$stats['prod_orders_updated']} production orders and " .
+                             "{$stats['history_orders_updated']} history orders were updated.",
+                'stats' => $stats
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Customer merge failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error merging customers: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Find potential duplicate customers (same name, different phone)
+     */
+    public function findDuplicates(Request $request)
+    {
+        try {
+            // Find customers with same name but different normalized phones
+            // Include combined order counts and last order date from both production and history tables
+            $duplicates = DB::select("
+                SELECT 
+                    c1.id as customer1_id,
+                    c1.first_name,
+                    c1.last_name,
+                    c1.phone_normalized as phone1,
+                    c1.city as city1,
+                    COALESCE(stats1.total_orders, 0) as orders1,
+                    stats1.last_order_date as last_order1,
+                    c2.id as customer2_id,
+                    c2.phone_normalized as phone2,
+                    c2.city as city2,
+                    COALESCE(stats2.total_orders, 0) as orders2,
+                    stats2.last_order_date as last_order2
+                FROM t_crm_prod_customer c1
+                JOIN t_crm_prod_customer c2 ON 
+                    LOWER(TRIM(c1.first_name)) = LOWER(TRIM(c2.first_name))
+                    AND LOWER(TRIM(c1.last_name)) = LOWER(TRIM(c2.last_name))
+                    AND c1.id < c2.id
+                    AND c1.phone_normalized != c2.phone_normalized
+                LEFT JOIN (
+                    SELECT customer_id, SUM(order_count) as total_orders, MAX(last_date) as last_order_date FROM (
+                        SELECT customer_id, COUNT(*) as order_count, MAX(order_date) as last_date
+                        FROM t_crm_prod_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                        UNION ALL
+                        SELECT customer_id, COUNT(*) as order_count, MAX(order_date) as last_date
+                        FROM t_crm_history_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                    ) combined GROUP BY customer_id
+                ) stats1 ON stats1.customer_id = c1.id
+                LEFT JOIN (
+                    SELECT customer_id, SUM(order_count) as total_orders, MAX(last_date) as last_order_date FROM (
+                        SELECT customer_id, COUNT(*) as order_count, MAX(order_date) as last_date
+                        FROM t_crm_prod_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                        UNION ALL
+                        SELECT customer_id, COUNT(*) as order_count, MAX(order_date) as last_date
+                        FROM t_crm_history_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                    ) combined GROUP BY customer_id
+                ) stats2 ON stats2.customer_id = c2.id
+                WHERE c1.merged_into_customer_id IS NULL
+                AND c2.merged_into_customer_id IS NULL
+                AND c1.first_name IS NOT NULL
+                AND c1.first_name != ''
+                ORDER BY c1.last_name, c1.first_name
+            ");
+            
+            return response()->json([
+                'success' => true,
+                'duplicates' => $duplicates,
+                'count' => count($duplicates)
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error finding duplicates: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Search customers for merge (from individual customer view)
+     * Returns customers that can be merged into the current one
+     */
+    public function searchForMerge(Request $request)
+    {
+        try {
+            $currentCustomerId = $request->get('current_customer_id');
+            $search = $request->get('q', '');
+            $limit = $request->get('limit', 20);
+            
+            if (strlen($search) < 2) {
+                return response()->json([
+                    'success' => true,
+                    'customers' => []
+                ]);
+            }
+            
+            // Use raw query to include combined order counts from prod + history
+            $customers = DB::select("
+                SELECT 
+                    c.id,
+                    c.first_name,
+                    c.last_name,
+                    c.phone_normalized,
+                    c.phone_original,
+                    c.city,
+                    COALESCE(stats.total_orders, 0) as total_orders
+                FROM t_crm_prod_customer c
+                LEFT JOIN (
+                    SELECT customer_id, SUM(order_count) as total_orders FROM (
+                        SELECT customer_id, COUNT(*) as order_count 
+                        FROM t_crm_prod_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                        UNION ALL
+                        SELECT customer_id, COUNT(*) as order_count 
+                        FROM t_crm_history_order 
+                        WHERE order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                    ) combined GROUP BY customer_id
+                ) stats ON stats.customer_id = c.id
+                WHERE c.merged_into_customer_id IS NULL
+                AND c.id != ?
+                AND (
+                    c.first_name LIKE ?
+                    OR c.last_name LIKE ?
+                    OR c.phone LIKE ?
+                    OR c.phone_original LIKE ?
+                    OR c.phone_normalized LIKE ?
+                    OR c.email LIKE ?
+                    OR CONCAT(c.first_name, ' ', c.last_name) LIKE ?
+                )
+                ORDER BY c.last_order_date DESC
+                LIMIT ?
+            ", [
+                $currentCustomerId,
+                "%{$search}%",
+                "%{$search}%",
+                "%{$search}%",
+                "%{$search}%",
+                "%{$search}%",
+                "%{$search}%",
+                "%{$search}%",
+                $limit
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'customers' => collect($customers)->map(function($c) {
+                    return [
+                        'id' => $c->id,
+                        'name' => trim($c->first_name . ' ' . $c->last_name),
+                        'phone' => $c->phone_original ?: $c->phone_normalized,
+                        'city' => $c->city,
+                        'orders' => $c->total_orders ?: 0
+                    ];
+                })
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error searching customers: ' . $e->getMessage()
             ], 500);
         }
     }

@@ -1334,6 +1334,41 @@ class ProductController extends Controller
         }
     }
 
+    /**
+     * Get dropdown options for product creation/editing (mobile API)
+     */
+    public function getDropdownOptions()
+    {
+        try {
+            $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort()->values();
+            $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort()->values();
+            $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort()->values();
+            $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort()->values();
+            $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort()->values();
+            
+            return response()->json([
+                'success' => true,
+                'options' => [
+                    'product_types' => $productTypes,
+                    'vendors' => $vendors,
+                    'attribute_1s' => $attribute1s,
+                    'attribute_2s' => $attribute2s,
+                    'attribute_3s' => $attribute3s,
+                ],
+                'labels' => [
+                    'attribute_1' => 'Category Level 1',
+                    'attribute_2' => 'Category Level 2',
+                    'attribute_3' => 'Category Level 3',
+                ]
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get dropdown options'
+            ], 500);
+        }
+    }
+
     public function search(Request $request)
     {
         try {
@@ -1904,14 +1939,36 @@ class ProductController extends Controller
             // Use the same function as API to maintain consistency
             $product = ProductModel::storeProductFromApi($productData);
 
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Product created successfully.',
+                    'product' => $product
+                ]);
+            }
+
             return redirect()->route('products.index')
                 ->with('success', 'Product created successfully.');
 
         } catch (\Illuminate\Validation\ValidationException $e) {
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $e->errors()
+                ], 422);
+            }
             return back()->withInput()
                 ->withErrors($e->errors());
         } catch (\Exception $e) {
             Log::error('Error creating manual product: ' . $e->getMessage());
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to create product: ' . $e->getMessage()
+                ], 500);
+            }
             return back()->withInput()
                 ->with('error', 'Failed to create product. Please try again.');
         }
@@ -2048,14 +2105,36 @@ class ProductController extends Controller
             // Use the same function as API to maintain consistency
             $updatedProduct = ProductModel::storeProductFromApi($productData);
 
+            // Return JSON for API requests
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Product updated successfully.',
+                    'product' => $updatedProduct
+                ]);
+            }
+
             return redirect()->route('products.index')
                 ->with('success', 'Product updated successfully.');
 
         } catch (\Illuminate\Validation\ValidationException $e) {
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $e->errors()
+                ], 422);
+            }
             return back()->withInput()
                 ->withErrors($e->errors());
         } catch (\Exception $e) {
             Log::error('Error updating manual product: ' . $e->getMessage());
+            if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to update product: ' . $e->getMessage()
+                ], 500);
+            }
             return back()->withInput()
                 ->with('error', 'Failed to update product. Please try again.');
         }

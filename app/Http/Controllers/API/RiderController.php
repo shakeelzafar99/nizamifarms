@@ -2432,13 +2432,15 @@ class RiderController extends Controller
             'longitude' => $group['longitude'],
             'accuracy' => $group['accuracy'],
             'captured_at' => $lastSeen->toIso8601String(),
-            'first_seen' => $firstSeen->toIso8601String(),
-            'last_seen' => $lastSeen->toIso8601String(),
+            'first_seen' => $firstSeen->format('h:i A'), // ⭐ Use formatted time instead of ISO
+            'last_seen' => $lastSeen->format('h:i A'), // ⭐ Use formatted time instead of ISO
             'time' => $lastSeen->format('h:i A'),
+            'time_display' => $firstSeen->format('h:i A'), // ⭐ Add time_display for frontend
             'arrival_time' => $firstSeen->format('h:i A'),
             'age' => $lastSeen->diffForHumans(),
             'duration' => $duration,
-            'duration_minutes' => $durationMinutes,
+            'duration_minutes' => round($durationMinutes), // ⭐ Round to whole minutes
+            'duration_display' => $duration, // ⭐ Already formatted display string
             'point_count' => $group['point_count'],
             'sources' => implode(', ', $group['sources']),
         ];
@@ -2528,6 +2530,7 @@ class RiderController extends Controller
                     'order_number' => $order->order_number,
                     'status' => $order->status,
                     'status_display' => ucfirst(str_replace('_', ' ', $order->status)),
+                    'customer_id' => $order->customer_id,
                     'customer_name' => trim($order->customer_name) ?: 'Unknown',
                     'address' => $order->address . ($order->city ? ', ' . $order->city : ''),
                     'total' => 'PKR ' . number_format($order->total_price, 0),
@@ -7423,6 +7426,9 @@ class RiderController extends Controller
             $riderFilter = $request->get('rider', 'all');
             $dateFrom = $request->get('date_from');
             $dateTo = $request->get('date_to');
+            // ⭐ New parameters: group_by (default 'date') and include_online (default true)
+            $groupBy = $request->get('group_by', 'date'); // 'date' (default) or 'rider'
+            $includeOnline = !$request->has('include_online') || $request->get('include_online') === '1';
             
             // Base query for ALL invoices (not just open)
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
@@ -7676,10 +7682,176 @@ class RiderController extends Controller
                     ];
                 });
             
+            // ⭐ Prepare date-grouped data for settled view
+            $invoicesByDate = null;
+            $onlineData = null;
+            
+            if ($statusFilter === 'settled' && $groupBy === 'date') {
+                // Group settled invoices by date (cash)
+                $invoicesByDate = $settledInvoices
+                    ->groupBy(function($invoice) {
+                        return $invoice->settled_at ? $invoice->settled_at->format('Y-m-d') : $invoice->transaction_date->format('Y-m-d');
+                    })
+                    ->map(function($dateInvoices, $date) {
+                        // Group by rider within each date
+                        $riderGroups = $dateInvoices->groupBy('to_account_id')->map(function($riderInvoices) {
+                            $account = $riderInvoices->first()->toAccount;
+                            return [
+                                'rider_name' => $account ? $account->account_name : 'Unknown',
+                                'count' => $riderInvoices->count(),
+                                'total_amount' => $riderInvoices->sum('amount'),
+                                'invoices' => $riderInvoices->map(function($inv) {
+                                    return [
+                                        'id' => $inv->id,
+                                        'order_number' => $inv->order ? $inv->order->order_number : 'N/A',
+                                        'customer_name' => $inv->order ? $inv->order->customer_name : null,
+                                        'amount' => $inv->amount,
+                                        'settled_at' => $inv->settled_at ? $inv->settled_at->format('Y-m-d H:i:s') : null
+                                    ];
+                                })->values()
+                            ];
+                        })->values();
+                        
+                        return [
+                            'date' => $date,
+                            'riders' => $riderGroups,
+                            'cash_count' => $dateInvoices->count(),
+                            'cash_amount' => $dateInvoices->sum('amount'),
+                            'online_count' => 0,
+                            'online_amount' => 0,
+                            'online_approved_count' => 0,
+                            'online_approved_amount' => 0,
+                            'online_pending_count' => 0,
+                            'online_pending_amount' => 0,
+                            'total_count' => $dateInvoices->count(),
+                            'total_amount' => $dateInvoices->sum('amount')
+                        ];
+                    })
+                    ->sortKeysDesc()
+                    ->values()
+                    ->toArray();
+                
+                // ⭐ Fetch online data if include_online is true
+                if ($includeOnline) {
+                    $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
+                    
+                    if ($onlineAccount) {
+                        $onlineQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                            ->where('to_account_id', $onlineAccount->id)
+                            ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED);
+                        
+                        if ($dateFrom) {
+                            $onlineQuery->where('transaction_date', '>=', $dateFrom);
+                        }
+                        if ($dateTo) {
+                            $onlineQuery->where('transaction_date', '<=', $dateTo . ' 23:59:59');
+                        }
+                        
+                        $onlineInvoices = $onlineQuery->with('order')->get();
+                        
+                        // Separate approved and pending
+                        $onlineApproved = $onlineInvoices->where('approval_status', LedgerModel::STATUS_APPROVED);
+                        $onlinePending = $onlineInvoices->where('approval_status', LedgerModel::STATUS_PENDING);
+                        
+                        // Group by transaction_date
+                        $onlineByDate = [];
+                        foreach ($onlineInvoices as $invoice) {
+                            $date = $invoice->transaction_date->format('Y-m-d');
+                            if (!isset($onlineByDate[$date])) {
+                                $onlineByDate[$date] = [
+                                    'approved' => [],
+                                    'pending' => [],
+                                    'approved_count' => 0,
+                                    'approved_amount' => 0,
+                                    'pending_count' => 0,
+                                    'pending_amount' => 0
+                                ];
+                            }
+                            
+                            $invoiceData = [
+                                'id' => $invoice->id,
+                                'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                                'customer_name' => $invoice->order ? $invoice->order->customer_name : null,
+                                'amount' => $invoice->amount,
+                                'transaction_date' => $invoice->transaction_date->format('Y-m-d H:i:s')
+                            ];
+                            
+                            if ($invoice->approval_status === LedgerModel::STATUS_APPROVED) {
+                                $onlineByDate[$date]['approved'][] = $invoiceData;
+                                $onlineByDate[$date]['approved_count']++;
+                                $onlineByDate[$date]['approved_amount'] += $invoice->amount;
+                            } else {
+                                $onlineByDate[$date]['pending'][] = $invoiceData;
+                                $onlineByDate[$date]['pending_count']++;
+                                $onlineByDate[$date]['pending_amount'] += $invoice->amount;
+                            }
+                        }
+                        
+                        // Merge online data into invoicesByDate
+                        foreach ($onlineByDate as $date => $onlineDayData) {
+                            $found = false;
+                            foreach ($invoicesByDate as &$dayData) {
+                                if ($dayData['date'] === $date) {
+                                    $dayData['online_count'] = $onlineDayData['approved_count'] + $onlineDayData['pending_count'];
+                                    $dayData['online_amount'] = $onlineDayData['approved_amount'] + $onlineDayData['pending_amount'];
+                                    $dayData['online_approved_count'] = $onlineDayData['approved_count'];
+                                    $dayData['online_approved_amount'] = $onlineDayData['approved_amount'];
+                                    $dayData['online_pending_count'] = $onlineDayData['pending_count'];
+                                    $dayData['online_pending_amount'] = $onlineDayData['pending_amount'];
+                                    $dayData['online_approved'] = $onlineDayData['approved'];
+                                    $dayData['online_pending'] = $onlineDayData['pending'];
+                                    $dayData['total_count'] += $onlineDayData['approved_count'] + $onlineDayData['pending_count'];
+                                    $dayData['total_amount'] += $onlineDayData['approved_amount'] + $onlineDayData['pending_amount'];
+                                    $found = true;
+                                    break;
+                                }
+                            }
+                            unset($dayData);
+                            
+                            // Add new date entry if not found in cash data
+                            if (!$found) {
+                                $invoicesByDate[] = [
+                                    'date' => $date,
+                                    'riders' => [],
+                                    'cash_count' => 0,
+                                    'cash_amount' => 0,
+                                    'online_count' => $onlineDayData['approved_count'] + $onlineDayData['pending_count'],
+                                    'online_amount' => $onlineDayData['approved_amount'] + $onlineDayData['pending_amount'],
+                                    'online_approved_count' => $onlineDayData['approved_count'],
+                                    'online_approved_amount' => $onlineDayData['approved_amount'],
+                                    'online_pending_count' => $onlineDayData['pending_count'],
+                                    'online_pending_amount' => $onlineDayData['pending_amount'],
+                                    'online_approved' => $onlineDayData['approved'],
+                                    'online_pending' => $onlineDayData['pending'],
+                                    'total_count' => $onlineDayData['approved_count'] + $onlineDayData['pending_count'],
+                                    'total_amount' => $onlineDayData['approved_amount'] + $onlineDayData['pending_amount']
+                                ];
+                            }
+                        }
+                        
+                        // Re-sort by date descending
+                        usort($invoicesByDate, function($a, $b) {
+                            return strcmp($b['date'], $a['date']);
+                        });
+                        
+                        $onlineData = [
+                            'total_count' => $onlineInvoices->count(),
+                            'total_amount' => $onlineInvoices->sum('amount'),
+                            'approved_count' => $onlineApproved->count(),
+                            'approved_amount' => $onlineApproved->sum('amount'),
+                            'pending_count' => $onlinePending->count(),
+                            'pending_amount' => $onlinePending->sum('amount')
+                        ];
+                    }
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'stats' => $stats,
                 'invoices_by_rider' => $invoicesByRider,
+                'invoices_by_date' => $invoicesByDate, // ⭐ New: date-grouped data for settled view
+                'online_summary' => $onlineData, // ⭐ New: online summary
                 'pending_settlements' => $pendingSettlements->map(function($settlement) {
                     return [
                         'id' => $settlement->id,
@@ -7699,7 +7871,9 @@ class RiderController extends Controller
                     'status' => $statusFilter,
                     'rider' => $riderFilter,
                     'date_from' => $dateFrom,
-                    'date_to' => $dateTo
+                    'date_to' => $dateTo,
+                    'group_by' => $groupBy, // ⭐ New
+                    'include_online' => $includeOnline // ⭐ New
                 ]
             ]);
             

@@ -115,6 +115,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}/payment-method/timeline', [OrderController::class, 'getPaymentMethodTimeline'])->name('orders.payment-method.timeline');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
+    Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');
+    Route::post('/operations/history-delivery-update', [\App\Http\Controllers\CRM\OperationsController::class, 'updateHistoryDeliveryDates'])->name('operations.history-delivery-update');
     
     // Rider profile management
     Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');
@@ -210,8 +212,13 @@ Route::middleware(['auth'])->group(function () {
         // Geocoding routes (must be before {id} to avoid conflict)
         Route::get('/geocode-stats', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeStats'])->name('customers.geocode-stats');
         Route::post('/batch-geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'batchGeocode'])->name('customers.batch-geocode');
+        // Merge routes (must be before {id} to avoid conflict)
+        Route::get('/find-duplicates', [\App\Http\Controllers\CRM\CustomerController::class, 'findDuplicates'])->name('customers.find-duplicates');
+        Route::get('/search-for-merge', [\App\Http\Controllers\CRM\CustomerController::class, 'searchForMerge'])->name('customers.search-for-merge');
+        Route::post('/merge', [\App\Http\Controllers\CRM\CustomerController::class, 'mergeCustomers'])->name('customers.merge');
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
         Route::get('/{id}/orders', [\App\Http\Controllers\CRM\CustomerController::class, 'orders'])->name('customers.orders');
+        Route::get('/history-order/{historyOrderId}', [\App\Http\Controllers\CRM\CustomerController::class, 'historyOrderDetails'])->name('customers.history-order');
         Route::put('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'update'])->name('customers.update');
         Route::post('/{id}/notes', [\App\Http\Controllers\CRM\CustomerController::class, 'addNote'])->name('customers.addNote');
         Route::post('/{id}/set-verified-location', [\App\Http\Controllers\CRM\CustomerController::class, 'setVerifiedLocation'])->name('customers.setVerifiedLocation');

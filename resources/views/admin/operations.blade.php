@@ -17,6 +17,105 @@
             </button>
         </div>
 
+        <!-- Import Historical Orders Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">📜 Import Historical Orders</h2>
+            </div>
+            
+            <!-- Info Box -->
+            <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-md">
+                <h3 class="text-sm font-semibold text-amber-800 mb-2">📊 Load Legacy Order Data</h3>
+                <div class="text-xs text-amber-700 space-y-1">
+                    <p><strong>This will import from:</strong></p>
+                    <p class="font-mono text-xs bg-amber-100 px-2 py-1 rounded">public/downloads/NF_Data_Center_Data_History.csv</p>
+                    
+                    <p class="mt-2"><strong>What happens:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Creates orders in <code>t_crm_history_order</code></li>
+                        <li>Creates line items in <code>t_crm_history_order_line_item</code></li>
+                        <li>Matches/creates customers by phone</li>
+                        <li>Updates first/last order dates</li>
+                    </ul>
+                    
+                    <p class="mt-2"><strong>✅ Safe to re-run:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Duplicates detected by order_number</li>
+                        <li>Skips already imported orders</li>
+                        <li>Can resume if interrupted</li>
+                    </ul>
+                    
+                    <p class="mt-2"><strong>⚠️ Important:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Run migration SQL first!</li>
+                        <li>May take 5-10 minutes for large files</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <!-- Progress Display -->
+            <div id="historyImportProgress" class="hidden mb-4">
+                <div class="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Importing...</span>
+                    <span id="historyImportStatus">Please wait</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div id="historyImportBar" class="bg-amber-600 h-2 rounded-full transition-all duration-300 animate-pulse" style="width: 100%"></div>
+                </div>
+            </div>
+            
+            <!-- Result Display -->
+            <div id="historyImportResult" class="hidden mb-4 p-3 rounded-lg"></div>
+            
+            <!-- Action Button -->
+            <button type="button" 
+                    id="startHistoryImportBtn"
+                    onclick="startHistoryImport()"
+                    class="w-full inline-flex items-center justify-center px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500">
+                📥 Start History Import
+            </button>
+        </div>
+
+        <!-- Update History Delivery Dates Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">📅 Update History Delivery Dates</h2>
+            </div>
+            
+            <!-- Info Box -->
+            <div class="mb-4 p-4 bg-teal-50 border border-teal-200 rounded-md">
+                <h3 class="text-sm font-semibold text-teal-800 mb-2">🚚 Fix Delivery Dates for History Orders</h3>
+                <div class="text-xs text-teal-700 space-y-1">
+                    <p><strong>CSV Format (same as production bulk update):</strong></p>
+                    <div class="mt-2 p-2 bg-white rounded border border-teal-300">
+                        <pre class="text-xs">Order Number,Delivery Status,Delivery Date
+1899022021022021,delivered,2/1/2021 22:30:15
+1901022021022021,delivered,2/2/2021 22:07:06</pre>
+                    </div>
+                    
+                    <p class="mt-2"><strong>What happens:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li>Updates <code>delivered_at</code> in history orders</li>
+                        <li>Only processes rows with status = "delivered"</li>
+                        <li>Matches by Order Number</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <form action="{{ route('operations.history-delivery-update') }}" method="POST" enctype="multipart/form-data">
+                @csrf
+                <input type="file" name="csv_file" accept=".csv,.txt" class="block w-full text-sm text-gray-500 mb-3 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100">
+                <button type="submit" class="w-full inline-flex items-center justify-center px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-sm font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500">
+                    📅 Update Delivery Dates
+                </button>
+            </form>
+            @if(session('history_delivery_result'))
+                <div class="mt-4 p-3 bg-gray-50 border border-gray-200 rounded">
+                    {!! session('history_delivery_result') !!}
+                </div>
+            @endif
+        </div>
+
         <!-- Bulk Delivery Status Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -713,6 +812,105 @@
             const log = document.getElementById('geocodingLog');
             const time = new Date().toLocaleTimeString();
             log.innerHTML = `<div>[${time}] ${message}</div>` + log.innerHTML;
+        }
+        
+        // ⭐ HISTORY IMPORT FUNCTION
+        async function startHistoryImport() {
+            if (!confirm('This will import all historical orders from the CSV file.\n\nThis may take 5-10 minutes for large files.\n\nContinue?')) {
+                return;
+            }
+            
+            const btn = document.getElementById('startHistoryImportBtn');
+            const progress = document.getElementById('historyImportProgress');
+            const result = document.getElementById('historyImportResult');
+            const status = document.getElementById('historyImportStatus');
+            
+            // Show progress, hide result
+            btn.disabled = true;
+            btn.textContent = '⏳ Importing...';
+            progress.classList.remove('hidden');
+            result.classList.add('hidden');
+            status.textContent = 'Processing CSV file...';
+            
+            try {
+                const response = await fetch('{{ route("operations.history-import") }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                // Hide progress
+                progress.classList.add('hidden');
+                
+                // Show result
+                result.classList.remove('hidden');
+                
+                if (data.success) {
+                    result.className = 'mb-4 p-3 rounded-lg bg-green-50 border border-green-200';
+                    
+                    // Format database summary
+                    let summaryHtml = '';
+                    if (data.database_summary) {
+                        const s = data.database_summary;
+                        summaryHtml = `
+                            <div class="mt-3 pt-3 border-t border-green-300">
+                                <strong>📊 Database Now Contains:</strong>
+                                <div class="text-xs mt-1">
+                                    <div>Total orders: <strong>${s.total_history_orders?.toLocaleString() || 0}</strong></div>
+                                    <div>Total line items: <strong>${s.total_history_line_items?.toLocaleString() || 0}</strong></div>
+                                    <div>Total revenue: <strong>PKR ${Number(s.total_history_revenue || 0).toLocaleString()}</strong></div>
+                                    <div>Date range: ${s.date_range?.earliest || 'N/A'} → ${s.date_range?.latest || 'N/A'}</div>
+                                </div>
+                            </div>`;
+                    }
+                    
+                    result.innerHTML = `
+                        <div class="text-green-800">
+                            <strong>✅ ${data.message}</strong>
+                            <div class="mt-2 text-sm">
+                                <div>📦 Orders created: <strong>${data.stats.orders_created}</strong></div>
+                                <div>🔄 Duplicates skipped: <strong>${data.stats.orders_skipped_duplicate || 0}</strong></div>
+                                <div>📋 Line items: <strong>${data.stats.line_items_created}</strong></div>
+                                <div>👤 New customers: <strong>${data.stats.customers_created}</strong></div>
+                                <div>👤 Updated customers: <strong>${data.stats.customers_updated}</strong></div>
+                                <div>⏭️ Skipped rows: ${data.stats.skipped_rows}</div>
+                                ${data.stats.errors && data.stats.errors.length > 0 ? 
+                                    `<div class="mt-2 text-orange-700">⚠️ Errors: ${data.stats.errors.length}</div>` : ''}
+                                ${summaryHtml}
+                            </div>
+                            <div class="mt-2 text-xs text-gray-600">Batch ID: ${data.batch_id}</div>
+                        </div>
+                    `;
+                } else {
+                    result.className = 'mb-4 p-3 rounded-lg bg-red-50 border border-red-200';
+                    result.innerHTML = `
+                        <div class="text-red-800">
+                            <strong>❌ Import Failed</strong>
+                            <div class="mt-2 text-sm">${data.message}</div>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                progress.classList.add('hidden');
+                result.classList.remove('hidden');
+                result.className = 'mb-4 p-3 rounded-lg bg-red-50 border border-red-200';
+                result.innerHTML = `
+                    <div class="text-red-800">
+                        <strong>❌ Connection Error</strong>
+                        <div class="mt-2 text-sm">${error.message}</div>
+                    </div>
+                `;
+            }
+            
+            // Re-enable button
+            btn.disabled = false;
+            btn.textContent = '📥 Start History Import';
         }
         </script>
     </div>

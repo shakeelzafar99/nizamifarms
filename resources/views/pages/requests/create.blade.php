@@ -351,15 +351,18 @@ function updateExpenseTitle() {
 }
 
 function openInlineExpenseCategoryModal() {
-    document.getElementById('inlineExpenseCategoryModal').classList.remove('hidden');
-    document.getElementById('inlineExpenseCategoryModal').style.display = 'flex';
+    const modal = document.getElementById('inlineExpenseCategoryModal');
+    modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
+    // Focus the input
+    setTimeout(() => document.getElementById('inline_category_name').focus(), 100);
 }
 
 function closeInlineExpenseCategoryModal() {
-    document.getElementById('inlineExpenseCategoryModal').classList.add('hidden');
-    document.getElementById('inlineExpenseCategoryModal').style.display = 'none';
+    const modal = document.getElementById('inlineExpenseCategoryModal');
+    modal.style.display = 'none';
     document.body.style.overflow = 'auto';
+    document.getElementById('inline_category_name').value = '';
 }
 
 function submitInlineCategory() {
@@ -460,42 +463,48 @@ document.getElementById('request-form').addEventListener('submit', function(e) {
 });
 </script>
 
-<!-- Inline Expense Category Modal -->
-<div id="inlineExpenseCategoryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
-    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" onclick="event.stopPropagation()">
-        <div class="p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold text-gray-800">➕ Add New Expense Category</h2>
-                <button onclick="closeInlineExpenseCategoryModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+<!-- Inline Expense Category Modal - Fixed Centering -->
+<div id="inlineExpenseCategoryModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 99999; align-items: center; justify-content: center; padding: 20px;" onclick="closeInlineExpenseCategoryModal()">
+    <div style="background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); max-width: 450px; width: 100%; margin: auto;" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; background: linear-gradient(135deg, #f3e8ff 0%, #ffffff 100%); border-radius: 12px 12px 0 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 style="font-size: 18px; font-weight: 600; color: #1f2937; margin: 0;">➕ Add New Expense Category</h2>
+                <button onclick="closeInlineExpenseCategoryModal()" style="background: none; border: none; color: #9ca3af; font-size: 28px; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+            </div>
+        </div>
+        
+        <!-- Body -->
+        <div style="padding: 24px;">
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Category Name <span style="color: #ef4444;">*</span></label>
+                <input type="text" id="inline_category_name"
+                       style="width: 100%; padding: 12px 16px; border: 2px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; box-sizing: border-box; transition: border-color 0.2s;"
+                       onfocus="this.style.borderColor='#8b5cf6'"
+                       onblur="this.style.borderColor='#d1d5db'"
+                       placeholder="e.g., Fuel, Marketing, Travel">
             </div>
             
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Category Name <span class="text-red-500">*</span></label>
-                    <input type="text" id="inline_category_name"
-                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                           placeholder="e.g., Fuel, Marketing, Travel">
-                </div>
-                
-                <div class="p-3 bg-purple-50 border border-purple-200 rounded-md">
-                    <p class="text-xs text-purple-800">
-                        ℹ️ <strong>System will automatically:</strong>
-                    </p>
-                    <ul class="text-xs text-purple-700 mt-1 ml-4 list-disc">
-                        <li>Create an expense account (e.g., EXP_FUEL)</li>
-                        <li>Add to expense type dropdown</li>
-                        <li>Make it available for all expense requests</li>
-                    </ul>
-                </div>
-                
-                <div class="flex gap-3 mt-6">
-                    <button type="button" onclick="closeInlineExpenseCategoryModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
-                        Cancel
-                    </button>
-                    <button type="button" onclick="submitInlineCategory()" class="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-md">
-                        ✓ Create & Select
-                    </button>
-                </div>
+            <div style="padding: 16px; background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; margin-bottom: 24px;">
+                <p style="font-size: 12px; color: #6d28d9; margin: 0 0 8px 0; font-weight: 600;">
+                    ℹ️ System will automatically:
+                </p>
+                <ul style="font-size: 12px; color: #7c3aed; margin: 0; padding-left: 20px;">
+                    <li style="margin-bottom: 4px;">Create an expense account (e.g., EXP_FUEL)</li>
+                    <li style="margin-bottom: 4px;">Add to expense type dropdown</li>
+                    <li>Make it available for all expense requests</li>
+                </ul>
+            </div>
+            
+            <div style="display: flex; gap: 12px;">
+                <button type="button" onclick="closeInlineExpenseCategoryModal()" 
+                        style="flex: 1; padding: 12px 20px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                    Cancel
+                </button>
+                <button type="button" onclick="submitInlineCategory()" 
+                        style="flex: 1; padding: 12px 20px; border: none; background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: white; font-weight: 600; border-radius: 8px; cursor: pointer; font-size: 14px; box-shadow: 0 4px 6px -1px rgba(139, 92, 246, 0.3);">
+                    ✓ Create & Select
+                </button>
             </div>
         </div>
     </div>

@@ -2031,6 +2031,9 @@ class EmployeeCashController extends Controller
             $riderFilter = $request->get('rider', 'all');
             $dateFrom = $request->get('date_from');
             $dateTo = $request->get('date_to');
+            // ⭐ Default: group by date (primary), include online by default
+            $groupBy = $request->get('group_by', 'date'); // 'date' (default) or 'rider'
+            $includeOnline = !$request->has('include_online') || $request->get('include_online') === '1'; // Default true
             
             // Base query for ALL invoices (not just open)
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
@@ -2329,8 +2332,28 @@ class EmployeeCashController extends Controller
                 ->orderBy('account_name')
                 ->get();
             
+            // ⭐ Fetch Online Orders (for include_online option)
+            $onlineData = null;
+            if ($includeOnline && $statusFilter === 'settled') {
+                \Log::info('Daily Closing: Fetching online data', ['dateFrom' => $dateFrom, 'dateTo' => $dateTo]);
+                $onlineData = $this->fetchOnlineOrdersForDailyClosing($dateFrom, $dateTo);
+                \Log::info('Daily Closing: Online data result', [
+                    'has_data' => $onlineData !== null,
+                    'pending_count' => $onlineData['pending_approval']['count'] ?? 0,
+                    'approved_count' => $onlineData['approved']['count'] ?? 0,
+                ]);
+            }
+            
+            // ⭐ Group by date (for settled view)
+            $invoicesByDate = null;
+            if ($groupBy === 'date' && $statusFilter === 'settled') {
+                $invoicesByDate = $this->groupSettledInvoicesByDate($settledInvoices, $onlineData);
+            }
+            
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
+                'invoicesByDate' => $invoicesByDate, // ⭐ New: Date-level grouping
+                'onlineData' => $onlineData, // ⭐ New: Online orders data
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
                 'allRiders' => $allRiders,
@@ -2338,7 +2361,9 @@ class EmployeeCashController extends Controller
                     'status' => $statusFilter,
                     'rider' => $riderFilter,
                     'date_from' => $dateFrom,
-                    'date_to' => $dateTo
+                    'date_to' => $dateTo,
+                    'group_by' => $groupBy, // ⭐ New
+                    'include_online' => $includeOnline // ⭐ New
                 ]
             ]);
             
@@ -2346,6 +2371,208 @@ class EmployeeCashController extends Controller
             \Log::error("Error fetching all outstanding invoices: " . $e->getMessage());
             return back()->with('error', 'Error loading outstanding invoices: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * ⭐ Fetch Online Orders for Daily Closing View
+     * Returns online orders that were delivered, grouped by approval status
+     * Uses the same logic as Employee Cash page for consistency
+     */
+    private function fetchOnlineOrdersForDailyClosing($dateFrom, $dateTo)
+    {
+        try {
+            // Get ONLINE account for ledger entries (same as Employee Cash page)
+            $onlineAccount = AccountModel::where('account_code', 'ONLINE')->first();
+            if (!$onlineAccount) {
+                \Log::warning('fetchOnlineOrdersForDailyClosing: ONLINE account not found');
+                return null;
+            }
+            
+            // Query online ledger transactions (invoices) - SAME LOGIC AS EMPLOYEE CASH PAGE
+            $onlineQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->where('to_account_id', $onlineAccount->id)
+                ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
+                ->with(['order.customer']);
+            
+            // Apply date filters using transaction_date (same as Employee Cash)
+            if ($dateFrom) {
+                $onlineQuery->where('transaction_date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $onlineQuery->where('transaction_date', '<=', $dateTo);
+            }
+            
+            $onlineTransactions = $onlineQuery->orderBy('transaction_date', 'desc')->get();
+            
+            \Log::info('fetchOnlineOrdersForDailyClosing: Found ' . $onlineTransactions->count() . ' online transactions');
+            
+            // Separate by approval status
+            $pendingApproval = $onlineTransactions->filter(function($txn) {
+                return in_array($txn->approval_status, [
+                    LedgerModel::STATUS_PENDING,
+                    LedgerModel::STATUS_PENDING_L1,
+                    LedgerModel::STATUS_PENDING_L2
+                ]);
+            });
+            
+            $approved = $onlineTransactions->filter(function($txn) {
+                return $txn->approval_status === LedgerModel::STATUS_APPROVED;
+            });
+            
+            // Helper function to format transaction
+            $formatTxn = function($txn) {
+                return [
+                    'id' => $txn->id,
+                    'order_number' => $txn->order ? $txn->order->order_number : 'N/A',
+                    'customer_name' => $txn->order && $txn->order->customer ? 
+                        ($txn->order->customer->full_name ?: $txn->order->customer->company ?: 'Unknown') : 'Unknown',
+                    'transaction_date' => $txn->transaction_date,
+                    'amount' => $txn->amount,
+                    'description' => $txn->description,
+                    'approval_status' => $txn->approval_status,
+                    'approved_at' => $txn->approved_at
+                ];
+            };
+            
+            // Group ALL online transactions by date (both approved and pending)
+            // This gives a complete picture of online orders for each day
+            $allByDate = $onlineTransactions->groupBy(function($txn) {
+                return $txn->transaction_date ? \Carbon\Carbon::parse($txn->transaction_date)->format('Y-m-d') : 'Unknown';
+            })->map(function($dayTxns, $date) use ($formatTxn) {
+                $approvedTxns = $dayTxns->filter(fn($t) => $t->approval_status === LedgerModel::STATUS_APPROVED);
+                $pendingTxns = $dayTxns->filter(fn($t) => in_array($t->approval_status, [
+                    LedgerModel::STATUS_PENDING,
+                    LedgerModel::STATUS_PENDING_L1,
+                    LedgerModel::STATUS_PENDING_L2
+                ]));
+                
+                return [
+                    'date' => $date,
+                    'transactions' => $dayTxns->map($formatTxn),
+                    'approved_transactions' => $approvedTxns->map($formatTxn),
+                    'pending_transactions' => $pendingTxns->map($formatTxn),
+                    'total_amount' => $dayTxns->sum('amount'),
+                    'approved_amount' => $approvedTxns->sum('amount'),
+                    'pending_amount' => $pendingTxns->sum('amount'),
+                    'count' => $dayTxns->count(),
+                    'approved_count' => $approvedTxns->count(),
+                    'pending_count' => $pendingTxns->count()
+                ];
+            });
+            
+            // Also keep the approved-only grouping for backward compatibility
+            $approvedByDate = $approved->groupBy(function($txn) {
+                return $txn->transaction_date ? \Carbon\Carbon::parse($txn->transaction_date)->format('Y-m-d') : 'Unknown';
+            })->map(function($dayTxns, $date) use ($formatTxn) {
+                return [
+                    'date' => $date,
+                    'transactions' => $dayTxns->map($formatTxn),
+                    'total_amount' => $dayTxns->sum('amount'),
+                    'count' => $dayTxns->count()
+                ];
+            });
+            
+            return [
+                'pending_approval' => [
+                    'count' => $pendingApproval->count(),
+                    'amount' => $pendingApproval->sum('amount'),
+                    'transactions' => $pendingApproval->map($formatTxn)
+                ],
+                'approved' => [
+                    'count' => $approved->count(),
+                    'amount' => $approved->sum('amount'),
+                    'by_date' => $approvedByDate
+                ],
+                'all_by_date' => $allByDate, // ⭐ All transactions grouped by date (approved + pending)
+                'total' => [
+                    'count' => $onlineTransactions->count(),
+                    'amount' => $onlineTransactions->sum('amount')
+                ]
+            ];
+        } catch (\Exception $e) {
+            \Log::error("Error fetching online orders: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * ⭐ Group settled invoices by date (instead of by rider)
+     */
+    private function groupSettledInvoicesByDate($settledInvoices, $onlineData = null)
+    {
+        // Group by settlement date
+        $byDate = $settledInvoices->groupBy(function($invoice) {
+            return $invoice->settled_at ? $invoice->settled_at->format('Y-m-d') : 'Unknown';
+        })->map(function($dayInvoices, $date) {
+            // Group by rider within each date
+            $byRider = $dayInvoices->groupBy('to_account_id')->map(function($riderInvoices) {
+                $account = $riderInvoices->first()->toAccount;
+                return [
+                    'rider_id' => $account->id,
+                    'rider_name' => $account->account_name,
+                    'invoices' => $riderInvoices->map(function($invoice) {
+                        return [
+                            'id' => $invoice->id,
+                            'order_number' => $invoice->order ? $invoice->order->order_number : 'N/A',
+                            'customer_name' => $invoice->order ? $invoice->order->customer_name : null,
+                            'transaction_date' => $invoice->transaction_date,
+                            'amount' => $invoice->amount,
+                            'settled_amount' => $invoice->settled_amount ?? 0,
+                            'description' => $invoice->description,
+                            'settled_at' => $invoice->settled_at
+                        ];
+                    }),
+                    'total_amount' => $riderInvoices->sum('amount'),
+                    'count' => $riderInvoices->count()
+                ];
+            });
+            
+            return [
+                'date' => $date,
+                'riders' => $byRider,
+                'total_amount' => $dayInvoices->sum('amount'),
+                'total_count' => $dayInvoices->count(),
+                'rider_count' => $byRider->count()
+            ];
+        })->sortKeysDesc(); // Most recent first
+        
+        // Convert to array for modification (Collections don't allow direct element modification)
+        // Also convert nested 'riders' collections to arrays
+        $byDateArray = $byDate->map(function($dayData) {
+            $dayArray = is_array($dayData) ? $dayData : $dayData;
+            if (isset($dayArray['riders']) && $dayArray['riders'] instanceof \Illuminate\Support\Collection) {
+                $dayArray['riders'] = $dayArray['riders']->toArray();
+            }
+            return $dayArray;
+        })->toArray();
+        
+        // Merge with online data if available (use all_by_date for complete picture)
+        if ($onlineData && isset($onlineData['all_by_date'])) {
+            foreach ($onlineData['all_by_date'] as $date => $onlineDay) {
+                // Convert Collection to array if needed
+                $onlineDayArray = $onlineDay instanceof \Illuminate\Support\Collection ? $onlineDay->toArray() : $onlineDay;
+                
+                if (isset($byDateArray[$date])) {
+                    $byDateArray[$date]['online'] = $onlineDayArray;
+                    $byDateArray[$date]['total_amount'] += $onlineDayArray['total_amount'];
+                    $byDateArray[$date]['total_count'] += $onlineDayArray['count'];
+                } else {
+                    $byDateArray[$date] = [
+                        'date' => $date,
+                        'riders' => collect(),
+                        'online' => $onlineDayArray,
+                        'total_amount' => $onlineDayArray['total_amount'],
+                        'total_count' => $onlineDayArray['count'],
+                        'rider_count' => 0
+                    ];
+                }
+            }
+        }
+        
+        // Sort by date descending and convert back to collection
+        krsort($byDateArray);
+        
+        return collect($byDateArray);
     }
 
     /**

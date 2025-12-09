@@ -21,6 +21,21 @@
             <input type="date" name="date_to" value="{{ $filters['date_to'] }}"
                    style="color: #1f2937 !important; background-color: white !important;" 
                    class="px-3 py-1.5 text-xs rounded-md focus:outline-none border-0">
+            <!-- ⭐ Group By (only for settled view) -->
+            @if($filters['status'] == 'settled')
+            <select name="group_by" style="color: #1f2937 !important; background-color: white !important;" class="px-3 py-1.5 text-xs rounded-md focus:outline-none border-0">
+                <option value="date" {{ ($filters['group_by'] ?? 'date') == 'date' ? 'selected' : '' }}>Group by Date</option>
+                <option value="rider" {{ ($filters['group_by'] ?? 'date') == 'rider' ? 'selected' : '' }}>Group by Rider</option>
+            </select>
+            <!-- ⭐ Include Online toggle (default ON) -->
+            @php $includeOnlineChecked = $filters['include_online'] ?? true; @endphp
+            <label class="flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer transition-all" 
+                   style="{{ $includeOnlineChecked ? 'background: #10b981 !important; color: white;' : 'background: white !important; color: #1f2937;' }}">
+                <input type="checkbox" name="include_online" value="1" {{ $includeOnlineChecked ? 'checked' : '' }} 
+                       style="accent-color: {{ $includeOnlineChecked ? 'white' : '#10b981' }}; width: 16px; height: 16px;">
+                <span class="text-xs font-semibold">🏦 Include Online</span>
+            </label>
+            @endif
             <button type="submit" style="background-color: white !important; color: #7c3aed !important;" class="px-3 py-1.5 font-medium text-xs rounded-md hover:opacity-90 transition-opacity">
                 Apply
             </button>
@@ -114,6 +129,21 @@
         </div>
     </div>
 
+    <!-- ⭐ View Settled Invoices Button - AT THE TOP -->
+    @if($filters['status'] != 'settled' && $stats['settled_count'] > 0)
+    <div class="mb-4">
+        <div style="background: linear-gradient(to right, #ecfdf5, #d1fae5); border: 2px solid #86efac;" class="rounded-lg p-4 flex items-center justify-between">
+            <div>
+                <h3 style="color: #166534 !important;" class="text-sm font-bold mb-1">✅ Settled Invoices Available</h3>
+                <p style="color: #15803d !important;" class="text-xs">{{ $stats['settled_count'] }} invoice(s) totaling Rs. {{ number_format($stats['settled_total'], 2) }} have been settled.</p>
+            </div>
+            <button onclick="filterByStatus('settled')" style="background: linear-gradient(to right, #16a34a, #15803d) !important; color: white !important;" class="inline-flex items-center px-5 py-2.5 text-sm font-semibold rounded-lg shadow-md hover:opacity-90 transition-opacity">
+                View Settled Invoices →
+            </button>
+        </div>
+    </div>
+    @endif
+
     <!-- No separate pending settlements section - they'll be shown inline with invoices -->
 
     <!-- Invoices Section -->
@@ -146,7 +176,290 @@
         </button>
     </div>
     @else
-    <!-- Invoices by Rider -->
+    
+    @if($filters['status'] == 'settled' && ($filters['group_by'] ?? 'rider') == 'date' && isset($invoicesByDate) && $invoicesByDate->count() > 0)
+    <!-- ⭐ Summary Header (Like Delivery History) -->
+    @php
+        $totalCashCount = 0;
+        $totalCashAmount = 0;
+        $totalOnlineCount = 0;
+        $totalOnlineAmount = 0;
+        $totalOnlineApprovedCount = 0;
+        $totalOnlineApprovedAmount = 0;
+        $totalOnlinePendingCount = 0;
+        $totalOnlinePendingAmount = 0;
+        foreach($invoicesByDate as $dayData) {
+            if(isset($dayData['riders'])) {
+                // Handle both Collection and array
+                $riders = is_array($dayData['riders']) ? collect($dayData['riders']) : $dayData['riders'];
+                $totalCashCount += $riders->sum('count');
+                $totalCashAmount += $riders->sum('total_amount');
+            }
+            if(isset($dayData['online'])) {
+                $totalOnlineCount += $dayData['online']['count'] ?? 0;
+                $totalOnlineAmount += $dayData['online']['total_amount'] ?? 0;
+                $totalOnlineApprovedCount += $dayData['online']['approved_count'] ?? 0;
+                $totalOnlineApprovedAmount += $dayData['online']['approved_amount'] ?? 0;
+                $totalOnlinePendingCount += $dayData['online']['pending_count'] ?? 0;
+                $totalOnlinePendingAmount += $dayData['online']['pending_amount'] ?? 0;
+            }
+        }
+        $grandTotal = $totalCashAmount + $totalOnlineAmount;
+        $grandCount = $totalCashCount + $totalOnlineCount;
+    @endphp
+    <div class="bg-gradient-to-r from-green-600 to-emerald-600 rounded-lg shadow-lg p-4 mb-4">
+        <div class="flex items-center justify-between flex-wrap gap-4">
+            <div class="flex items-center gap-3">
+                <span class="text-3xl">✅</span>
+                <div>
+                    <h2 class="text-white font-bold text-lg">Daily Settlement Summary</h2>
+                    <p class="text-green-100 text-sm">{{ $grandCount }} invoices • Rs. {{ number_format($grandTotal, 0) }} total</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3 flex-wrap">
+                <!-- Cash Total Badge -->
+                @if($totalCashCount > 0)
+                <div class="bg-white bg-opacity-20 rounded-lg px-4 py-2 text-center">
+                    <div class="text-white text-xs font-medium">💵 Cash Settled</div>
+                    <div class="text-white font-bold">{{ $totalCashCount }} • Rs. {{ number_format($totalCashAmount, 0) }}</div>
+                </div>
+                @endif
+                
+                <!-- Online Approved Badge -->
+                @if($totalOnlineApprovedCount > 0)
+                <div class="bg-white bg-opacity-20 rounded-lg px-4 py-2 text-center">
+                    <div class="text-white text-xs font-medium">🏦 Online ✓</div>
+                    <div class="text-white font-bold">{{ $totalOnlineApprovedCount }} • Rs. {{ number_format($totalOnlineApprovedAmount, 0) }}</div>
+                </div>
+                @endif
+                
+                <!-- Online Pending Badge -->
+                @if($totalOnlinePendingCount > 0)
+                <div class="bg-yellow-400 bg-opacity-30 rounded-lg px-4 py-2 text-center">
+                    <div class="text-white text-xs font-medium">⏳ Online Pending</div>
+                    <div class="text-white font-bold">{{ $totalOnlinePendingCount }} • Rs. {{ number_format($totalOnlinePendingAmount, 0) }}</div>
+                </div>
+                @endif
+            </div>
+        </div>
+    </div>
+    
+    <!-- ⭐ Invoices by Date (Date-Level Grouping) - Delivery History Style -->
+    <div class="space-y-2">
+        @php
+            $dateIndex = 0;
+        @endphp
+        @foreach($invoicesByDate as $date => $dayData)
+        @php
+            // Handle both Collection and array for riders
+            $ridersData = isset($dayData['riders']) ? (is_array($dayData['riders']) ? collect($dayData['riders']) : $dayData['riders']) : collect();
+            $cashCount = $ridersData->sum('count');
+            $cashAmount = $ridersData->sum('total_amount');
+            $onlineCount = isset($dayData['online']) ? ($dayData['online']['count'] ?? 0) : 0;
+            $onlineAmount = isset($dayData['online']) ? ($dayData['online']['total_amount'] ?? 0) : 0;
+            $isFirstDate = $dateIndex === 0;
+            $dateIndex++;
+        @endphp
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <!-- Date Header Row (Like Delivery History) -->
+            <div class="flex items-center justify-between px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100" onclick="toggleDateGroup('{{ str_replace(['-', ' '], '_', $date) }}')">
+                <div class="flex items-center gap-3">
+                    <!-- Expand/Collapse Arrow -->
+                    <span id="toggle-icon-{{ str_replace(['-', ' '], '_', $date) }}" class="text-gray-400 text-sm transition-transform {{ $isFirstDate ? '' : 'rotate-[-90deg]' }}">▼</span>
+                    
+                    <!-- Date Info -->
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg">📅</span>
+                        <div>
+                            <h3 class="font-bold text-gray-800">{{ \Carbon\Carbon::parse($date)->format('D, M d, Y') }}</h3>
+                            <p class="text-xs text-gray-500">
+                                {{ $dayData['total_count'] }} invoice(s) • Rs. {{ number_format($dayData['total_amount'], 0) }} total
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Summary Badges (Like Delivery History) -->
+                <div class="flex items-center gap-2">
+                    <!-- Cash Badge (Green) -->
+                    @if($cashCount > 0)
+                    <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold" style="background: #dcfce7; color: #166534;">
+                        💵 {{ $cashCount }} • Rs. {{ number_format($cashAmount, 0) }}
+                    </span>
+                    @endif
+                    
+                    <!-- Online Badge (Blue) - Show TOTAL online (approved + pending combined) -->
+                    @if($onlineCount > 0)
+                    <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold" style="background: #dbeafe; color: #1e40af;">
+                        🏦 {{ $onlineCount }} • Rs. {{ number_format($onlineAmount, 0) }}
+                    </span>
+                    @endif
+                </div>
+            </div>
+            
+            <!-- Date Content (Expandable) -->
+            <div id="date-content-{{ str_replace(['-', ' '], '_', $date) }}" class="{{ $isFirstDate ? '' : 'hidden' }}">
+                <!-- Cash Settlements by Rider -->
+                @if(isset($dayData['riders']) && count($dayData['riders']) > 0)
+                <div class="px-4 py-3 border-b border-gray-100">
+                    <h4 class="text-sm font-bold text-green-700 mb-3 flex items-center gap-2">
+                        💵 Cash Settlements
+                        <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                            {{ $cashCount }} invoices • Rs. {{ number_format($cashAmount, 0) }}
+                        </span>
+                    </h4>
+                    <div class="space-y-3">
+                        @foreach($dayData['riders'] as $riderGroup)
+                        <div class="bg-gray-50 rounded-lg p-3">
+                            <div class="flex items-center justify-between mb-2 pb-2 border-b border-gray-200">
+                                <span class="font-semibold text-purple-700 flex items-center gap-2">
+                                    👤 {{ $riderGroup['rider_name'] }}
+                                </span>
+                                <span class="text-sm font-bold text-gray-700">
+                                    {{ $riderGroup['count'] }} inv • Rs. {{ number_format($riderGroup['total_amount'], 0) }}
+                                </span>
+                            </div>
+                            <div class="text-sm text-gray-600 space-y-1">
+                                @foreach($riderGroup['invoices'] as $invoice)
+                                <div class="flex justify-between items-center py-1.5 border-b border-gray-100 last:border-0">
+                                    <div>
+                                        <span class="font-medium text-blue-600">#{{ $invoice['order_number'] }}</span>
+                                        @if($invoice['customer_name'])
+                                            <span class="text-gray-600"> - {{ $invoice['customer_name'] }}</span>
+                                        @endif
+                                    </div>
+                                    <span class="font-semibold text-gray-800">Rs. {{ number_format($invoice['amount'], 0) }}</span>
+                                </div>
+                                @endforeach
+                            </div>
+                        </div>
+                        @endforeach
+                    </div>
+                </div>
+                @endif
+                
+                <!-- Online Payments -->
+                @if(isset($dayData['online']) && $dayData['online']['count'] > 0)
+                @php
+                    $onlineApprovedCount = isset($dayData['online']['approved_count']) ? $dayData['online']['approved_count'] : 0;
+                    $onlineApprovedAmount = isset($dayData['online']['approved_amount']) ? $dayData['online']['approved_amount'] : 0;
+                    $onlinePendingCount = isset($dayData['online']['pending_count']) ? $dayData['online']['pending_count'] : 0;
+                    $onlinePendingAmount = isset($dayData['online']['pending_amount']) ? $dayData['online']['pending_amount'] : 0;
+                @endphp
+                <div class="px-4 py-3">
+                    <h4 class="text-sm font-bold text-blue-700 mb-3 flex items-center gap-2">
+                        🏦 Online Payments
+                        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                            {{ $onlineCount }} orders • Rs. {{ number_format($onlineAmount, 0) }}
+                        </span>
+                    </h4>
+                    
+                    <!-- Approved Online Payments (Blue) -->
+                    @if($onlineApprovedCount > 0)
+                    <div class="bg-blue-50 rounded-lg p-3 mb-2">
+                        <div class="flex items-center justify-between mb-2 pb-2 border-b border-blue-200">
+                            <span class="font-semibold text-blue-700">✓ Approved</span>
+                            <span class="text-sm font-bold text-gray-700">{{ $onlineApprovedCount }} • Rs. {{ number_format($onlineApprovedAmount, 0) }}</span>
+                        </div>
+                        <div class="text-sm text-gray-600 space-y-1">
+                            @foreach($dayData['online']['approved_transactions'] ?? [] as $txn)
+                            <div class="flex justify-between items-center py-1.5 border-b border-blue-100 last:border-0">
+                                <div>
+                                    <span class="font-medium text-blue-600">#{{ $txn['order_number'] }}</span>
+                                    <span class="text-gray-600"> - {{ $txn['customer_name'] }}</span>
+                                </div>
+                                <span class="font-semibold text-gray-800">Rs. {{ number_format($txn['amount'], 0) }}</span>
+                            </div>
+                            @endforeach
+                        </div>
+                    </div>
+                    @endif
+                    
+                    <!-- Pending Online Payments (Yellow) -->
+                    @if($onlinePendingCount > 0)
+                    <div class="bg-yellow-50 rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-2 pb-2 border-b border-yellow-200">
+                            <span class="font-semibold text-yellow-700">⏳ Pending Approval</span>
+                            <span class="text-sm font-bold text-gray-700">{{ $onlinePendingCount }} • Rs. {{ number_format($onlinePendingAmount, 0) }}</span>
+                        </div>
+                        <div class="text-sm text-gray-600 space-y-1">
+                            @foreach($dayData['online']['pending_transactions'] ?? [] as $txn)
+                            <div class="flex justify-between items-center py-1.5 border-b border-yellow-100 last:border-0">
+                                <div>
+                                    <span class="font-medium text-yellow-600">#{{ $txn['order_number'] }}</span>
+                                    <span class="text-gray-600"> - {{ $txn['customer_name'] }}</span>
+                                </div>
+                                <span class="font-semibold text-gray-800">Rs. {{ number_format($txn['amount'], 0) }}</span>
+                            </div>
+                            @endforeach
+                        </div>
+                    </div>
+                    @endif
+                </div>
+                @endif
+                
+                <!-- Empty state if no data -->
+                @if((!isset($dayData['riders']) || count($dayData['riders']) == 0) && (!isset($dayData['online']) || ($dayData['online']['count'] ?? 0) == 0))
+                <div class="px-4 py-6 text-center text-gray-500 text-sm">
+                    No settlement details available for this date.
+                </div>
+                @endif
+            </div>
+        </div>
+        @endforeach
+    </div>
+    
+    <!-- Online Pending Approval Section (if include_online is enabled) -->
+    @if(isset($onlineData) && $onlineData['pending_approval']['count'] > 0)
+    <div class="mt-4">
+        <div class="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-4">
+            <h3 class="text-sm font-bold text-yellow-800 mb-3 flex items-center gap-2">
+                ⏳ Online Payments - Pending Approval
+                <span class="bg-yellow-500 text-white px-2 py-0.5 rounded-full text-xs">
+                    {{ $onlineData['pending_approval']['count'] }} pending
+                </span>
+            </h3>
+            <div class="text-xs text-gray-600">
+                <table class="w-full">
+                    <thead class="bg-yellow-100">
+                        <tr>
+                            <th class="text-left px-2 py-1">Order #</th>
+                            <th class="text-left px-2 py-1">Customer</th>
+                            <th class="text-left px-2 py-1">Date</th>
+                            <th class="text-right px-2 py-1">Amount</th>
+                            <th class="text-center px-2 py-1">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($onlineData['pending_approval']['transactions'] as $txn)
+                        <tr class="border-b border-yellow-100">
+                            <td class="px-2 py-1 font-medium text-blue-600">#{{ $txn['order_number'] }}</td>
+                            <td class="px-2 py-1">{{ $txn['customer_name'] }}</td>
+                            <td class="px-2 py-1">{{ \Carbon\Carbon::parse($txn['transaction_date'])->format('M d') }}</td>
+                            <td class="px-2 py-1 text-right font-semibold">Rs. {{ number_format($txn['amount'], 2) }}</td>
+                            <td class="px-2 py-1 text-center">
+                                <span class="bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded text-xs">
+                                    {{ ucfirst(str_replace('_', ' ', $txn['approval_status'])) }}
+                                </span>
+                            </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                    <tfoot class="bg-yellow-100">
+                        <tr>
+                            <td colspan="3" class="px-2 py-1 font-bold text-right">Total Pending:</td>
+                            <td class="px-2 py-1 text-right font-bold text-yellow-800">Rs. {{ number_format($onlineData['pending_approval']['amount'], 2) }}</td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+    </div>
+    @endif
+    
+    @else
+    <!-- Invoices by Rider (Default View) -->
     <div class="space-y-3">
         @foreach($invoicesByRider as $riderData)
         <div class="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow">
@@ -397,20 +710,6 @@
         @endforeach
     </div>
     @endif
-
-    <!-- View Settled Invoices Section -->
-    @if($filters['status'] != 'settled' && $stats['settled_count'] > 0)
-    <div class="mt-4">
-        <div style="background: linear-gradient(to right, #ecfdf5, #d1fae5); border: 2px solid #86efac;" class="rounded-lg p-4 flex items-center justify-between">
-            <div>
-                <h3 style="color: #166534 !important;" class="text-sm font-bold mb-1">✅ Settled Invoices Available</h3>
-                <p style="color: #15803d !important;" class="text-xs">{{ $stats['settled_count'] }} invoice(s) totaling Rs. {{ number_format($stats['settled_total'], 2) }} have been settled.</p>
-            </div>
-            <button onclick="filterByStatus('settled')" style="background: linear-gradient(to right, #16a34a, #15803d) !important; color: white !important;" class="inline-flex items-center px-5 py-2.5 text-sm font-semibold rounded-lg shadow-md hover:opacity-90 transition-opacity">
-                View Settled Invoices →
-            </button>
-        </div>
-    </div>
     @endif
 
 </div>
@@ -426,6 +725,23 @@ function togglePendingSettlements() {
     const section = document.getElementById('pending-settlements-section');
     if (section) {
         section.classList.toggle('hidden');
+    }
+}
+
+// ⭐ Toggle date group visibility
+function toggleDateGroup(date) {
+    const content = document.getElementById('date-content-' + date);
+    const icon = document.getElementById('toggle-icon-' + date);
+    if (content) {
+        content.classList.toggle('hidden');
+        if (icon) {
+            // Rotate arrow: pointing right when collapsed, down when expanded
+            if (content.classList.contains('hidden')) {
+                icon.style.transform = 'rotate(-90deg)';
+            } else {
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
     }
 }
 

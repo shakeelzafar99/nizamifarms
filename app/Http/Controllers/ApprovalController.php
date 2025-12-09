@@ -610,13 +610,15 @@ class ApprovalController extends Controller
             });
         }
         
-        // Filter by search if specified
+        // Filter by search if specified (search in number, title, requester, description, category)
         if ($search) {
             $items = array_filter($items, function($item) use ($search) {
                 $searchLower = strtolower($search);
-                return strpos(strtolower($item['number']), $searchLower) !== false ||
-                       strpos(strtolower($item['title']), $searchLower) !== false ||
-                       strpos(strtolower($item['requester']), $searchLower) !== false;
+                return strpos(strtolower($item['number'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['title'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['requester'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['description'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['category'] ?? ''), $searchLower) !== false;
             });
         }
         

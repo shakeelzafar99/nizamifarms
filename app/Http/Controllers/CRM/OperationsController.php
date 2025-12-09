@@ -5,10 +5,551 @@ namespace App\Http\Controllers\CRM;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use App\Models\CRM\OrderModel;
+use App\Models\CRM\CustomerModel;
 
 class OperationsController extends Controller
 {
+    /**
+     * Import historical orders from CSV file
+     * File location: public/downloads/NF_Data_Center_Data_History.csv
+     */
+    public function importHistoryOrders(Request $request)
+    {
+        set_time_limit(0); // Allow unlimited execution time
+        ini_set('memory_limit', '1G'); // Increase memory for large CSV
+        
+        $csvPath = public_path('downloads/NF_Data_Center_Data_History.csv');
+        
+        if (!file_exists($csvPath)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'CSV file not found at: public/downloads/NF_Data_Center_Data_History.csv'
+            ], 404);
+        }
+        
+        // Check if tables exist
+        if (!DB::getSchemaBuilder()->hasTable('t_crm_history_order')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'History tables not created. Please run the migration SQL first: database/migrations/create_history_orders_tables_dec04_2025.sql'
+            ], 400);
+        }
+        
+        $batchId = 'CSV_' . date('Ymd_His');
+        $stats = [
+            'orders_created' => 0,
+            'orders_skipped_duplicate' => 0,
+            'line_items_created' => 0,
+            'customers_created' => 0,
+            'customers_updated' => 0,
+            'skipped_rows' => 0,
+            'errors' => []
+        ];
+        
+        // Pre-load existing order numbers for faster duplicate detection
+        $existingOrderNumbers = DB::table('t_crm_history_order')
+            ->pluck('order_number')
+            ->flip()
+            ->toArray();
+        
+        try {
+            // Open file with proper handling for multiline fields
+            $handle = fopen($csvPath, 'r');
+            if (!$handle) {
+                throw new \Exception('Cannot open CSV file');
+            }
+            
+            // Read header
+            $header = fgetcsv($handle);
+            if (!$header) {
+                fclose($handle);
+                throw new \Exception('Cannot read CSV header');
+            }
+            
+            // Normalize header names
+            $headerMap = [];
+            foreach ($header as $idx => $col) {
+                $headerMap[strtolower(trim($col))] = $idx;
+            }
+            
+            // Group line items by Order Number
+            $orders = [];
+            $rowNum = 1;
+            
+            while (($row = fgetcsv($handle)) !== false) {
+                $rowNum++;
+                
+                try {
+                    $orderNumber = trim($row[$headerMap['order number'] ?? -1] ?? '');
+                    if (empty($orderNumber)) {
+                        $stats['skipped_rows']++;
+                        continue;
+                    }
+                    
+                    // Get order-level data (first occurrence wins)
+                    if (!isset($orders[$orderNumber])) {
+                        $orders[$orderNumber] = [
+                            'order_number' => $orderNumber,
+                            'order_status' => $this->normalizeHistoryStatus($row[$headerMap['order status'] ?? -1] ?? ''),
+                            'order_date' => $this->parseHistoryDate($row[$headerMap['order date'] ?? -1] ?? '', 'dmy'),
+                            'delivered_at' => $this->parseHistoryDate($row[$headerMap['delivery date'] ?? -1] ?? '', 'mdy'),
+                            'first_name' => trim($row[$headerMap['first name (billing)'] ?? -1] ?? ''),
+                            'last_name' => trim($row[$headerMap['last name (billing)'] ?? -1] ?? ''),
+                            'address_line1' => trim($row[$headerMap['address 1 (billing)'] ?? -1] ?? ''),
+                            'city' => trim($row[$headerMap['city (billing)'] ?? -1] ?? ''),
+                            'email' => trim($row[$headerMap['email (billing)'] ?? -1] ?? ''),
+                            'phone' => $this->cleanPhone($row[$headerMap['mobile number'] ?? -1] ?? ''),
+                            'payment_method' => $this->normalizePaymentMethod($row[$headerMap['payment method'] ?? -1] ?? ''),
+                            'discount_total' => $this->cleanAmount($row[$headerMap['cart discount amount'] ?? -1] ?? '0'),
+                            'shipping_total' => $this->cleanAmount($row[$headerMap['order shipping amount'] ?? -1] ?? '0'),
+                            'total_price' => $this->cleanAmount($row[$headerMap['order total amount'] ?? -1] ?? '0'),
+                            'coupon_code' => trim($row[$headerMap['coupon code'] ?? -1] ?? ''),
+                            'note' => trim($row[$headerMap['notes'] ?? -1] ?? ''),
+                            'raw_products_text' => trim($row[$headerMap['products'] ?? -1] ?? ''),
+                            'line_items' => []
+                        ];
+                    }
+                    
+                    // Add line item
+                    $orders[$orderNumber]['line_items'][] = [
+                        'external_line_item_id' => trim($row[$headerMap['item #'] ?? -1] ?? ''),
+                        'sku' => trim($row[$headerMap['sku'] ?? -1] ?? ''),
+                        'name' => trim($row[$headerMap['item name'] ?? -1] ?? ''),
+                        'quantity' => $this->cleanAmount($row[$headerMap['quantity'] ?? -1] ?? '1'),
+                        'unit_price' => $this->cleanAmount($row[$headerMap['item cost before discount'] ?? -1] ?? '0'),
+                        'line_subtotal' => $this->cleanAmount($row[$headerMap['order line subtotal'] ?? -1] ?? '0'),
+                        'discount_amount' => $this->cleanAmount($row[$headerMap['discount amount'] ?? -1] ?? '0'),
+                    ];
+                    
+                } catch (\Throwable $e) {
+                    $stats['errors'][] = "Row {$rowNum}: " . $e->getMessage();
+                    if (count($stats['errors']) > 100) {
+                        $stats['errors'][] = '... (errors truncated)';
+                        break;
+                    }
+                }
+            }
+            
+            fclose($handle);
+            
+            Log::info('History import: CSV parsed', ['total_orders' => count($orders)]);
+            
+            // Now process each order in a transaction
+            $processedCount = 0;
+            foreach ($orders as $orderNumber => $orderData) {
+                try {
+                    // =========================================
+                    // DUPLICATE CHECK - Skip if already exists
+                    // =========================================
+                    if (isset($existingOrderNumbers[$orderNumber])) {
+                        $stats['orders_skipped_duplicate']++;
+                        $processedCount++;
+                        continue; // Skip to next order
+                    }
+                    
+                    DB::beginTransaction();
+                    
+                    // Find or create customer if phone exists
+                    $customerId = null;
+                    if (!empty($orderData['phone'])) {
+                        $customerResult = $this->findOrCreateHistoryCustomer(
+                            $orderData['phone'],
+                            $orderData,
+                            $stats
+                        );
+                        $customerId = $customerResult['customer_id'];
+                    }
+                    
+                    // Calculate subtotal from line items
+                    $subtotal = 0;
+                    foreach ($orderData['line_items'] as $li) {
+                        $subtotal += floatval($li['line_subtotal']);
+                    }
+                    
+                    // Insert order
+                    $orderId = DB::table('t_crm_history_order')->insertGetId([
+                        'customer_id' => $customerId,
+                        'external_source' => 'csv_import',
+                        'external_id' => $orderNumber,
+                        'order_number' => $orderNumber,
+                        'order_status' => $orderData['order_status'],
+                        'order_date' => $orderData['order_date'],
+                        'delivered_at' => $orderData['delivered_at'],
+                        'name' => trim($orderData['first_name'] . ' ' . $orderData['last_name']),
+                        'currency' => 'PKR',
+                        'contact_email' => $orderData['email'] ?: null,
+                        'subtotal_price' => $subtotal,
+                        'discount_total' => $orderData['discount_total'],
+                        'shipping_total' => $orderData['shipping_total'],
+                        'total_price' => $orderData['total_price'],
+                        'address_first_name' => $orderData['first_name'] ?: null,
+                        'address_last_name' => $orderData['last_name'] ?: null,
+                        'address_email' => $orderData['email'] ?: null,
+                        'address_phone' => $orderData['phone'] ?: null,
+                        'address_line1' => $orderData['address_line1'] ?: null,
+                        'address_city' => $orderData['city'] ?: null,
+                        'address_country' => 'Pakistan',
+                        'coupon_code' => $orderData['coupon_code'] ?: null,
+                        'payment_method' => $orderData['payment_method'],
+                        'note' => $orderData['note'] ?: null,
+                        'raw_products_text' => $orderData['raw_products_text'] ?: null,
+                        'import_batch_id' => $batchId,
+                        'created_at' => now(),
+                        'updated_at' => now()
+                    ]);
+                    
+                    $stats['orders_created']++;
+                    
+                    // Insert line items
+                    foreach ($orderData['line_items'] as $li) {
+                        DB::table('t_crm_history_order_line_item')->insert([
+                            'order_id' => $orderId,
+                            'external_line_item_id' => $li['external_line_item_id'] ?: null,
+                            'sku' => $li['sku'] ?: null,
+                            'name' => $li['name'] ?: null,
+                            'quantity' => $li['quantity'],
+                            'unit_price' => $li['unit_price'],
+                            'line_subtotal' => $li['line_subtotal'],
+                            'discount_amount' => $li['discount_amount'],
+                            'line_total' => $li['line_subtotal'], // Same as subtotal for history
+                            'created_at' => now(),
+                            'updated_at' => now()
+                        ]);
+                        $stats['line_items_created']++;
+                    }
+                    
+                    DB::commit();
+                    $processedCount++;
+                    
+                    // Mark this order as existing (for any subsequent duplicates in same batch)
+                    $existingOrderNumbers[$orderNumber] = true;
+                    
+                    // Log progress every 500 orders
+                    if ($processedCount % 500 === 0) {
+                        Log::info('History import progress', [
+                            'processed' => $processedCount, 
+                            'total' => count($orders),
+                            'created' => $stats['orders_created'],
+                            'skipped_dup' => $stats['orders_skipped_duplicate']
+                        ]);
+                    }
+                    
+                } catch (\Throwable $e) {
+                    DB::rollBack();
+                    $stats['errors'][] = "Order {$orderNumber}: " . $e->getMessage();
+                    if (count($stats['errors']) > 100) {
+                        break;
+                    }
+                }
+            }
+            
+            Log::info('History import completed', $stats);
+            
+            // Get summary of what's in the database now
+            $summary = [
+                'total_history_orders' => DB::table('t_crm_history_order')->count(),
+                'total_history_line_items' => DB::table('t_crm_history_order_line_item')->count(),
+                'total_history_revenue' => DB::table('t_crm_history_order')
+                    ->where('order_status', 'delivered')
+                    ->sum('total_price'),
+                'date_range' => [
+                    'earliest' => DB::table('t_crm_history_order')->min('order_date'),
+                    'latest' => DB::table('t_crm_history_order')->max('order_date')
+                ]
+            ];
+            
+            $message = "Import completed successfully!";
+            if ($stats['orders_skipped_duplicate'] > 0) {
+                $message .= " ({$stats['orders_skipped_duplicate']} duplicates skipped)";
+            }
+            
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'batch_id' => $batchId,
+                'stats' => $stats,
+                'database_summary' => $summary
+            ]);
+            
+        } catch (\Throwable $e) {
+            Log::error('History import failed', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Import failed: ' . $e->getMessage(),
+                'stats' => $stats
+            ], 500);
+        }
+    }
+    
+    /**
+     * Find or create customer for history import
+     * Uses same phone normalization as production
+     */
+    private function findOrCreateHistoryCustomer(string $phone, array $orderData, array &$stats): array
+    {
+        // Normalize phone (take last 10 digits)
+        $phoneData = CustomerModel::normalizePhone($phone);
+        $normalizedPhone = $phoneData['normalized'];
+        
+        // Find existing customer
+        $customer = DB::table('t_crm_prod_customer')
+            ->where('phone_normalized', $normalizedPhone)
+            ->first();
+        
+        $orderDate = $orderData['order_date'];
+        $isDelivered = in_array($orderData['order_status'], ['delivered', 'completed']);
+        
+        if (!$customer) {
+            // Create new customer
+            $customerId = DB::table('t_crm_prod_customer')->insertGetId([
+                'phone' => $normalizedPhone,
+                'phone_normalized' => $normalizedPhone,
+                'phone_original' => $phone,
+                'first_name' => $orderData['first_name'] ?: null,
+                'last_name' => $orderData['last_name'] ?: null,
+                'email' => $orderData['email'] ?: null,
+                'address1' => $orderData['address_line1'] ?: null,
+                'city' => $orderData['city'] ?: null,
+                'country' => 'Pakistan',
+                // Only set dates if order is delivered/completed
+                'first_order_date' => $isDelivered ? $orderDate : null,
+                'last_order_date' => $isDelivered ? $orderDate : null,
+                'total_orders' => 0, // Will be calculated from history view
+                'total_spent' => 0,  // Will be calculated from history view
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+            $stats['customers_created']++;
+            
+            return ['customer_id' => $customerId, 'is_new' => true];
+        } else {
+            // Update existing customer's first_order_date if this is earlier
+            $updates = [];
+            
+            if ($isDelivered && $orderDate) {
+                // Update first_order_date if this order is earlier
+                if (!$customer->first_order_date || $orderDate < $customer->first_order_date) {
+                    $updates['first_order_date'] = $orderDate;
+                }
+                // Update last_order_date if this order is later
+                if (!$customer->last_order_date || $orderDate > $customer->last_order_date) {
+                    $updates['last_order_date'] = $orderDate;
+                }
+            }
+            
+            if (!empty($updates)) {
+                $updates['updated_at'] = now();
+                DB::table('t_crm_prod_customer')
+                    ->where('id', $customer->id)
+                    ->update($updates);
+                $stats['customers_updated']++;
+            }
+            
+            return ['customer_id' => $customer->id, 'is_new' => false];
+        }
+    }
+    
+    /**
+     * Parse date from CSV in various formats
+     * @param string $dateStr
+     * @param string $format 'dmy' for DD/MM/YYYY or 'mdy' for M/D/YYYY
+     */
+    private function parseHistoryDate(string $dateStr, string $format = 'dmy'): ?string
+    {
+        $dateStr = trim($dateStr);
+        if (empty($dateStr)) return null;
+        
+        // Check for Excel empty date (12/31/1899)
+        if (strpos($dateStr, '1899') !== false) return null;
+        
+        try {
+            if ($format === 'dmy') {
+                // DD/MM/YYYY HH:MM:SS
+                $dt = \DateTime::createFromFormat('d/m/Y H:i:s', $dateStr);
+                if (!$dt) {
+                    $dt = \DateTime::createFromFormat('d/m/Y', $dateStr);
+                }
+            } else {
+                // M/D/YYYY H:MM:SS (Delivery date format)
+                $dt = \DateTime::createFromFormat('n/j/Y G:i:s', $dateStr);
+                if (!$dt) {
+                    $dt = \DateTime::createFromFormat('n/j/Y H:i:s', $dateStr);
+                }
+                if (!$dt) {
+                    $dt = \DateTime::createFromFormat('n/j/Y', $dateStr);
+                }
+            }
+            
+            return $dt ? $dt->format('Y-m-d H:i:s') : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Normalize order status for history
+     * All orders are either "cancelled" or "delivered" - nothing in between for historical data
+     */
+    private function normalizeHistoryStatus(string $status): string
+    {
+        $status = strtolower(trim($status));
+        
+        // Only cancelled orders stay cancelled, everything else becomes delivered
+        $cancelledStatuses = ['cancelled', 'canceled', 'refunded'];
+        
+        if (in_array($status, $cancelledStatuses)) {
+            return 'cancelled';
+        }
+        
+        // Everything else (completed, processing, pending, on-hold, delivered, etc.) = delivered
+        return 'delivered';
+    }
+    
+    /**
+     * Update delivery dates for history orders from CSV
+     * CSV format: Order Number, Delivery Status, Delivery Date
+     */
+    public function updateHistoryDeliveryDates(Request $request)
+    {
+        $request->validate([
+            'csv_file' => 'required|file|mimes:csv,txt|max:8192'
+        ]);
+        
+        $file = $request->file('csv_file');
+        $rows = array_map('str_getcsv', file($file->getRealPath()));
+        
+        if (!$rows || count($rows) < 2) {
+            return back()->with('history_delivery_result', '<div class="text-red-600">Empty or invalid CSV</div>');
+        }
+        
+        // Remove header row and normalize
+        $header = array_map('trim', array_map('strtolower', array_shift($rows)));
+        $headerMap = array_flip($header);
+        
+        $results = [
+            'updated' => 0,
+            'not_found' => 0,
+            'skipped' => 0,
+            'errors' => []
+        ];
+        
+        foreach ($rows as $i => $row) {
+            try {
+                // Support multiple column name formats
+                $orderNumber = trim($row[$headerMap['order number'] ?? $headerMap['order_number'] ?? $headerMap['ordernumber'] ?? 0] ?? '');
+                $deliveryStatus = strtolower(trim($row[$headerMap['delivery status'] ?? $headerMap['delivery_status'] ?? $headerMap['status'] ?? 1] ?? ''));
+                $deliveryDate = trim($row[$headerMap['delivery date'] ?? $headerMap['delivery_date'] ?? $headerMap['deliverydate'] ?? $headerMap['date'] ?? 2] ?? '');
+                
+                if (empty($orderNumber)) {
+                    $results['skipped']++;
+                    continue;
+                }
+                
+                // Only update if status is delivered
+                if ($deliveryStatus !== 'delivered') {
+                    $results['skipped']++;
+                    continue;
+                }
+                
+                // Find history order by order_number
+                $historyOrder = DB::table('t_crm_history_order')
+                    ->where('order_number', $orderNumber)
+                    ->first();
+                
+                if (!$historyOrder) {
+                    $results['not_found']++;
+                    continue;
+                }
+                
+                // Parse delivery date (M/D/YYYY format from your sheet)
+                $parsedDate = $this->parseHistoryDate($deliveryDate, 'mdy');
+                
+                if (!$parsedDate) {
+                    // Try alternative formats
+                    $parsedDate = $this->parseHistoryDate($deliveryDate, 'dmy');
+                }
+                
+                if ($parsedDate) {
+                    DB::table('t_crm_history_order')
+                        ->where('id', $historyOrder->id)
+                        ->update([
+                            'delivered_at' => $parsedDate,
+                            'order_status' => 'delivered',
+                            'updated_at' => now()
+                        ]);
+                    $results['updated']++;
+                } else {
+                    $results['errors'][] = "Row " . ($i + 2) . ": Could not parse date '{$deliveryDate}' for order {$orderNumber}";
+                }
+                
+            } catch (\Throwable $e) {
+                $results['errors'][] = "Row " . ($i + 2) . ": " . $e->getMessage();
+            }
+        }
+        
+        $html = '<div class="text-green-700">';
+        $html .= '<strong>Update Complete!</strong><br>';
+        $html .= "Updated: {$results['updated']}<br>";
+        $html .= "Not found: {$results['not_found']}<br>";
+        $html .= "Skipped (not delivered): {$results['skipped']}";
+        $html .= '</div>';
+        
+        if (!empty($results['errors'])) {
+            $html .= '<div class="mt-2 text-orange-600"><strong>Errors (' . count($results['errors']) . '):</strong><br>';
+            $html .= '<div style="max-height: 150px; overflow-y: auto; background: #fffbeb; padding: 8px; border-radius: 4px; margin-top: 4px;">';
+            $html .= implode('<br>', array_slice($results['errors'], 0, 50));
+            if (count($results['errors']) > 50) {
+                $html .= '<br>... and ' . (count($results['errors']) - 50) . ' more';
+            }
+            $html .= '</div></div>';
+        }
+        
+        return back()->with('history_delivery_result', $html);
+    }
+    
+    /**
+     * Clean phone number - take last 10 digits
+     */
+    private function cleanPhone(string $phone): string
+    {
+        $digits = preg_replace('/\D/', '', $phone);
+        return substr($digits, -10);
+    }
+    
+    /**
+     * Clean amount - remove commas and convert to float
+     */
+    private function cleanAmount(string $amount): float
+    {
+        $amount = str_replace([',', ' '], '', trim($amount));
+        return is_numeric($amount) ? floatval($amount) : 0;
+    }
+    
+    /**
+     * Normalize payment method
+     */
+    private function normalizePaymentMethod(string $method): string
+    {
+        $method = strtolower(trim($method));
+        
+        $map = [
+            'cod' => 'cash_on_delivery',
+            'cash on delivery' => 'cash_on_delivery',
+            'bacs' => 'bank_transfer',
+            'bank transfer' => 'bank_transfer',
+            'direct bank transfer' => 'bank_transfer',
+            'card' => 'card',
+            'stripe' => 'online',
+            'paypal' => 'online',
+        ];
+        
+        return $map[$method] ?? ($method ?: 'cash');
+    }
+
     public function importRiderAssignments(Request $request)
     {
         $request->validate([
