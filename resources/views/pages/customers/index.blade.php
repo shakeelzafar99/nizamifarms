@@ -68,6 +68,7 @@ window.viewCustomer = function(id) {
         console.log('Customer data received:', data);
         if (data.success) {
             const customer = data.customer;
+            const mergedCustomers = data.merged_customers || [];
             
             let html = `
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
@@ -217,6 +218,41 @@ window.viewCustomer = function(id) {
                         <p style="margin: 0; color: #374151; white-space: pre-wrap;">${customer.notes || 'No notes available'}</p>
                     </div>
                 </div>
+                
+                ${mergedCustomers && mergedCustomers.length > 0 ? `
+                <!-- Merged/Linked Customers Section -->
+                <div style="margin-top: 24px;">
+                    <div style="background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); padding: 16px; border-radius: 8px; border: 1px solid #3b82f6;">
+                        <h4 style="font-weight: 600; color: #1e40af; margin: 0 0 12px 0;">🔗 Linked Customers (${mergedCustomers.length})</h4>
+                        <p style="margin: 0 0 12px 0; font-size: 12px; color: #1e40af;">The following customer records were merged into this customer:</p>
+                        <div style="background: white; border-radius: 6px; overflow: hidden;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                <thead>
+                                    <tr style="background: #eff6ff; border-bottom: 1px solid #dbeafe;">
+                                        <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">ID</th>
+                                        <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Name</th>
+                                        <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Phone</th>
+                                        <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Merged</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${mergedCustomers.map(m => `
+                                        <tr style="border-bottom: 1px solid #f3f4f6;">
+                                            <td style="padding: 8px 12px; color: #6b7280;">#${m.id}</td>
+                                            <td style="padding: 8px 12px; color: #374151; font-weight: 500;">${m.name || 'N/A'}</td>
+                                            <td style="padding: 8px 12px; color: #6b7280;">${m.phone || m.phone_normalized || 'N/A'}</td>
+                                            <td style="padding: 8px 12px; color: #6b7280; font-size: 11px;">
+                                                ${m.merged_at ? new Date(m.merged_at).toLocaleDateString() : ''} 
+                                                ${m.merged_by_name ? 'by ' + m.merged_by_name : ''}
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
                 
                 <!-- Merge Customer Section -->
                 <div style="margin-top: 24px;">

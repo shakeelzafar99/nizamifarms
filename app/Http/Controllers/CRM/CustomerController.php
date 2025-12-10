@@ -176,12 +176,33 @@ class CustomerController extends Controller
                 ];
             }
             
+            // =========================================
+            // Get customers that were MERGED INTO this one
+            // =========================================
+            $mergedCustomers = DB::table('t_crm_prod_customer')
+                ->where('merged_into_customer_id', $id)
+                ->select('id', 'first_name', 'last_name', 'phone', 'phone_normalized', 'merged_at', 'merged_by')
+                ->get()
+                ->map(function($merged) {
+                    // Get merger's name
+                    $mergerName = DB::table('t_sys_user')->where('id', $merged->merged_by)->value('fullname');
+                    return [
+                        'id' => $merged->id,
+                        'name' => trim(($merged->first_name ?? '') . ' ' . ($merged->last_name ?? '')),
+                        'phone' => $merged->phone,
+                        'phone_normalized' => $merged->phone_normalized,
+                        'merged_at' => $merged->merged_at,
+                        'merged_by_name' => $mergerName,
+                    ];
+                });
+            
             // Always return JSON for now to maintain existing functionality
             // The existing viewCustomer function expects JSON response
             return response()->json([
                 'success' => true,
                 'customer' => $customer,
                 'verified_location' => $verifiedLocation,
+                'merged_customers' => $mergedCustomers,
                 // Additional stats breakdown (optional, for debugging/display)
                 'stats_breakdown' => [
                     'production' => [

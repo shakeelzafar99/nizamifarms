@@ -165,18 +165,20 @@ class OrderModel extends BaseModel
             return null;
         }
 
-        // Try to get from loaded relationship first
+        // Try to get from loaded relationship first (if current status is delivered)
         if ($this->relationLoaded('currentStatusHistory') && $this->currentStatusHistory) {
             if ($this->currentStatusHistory->status_code === 'delivered' && $this->currentStatusHistory->changed_at) {
                 return date('Y-m-d', strtotime($this->currentStatusHistory->changed_at));
             }
         }
 
-        // Fallback: Query the database
+        // Query the database for delivery date
+        // NOTE: Don't filter by is_current=1 because if order went delivered→completed,
+        // the 'delivered' entry would have is_current=0 but we still want that date
         $deliveryHistory = \DB::table('t_crm_order_status_history')
             ->where('order_id', $this->id)
             ->where('status_code', 'delivered')
-            ->where('is_current', 1)
+            ->orderBy('changed_at', 'desc') // Get most recent delivered status change
             ->value('changed_at');
 
         if ($deliveryHistory) {

@@ -4758,9 +4758,26 @@ function saveOrderChanges(orderId) {
         }
     }
     
-    // Submit to existing update endpoint
-    fetch(`/orders/${orderId}`, {
-        method: 'PUT',
+    // Determine endpoint and method based on whether this is a create or update
+    const isNewOrder = !orderId;
+    const endpoint = isNewOrder ? '/orders' : `/orders/${orderId}`;
+    const method = isNewOrder ? 'POST' : 'PUT';
+    
+    // For new orders, add customer creation fields if in new customer mode
+    if (isNewOrder) {
+        orderData.customer_phone = formData.get('customer_phone');
+        orderData.customer_first_name = formData.get('customer_first_name');
+        orderData.customer_last_name = formData.get('customer_last_name');
+        orderData.customer_company = formData.get('customer_company');
+        orderData.customer_address1 = formData.get('customer_address1');
+        orderData.customer_address2 = formData.get('customer_address2');
+        orderData.customer_city = formData.get('customer_city');
+        orderData.customer_notes = formData.get('customer_notes');
+    }
+    
+    // Submit to appropriate endpoint
+    fetch(endpoint, {
+        method: method,
         headers: {
             'Content-Type': 'application/json',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
@@ -4771,24 +4788,33 @@ function saveOrderChanges(orderId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Show appropriate message based on whether adjustment was created
-            if (data.requires_approval) {
-                showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
+            if (isNewOrder) {
+                // Show success and reload page to see new order
+                showSuccessMessage('Order created successfully!');
+                setTimeout(() => {
+                    closeModal('editOrderModal');
+                    location.reload();
+                }, 1000);
             } else {
-                showSuccessMessage('Order updated successfully!');
+                // Show appropriate message based on whether adjustment was created
+                if (data.requires_approval) {
+                    showSuccessMessage(data.message + ' (Adjustment ID: #' + data.adjustment_id + ')');
+                } else {
+                    showSuccessMessage('Order updated successfully!');
+                }
+                submitBtn.textContent = 'Save';
+                submitBtn.disabled = false;
+                // Keep modal open for regular save - no page reload
             }
-            submitBtn.textContent = 'Save';
-            submitBtn.disabled = false;
-            // Keep modal open for regular save - no page reload
         } else {
-            alert('Error updating order: ' + (data.message || 'Unknown error'));
+            alert('Error ' + (isNewOrder ? 'creating' : 'updating') + ' order: ' + (data.message || 'Unknown error'));
             submitBtn.textContent = 'Save';
             submitBtn.disabled = false;
         }
     })
     .catch(error => {
-        console.error('Error updating order:', error);
-        alert('Error updating order. Please try again.');
+        console.error('Error ' + (isNewOrder ? 'creating' : 'updating') + ' order:', error);
+        alert('Error ' + (isNewOrder ? 'creating' : 'updating') + ' order. Please try again.');
         submitBtn.textContent = 'Save Changes';
         submitBtn.disabled = false;
     });

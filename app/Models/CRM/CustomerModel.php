@@ -42,7 +42,11 @@ class CustomerModel extends BaseModel
         'notes',
         'is_active',
         'created_by',
-        'updated_by'
+        'updated_by',
+        // Merge support fields
+        'merged_into_customer_id',
+        'merged_at',
+        'merged_by'
     ];
 
     protected $casts = [

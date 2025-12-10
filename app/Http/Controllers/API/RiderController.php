@@ -3988,11 +3988,52 @@ class RiderController extends Controller
                 ];
             });
             
-            return response()->json([
+            // ⭐ PINNED RIDER DASHBOARD: Include rider summaries for pinned riders
+            // Supports both single rider (pinned_rider_id) and multiple riders (pinned_rider_ids)
+            $riderSummary = null;
+            $riderSummaries = null;
+            
+            // Single rider (backward compatible)
+            $pinnedRiderId = $request->get('pinned_rider_id');
+            if ($pinnedRiderId) {
+                $riderSummary = $this->getRiderDashboardSummary($pinnedRiderId);
+            }
+            
+            // Multiple riders (new: prefetch all at once for seamless tab switching)
+            $pinnedRiderIds = $request->get('pinned_rider_ids');
+            if ($pinnedRiderIds) {
+                // Accept comma-separated string or array
+                if (is_string($pinnedRiderIds)) {
+                    $pinnedRiderIds = array_filter(array_map('trim', explode(',', $pinnedRiderIds)));
+                }
+                if (!empty($pinnedRiderIds)) {
+                    $riderSummaries = [];
+                    foreach ($pinnedRiderIds as $id) {
+                        $summary = $this->getRiderDashboardSummary($id);
+                        if ($summary) {
+                            $riderSummaries[$id] = $summary;
+                        }
+                    }
+                }
+            }
+            
+            $response = [
                 'success' => true,
                 'orders' => $formattedOrders,
                 'total_count' => $formattedOrders->count()
-            ]);
+            ];
+            
+            // Single rider summary (backward compatible)
+            if ($riderSummary) {
+                $response['rider_summary'] = $riderSummary;
+            }
+            
+            // Multiple rider summaries (new: keyed by rider ID)
+            if ($riderSummaries && !empty($riderSummaries)) {
+                $response['rider_summaries'] = $riderSummaries;
+            }
+            
+            return response()->json($response);
             
         } catch (\Exception $e) {
             \Log::error('Failed to fetch store open orders (light)', [
@@ -4004,6 +4045,151 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to fetch open orders: ' . $e->getMessage()
             ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ PINNED RIDER DASHBOARD: Get rider summary for dashboard header
+     * Returns delivered count, last delivered order, location and distance from office
+     * 
+     * @param int $riderId
+     * @return array|null
+     */
+    private function getRiderDashboardSummary($riderId)
+    {
+        try {
+            $today = now()->format('Y-m-d');
+            
+            // Get rider info
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname as name')
+                ->first();
+            
+            if (!$rider) {
+                return null;
+            }
+            
+            // ⭐ Get delivered orders count TODAY for this rider
+            // Based on status history (when order was marked delivered)
+            $deliveredToday = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh', function($join) use ($today) {
+                    $join->on('o.id', '=', 'osh.order_id')
+                         ->where('osh.status_code', '=', 'delivered')
+                         ->whereDate('osh.changed_at', $today);
+                })
+                ->where('o.assigned_rider_user_id', $riderId)
+                ->select(\DB::raw('COUNT(DISTINCT o.id) as count'))
+                ->first();
+            
+            $deliveredTodayCount = $deliveredToday->count ?? 0;
+            
+            // ⭐ Get last delivered order for this rider (today)
+            $lastDelivered = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh', function($join) use ($today) {
+                    $join->on('o.id', '=', 'osh.order_id')
+                         ->where('osh.status_code', '=', 'delivered')
+                         ->whereDate('osh.changed_at', $today);
+                })
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $riderId)
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'osh.changed_at as delivered_at',
+                ])
+                ->orderBy('osh.changed_at', 'desc')
+                ->first();
+            
+            // ⭐ Get rider's current location (from heartbeat)
+            $riderLocation = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>=', now()->subHours(24))
+                ->orderBy('captured_at', 'desc')
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at')
+                ->first();
+            
+            // ⭐ Calculate distance from office using LocationService
+            $distanceInfo = null;
+            if ($riderLocation) {
+                $distanceInfo = \App\Services\LocationService::calculateDistanceFromBase(
+                    $riderLocation->latitude,
+                    $riderLocation->longitude,
+                    $riderId
+                );
+            }
+            
+            // ⭐ Get rider's online status (based on last sync or location)
+            $lastSync = \DB::table('t_crm_prod_order')
+                ->where('assigned_rider_user_id', $riderId)
+                ->whereNotNull('rider_last_sync_at')
+                ->max('rider_last_sync_at');
+            
+            // Determine online status
+            $lastSeenTime = null;
+            $lastSeenText = 'Unknown';
+            $isOnline = false;
+            
+            // Use the most recent: location heartbeat or order sync
+            if ($riderLocation && $riderLocation->captured_at) {
+                $locTime = \Carbon\Carbon::parse($riderLocation->captured_at);
+                if (!$lastSeenTime || $locTime->gt($lastSeenTime)) {
+                    $lastSeenTime = $locTime;
+                }
+            }
+            if ($lastSync) {
+                $syncTime = \Carbon\Carbon::parse($lastSync);
+                if (!$lastSeenTime || $syncTime->gt($lastSeenTime)) {
+                    $lastSeenTime = $syncTime;
+                }
+            }
+            
+            if ($lastSeenTime) {
+                $ageMinutes = abs(now()->diffInMinutes($lastSeenTime));
+                $lastSeenText = $lastSeenTime->diffForHumans();
+                $isOnline = $ageMinutes <= 5;  // Online if seen within 5 minutes
+            }
+            
+            return [
+                'rider' => [
+                    'id' => $rider->id,
+                    'name' => $rider->name,
+                    'is_online' => $isOnline,
+                    'last_seen' => $lastSeenText,
+                    'last_seen_at' => $lastSeenTime ? $lastSeenTime->toIso8601String() : null,
+                ],
+                'delivered_today' => $deliveredTodayCount,
+                'last_delivered' => $lastDelivered ? [
+                    'order_id' => $lastDelivered->id,
+                    'order_number' => $lastDelivered->order_number,
+                    'customer_name' => trim($lastDelivered->customer_name) ?: 'Unknown',
+                    'delivered_at' => \Carbon\Carbon::parse($lastDelivered->delivered_at)->format('h:i A'),
+                ] : null,
+                'location' => $riderLocation ? [
+                    'latitude' => (float)$riderLocation->latitude,
+                    'longitude' => (float)$riderLocation->longitude,
+                    'accuracy' => $riderLocation->accuracy,
+                    'captured_at' => $riderLocation->captured_at,
+                ] : null,
+                'office' => $distanceInfo && $distanceInfo['base_location'] ? [
+                    'name' => $distanceInfo['base_location']->location_name ?? 'Office',
+                    'latitude' => (float)$distanceInfo['base_location']->latitude,
+                    'longitude' => (float)$distanceInfo['base_location']->longitude,
+                    'distance_meters' => $distanceInfo['distance_meters'],
+                    'distance_display' => $distanceInfo['distance_meters'] 
+                        ? \App\Services\LocationService::formatDistance($distanceInfo['distance_meters'])
+                        : null,
+                ] : null,
+            ];
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get rider dashboard summary', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage()
+            ]);
+            return null;
         }
     }
 

@@ -1240,6 +1240,11 @@ function getCellContent(columnKey, product) {
                         title="View Details">
                     <i class="ki-filled ki-eye text-xs"></i>
                 </button>
+                <button onclick="openProductInNewTab(${product.id})" 
+                        class="btn flex items-center justify-center w-7 h-7 rounded-md bg-gray-50 text-gray-600 hover:bg-gray-100 transition-colors duration-200 border border-gray-200" 
+                        title="Open in New Tab">
+                    <i class="ki-filled ki-exit-up text-xs"></i>
+                </button>
                 <button onclick="editProduct(${product.id})" 
                         class="btn flex items-center justify-center w-7 h-7 rounded-md bg-green-50 text-green-600 hover:bg-green-100 transition-colors duration-200 border border-green-200" 
                         title="Edit Product">
@@ -1770,6 +1775,11 @@ function handleDragEnd(e) {
 // Edit product - redirect to edit page
 function editProduct(productId) {
     window.location.href = `/products/${productId}/edit`;
+}
+
+// Open product in new browser tab
+function openProductInNewTab(productId) {
+    window.open(`/products/${productId}/edit`, '_blank');
 }
 
 function viewProduct(productId) {
