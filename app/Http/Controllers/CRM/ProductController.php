@@ -1620,13 +1620,15 @@ class ProductController extends Controller
 
             $source = $request->get('source', 'Shopify');
             $priceOnlyUpdate = $request->get('price_only_update', false);
+            $isWooCommerce = strcasecmp($source, 'WooCommerce') === 0;
             
             \Log::info('Import settings', [
                 'source' => $source,
-                'price_only_update' => $priceOnlyUpdate
+                'price_only_update' => $priceOnlyUpdate,
+                'sku_primary' => $isWooCommerce
             ]);
             
-            if (strcasecmp($source, 'WooCommerce') === 0) {
+            if ($isWooCommerce) {
                 \Log::info('Bulk import source selected: WooCommerce');
                 $wooProductsRaw = $this->wooCommerce->fetchAllProducts();
                 $products = [];
@@ -1663,6 +1665,11 @@ class ProductController extends Controller
                     // Add price_only_update flag to payload
                     if ($priceOnlyUpdate) {
                         $productPayload['_price_only_update'] = true;
+                    }
+                    
+                    // For WooCommerce, use SKU as primary matching key (prevents duplicates)
+                    if ($isWooCommerce) {
+                        $productPayload['_sku_primary'] = true;
                     }
                     
                     // Reuse store method that expects canonical payload
@@ -2114,7 +2121,8 @@ class ProductController extends Controller
                 ]);
             }
 
-            return redirect()->route('products.index')
+            // Stay on the edit page after saving, showing success message
+            return redirect()->route('products.edit', $id)
                 ->with('success', 'Product updated successfully.');
 
         } catch (\Illuminate\Validation\ValidationException $e) {

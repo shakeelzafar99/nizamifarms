@@ -221,7 +221,7 @@
                     </svg>
                     Search
                 </button>
-                <button type="button" onclick="clearFilters()" class="clear-btn" style="padding: 12px 20px; background: #f3f4f6; border: none; border-radius: 10px; font-weight: 500; cursor: pointer;">
+                <button type="button" onclick="clearAllFilters()" class="clear-btn" style="padding: 12px 20px; background: #f3f4f6; border: none; border-radius: 10px; font-weight: 500; cursor: pointer;">
                     Clear
                 </button>
             </div>
@@ -296,12 +296,12 @@
     <!-- Enhanced Pagination -->
     <div style="padding: 20px 24px; border-top: 1px solid #e5e7eb; background: white;">
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="flex items-center gap-2 text-sm text-gray-600">
+            <div class="flex items-center gap-2 text-sm text-gray-600" id="paginationInfo">
                 <span class="font-medium">Showing {{ $products->firstItem() ?? 0 }} to {{ $products->lastItem() ?? 0 }}</span>
                 <span>of</span>
                 <span class="font-semibold text-gray-900">{{ $products->total() }} products</span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2" id="paginationLinks">
                 {{ $products->appends(request()->query())->links() }}
             </div>
         </div>
@@ -863,33 +863,46 @@ const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_ran
 const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
-let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || JSON.stringify(defaultColumns));
-let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || JSON.stringify(allColumns));
+let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
+let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || 'null');
 
-// Migrate: Add new columns to existing saved preferences if they don't exist
-// This ensures users with saved preferences see new columns like 'is_lean'
-allColumns.forEach(col => {
-    if (!columnOrder.includes(col)) {
-        // Insert new column before 'actions' (which is always last)
-        const actionsIndex = columnOrder.indexOf('actions');
-        if (actionsIndex !== -1) {
-            columnOrder.splice(actionsIndex, 0, col);
-        } else {
-            columnOrder.push(col);
+// Track migration version to only run migrations once for truly new columns
+const COLUMN_MIGRATION_VERSION = 2; // Increment this when adding new columns
+const savedMigrationVersion = parseInt(localStorage.getItem('products_column_migration_version') || '0');
+
+// If no saved preferences exist, use defaults
+if (!visibleColumns) {
+    visibleColumns = [...defaultColumns];
+}
+if (!columnOrder) {
+    columnOrder = [...allColumns];
+}
+
+// Only run migration if version has changed (new columns were added to the codebase)
+if (savedMigrationVersion < COLUMN_MIGRATION_VERSION) {
+    // Migrate: Add new columns to column order if they don't exist
+    // This ensures the column selector shows all available columns
+    allColumns.forEach(col => {
+        if (!columnOrder.includes(col)) {
+            // Insert new column before 'actions' (which is always last)
+            const actionsIndex = columnOrder.indexOf('actions');
+            if (actionsIndex !== -1) {
+                columnOrder.splice(actionsIndex, 0, col);
+            } else {
+                columnOrder.push(col);
+            }
+            // Also make new columns visible by default (only for truly new columns)
+            if (defaultColumns.includes(col) && !visibleColumns.includes(col)) {
+                visibleColumns.push(col);
+            }
         }
-    }
-});
-
-// Add new columns to visible columns if they're in defaultColumns but not in saved preferences
-defaultColumns.forEach(col => {
-    if (!visibleColumns.includes(col) && col !== 'actions') {
-        visibleColumns.push(col);
-    }
-});
-
-// Save migrated preferences
-localStorage.setItem('products_visible_columns', JSON.stringify(visibleColumns));
-localStorage.setItem('products_column_order', JSON.stringify(columnOrder));
+    });
+    
+    // Save migration version so we don't re-add columns user has removed
+    localStorage.setItem('products_column_migration_version', COLUMN_MIGRATION_VERSION.toString());
+    localStorage.setItem('products_visible_columns', JSON.stringify(visibleColumns));
+    localStorage.setItem('products_column_order', JSON.stringify(columnOrder));
+}
 
 // Initialize table on page load
 document.addEventListener('DOMContentLoaded', function() {
@@ -927,6 +940,39 @@ function initializeRealTimeSearch() {
         select.addEventListener('change', function() {
             document.getElementById('productSearchForm').submit();
         });
+    });
+    
+    // Intercept pagination link clicks to preserve current filter values
+    initializePaginationHandler();
+}
+
+function initializePaginationHandler() {
+    const paginationContainer = document.getElementById('paginationLinks');
+    if (!paginationContainer) return;
+    
+    // Use event delegation to handle clicks on dynamically updated links
+    paginationContainer.addEventListener('click', function(e) {
+        const link = e.target.closest('a');
+        if (!link) return;
+        
+        e.preventDefault();
+        
+        try {
+            const url = new URL(link.href, window.location.origin);
+            const page = url.searchParams.get('page');
+            
+            // Build new URL with current filters from form + page parameter
+            const currentParams = getCurrentFilterParams();
+            if (page) {
+                currentParams.set('page', page);
+            }
+            
+            // Navigate to the new URL with current filters
+            window.location.href = `${window.location.pathname}?${currentParams.toString()}`;
+        } catch (err) {
+            // If parsing fails, just follow the original link
+            window.location.href = link.href;
+        }
     });
 }
 
@@ -1000,10 +1046,68 @@ function hideLoadingState() {
 }
 
 function updatePaginationInfo(pagination) {
-    const paginationInfo = document.querySelector('.text-sm.text-gray-700');
+    const paginationInfo = document.getElementById('paginationInfo');
     if (paginationInfo && pagination) {
-        paginationInfo.textContent = `Showing ${pagination.from || 0} to ${pagination.to || 0} of ${pagination.total || 0} products`;
+        paginationInfo.innerHTML = `
+            <span class="font-medium">Showing ${pagination.from || 0} to ${pagination.to || 0}</span>
+            <span>of</span>
+            <span class="font-semibold text-gray-900">${pagination.total || 0} products</span>
+        `;
     }
+    
+    // Update pagination links to use current filter values
+    updatePaginationLinks(pagination);
+}
+
+function updatePaginationLinks(pagination) {
+    const paginationLinksContainer = document.getElementById('paginationLinks');
+    if (!paginationLinksContainer || !pagination) return;
+    
+    // Get current filter values to include in pagination links
+    const currentParams = getCurrentFilterParams();
+    
+    // Update all pagination links to include current filter params
+    const links = paginationLinksContainer.querySelectorAll('a');
+    links.forEach(link => {
+        try {
+            const url = new URL(link.href, window.location.origin);
+            const page = url.searchParams.get('page');
+            
+            // Build new URL with current filters + page parameter
+            const newParams = new URLSearchParams(currentParams);
+            if (page) {
+                newParams.set('page', page);
+            }
+            
+            link.href = `${window.location.pathname}?${newParams.toString()}`;
+        } catch (e) {
+            // Skip if link parsing fails
+        }
+    });
+}
+
+function getCurrentFilterParams() {
+    const params = new URLSearchParams();
+    
+    const searchValue = document.getElementById('productSearchInput')?.value?.trim();
+    const statusValue = document.getElementById('statusFilter')?.value;
+    const syncStatusValue = document.getElementById('syncStatusFilter')?.value;
+    const categoryValue = document.getElementById('categoryFilter')?.value;
+    const vendorValue = document.getElementById('vendorFilter')?.value;
+    const attr1Value = document.getElementById('attr1Filter')?.value;
+    const attr2Value = document.getElementById('attr2Filter')?.value;
+    const attr3Value = document.getElementById('attr3Filter')?.value;
+    
+    if (searchValue) params.set('search', searchValue);
+    if (statusValue) params.set('status', statusValue);
+    if (syncStatusValue) params.set('sync_status', syncStatusValue);
+    if (categoryValue) params.set('product_type', categoryValue);
+    if (vendorValue) params.set('vendor', vendorValue);
+    if (attr1Value) params.set('attribute_1', attr1Value);
+    if (attr2Value) params.set('attribute_2', attr2Value);
+    if (attr3Value) params.set('attribute_3', attr3Value);
+    
+    return params;
 }
 
 function updateClearButton() {

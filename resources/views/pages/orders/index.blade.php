@@ -3028,6 +3028,9 @@ function loadEditForm(order) {
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed; color: #6b7280;" readonly>
                                 <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
+                                <input type="hidden" name="items[${index}][sku]" value="${item.sku || ''}">
+                                <input type="hidden" name="items[${index}][variant_id]" value="${item.variant_id || ''}">
+                                <input type="hidden" name="items[${index}][product_id]" value="${item.product_id || ''}">
                             </div>
                             <div style="position: relative;">
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">
@@ -3535,6 +3538,9 @@ function addLineItem() {
                    autocomplete="off">
             <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
             <input type="hidden" name="items[${lineItemIndex}][id]" value="">
+            <input type="hidden" name="items[${lineItemIndex}][sku]" value="">
+            <input type="hidden" name="items[${lineItemIndex}][variant_id]" value="">
+            <input type="hidden" name="items[${lineItemIndex}][product_id]" value="">
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -4658,13 +4664,19 @@ function saveOrderChanges(orderId) {
         const name = item.querySelector('input[name*="[name]"]')?.value;
         const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
         const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+        const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
+        const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
+        const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
         
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice
+                line_total: quantity * unitPrice,
+                sku: sku,
+                variant_id: variantId,
+                product_id: productId
             });
         }
     });
@@ -4833,13 +4845,19 @@ function saveAndCloseOrder(orderId) {
         const name = item.querySelector('input[name*="[name]"]')?.value;
         const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
         const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+        const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
+        const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
+        const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
         
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice
+                line_total: quantity * unitPrice,
+                sku: sku,
+                variant_id: variantId,
+                product_id: productId
             });
         }
     });
@@ -5124,6 +5142,9 @@ function popoutOrder() {
                            autocomplete="off">
                     <div id="productDropdown_${newWindow.lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][id]" value="">
+                    <input type="hidden" name="items[${newWindow.lineItemIndex}][sku]" value="">
+                    <input type="hidden" name="items[${newWindow.lineItemIndex}][variant_id]" value="">
+                    <input type="hidden" name="items[${newWindow.lineItemIndex}][product_id]" value="">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -5194,13 +5215,19 @@ function popoutOrder() {
                 const name = item.querySelector('input[name*="[name]"]')?.value;
                 const quantity = parseFloat(item.querySelector('input[name*="[quantity]"]')?.value) || 0;
                 const unitPrice = parseFloat(item.querySelector('input[name*="[unit_price]"]')?.value) || 0;
+                const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
+                const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
+                const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
                 
                 if (name && quantity > 0 && unitPrice >= 0) {
                     items.push({
                         name: name,
                         quantity: quantity,
                         unit_price: unitPrice,
-                        line_total: quantity * unitPrice
+                        line_total: quantity * unitPrice,
+                        sku: sku,
+                        variant_id: variantId,
+                        product_id: productId
                     });
                 }
             });
@@ -5724,8 +5751,12 @@ function showProductResults(products, index) {
     if (products.length === 0) {
         dropdown.innerHTML = '<div style="padding: 8px; color: #6b7280; font-size: 12px;">No products found</div>';
     } else {
-        dropdown.innerHTML = products.map((product, idx) => `
-            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price})" 
+        dropdown.innerHTML = products.map((product, idx) => {
+            // Extract variant_id and product_id from the product.id (format: "variant_123")
+            const variantId = product.id && product.id.startsWith('variant_') ? product.id.replace('variant_', '') : '';
+            const sku = (product.sku || '').replace(/'/g, "\\'");
+            return `
+            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}')" 
                  data-product-index="${idx}"
                  style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
                  onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
@@ -5735,12 +5766,12 @@ function showProductResults(products, index) {
                     ${product.sku ? 'SKU: ' + product.sku + ' | ' : ''}Price: PKR ${product.price}${product.sku ? '' : ' | Stock: ' + (product.inventory || 0)}
                 </div>
             </div>
-        `).join('');
+        `}).join('');
     }
     
     dropdown.style.display = 'block';
 }
-function selectProduct(index, productId, productName, price) {
+function selectProduct(index, productId, productName, price, sku = '', variantId = '') {
     // Get the specific line item by data-index attribute to avoid selecting wrong row
     const lineItem = document.querySelector(`.line-item[data-index="${index}"]`);
     if (!lineItem) {
@@ -5752,9 +5783,17 @@ function selectProduct(index, productId, productName, price) {
     const nameInput = lineItem.querySelector(`input[name="items[${index}][name]"]`);
     const priceInput = lineItem.querySelector(`input[name="items[${index}][unit_price]"]`);
     const idInput = lineItem.querySelector(`input[name="items[${index}][id]"]`);
+    const skuInput = lineItem.querySelector(`input[name="items[${index}][sku]"]`);
+    const variantIdInput = lineItem.querySelector(`input[name="items[${index}][variant_id]"]`);
+    const productIdInput = lineItem.querySelector(`input[name="items[${index}][product_id]"]`);
     
     if (nameInput) nameInput.value = productName;
     if (idInput) idInput.value = productId;
+    if (skuInput) skuInput.value = sku || '';
+    if (variantIdInput) variantIdInput.value = variantId || '';
+    // product_id will be resolved on backend from variant_id
+    if (productIdInput) productIdInput.value = '';
+    
     if (priceInput) {
         priceInput.value = price;
         // Make price readonly when selected from product dropdown
@@ -8053,6 +8092,9 @@ function saveNewOrder() {
         const name = item.querySelector(`input[name*="[name]"]`)?.value?.trim();
         const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`)?.value) || 0;
         const unitPrice = parseFloat(item.querySelector(`input[name*="[unit_price]"]`)?.value) || 0;
+        const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
+        const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
+        const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
         
         // Only add items that have a name and valid quantity/price
         if (name && quantity > 0 && unitPrice >= 0) {
@@ -8060,7 +8102,10 @@ function saveNewOrder() {
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice
+                line_total: quantity * unitPrice,
+                sku: sku,
+                variant_id: variantId,
+                product_id: productId
             });
         }
     });

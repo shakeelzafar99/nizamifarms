@@ -2606,6 +2606,9 @@ function addLineItem() {
                            onblur="hideProductDropdown(${lineItemIndex})">
                     <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
                     <input type="hidden" name="items[${lineItemIndex}][id]" value="">
+                    <input type="hidden" name="items[${lineItemIndex}][sku]" value="">
+                    <input type="hidden" name="items[${lineItemIndex}][variant_id]" value="">
+                    <input type="hidden" name="items[${lineItemIndex}][product_id]" value="">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -2879,13 +2882,19 @@ function saveNewOrder() {
         const name = item.querySelector(`input[name*="[name]"]`)?.value;
         const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`)?.value) || 0;
         const unitPrice = parseFloat(item.querySelector(`input[name*="[unit_price]"]`)?.value) || 0;
+        const sku = item.querySelector(`input[name*="[sku]"]`)?.value || null;
+        const variantId = item.querySelector(`input[name*="[variant_id]"]`)?.value || null;
+        const productId = item.querySelector(`input[name*="[product_id]"]`)?.value || null;
         
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice
+                line_total: quantity * unitPrice,
+                sku: sku,
+                variant_id: variantId,
+                product_id: productId
             });
         }
     });
@@ -2997,8 +3006,12 @@ function showProductResults(products, index) {
             const safeName = displayName.replace(/'/g, "\\'");
             const price = (product.price ?? product.price_min ?? 0);
             const inventory = (product.inventory ?? product.total_inventory ?? 0);
+            // Extract variant_id and product_id from the product.id (format: "variant_123")
+            const variantId = product.id && product.id.toString().startsWith('variant_') ? product.id.toString().replace('variant_', '') : (product.variant_id || '');
+            const productId = product.product_id || '';
+            const sku = (product.sku || '').replace(/'/g, "\\'");
             return `
-            <div onclick="selectProduct(${index}, '${product.id}', '${safeName}', ${price})" 
+            <div onclick="selectProduct(${index}, '${product.id}', '${safeName}', ${price}, '${sku}', '${variantId}', '${productId}')" 
                  style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6;"
                  onmouseover="this.style.backgroundColor='#f9fafb'" 
                  onmouseout="this.style.backgroundColor='white'">
@@ -3031,11 +3044,14 @@ function hideProductDropdown(index) {
     }
 }
 
-function selectProduct(index, productId, productName, price) {
+function selectProduct(index, productId, productName, price, sku = '', variantId = '', productIdFromSearch = '') {
     // Fill in the product details
     const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
     const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
     const hiddenInput = document.querySelector(`input[name="items[${index}][id]"]`);
+    const skuInput = document.querySelector(`input[name="items[${index}][sku]"]`);
+    const variantIdInput = document.querySelector(`input[name="items[${index}][variant_id]"]`);
+    const productIdInput = document.querySelector(`input[name="items[${index}][product_id]"]`);
     
     if (nameInput) nameInput.value = productName;
     if (priceInput) {
@@ -3048,6 +3064,9 @@ function selectProduct(index, productId, productName, price) {
         priceInput.title = 'Price is set from product catalog and cannot be edited';
     }
     if (hiddenInput) hiddenInput.value = productId;
+    if (skuInput) skuInput.value = sku || '';
+    if (variantIdInput) variantIdInput.value = variantId || '';
+    if (productIdInput) productIdInput.value = productIdFromSearch || '';
     
     // Update the line total
     updateLineTotal(index);

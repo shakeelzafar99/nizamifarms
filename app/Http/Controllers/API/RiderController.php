@@ -4571,11 +4571,19 @@ class RiderController extends Controller
                 $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             }
 
+            // SKU-primary matching with fallbacks for manual orders
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function ($join) {
                     $join->where(function ($q) {
-                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                        // PRIORITY 1: SKU match (most reliable)
+                        $q->where(function($skuMatch) {
+                            $skuMatch->whereNotNull('li.sku')
+                                     ->where('li.sku', '!=', '')
+                                     ->whereColumn('li.sku', 'pv.sku');
+                        })
+                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
+                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.variant_id', 'pv.id')
                           ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.product_id', 'pv.id');
@@ -4584,8 +4592,21 @@ class RiderController extends Controller
                 ->leftJoin('t_crm_prod_product as p', function ($join) {
                     $join->where(function ($q) {
                         $q->whereColumn('pv.product_id', 'p.id')
-                          ->orWhereColumn('li.product_id', 'p.id');
-                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          ->orWhereColumn('li.product_id', 'p.id')
+                          // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
+                          ->orWhere(function($nameFallback) {
+                              $nameFallback->whereNull('li.sku')
+                                           ->where(function($noIds) {
+                                               $noIds->whereNull('li.variant_id')
+                                                     ->orWhere('li.variant_id', '');
+                                           })
+                                           ->where(function($noProdId) {
+                                               $noProdId->whereNull('li.product_id')
+                                                        ->orWhere('li.product_id', '');
+                                           })
+                                           ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          });
+                    });
                 })
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where(function ($q) {
@@ -5357,12 +5378,19 @@ class RiderController extends Controller
                 ->first();
             $excludedStatuses = $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded'];
             
-            // Build base query - same as webapp
+            // Build base query - same as webapp with SKU-primary matching
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
                     $join->where(function($q) {
-                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                        // PRIORITY 1: SKU match (most reliable)
+                        $q->where(function($skuMatch) {
+                            $skuMatch->whereNotNull('li.sku')
+                                     ->where('li.sku', '!=', '')
+                                     ->whereColumn('li.sku', 'pv.sku');
+                        })
+                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
+                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.variant_id', 'pv.id')
                           ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.product_id', 'pv.id');
@@ -5371,8 +5399,21 @@ class RiderController extends Controller
                 ->leftJoin('t_crm_prod_product as p', function($join) {
                     $join->where(function($q) {
                         $q->whereColumn('pv.product_id', 'p.id')
-                          ->orWhereColumn('li.product_id', 'p.id');
-                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          ->orWhereColumn('li.product_id', 'p.id')
+                          // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
+                          ->orWhere(function($nameFallback) {
+                              $nameFallback->whereNull('li.sku')
+                                           ->where(function($noIds) {
+                                               $noIds->whereNull('li.variant_id')
+                                                     ->orWhere('li.variant_id', '');
+                                           })
+                                           ->where(function($noProdId) {
+                                               $noProdId->whereNull('li.product_id')
+                                                        ->orWhere('li.product_id', '');
+                                           })
+                                           ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          });
+                    });
                 })
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')

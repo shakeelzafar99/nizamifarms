@@ -37,6 +37,23 @@
 </div>
 
 <div class="container-fixed">
+    <!-- Success Alert Banner -->
+    @if (session('success'))
+    <div style="background: #f0fdf4; border: 2px solid #22c55e; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);">
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+            <div style="background: #22c55e; color: white; width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0;">
+                ✓
+            </div>
+            <div style="flex: 1;">
+                <h4 style="color: #166534; font-size: 18px; font-weight: 700; margin: 0;">{{ session('success') }}</h4>
+            </div>
+            <button type="button" onclick="this.parentElement.parentElement.remove()" style="background: none; border: none; color: #166534; font-size: 24px; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; transition: background 0.15s;">
+                ✕
+            </button>
+        </div>
+    </div>
+    @endif
+    
     <!-- Error Alert Banner -->
     @if ($errors->any() || session('error'))
     <div style="background: #fef2f2; border: 2px solid #dc2626; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(220, 38, 38, 0.2);">

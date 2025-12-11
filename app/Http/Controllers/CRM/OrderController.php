@@ -484,6 +484,9 @@ class OrderController extends Controller
                 'items.*.quantity' => 'required|numeric|min:0.001',
                 'items.*.unit_price' => 'required|numeric|min:0',
                 'items.*.line_total' => 'required|numeric|min:0',
+                'items.*.sku' => 'nullable|string',
+                'items.*.variant_id' => 'nullable|string',
+                'items.*.product_id' => 'nullable|string',
                 // Address fields
                 'address_first_name' => 'nullable|string',
                 'address_last_name' => 'nullable|string',
@@ -673,6 +676,23 @@ class OrderController extends Controller
                     $quantity = $itemData['quantity'];
                     $unitPrice = $itemData['unit_price'];
                     
+                    // Get SKU and variant_id if provided
+                    $sku = $itemData['sku'] ?? null;
+                    $variantId = $itemData['variant_id'] ?? null;
+                    $productId = $itemData['product_id'] ?? null;
+                    
+                    // If variant_id provided but no product_id, resolve product_id from variant
+                    if ($variantId && !$productId) {
+                        $variant = \App\Models\CRM\ProductVariantModel::find($variantId);
+                        if ($variant) {
+                            $productId = $variant->product_id;
+                            // Also get SKU from variant if not provided
+                            if (!$sku) {
+                                $sku = $variant->sku;
+                            }
+                        }
+                    }
+                    
                     $formattedLineItems[] = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
@@ -681,6 +701,9 @@ class OrderController extends Controller
                         'discount_amount' => 0,
                         'tax_amount' => 0,
                         'line_total' => $quantity * $unitPrice,
+                        'sku' => $sku,
+                        'variant_id' => $variantId,
+                        'product_id' => $productId,
                     ];
                 }
                 
@@ -791,6 +814,9 @@ class OrderController extends Controller
                 'items.*.quantity' => 'required|numeric|min:0.001',
                 'items.*.unit_price' => 'required|numeric|min:0',
                 'items.*.line_total' => 'required|numeric|min:0',
+                'items.*.sku' => 'nullable|string',
+                'items.*.variant_id' => 'nullable|string',
+                'items.*.product_id' => 'nullable|string',
                 // Customer creation fields
                 'customer_phone' => 'nullable|string',
                 'customer_first_name' => 'nullable|string',
@@ -897,6 +923,23 @@ class OrderController extends Controller
                     $quantity = $itemData['quantity'];
                     $unitPrice = $itemData['unit_price'];
                     
+                    // Get SKU and variant_id if provided
+                    $sku = $itemData['sku'] ?? null;
+                    $variantId = $itemData['variant_id'] ?? null;
+                    $productId = $itemData['product_id'] ?? null;
+                    
+                    // If variant_id provided but no product_id, resolve product_id from variant
+                    if ($variantId && !$productId) {
+                        $variant = \App\Models\CRM\ProductVariantModel::find($variantId);
+                        if ($variant) {
+                            $productId = $variant->product_id;
+                            // Also get SKU from variant if not provided
+                            if (!$sku) {
+                                $sku = $variant->sku;
+                            }
+                        }
+                    }
+                    
                     $formattedLineItems[] = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
@@ -905,6 +948,9 @@ class OrderController extends Controller
                         'discount_amount' => 0,
                         'tax_amount' => 0,
                         'line_total' => $quantity * $unitPrice,
+                        'sku' => $sku,
+                        'variant_id' => $variantId,
+                        'product_id' => $productId,
                     ];
                 }
             }
@@ -1855,37 +1901,61 @@ class OrderController extends Controller
             
             Log::debug('Open Quantities Excluded Statuses:', ['excluded' => $excludedStatuses]);
             Log::debug('Open Quantities Join Strategy:', [
-                'note' => 'Trying multiple join paths for line_item -> product',
+                'note' => 'SKU-primary matching with fallbacks for manual orders',
                 'paths' => [
-                    '1' => 'li.variant_id -> pv.shopify_variant_id -> pv.product_id -> p.id',
-                    '2' => 'li.product_id -> pv.shopify_variant_id -> pv.product_id -> p.id',
-                    '3' => 'li.product_id -> p.id (direct)',
-                    '4' => 'li.name -> p.title (name match fallback)'
+                    '1' => 'li.sku -> pv.sku (PRIMARY - most reliable)',
+                    '2' => 'li.variant_id -> pv.shopify_variant_id',
+                    '3' => 'li.variant_id -> pv.id',
+                    '4' => 'li.product_id -> pv.shopify_variant_id',
+                    '5' => 'li.product_id -> pv.id',
+                    '6' => 'li.product_id -> p.id (direct)'
                 ]
             ]);
 
             // Build base query for open orders with line items
-            // Multiple join paths to match products:
-            // Path 1: li.variant_id -> pv.shopify_variant_id -> p.id
-            // Path 2: li.product_id -> pv.shopify_variant_id -> p.id  
-            // Path 3: li.product_id -> p.id (direct)
-            // Path 4: li.name -> p.title (name match)
+            // SKU-primary matching with fallbacks:
+            // Priority 1: SKU match (most reliable for WooCommerce products)
+            // Priority 2-5: Existing variant/product ID matches (for manual orders without SKU)
+            // Priority 6: Direct product_id match
+            // Priority 7: Name fallback (lowest priority, for legacy orders without any IDs)
             $query = \DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
-                    // Try multiple variant matching strategies
+                    // SKU-primary matching with fallbacks
                     $join->where(function($q) {
-                        $q->whereColumn('li.variant_id', 'pv.shopify_variant_id')  // Path 1: variant_id field
+                        // PRIORITY 1: SKU match (most reliable)
+                        $q->where(function($skuMatch) {
+                            $skuMatch->whereNotNull('li.sku')
+                                     ->where('li.sku', '!=', '')
+                                     ->whereColumn('li.sku', 'pv.sku');
+                        })
+                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
+                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.variant_id', 'pv.id')
-                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id') // Path 2: product_id as variant
+                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.product_id', 'pv.id');
                     });
                 })
                 ->leftJoin('t_crm_prod_product as p', function($join) {
+                    // Product match via variant or direct product_id, with name fallback for legacy
                     $join->where(function($q) {
-                        $q->whereColumn('pv.product_id', 'p.id')  // Via variant table
-                          ->orWhereColumn('li.product_id', 'p.id'); // Direct match
-                    })->orWhereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))'); // Name fallback
+                        $q->whereColumn('pv.product_id', 'p.id')      // Via variant table (covers SKU match)
+                          ->orWhereColumn('li.product_id', 'p.id')   // Direct product_id match
+                          // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
+                          ->orWhere(function($nameFallback) {
+                              // Only use name match when no SKU, variant_id, or product_id exists
+                              $nameFallback->whereNull('li.sku')
+                                           ->where(function($noIds) {
+                                               $noIds->whereNull('li.variant_id')
+                                                     ->orWhere('li.variant_id', '');
+                                           })
+                                           ->where(function($noProdId) {
+                                               $noProdId->whereNull('li.product_id')
+                                                        ->orWhere('li.product_id', '');
+                                           })
+                                           ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          });
+                    });
                 })
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')

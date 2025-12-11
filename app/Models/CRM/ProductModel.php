@@ -374,17 +374,70 @@ class ProductModel extends BaseModel
             $priceOnlyUpdate = $productData['_price_only_update'] ?? false;
             unset($productData['_price_only_update']); // Remove flag from data
             
+            // Check for SKU-primary flag (WooCommerce sync uses this)
+            $skuPrimary = $productData['_sku_primary'] ?? false;
+            unset($productData['_sku_primary']); // Remove flag from data
+            
             // Check for existing product
             $existingProduct = null;
+            $matchedBySku = false;
             
             // First check if we have an explicit existing product ID (for manual updates)
             if (isset($productData['existing_product_id'])) {
                 $existingProduct = static::find($productData['existing_product_id']);
                 unset($productData['existing_product_id']); // Remove from data to avoid DB issues
             }
+            // SKU-Primary mode: Check SKU FIRST before platform ID (for WooCommerce sync)
+            elseif ($skuPrimary && isset($productData['variants']) && !empty($productData['variants'])) {
+                foreach ($productData['variants'] as $incomingVariant) {
+                    $incomingSku = $incomingVariant['sku'] ?? null;
+                    if ($incomingSku) {
+                        // Find existing product with this SKU
+                        $existingVariant = ProductVariantModel::where('sku', $incomingSku)->first();
+                        if ($existingVariant) {
+                            $existingProduct = $existingVariant->product;
+                            $matchedBySku = true;
+                            // Link this product to the platform product if not already linked
+                            if (empty($existingProduct->shopify_product_id) && !empty($productData['shopify_product_id'])) {
+                                $existingProduct->shopify_product_id = $productData['shopify_product_id'];
+                                $existingProduct->sync_status = 'synced';
+                                $existingProduct->save();
+                                \Log::info("Linked product #{$existingProduct->id} to WooCommerce #{$productData['shopify_product_id']} via SKU: {$incomingSku}");
+                            }
+                            break; // Found a match, stop looking
+                        }
+                    }
+                }
+                
+                // If not found by SKU, also check by platform ID as fallback
+                if (!$existingProduct && isset($productData['shopify_product_id'])) {
+                    $existingProduct = static::where('shopify_product_id', $productData['shopify_product_id'])->first();
+                }
+            }
             // Then check for Shopify/WooCommerce products by their platform ID
             elseif (isset($productData['shopify_product_id'])) {
                 $existingProduct = static::where('shopify_product_id', $productData['shopify_product_id'])->first();
+                
+                // If not found by platform ID, try matching by SKU (for manual products that should be linked)
+                if (!$existingProduct && isset($productData['variants']) && !empty($productData['variants'])) {
+                    foreach ($productData['variants'] as $incomingVariant) {
+                        $incomingSku = $incomingVariant['sku'] ?? null;
+                        if ($incomingSku) {
+                            // Find existing product with this SKU
+                            $existingVariant = ProductVariantModel::where('sku', $incomingSku)->first();
+                            if ($existingVariant) {
+                                $existingProduct = $existingVariant->product;
+                                $matchedBySku = true;
+                                // Link this manual product to the platform product
+                                $existingProduct->shopify_product_id = $productData['shopify_product_id'];
+                                $existingProduct->sync_status = 'synced';
+                                $existingProduct->save();
+                                \Log::info("Linked manual product #{$existingProduct->id} to WooCommerce product #{$productData['shopify_product_id']} via SKU: {$incomingSku}");
+                                break; // Found a match, stop looking
+                            }
+                        }
+                    }
+                }
             }
 
             // Prepare product data
@@ -398,12 +451,26 @@ class ProductModel extends BaseModel
 
             // Create or update product
             if ($existingProduct) {
-                if ($priceOnlyUpdate) {
-                    // For price-only updates, only update specific fields
+                if ($priceOnlyUpdate || $skuPrimary) {
+                    // For price-only updates or SKU-primary mode (WooCommerce), 
+                    // only update title, price, and sync fields - PRESERVE categories
                     $updateFields = [
                         'updated_by' => $productAttributes['updated_by'],
                         'updated_at' => now(),
                     ];
+                    
+                    // For SKU-primary mode, also update title
+                    if ($skuPrimary && isset($productAttributes['title'])) {
+                        $updateFields['title'] = $productAttributes['title'];
+                    }
+                    
+                    // Update price fields
+                    if (isset($productAttributes['price_min'])) {
+                        $updateFields['price_min'] = $productAttributes['price_min'];
+                    }
+                    if (isset($productAttributes['price_max'])) {
+                        $updateFields['price_max'] = $productAttributes['price_max'];
+                    }
                     
                     // Only update sync-related fields if they exist
                     if (isset($productAttributes['sync_status'])) {
@@ -413,8 +480,13 @@ class ProductModel extends BaseModel
                         $updateFields['last_synced_at'] = $productAttributes['last_synced_at'];
                     }
                     
+                    // Update status if provided
+                    if (isset($productAttributes['status'])) {
+                        $updateFields['status'] = $productAttributes['status'];
+                    }
+                    
                     $existingProduct->update($updateFields);
-                    \Log::info("Price-only update for product: {$existingProduct->title}");
+                    \Log::info(($skuPrimary ? "SKU-primary" : "Price-only") . " update for product: {$existingProduct->title}");
                 } else {
                     // Full update - update all fields except categories/attributes
                     $existingProduct->update($productAttributes);
@@ -426,8 +498,8 @@ class ProductModel extends BaseModel
 
             // Store variants
             if (!empty($variants)) {
-                if ($existingProduct && $priceOnlyUpdate) {
-                    // For price-only updates, match variants by shopify_variant_id or SKU and update prices only
+                if ($existingProduct && ($priceOnlyUpdate || $skuPrimary)) {
+                    // For price-only updates or SKU-primary mode, match variants by SKU and update prices only
                     foreach ($variants as $variantData) {
                         $mappedVariant = ProductVariantModel::mapShopifyVariant($variantData);
                         $variantId = $mappedVariant['shopify_variant_id'] ?? null;
@@ -435,12 +507,17 @@ class ProductModel extends BaseModel
                         
                         $existingVariant = null;
                         
-                        // First try to match by shopify_variant_id (WooCommerce/Shopify variant ID)
-                        if ($variantId) {
+                        // For SKU-primary mode, check SKU first
+                        if ($skuPrimary && $sku) {
+                            $existingVariant = $product->variants()->where('sku', $sku)->first();
+                        }
+                        
+                        // Then try to match by shopify_variant_id (WooCommerce/Shopify variant ID)
+                        if (!$existingVariant && $variantId) {
                             $existingVariant = $product->variants()->where('shopify_variant_id', $variantId)->first();
                         }
                         
-                        // If not found and SKU exists, try matching by SKU
+                        // If still not found and SKU exists, try matching by SKU
                         if (!$existingVariant && $sku) {
                             $existingVariant = $product->variants()->where('sku', $sku)->first();
                         }
@@ -453,14 +530,20 @@ class ProductModel extends BaseModel
                                 'cost_price' => $mappedVariant['cost_price'] ?? $existingVariant->cost_price,
                                 'updated_at' => now(),
                             ];
+                            
+                            // Link variant to platform ID if not already linked
+                            if ($skuPrimary && $variantId && empty($existingVariant->shopify_variant_id)) {
+                                $priceUpdateFields['shopify_variant_id'] = $variantId;
+                            }
+                            
                             $existingVariant->update($priceUpdateFields);
-                            \Log::info("Updated prices for variant ID: {$variantId}, SKU: {$sku}");
+                            \Log::info("Updated prices for variant SKU: {$sku}" . ($variantId ? ", ID: {$variantId}" : ""));
                         } else {
                             // New variant - add it
                             $mappedVariant['product_id'] = $product->id;
                             $mappedVariant['created_by'] = auth()->check() ? auth()->id() : null;
                             ProductVariantModel::create($mappedVariant);
-                            \Log::info("Added new variant ID: {$variantId}, SKU: {$sku}");
+                            \Log::info("Added new variant SKU: {$sku}" . ($variantId ? ", ID: {$variantId}" : ""));
                         }
                     }
                 } else {
@@ -482,8 +565,8 @@ class ProductModel extends BaseModel
             }
 
             // Auto-assign optional attribute labels by match rules stored in JSON (title contains)
-            // Skip this for price-only updates to preserve existing categories
-            if (!$priceOnlyUpdate || !$existingProduct) {
+            // Skip this for price-only updates and SKU-primary mode to preserve existing categories
+            if ((!$priceOnlyUpdate && !$skuPrimary) || !$existingProduct) {
                 try {
                     $title = (string) ($product->title ?? '');
                     $labelsPath = storage_path('app/private/attribute_auto_rules.json');
