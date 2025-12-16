@@ -12697,13 +12697,13 @@ async function loadRiderLocationHistory(riderId) {
             const icon = L.divIcon({
                 className: 'history-marker',
                 html: iconHtml,
-                iconSize: hasDuration ? [48, 36] : [28, 28],
-                iconAnchor: hasDuration ? [14, 28] : [14, 14]
+                iconSize: showDurationBadge ? [48, 36] : [28, 28],
+                iconAnchor: showDurationBadge ? [14, 28] : [14, 14]
             });
             
             // Build popup with duration info
             let popupHtml = `<b>#${idx + 1} - ${loc.time}</b><br>`;
-            if (hasDuration) {
+            if (showDurationBadge) {
                 popupHtml += `<span style="color: #f59e0b; font-weight: 600;">⏱️ Stayed ${loc.duration}</span><br>`;
                 popupHtml += `<small>Arrived: ${loc.arrival_time}</small><br>`;
             }

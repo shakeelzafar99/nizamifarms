@@ -16,12 +16,12 @@ class AppController extends Controller
         return response()->json([
             'success' => true,
             'version' => [
-                'code' => 350,                  // Current versionCode (increment this when releasing new version)
-                'name' => '3.5.0',              // Current versionName (user-facing version)
+                'code' => 360,                  // Current versionCode (increment this when releasing new version)
+                'name' => '3.6.0',              // Current versionName (user-facing version)
                 'download_url' => url('/downloads/NizamiFarms-Rider.apk'),
                 'release_notes' => 'Bug fixes and improvements.',
                 'force_update' => true,        // Set to true to force users to update
-                'min_supported_version' => 200  // Minimum versionCode that can still use the app
+                'min_supported_version' => 300  // Minimum versionCode that can still use the app
             ]
         ]);
     }

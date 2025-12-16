@@ -2465,7 +2465,12 @@ class RiderController extends Controller
             $ordersQuery = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
-                ->whereNotIn('o.order_status', $excludedStatuses);
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                // Exclude Shopify orders - match Invoices page logic
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                });
             
             // Apply status filter if provided
             if ($statusFilter && $statusFilter !== 'all') {
