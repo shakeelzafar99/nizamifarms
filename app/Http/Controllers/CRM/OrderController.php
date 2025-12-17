@@ -1212,7 +1212,7 @@ class OrderController extends Controller
             $originalOrder->update(['converted' => 1]);
             
             // Prepare response message with any warnings
-            $message = 'Order converted successfully with recalculated prices based on your product rates';
+            $message = 'Order converted successfully with product names and prices from your system';
             if (!empty($validationResult['warnings'])) {
                 $message .= '. Warnings: ' . implode(', ', $validationResult['warnings']);
             }
@@ -1264,8 +1264,9 @@ class OrderController extends Controller
                 continue;
             }
             
-            // Find product variant by SKU
-            $productVariants = \App\Models\CRM\ProductVariantModel::where('sku', $lineItem->sku)->get();
+            // Find product variant by SKU (with product relationship for name)
+            $productVariants = \App\Models\CRM\ProductVariantModel::with('product')
+                ->where('sku', $lineItem->sku)->get();
             
             if ($productVariants->isEmpty()) {
                 $validationErrors[] = "SKU '{$lineItem->sku}' not found in your products";
@@ -1280,19 +1281,28 @@ class OrderController extends Controller
             $productVariant = $productVariants->first();
             $originalPrice = (float) $lineItem->unit_price;
             $newPrice = (float) $productVariant->price;
+            
+            // Get the product name from our system
+            $localProductName = $productVariant->product ? $productVariant->product->title : null;
             $quantity = (int) $lineItem->quantity;
             
             // Calculate new line total
             $newLineTotal = $quantity * $newPrice;
             $originalLineTotal = $quantity * $originalPrice;
             
-            // Track price changes
-            if ($originalPrice != $newPrice) {
+            // Track price and name changes
+            $originalName = $lineItem->name;
+            $nameChanged = $localProductName && $localProductName !== $originalName;
+            
+            if ($originalPrice != $newPrice || $nameChanged) {
                 $priceChanges[] = [
                     'sku' => $lineItem->sku,
-                    'name' => $lineItem->name,
+                    'original_name' => $originalName,
+                    'new_name' => $nameChanged ? $localProductName : $originalName,
+                    'name_changed' => $nameChanged,
                     'original_price' => $originalPrice,
                     'new_price' => $newPrice,
+                    'price_changed' => $originalPrice != $newPrice,
                     'quantity' => $quantity,
                     'original_total' => $originalLineTotal,
                     'new_total' => $newLineTotal
@@ -1310,6 +1320,11 @@ class OrderController extends Controller
             $lineItemData['unit_price'] = $newPrice;
             $lineItemData['line_total'] = $newLineTotal;
             $lineItemData['line_subtotal'] = $newLineTotal; // Assuming no line-level discounts
+            
+            // Update with product name from our system (if available)
+            if ($localProductName) {
+                $lineItemData['name'] = $localProductName;
+            }
             
             $recalculatedLineItems[] = $lineItemData;
             $newSubtotal += $newLineTotal;
@@ -1826,6 +1841,25 @@ class OrderController extends Controller
             ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
             ->where('ur.user_id', $user->id)
             ->value('r.type');
+    }
+
+    /**
+     * Riders Map - Standalone Page
+     * Shows riders with their live locations and order assignments
+     */
+    public function ridersMap()
+    {
+        // Check permission - users with view_all_orders or admin/manager roles can access
+        $user = auth()->user();
+        $userRole = $user->roles->first()->type ?? 'user';
+        
+        // Block riders from accessing the riders map page
+        if ($userRole === 'rider') {
+            return redirect()->route('orders.index')
+                ->with('error', 'You do not have permission to view Riders Map.');
+        }
+        
+        return view('pages.riders-map.index');
     }
 
     /**

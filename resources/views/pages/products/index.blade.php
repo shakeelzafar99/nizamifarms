@@ -159,6 +159,89 @@
     overflow-x: auto;
     background: white;
 }
+
+/* Checkbox column styling */
+.col-checkbox {
+    width: 40px !important;
+    min-width: 40px !important;
+    max-width: 40px !important;
+    text-align: center;
+    padding: 8px !important;
+}
+
+.col-checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #667eea;
+}
+
+/* Selected row highlight */
+tr.bg-indigo-50 {
+    background-color: #eef2ff !important;
+}
+
+tr.bg-indigo-50:hover {
+    background-color: #e0e7ff !important;
+}
+
+/* Quick Edit Toggle Styling */
+.quick-edit-toggle input:checked + .toggle-slider {
+    background-color: #10b981 !important;
+}
+
+.quick-edit-toggle .toggle-slider:before {
+    content: "";
+    position: absolute;
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+}
+
+.quick-edit-toggle input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+}
+
+/* Quick Edit Price Input */
+.quick-edit-price-input {
+    width: 90px;
+    padding: 4px 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    text-align: right;
+    transition: all 0.2s;
+}
+
+.quick-edit-price-input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+.quick-edit-price-input.saving {
+    background-color: #fef3c7;
+    border-color: #f59e0b;
+}
+
+.quick-edit-price-input.saved {
+    background-color: #d1fae5;
+    border-color: #10b981;
+}
+
+.quick-edit-price-input.error {
+    background-color: #fee2e2;
+    border-color: #ef4444;
+}
+
+/* Quick edit mode indicator */
+.quick-edit-active {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+}
 </style>
 @endpush
 
@@ -193,6 +276,15 @@
                     <i class="ki-filled ki-weight"></i>
                     Weight
                 </button>
+                <!-- Quick Edit Toggle -->
+                <div class="action-btn" style="padding: 6px 12px; display: flex; align-items: center; gap: 8px; cursor: default;">
+                    <i class="ki-filled ki-pencil"></i>
+                    <span style="font-size: 12px;">Quick Edit</span>
+                    <label class="quick-edit-toggle" style="position: relative; display: inline-block; width: 36px; height: 20px; margin: 0;">
+                        <input type="checkbox" id="quickEditToggle" onchange="toggleQuickEditMode(this)" style="opacity: 0; width: 0; height: 0;">
+                        <span class="toggle-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.3); transition: 0.3s; border-radius: 20px;"></span>
+                    </label>
+                </div>
                 <a href="{{ route('products.create') }}" class="action-btn action-btn-primary">
                     <i class="ki-filled ki-plus"></i>
                     Create Product
@@ -226,53 +318,38 @@
                 </button>
             </div>
             
-            <div class="products-filters-row">
-                <select name="status" id="statusFilter" onchange="performSearch()">
-                    <option value="">All Status</option>
-                    <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                    <option value="draft" {{ request('status') == 'draft' ? 'selected' : '' }}>Draft</option>
-                    <option value="archived" {{ request('status') == 'archived' ? 'selected' : '' }}>Archived</option>
+            <div class="products-filters-row" style="flex-wrap: nowrap;">
+                <select name="is_lean" id="leanFilter" onchange="performSearch()" style="min-width: 110px;">
+                    <option value="">Lean/Non-Lean</option>
+                    <option value="1" {{ request('is_lean') === '1' ? 'selected' : '' }}>✓ Lean</option>
+                    <option value="0" {{ request('is_lean') === '0' ? 'selected' : '' }}>✗ Non-Lean</option>
                 </select>
 
-                <select name="product_type" id="categoryFilter" onchange="performSearch()">
-                    <option value="">All Categories</option>
+                <select name="product_type" id="categoryFilter" onchange="performSearch()" style="min-width: 110px;">
+                    <option value="">Categories</option>
                     @foreach($productTypes as $type)
                         <option value="{{ $type }}" {{ request('product_type') == $type ? 'selected' : '' }}>{{ $type }}</option>
                     @endforeach
                 </select>
 
-                <select name="vendor" id="vendorFilter" onchange="performSearch()">
-                    <option value="">All Vendors</option>
-                    @foreach($vendors as $vendor)
-                        <option value="{{ $vendor }}" {{ request('vendor') == $vendor ? 'selected' : '' }}>{{ $vendor }}</option>
-                    @endforeach
-                </select>
-
-                <select name="attribute_1" id="attr1Filter" onchange="performSearch()">
-                    <option value="">All {{ $attributeLabels['1'] ?? 'category level 1' }}</option>
+                <select name="attribute_1" id="attr1Filter" onchange="performSearch()" style="min-width: 110px;">
+                    <option value="">{{ $attributeLabels['1'] ?? 'Level 1' }}</option>
                     @foreach($attribute1s as $val)
                         <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>{{ $val }}</option>
                     @endforeach
                 </select>
 
-                <select name="attribute_2" id="attr2Filter" onchange="performSearch()">
-                    <option value="">All {{ $attributeLabels['2'] ?? 'Category Level 2' }}</option>
+                <select name="attribute_2" id="attr2Filter" onchange="performSearch()" style="min-width: 110px;">
+                    <option value="">{{ $attributeLabels['2'] ?? 'Level 2' }}</option>
                     @foreach($attribute2s as $val)
                         <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>{{ $val }}</option>
                     @endforeach
                 </select>
 
-                <select name="attribute_3" id="attr3Filter" style="display: none;">
-                    <option value="">All {{ $attributeLabels['3'] ?? 'Category Level 3' }}</option>
+                <select name="attribute_3" id="attr3Filter" onchange="performSearch()" style="min-width: 110px;">
+                    <option value="">{{ $attributeLabels['3'] ?? 'Level 3' }}</option>
                     @foreach($attribute3s as $val)
                         <option value="{{ $val }}" {{ request('attribute_3') == $val ? 'selected' : '' }}>{{ $val }}</option>
-                    @endforeach
-                </select>
-
-                <select name="sync_status" id="syncStatusFilter" onchange="performSearch()">
-                    <option value="">All Sources</option>
-                    @foreach($syncStatuses as $syncStatus)
-                        <option value="{{ $syncStatus }}" {{ request('sync_status') == $syncStatus ? 'selected' : '' }}>{{ ucfirst($syncStatus) }}</option>
                     @endforeach
                 </select>
             </div>
@@ -421,64 +498,68 @@
             <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;">Choose a filter and apply an increase or decrease to variant prices.</p>
         </div>
         <div style="padding: 20px; display: grid; gap: 12px;">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                <div>
-                    <label class="form-label">Category</label>
-                    <select id="bulkCategory" class="select select-sm bulk-filter-cascade">
-                        <option value="">Any</option>
-                        @foreach($productTypes as $type)
-                            <option value="{{ $type }}">{{ $type }}</option>
-                        @endforeach
-                    </select>
+            <!-- Filter Section (hidden when using selected products) -->
+            <div id="bulkPriceFiltersSection">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div>
+                        <label class="form-label">Category</label>
+                        <select id="bulkCategory" class="select select-sm bulk-filter-cascade">
+                            <option value="">Any</option>
+                            @foreach($productTypes as $type)
+                                <option value="{{ $type }}">{{ $type }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Vendor</label>
+                        <select id="bulkVendor" class="select select-sm bulk-filter-cascade">
+                            <option value="">Any</option>
+                            @foreach($vendors as $vendor)
+                                <option value="{{ $vendor }}">{{ $vendor }}</option>
+                            @endforeach
+                        </select>
+                    </div>
                 </div>
-                <div>
-                    <label class="form-label">Vendor</label>
-                    <select id="bulkVendor" class="select select-sm bulk-filter-cascade">
-                        <option value="">Any</option>
-                        @foreach($vendors as $vendor)
-                            <option value="{{ $vendor }}">{{ $vendor }}</option>
-                        @endforeach
-                    </select>
-                </div>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
-                <div>
-                    <label class="form-label">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
-                    <select id="bulkAttr1" class="select select-sm bulk-filter-cascade">
-                        <option value="">Any</option>
-                        @foreach($attribute1s as $val)
-                            <option value="{{ $val }}">{{ $val }}</option>
-                        @endforeach
-                    </select>
-                </div>
-                <div>
-                    <label class="form-label">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
-                    <select id="bulkAttr2" class="select select-sm bulk-filter-cascade">
-                        <option value="">Any</option>
-                        @foreach($attribute2s as $val)
-                            <option value="{{ $val }}">{{ $val }}</option>
-                        @endforeach
-                    </select>
-                </div>
-                <div>
-                    <label class="form-label">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
-                    <select id="bulkAttr3" class="select select-sm bulk-filter-cascade">
-                        <option value="">Any</option>
-                        @foreach($attribute3s as $val)
-                            <option value="{{ $val }}">{{ $val }}</option>
-                        @endforeach
-                    </select>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 12px;">
+                    <div>
+                        <label class="form-label">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
+                        <select id="bulkAttr1" class="select select-sm bulk-filter-cascade">
+                            <option value="">Any</option>
+                            @foreach($attribute1s as $val)
+                                <option value="{{ $val }}">{{ $val }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
+                        <select id="bulkAttr2" class="select select-sm bulk-filter-cascade">
+                            <option value="">Any</option>
+                            @foreach($attribute2s as $val)
+                                <option value="{{ $val }}">{{ $val }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
+                        <select id="bulkAttr3" class="select select-sm bulk-filter-cascade">
+                            <option value="">Any</option>
+                            @foreach($attribute3s as $val)
+                                <option value="{{ $val }}">{{ $val }}</option>
+                            @endforeach
+                        </select>
+                    </div>
                 </div>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                 <div>
                     <label class="form-label">Operation</label>
-                    <select id="bulkOperation" class="select select-sm">
+                    <select id="bulkOperation" class="select select-sm" onchange="toggleBulkPriceMode()">
                         <option value="increase">Increase</option>
                         <option value="decrease">Decrease</option>
+                        <option value="set">Set Exact Price</option>
                     </select>
                 </div>
-                <div>
+                <div id="bulkModeContainer">
                     <label class="form-label">Mode</label>
                     <select id="bulkMode" class="select select-sm">
                         <option value="percent">Percentage (%)</option>
@@ -487,8 +568,9 @@
                 </div>
             </div>
             <div>
-                <label class="form-label">Amount</label>
+                <label class="form-label" id="bulkAmountLabel">Amount</label>
                 <input type="number" id="bulkAmount" class="input input-sm" placeholder="e.g., 10 for 10% or 100 for PKR 100" step="0.01" min="0">
+                <p id="bulkAmountHint" style="font-size: 12px; color: #6b7280; margin-top: 4px;"></p>
             </div>
         </div>
         <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
@@ -838,6 +920,7 @@ window.productsData = @json($products->items());
 
 // Available columns configuration - optimized for better space usage
 const availableColumns = {
+    'checkbox': { label: '', width: 'w-[40px]', order: 0, fixed: true, cssClass: 'col-checkbox' },
     'image': { label: 'Image', width: 'w-[50px]', order: 1, cssClass: 'col-image' },
     'title': { label: 'Product', width: 'min-w-[180px]', order: 2, cssClass: 'col-name' },
     'skus': { label: 'SKUs', width: 'w-[130px]', order: 3, cssClass: 'col-sku' },
@@ -856,18 +939,26 @@ const availableColumns = {
     'actions': { label: 'Actions', width: 'w-[105px]', order: 16, fixed: true, cssClass: 'col-actions' }
 };
 
+// Track selected products
+let selectedProductIds = new Set();
+let selectAllMatchingMode = false; // When true, all products matching current filters are selected
+let totalMatchingProducts = {{ $products->total() }}; // Total products matching current search/filters
+
+// Quick edit mode for inline price editing
+let quickEditPricesEnabled = false;
+
 // Default visible columns
-const defaultColumns = ['image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
+const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
 let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || 'null');
 
 // Track migration version to only run migrations once for truly new columns
-const COLUMN_MIGRATION_VERSION = 2; // Increment this when adding new columns
+const COLUMN_MIGRATION_VERSION = 3; // Increment this when adding new columns (v3 = checkbox column)
 const savedMigrationVersion = parseInt(localStorage.getItem('products_column_migration_version') || '0');
 
 // If no saved preferences exist, use defaults
@@ -884,12 +975,17 @@ if (savedMigrationVersion < COLUMN_MIGRATION_VERSION) {
     // This ensures the column selector shows all available columns
     allColumns.forEach(col => {
         if (!columnOrder.includes(col)) {
-            // Insert new column before 'actions' (which is always last)
-            const actionsIndex = columnOrder.indexOf('actions');
-            if (actionsIndex !== -1) {
-                columnOrder.splice(actionsIndex, 0, col);
+            if (col === 'checkbox') {
+                // Checkbox column should always be first
+                columnOrder.unshift(col);
             } else {
-                columnOrder.push(col);
+                // Insert new column before 'actions' (which is always last)
+                const actionsIndex = columnOrder.indexOf('actions');
+                if (actionsIndex !== -1) {
+                    columnOrder.splice(actionsIndex, 0, col);
+                } else {
+                    columnOrder.push(col);
+                }
             }
             // Also make new columns visible by default (only for truly new columns)
             if (defaultColumns.includes(col) && !visibleColumns.includes(col)) {
@@ -898,10 +994,28 @@ if (savedMigrationVersion < COLUMN_MIGRATION_VERSION) {
         }
     });
     
+    // Ensure checkbox is always first in columnOrder (even if it was already there)
+    const checkboxIdx = columnOrder.indexOf('checkbox');
+    if (checkboxIdx > 0) {
+        columnOrder.splice(checkboxIdx, 1);
+        columnOrder.unshift('checkbox');
+    }
+    
     // Save migration version so we don't re-add columns user has removed
     localStorage.setItem('products_column_migration_version', COLUMN_MIGRATION_VERSION.toString());
     localStorage.setItem('products_visible_columns', JSON.stringify(visibleColumns));
     localStorage.setItem('products_column_order', JSON.stringify(columnOrder));
+}
+
+// Always ensure checkbox column is visible and first (safeguard)
+if (!visibleColumns.includes('checkbox')) {
+    visibleColumns.unshift('checkbox');
+}
+if (!columnOrder.includes('checkbox')) {
+    columnOrder.unshift('checkbox');
+} else if (columnOrder.indexOf('checkbox') > 0) {
+    columnOrder.splice(columnOrder.indexOf('checkbox'), 1);
+    columnOrder.unshift('checkbox');
 }
 
 // Initialize table on page load
@@ -915,10 +1029,8 @@ let searchTimeout = null;
 
 function initializeRealTimeSearch() {
     const searchInput = document.getElementById('productSearchInput');
-    const statusFilter = document.getElementById('statusFilter');
-    const syncStatusFilter = document.getElementById('syncStatusFilter');
+    const leanFilter = document.getElementById('leanFilter');
     const categoryFilter = document.getElementById('categoryFilter');
-    const vendorFilter = document.getElementById('vendorFilter');
     const attr1Filter = document.getElementById('attr1Filter');
     const attr2Filter = document.getElementById('attr2Filter');
     const attr3Filter = document.getElementById('attr3Filter');
@@ -978,10 +1090,8 @@ function initializePaginationHandler() {
 
 function performSearch() {
     const searchValue = document.getElementById('productSearchInput').value;
-    const statusValue = document.getElementById('statusFilter').value;
-    const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    const leanValue = document.getElementById('leanFilter').value;
     const categoryValue = document.getElementById('categoryFilter').value;
-    const vendorValue = document.getElementById('vendorFilter').value;
     const attr1Value = document.getElementById('attr1Filter').value;
     const attr2Value = document.getElementById('attr2Filter').value;
     const attr3Value = document.getElementById('attr3Filter').value;
@@ -989,10 +1099,8 @@ function performSearch() {
     // Build query parameters
     const params = new URLSearchParams();
     if (searchValue.trim()) params.set('search', searchValue.trim());
-    if (statusValue) params.set('status', statusValue);
-    if (syncStatusValue) params.set('sync_status', syncStatusValue);
+    if (leanValue !== '') params.set('is_lean', leanValue);
     if (categoryValue) params.set('product_type', categoryValue);
-    if (vendorValue) params.set('vendor', vendorValue);
     if (attr1Value) params.set('attribute_1', attr1Value);
     if (attr2Value) params.set('attribute_2', attr2Value);
     if (attr3Value) params.set('attribute_3', attr3Value);
@@ -1012,6 +1120,14 @@ function performSearch() {
         if (data.success) {
             // Update the products data
             window.productsData = data.products;
+            
+            // Update total matching products count for "select all" feature
+            if (data.pagination && data.pagination.total !== undefined) {
+                totalMatchingProducts = data.pagination.total;
+            }
+            
+            // Clear selection when search/filter changes (results are different)
+            clearProductSelection();
             
             // Re-render the table with new data
             renderTable();
@@ -1090,19 +1206,15 @@ function getCurrentFilterParams() {
     const params = new URLSearchParams();
     
     const searchValue = document.getElementById('productSearchInput')?.value?.trim();
-    const statusValue = document.getElementById('statusFilter')?.value;
-    const syncStatusValue = document.getElementById('syncStatusFilter')?.value;
+    const leanValue = document.getElementById('leanFilter')?.value;
     const categoryValue = document.getElementById('categoryFilter')?.value;
-    const vendorValue = document.getElementById('vendorFilter')?.value;
     const attr1Value = document.getElementById('attr1Filter')?.value;
     const attr2Value = document.getElementById('attr2Filter')?.value;
     const attr3Value = document.getElementById('attr3Filter')?.value;
     
     if (searchValue) params.set('search', searchValue);
-    if (statusValue) params.set('status', statusValue);
-    if (syncStatusValue) params.set('sync_status', syncStatusValue);
+    if (leanValue !== '' && leanValue !== undefined && leanValue !== null) params.set('is_lean', leanValue);
     if (categoryValue) params.set('product_type', categoryValue);
-    if (vendorValue) params.set('vendor', vendorValue);
     if (attr1Value) params.set('attribute_1', attr1Value);
     if (attr2Value) params.set('attribute_2', attr2Value);
     if (attr3Value) params.set('attribute_3', attr3Value);
@@ -1112,16 +1224,14 @@ function getCurrentFilterParams() {
 
 function updateClearButton() {
     const searchValue = document.getElementById('productSearchInput').value;
-    const statusValue = document.getElementById('statusFilter').value;
-    const syncStatusValue = document.getElementById('syncStatusFilter').value;
+    const leanValue = document.getElementById('leanFilter').value;
     const categoryValue = document.getElementById('categoryFilter').value;
-    const vendorValue = document.getElementById('vendorFilter').value;
     const attr1Value = document.getElementById('attr1Filter').value;
     const attr2Value = document.getElementById('attr2Filter').value;
     const attr3Value = document.getElementById('attr3Filter').value;
     
     const clearBtn = document.getElementById('clearFiltersBtn');
-    const hasFilters = searchValue.trim() || statusValue || syncStatusValue || categoryValue || vendorValue || attr1Value || attr2Value || attr3Value;
+    const hasFilters = searchValue.trim() || leanValue !== '' || categoryValue || attr1Value || attr2Value || attr3Value;
     
     if (hasFilters && !clearBtn) {
         // Add clear button
@@ -1162,7 +1272,14 @@ function renderTableHeaders() {
             const column = availableColumns[columnKey];
             const th = document.createElement('th');
             th.className = `${column.cssClass} ${column.width}`;
-            th.innerHTML = `<span class="hdr">${column.label}</span>`;
+            
+            if (columnKey === 'checkbox') {
+                // Add select all checkbox
+                th.innerHTML = `<input type="checkbox" id="selectAllProducts" onchange="toggleSelectAll(this)" 
+                    style="width: 16px; height: 16px; cursor: pointer; accent-color: #667eea;">`;
+            } else {
+                th.innerHTML = `<span class="hdr">${column.label}</span>`;
+            }
             headerRow.appendChild(th);
         }
     });
@@ -1180,10 +1297,15 @@ function renderTableBody() {
         row.className = 'product-row hover:bg-blue-50 transition-colors duration-150 cursor-pointer group';
         row.dataset.productId = product.id;
         
+        // Highlight row if selected
+        if (selectedProductIds.has(product.id)) {
+            row.classList.add('bg-indigo-50');
+        }
+        
         // Add click handler to open product view modal
         row.addEventListener('click', function(e) {
-            // Don't trigger if clicking on action buttons
-            if (!e.target.closest('.col-actions')) {
+            // Don't trigger if clicking on action buttons or checkboxes
+            if (!e.target.closest('.col-actions') && !e.target.closest('.col-checkbox')) {
                 viewProduct(product.id);
             }
         });
@@ -1200,10 +1322,19 @@ function renderTableBody() {
         
         tbody.appendChild(row);
     });
+    
+    // Update select all checkbox state
+    updateSelectAllState();
 }
 
 function getCellContent(columnKey, product) {
     switch(columnKey) {
+        case 'checkbox':
+            const isChecked = selectedProductIds.has(product.id);
+            return `<input type="checkbox" class="product-checkbox" data-product-id="${product.id}" 
+                ${isChecked ? 'checked' : ''} onchange="toggleProductSelection(${product.id}, this)"
+                style="width: 16px; height: 16px; cursor: pointer; accent-color: #667eea;">`;
+                
         case 'image':
             if (product.featured_image) {
                 return `<img src="${product.featured_image}" alt="${product.title}" class="thumb">`;
@@ -1287,13 +1418,64 @@ function getCellContent(columnKey, product) {
                 '<span class="text-gray-400 text-sm">-</span>';
             
         case 'price_range':
-            if (product.price_min && product.price_max) {
-                const priceRange = product.price_min === product.price_max ? 
-                    `PKR ${parseFloat(product.price_min).toFixed(2)}` : 
-                    `PKR ${parseFloat(product.price_min).toFixed(2)} - ${parseFloat(product.price_max).toFixed(2)}`;
-                return `<span class="price">${priceRange}</span>`;
+            if (quickEditPricesEnabled && product.variants && product.variants.length > 0) {
+                // Quick edit mode - show editable inputs
+                if (product.variants.length === 1) {
+                    // Single variant - show editable input
+                    const variant = product.variants[0];
+                    const price = parseFloat(variant.price || 0).toFixed(2);
+                    return `<div class="quick-edit-price-wrapper" style="display: flex; align-items: center; gap: 4px;">
+                        <span style="color: #6b7280; font-size: 11px;">PKR</span>
+                        <input type="number" 
+                            class="quick-edit-price-input" 
+                            value="${price}" 
+                            data-variant-id="${variant.id}"
+                            data-product-id="${product.id}"
+                            data-original-price="${price}"
+                            onchange="saveQuickPrice(this)"
+                            onkeydown="handleQuickPriceKeydown(event, this)"
+                            onclick="event.stopPropagation()"
+                            step="0.01" 
+                            min="0">
+                    </div>`;
+                } else {
+                    // Multiple variants - show mini editor
+                    let html = '<div class="quick-edit-multi-variant" style="font-size: 12px;">';
+                    product.variants.slice(0, 3).forEach((variant, idx) => {
+                        const price = parseFloat(variant.price || 0).toFixed(2);
+                        const variantName = variant.title && variant.title !== product.title ? variant.title : `V${idx + 1}`;
+                        html += `<div style="display: flex; align-items: center; gap: 4px; margin-bottom: 2px;">
+                            <span style="color: #6b7280; font-size: 10px; width: 30px; overflow: hidden; text-overflow: ellipsis;" title="${variantName}">${variantName}:</span>
+                            <input type="number" 
+                                class="quick-edit-price-input" 
+                                style="width: 70px; font-size: 11px; padding: 2px 4px;"
+                                value="${price}" 
+                                data-variant-id="${variant.id}"
+                                data-product-id="${product.id}"
+                                data-original-price="${price}"
+                                onchange="saveQuickPrice(this)"
+                                onkeydown="handleQuickPriceKeydown(event, this)"
+                                onclick="event.stopPropagation()"
+                                step="0.01" 
+                                min="0">
+                        </div>`;
+                    });
+                    if (product.variants.length > 3) {
+                        html += `<div style="color: #9ca3af; font-size: 10px;">+${product.variants.length - 3} more</div>`;
+                    }
+                    html += '</div>';
+                    return html;
+                }
+            } else {
+                // Normal display mode
+                if (product.price_min && product.price_max) {
+                    const priceRange = product.price_min === product.price_max ? 
+                        `PKR ${parseFloat(product.price_min).toFixed(2)}` : 
+                        `PKR ${parseFloat(product.price_min).toFixed(2)} - ${parseFloat(product.price_max).toFixed(2)}`;
+                    return `<span class="price">${priceRange}</span>`;
+                }
+                return '<span class="text-gray-400 text-sm">No price</span>';
             }
-            return '<span class="text-gray-400 text-sm">No price</span>';
             
         case 'variants_count':
             const variantCount = product.variants ? product.variants.length : 0;
@@ -1378,6 +1560,406 @@ function getTimeAgo(date) {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// ========================================
+// PRODUCT SELECTION FUNCTIONS
+// ========================================
+
+function toggleProductSelection(productId, checkbox) {
+    if (checkbox.checked) {
+        selectedProductIds.add(productId);
+    } else {
+        selectedProductIds.delete(productId);
+    }
+    
+    // Update row highlight
+    const row = checkbox.closest('tr');
+    if (row) {
+        if (checkbox.checked) {
+            row.classList.add('bg-indigo-50');
+        } else {
+            row.classList.remove('bg-indigo-50');
+        }
+    }
+    
+    updateSelectAllState();
+    updateSelectionBar();
+}
+
+function toggleSelectAll(selectAllCheckbox) {
+    const checkboxes = document.querySelectorAll('.product-checkbox');
+    
+    if (selectAllCheckbox.checked) {
+        // Select all visible products on this page
+        checkboxes.forEach(cb => {
+            const productId = parseInt(cb.dataset.productId);
+            cb.checked = true;
+            selectedProductIds.add(productId);
+            cb.closest('tr')?.classList.add('bg-indigo-50');
+        });
+        
+        // If there are more products across pages, show option to select all
+        selectAllMatchingMode = false;
+    } else {
+        // Deselect all - also exit "select all matching" mode
+        selectAllMatchingMode = false;
+        checkboxes.forEach(cb => {
+            const productId = parseInt(cb.dataset.productId);
+            cb.checked = false;
+            selectedProductIds.delete(productId);
+            cb.closest('tr')?.classList.remove('bg-indigo-50');
+        });
+    }
+    
+    updateSelectionBar();
+}
+
+function selectAllMatchingProducts() {
+    // Enable "select all matching" mode
+    selectAllMatchingMode = true;
+    
+    // Also select all visible checkboxes for visual feedback
+    const checkboxes = document.querySelectorAll('.product-checkbox');
+    checkboxes.forEach(cb => {
+        const productId = parseInt(cb.dataset.productId);
+        cb.checked = true;
+        selectedProductIds.add(productId);
+        cb.closest('tr')?.classList.add('bg-indigo-50');
+    });
+    
+    // Update header checkbox
+    const selectAllCheckbox = document.getElementById('selectAllProducts');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+    }
+    
+    updateSelectionBar();
+}
+
+function exitSelectAllMatchingMode() {
+    selectAllMatchingMode = false;
+    updateSelectionBar();
+}
+
+function updateSelectAllState() {
+    const selectAllCheckbox = document.getElementById('selectAllProducts');
+    if (!selectAllCheckbox) return;
+    
+    const checkboxes = document.querySelectorAll('.product-checkbox');
+    const checkedCount = document.querySelectorAll('.product-checkbox:checked').length;
+    
+    if (checkedCount === 0) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    } else if (checkedCount === checkboxes.length) {
+        selectAllCheckbox.checked = true;
+        selectAllCheckbox.indeterminate = false;
+    } else {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = true;
+    }
+}
+
+function updateSelectionBar() {
+    let selectionBar = document.getElementById('productSelectionBar');
+    
+    const hasSelection = selectedProductIds.size > 0 || selectAllMatchingMode;
+    
+    if (hasSelection) {
+        if (!selectionBar) {
+            // Create selection bar
+            selectionBar = document.createElement('div');
+            selectionBar.id = 'productSelectionBar';
+            selectionBar.style.cssText = `
+                position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 12px 24px; border-radius: 12px; z-index: 1000;
+                display: flex; align-items: center; gap: 16px;
+                box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+                animation: slideUp 0.3s ease-out;
+            `;
+            document.body.appendChild(selectionBar);
+            
+            // Add animation keyframes if not exists
+            if (!document.getElementById('selectionBarStyles')) {
+                const style = document.createElement('style');
+                style.id = 'selectionBarStyles';
+                style.textContent = `
+                    @keyframes slideUp {
+                        from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+                        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+        
+        // Determine selection count and mode
+        const visibleSelected = selectedProductIds.size;
+        const showSelectAllOption = !selectAllMatchingMode && visibleSelected > 0 && totalMatchingProducts > visibleSelected;
+        
+        let selectionText = '';
+        let selectAllLink = '';
+        
+        if (selectAllMatchingMode) {
+            selectionText = `<strong>All ${totalMatchingProducts}</strong> matching products selected`;
+            selectAllLink = `<a href="#" onclick="exitSelectAllMatchingMode(); return false;" style="color: rgba(255,255,255,0.8); font-size: 12px; margin-left: 4px;">(select only this page)</a>`;
+        } else {
+            selectionText = `<strong>${visibleSelected}</strong> product${visibleSelected > 1 ? 's' : ''} selected`;
+            if (showSelectAllOption) {
+                selectAllLink = `<a href="#" onclick="selectAllMatchingProducts(); return false;" style="color: rgba(255,255,255,0.9); font-size: 12px; margin-left: 8px; text-decoration: underline;">Select all ${totalMatchingProducts} matching</a>`;
+            }
+        }
+        
+        selectionBar.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px; color: white; flex-wrap: wrap;">
+                <i class="ki-filled ki-check-circle text-lg"></i>
+                <span style="font-weight: 500;">${selectionText}</span>
+                ${selectAllLink}
+            </div>
+            <div style="width: 1px; height: 24px; background: rgba(255,255,255,0.3);"></div>
+            <button onclick="openBulkPriceModalForSelected()" style="
+                display: flex; align-items: center; gap: 6px;
+                padding: 8px 16px; background: white; color: #667eea;
+                border: none; border-radius: 8px; font-weight: 600;
+                font-size: 13px; cursor: pointer; transition: all 0.2s;
+            " onmouseover="this.style.background='#f0f0ff'" onmouseout="this.style.background='white'">
+                <i class="ki-filled ki-price-tag"></i>
+                Bulk Update Prices
+            </button>
+            <button onclick="clearProductSelection()" style="
+                display: flex; align-items: center; justify-content: center;
+                width: 32px; height: 32px; background: rgba(255,255,255,0.2);
+                border: none; border-radius: 8px; color: white; cursor: pointer;
+                transition: all 0.2s;
+            " onmouseover="this.style.background='rgba(255,255,255,0.3)'" onmouseout="this.style.background='rgba(255,255,255,0.2)'" title="Clear Selection">
+                <i class="ki-filled ki-cross"></i>
+            </button>
+        `;
+    } else if (selectionBar) {
+        selectionBar.remove();
+    }
+}
+
+function clearProductSelection() {
+    selectedProductIds.clear();
+    selectAllMatchingMode = false;
+    
+    // Uncheck all checkboxes
+    document.querySelectorAll('.product-checkbox').forEach(cb => {
+        cb.checked = false;
+        cb.closest('tr')?.classList.remove('bg-indigo-50');
+    });
+    
+    // Update select all checkbox
+    const selectAllCheckbox = document.getElementById('selectAllProducts');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    }
+    
+    updateSelectionBar();
+}
+
+function openBulkPriceModalForSelected() {
+    if (selectedProductIds.size === 0 && !selectAllMatchingMode) {
+        alert('Please select at least one product.');
+        return;
+    }
+    
+    // Determine selection count
+    const selectionCount = selectAllMatchingMode ? totalMatchingProducts : selectedProductIds.size;
+    
+    // Store selection mode and data
+    if (selectAllMatchingMode) {
+        // In "select all matching" mode, we use current page filters instead of product IDs
+        window.bulkPriceSelectedProductIds = null;
+        window.bulkPriceSelectAllMatching = true;
+        window.bulkPriceCurrentFilters = getCurrentFilterParams();
+    } else {
+        // Individual selection mode
+        window.bulkPriceSelectedProductIds = Array.from(selectedProductIds);
+        window.bulkPriceSelectAllMatching = false;
+        window.bulkPriceCurrentFilters = null;
+    }
+    
+    // Show the modal with selection info
+    const modal = document.getElementById('bulkAdjustPricesModal');
+    modal.style.display = 'block';
+    
+    // Update modal title to show selection count
+    const modalTitle = modal.querySelector('h3');
+    const countLabel = selectAllMatchingMode ? `All ${selectionCount} matching` : selectionCount;
+    modalTitle.innerHTML = `Bulk Adjust Prices <span style="font-size: 14px; font-weight: 500; color: #6366f1; margin-left: 8px;">(${countLabel} products)</span>`;
+    
+    // Hide the filter section since we're using selected products
+    const filterSection = document.getElementById('bulkPriceFiltersSection');
+    if (filterSection) {
+        filterSection.style.display = 'none';
+    }
+    
+    // Show "using selected products" info
+    let selectionInfo = document.getElementById('bulkPriceSelectionInfo');
+    if (!selectionInfo) {
+        selectionInfo = document.createElement('div');
+        selectionInfo.id = 'bulkPriceSelectionInfo';
+        selectionInfo.style.cssText = 'margin-bottom: 16px; padding: 12px 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;';
+        const modalContent = modal.querySelector('div[style*="padding: 20px"]');
+        modalContent.insertBefore(selectionInfo, modalContent.firstChild);
+    }
+    
+    const selectionLabel = selectAllMatchingMode 
+        ? `<strong>All ${selectionCount} products</strong> matching your current search/filters will be updated.`
+        : `<strong>${selectionCount} products</strong> selected from the table will be updated.`;
+    
+    selectionInfo.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <i class="ki-filled ki-information-2 text-blue-600"></i>
+            <span style="color: #0369a1; font-size: 13px;">
+                ${selectionLabel}
+                <a href="#" onclick="switchToFilterMode(); return false;" style="color: #667eea; text-decoration: underline; margin-left: 4px;">Use custom filters instead</a>
+            </span>
+        </div>
+    `;
+    selectionInfo.style.display = 'block';
+    
+    // Initialize mode toggle state
+    toggleBulkPriceMode();
+}
+
+// ========================================
+// QUICK EDIT PRICE FUNCTIONS
+// ========================================
+
+function toggleQuickEditMode(checkbox) {
+    quickEditPricesEnabled = checkbox.checked;
+    
+    // Update header bar styling
+    const headerBar = document.querySelector('.products-header-bar');
+    if (quickEditPricesEnabled) {
+        headerBar.classList.add('quick-edit-active');
+        showQuickEditNotification('Quick Edit mode enabled - click on prices to edit them directly');
+    } else {
+        headerBar.classList.remove('quick-edit-active');
+    }
+    
+    // Re-render table to show/hide edit inputs
+    renderTable();
+}
+
+function showQuickEditNotification(message) {
+    // Create temporary notification
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed; top: 80px; right: 24px; z-index: 1000;
+        background: #10b981; color: white; padding: 12px 20px;
+        border-radius: 8px; font-size: 13px; font-weight: 500;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+        animation: slideIn 0.3s ease-out;
+    `;
+    notification.innerHTML = `<i class="ki-filled ki-check-circle" style="margin-right: 8px;"></i>${message}`;
+    document.body.appendChild(notification);
+    
+    // Remove after 3 seconds
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transition = 'opacity 0.3s';
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
+}
+
+function handleQuickPriceKeydown(event, input) {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        input.blur(); // Trigger save via onchange
+    } else if (event.key === 'Escape') {
+        // Revert to original value
+        input.value = input.dataset.originalPrice;
+        input.blur();
+    }
+}
+
+function saveQuickPrice(input) {
+    const variantId = input.dataset.variantId;
+    const productId = input.dataset.productId;
+    const originalPrice = parseFloat(input.dataset.originalPrice);
+    const newPrice = parseFloat(input.value);
+    
+    // Skip if no change
+    if (newPrice === originalPrice) {
+        return;
+    }
+    
+    // Validate
+    if (isNaN(newPrice) || newPrice < 0) {
+        input.value = originalPrice;
+        input.classList.add('error');
+        setTimeout(() => input.classList.remove('error'), 1500);
+        return;
+    }
+    
+    // Show saving state
+    input.classList.add('saving');
+    input.disabled = true;
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                      document.querySelector('input[name="_token"]')?.value || '';
+    
+    fetch('/products/quick-update-price', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify({
+            variant_id: variantId,
+            product_id: productId,
+            price: newPrice
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        input.disabled = false;
+        input.classList.remove('saving');
+        
+        if (data.success) {
+            // Show success state
+            input.classList.add('saved');
+            input.dataset.originalPrice = newPrice.toFixed(2);
+            
+            // Update local product data
+            const product = window.productsData.find(p => p.id == productId);
+            if (product) {
+                const variant = product.variants?.find(v => v.id == variantId);
+                if (variant) {
+                    variant.price = newPrice;
+                }
+                // Update price_min and price_max if returned
+                if (data.price_min !== undefined) product.price_min = data.price_min;
+                if (data.price_max !== undefined) product.price_max = data.price_max;
+            }
+            
+            setTimeout(() => input.classList.remove('saved'), 1500);
+        } else {
+            // Show error state and revert
+            input.classList.add('error');
+            input.value = originalPrice;
+            alert('Failed to update price: ' + (data.message || 'Unknown error'));
+            setTimeout(() => input.classList.remove('error'), 1500);
+        }
+    })
+    .catch(err => {
+        console.error('Quick price update error:', err);
+        input.disabled = false;
+        input.classList.remove('saving');
+        input.classList.add('error');
+        input.value = originalPrice;
+        setTimeout(() => input.classList.remove('error'), 1500);
+    });
+}
+
 function openColumnSettings() {
     const content = document.getElementById('columnSettingsContent');
     content.innerHTML = '';
@@ -1388,6 +1970,9 @@ function openColumnSettings() {
     list.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
     
     columnOrder.forEach(columnKey => {
+        // Skip checkbox column - it's always visible and first
+        if (columnKey === 'checkbox') return;
+        
         if (availableColumns[columnKey]) {
             const column = availableColumns[columnKey];
             const item = document.createElement('div');
@@ -1426,10 +2011,79 @@ function openColumnSettings() {
 }
 
 function openBulkAdjustPricesModal() {
-    document.getElementById('bulkAdjustPricesModal').style.display = 'block';
+    // Clear any selected product IDs (use filters mode)
+    window.bulkPriceSelectedProductIds = null;
+    
+    const modal = document.getElementById('bulkAdjustPricesModal');
+    modal.style.display = 'block';
+    
+    // Reset modal title
+    const modalTitle = modal.querySelector('h3');
+    modalTitle.innerHTML = 'Bulk Adjust Prices';
+    
+    // Show filter section
+    const filterSection = document.getElementById('bulkPriceFiltersSection');
+    if (filterSection) {
+        filterSection.style.display = 'block';
+    }
+    
+    // Hide selection info if exists
+    const selectionInfo = document.getElementById('bulkPriceSelectionInfo');
+    if (selectionInfo) {
+        selectionInfo.style.display = 'none';
+    }
     
     // Setup cascading filter behavior for bulk modal
     setupBulkModalCascadingFilters();
+    
+    // Initialize mode toggle state
+    toggleBulkPriceMode();
+}
+
+function switchToFilterMode() {
+    window.bulkPriceSelectedProductIds = null;
+    
+    const modal = document.getElementById('bulkAdjustPricesModal');
+    
+    // Reset modal title
+    const modalTitle = modal.querySelector('h3');
+    modalTitle.innerHTML = 'Bulk Adjust Prices';
+    
+    // Show filter section
+    const filterSection = document.getElementById('bulkPriceFiltersSection');
+    if (filterSection) {
+        filterSection.style.display = 'block';
+    }
+    
+    // Hide selection info
+    const selectionInfo = document.getElementById('bulkPriceSelectionInfo');
+    if (selectionInfo) {
+        selectionInfo.style.display = 'none';
+    }
+}
+
+function toggleBulkPriceMode() {
+    const operation = document.getElementById('bulkOperation').value;
+    const modeContainer = document.getElementById('bulkModeContainer');
+    const amountLabel = document.getElementById('bulkAmountLabel');
+    const amountInput = document.getElementById('bulkAmount');
+    const amountHint = document.getElementById('bulkAmountHint');
+    
+    if (operation === 'set') {
+        // Hide mode dropdown for "Set Exact Price" - mode is always fixed
+        modeContainer.style.display = 'none';
+        amountLabel.textContent = 'New Price (PKR)';
+        amountInput.placeholder = 'e.g., 1500 to set all prices to PKR 1500';
+        amountHint.textContent = 'All matching variants will be set to this exact price.';
+        amountHint.style.display = 'block';
+    } else {
+        // Show mode dropdown for increase/decrease
+        modeContainer.style.display = 'block';
+        amountLabel.textContent = 'Amount';
+        amountInput.placeholder = 'e.g., 10 for 10% or 100 for PKR 100';
+        amountHint.textContent = '';
+        amountHint.style.display = 'none';
+    }
 }
 
 function setupBulkModalCascadingFilters() {
@@ -1491,18 +2145,47 @@ function updateBulkFilterDropdown(selectElement, options, selectedValue) {
 }
 
 function submitBulkAdjustPrices() {
+    const operation = document.getElementById('bulkOperation').value;
+    const amount = parseFloat(document.getElementById('bulkAmount').value || '0');
+    
     const payload = {
-        mode: document.getElementById('bulkMode').value,
-        operation: document.getElementById('bulkOperation').value,
-        amount: parseFloat(document.getElementById('bulkAmount').value || '0'),
+        mode: operation === 'set' ? 'fixed' : document.getElementById('bulkMode').value,
+        operation: operation,
+        amount: amount,
         product_type: document.getElementById('bulkCategory').value || '',
         vendor: document.getElementById('bulkVendor').value || '',
         attribute_1: document.getElementById('bulkAttr1').value || '',
         attribute_2: document.getElementById('bulkAttr2').value || '',
         attribute_3: document.getElementById('bulkAttr3').value || ''
     };
+    
+    // Determine selection mode
+    if (window.bulkPriceSelectAllMatching && window.bulkPriceCurrentFilters) {
+        // "Select all matching" mode - use current page filters
+        const filters = window.bulkPriceCurrentFilters;
+        payload.product_type = filters.get('product_type') || '';
+        payload.vendor = filters.get('vendor') || '';
+        payload.attribute_1 = filters.get('attribute_1') || '';
+        payload.attribute_2 = filters.get('attribute_2') || '';
+        payload.attribute_3 = filters.get('attribute_3') || '';
+        // Also pass search term if present
+        if (filters.get('search')) {
+            payload.search = filters.get('search');
+        }
+        if (filters.get('status')) {
+            payload.status = filters.get('status');
+        }
+    } else if (window.bulkPriceSelectedProductIds && window.bulkPriceSelectedProductIds.length > 0) {
+        // Individual selection mode - use product IDs
+        payload.product_ids = window.bulkPriceSelectedProductIds;
+    }
 
-    if (!payload.amount || payload.amount <= 0) {
+    if (operation === 'set') {
+        if (amount < 0) {
+            alert('Please enter a valid price (cannot be negative).');
+            return;
+        }
+    } else if (!payload.amount || payload.amount <= 0) {
         alert('Please enter a valid amount.');
         return;
     }
@@ -1525,6 +2208,12 @@ function submitBulkAdjustPrices() {
         if (data.success) {
             closeModal('bulkAdjustPricesModal');
             
+            // Clear product selection if used
+            clearProductSelection();
+            window.bulkPriceSelectedProductIds = null;
+            window.bulkPriceSelectAllMatching = false;
+            window.bulkPriceCurrentFilters = null;
+            
             // Show price change summary
             showPriceChangeSummary(data);
             
@@ -1541,18 +2230,47 @@ function submitBulkAdjustPrices() {
 }
 
 function previewBulkAdjustPrices() {
+    const operation = document.getElementById('bulkOperation').value;
+    const amount = parseFloat(document.getElementById('bulkAmount').value || '0');
+    
     const payload = {
-        mode: document.getElementById('bulkMode').value,
-        operation: document.getElementById('bulkOperation').value,
-        amount: parseFloat(document.getElementById('bulkAmount').value || '0'),
+        mode: operation === 'set' ? 'fixed' : document.getElementById('bulkMode').value,
+        operation: operation,
+        amount: amount,
         product_type: document.getElementById('bulkCategory').value || '',
         vendor: document.getElementById('bulkVendor').value || '',
         attribute_1: document.getElementById('bulkAttr1').value || '',
         attribute_2: document.getElementById('bulkAttr2').value || '',
         attribute_3: document.getElementById('bulkAttr3').value || ''
     };
+    
+    // Determine selection mode
+    if (window.bulkPriceSelectAllMatching && window.bulkPriceCurrentFilters) {
+        // "Select all matching" mode - use current page filters
+        const filters = window.bulkPriceCurrentFilters;
+        payload.product_type = filters.get('product_type') || '';
+        payload.vendor = filters.get('vendor') || '';
+        payload.attribute_1 = filters.get('attribute_1') || '';
+        payload.attribute_2 = filters.get('attribute_2') || '';
+        payload.attribute_3 = filters.get('attribute_3') || '';
+        // Also pass search term if present
+        if (filters.get('search')) {
+            payload.search = filters.get('search');
+        }
+        if (filters.get('status')) {
+            payload.status = filters.get('status');
+        }
+    } else if (window.bulkPriceSelectedProductIds && window.bulkPriceSelectedProductIds.length > 0) {
+        // Individual selection mode - use product IDs
+        payload.product_ids = window.bulkPriceSelectedProductIds;
+    }
 
-    if (!payload.amount || payload.amount <= 0) {
+    if (operation === 'set') {
+        if (amount < 0) {
+            alert('Please enter a valid price (cannot be negative).');
+            return;
+        }
+    } else if (!payload.amount || payload.amount <= 0) {
         alert('Please enter a valid amount.');
         return;
     }
@@ -1626,6 +2344,12 @@ function applyFromPreview() {
         if (data.success) {
             closeModal('priceChangePreviewModal');
             closeModal('bulkAdjustPricesModal');
+            
+            // Clear product selection
+            clearProductSelection();
+            window.bulkPriceSelectedProductIds = null;
+            window.bulkPriceSelectAllMatching = false;
+            window.bulkPriceCurrentFilters = null;
             
             // Show success summary
             showPriceChangeSummary(data);
@@ -1828,6 +2552,9 @@ function submitBulkWeightFactor() {
 }
 
 function toggleColumn(columnKey) {
+    // Checkbox column cannot be toggled off
+    if (columnKey === 'checkbox') return;
+    
     if (visibleColumns.includes(columnKey)) {
         visibleColumns = visibleColumns.filter(col => col !== columnKey);
     } else {

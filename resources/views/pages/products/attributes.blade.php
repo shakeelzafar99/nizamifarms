@@ -416,7 +416,11 @@
         <div class="info-banner">
             <div class="info-banner-icon">💡</div>
             <div class="info-banner-text">
-                <strong>How it works:</strong> Create rules below to automatically assign categories to your products based on their names. For example, products with "chicken" in the name will be categorized as "Chicken". Rules are applied automatically when you add new products.
+                <strong>How it works:</strong> Create rules below to automatically assign categories to your products based on their names. For example, products with "chicken" in the name will be categorized as "Chicken". 
+                <br><br>
+                <strong>🔒 Manual entries are protected:</strong> Rules only apply to products WITHOUT an existing category. If you've manually set a product's category, it will NOT be overwritten.
+                <br>
+                <strong>📊 Priority affects Open Order Quantities:</strong> Drag categories to reorder them - this priority determines the display order in Open Order Quantities.
             </div>
         </div>
 
@@ -496,11 +500,14 @@
                 </div>
 
                 <!-- Apply Button - Moved Above Table -->
-                <div style="margin-top: 20px; display: flex; justify-content: center;">
+                <div style="margin-top: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
                     <button class="btn-apply" type="button" onclick="applySavedRulesUI()">
                         <i class="ki-filled ki-check-circle"></i>
-                        Apply Rules to All Products
+                        Apply Rules to Uncategorized Products
                     </button>
+                    <span style="font-size: 11px; color: #6b7280;">
+                        🔒 Products with existing categories will NOT be changed
+                    </span>
                 </div>
 
                 <!-- Categories Table (Consolidated View) -->
@@ -1444,7 +1451,13 @@ async function applySavedRulesUI(){
     const res = await fetch('{{ route('products.attributes.apply_saved') }}', { method: 'POST', headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'Accept': 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ attribute_key }) });
     const data = await res.json();
     if (data.success) {
-        alert('Updated ' + data.updated + ' products.');
+        // Show detailed message about what happened
+        let message = '✅ Rules Applied Successfully!\n\n';
+        message += `📝 Newly categorized: ${data.updated} products\n`;
+        message += `🔒 Preserved (existing): ${data.skipped || 0} products\n\n`;
+        message += '💡 Note: Products with existing categories are NOT overwritten.\n';
+        message += 'To change a product\'s category, edit it directly on the Products page.';
+        alert(message);
         // Refresh coverage after applying rules
         refreshCoverageSummary();
     }

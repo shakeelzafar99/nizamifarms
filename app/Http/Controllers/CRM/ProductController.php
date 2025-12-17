@@ -715,18 +715,28 @@ class ProductController extends Controller
         usort($rset, function($a,$b){ return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0); });
         $column = 'attribute_' . $attributeKey;
         $updated = 0;
+        $skipped = 0;
         
-        // Track which product IDs have been categorized by rules (to respect priority)
-        $categorizedIds = [];
+        // Get all product IDs that ALREADY have a category assigned (manual entries)
+        // These will be PRESERVED and NOT overwritten
+        $alreadyCategorizedIds = \DB::table('t_crm_prod_product')
+            ->whereNotNull($column)
+            ->where($column, '!=', '')
+            ->pluck('id')
+            ->toArray();
+        
+        // Track which product IDs have been categorized by rules in THIS run (to respect priority)
+        $newlyCategorizedIds = [];
         
         // Apply in priority order - highest priority first
         // Higher priority rules will take precedence by categorizing products first
+        // BUT only for products that don't already have a category
         foreach ($rset as $rule) {
             $needle = trim((string)($rule['match'] ?? ''));
             $group  = trim((string)($rule['group'] ?? ''));
             if ($needle === '' || $group === '') { continue; }
             
-            // Get all products that match this rule
+            // Get all products that match this rule AND don't already have a category
             // NOTE: Database may have HTML entities (like &amp;) so we search for both versions
             $matchingProducts = \DB::table('t_crm_prod_product')
                 ->where(function($q) use ($needle) {
@@ -744,10 +754,15 @@ class ProductController extends Controller
                         $q->orWhere('title', 'LIKE', '%'.$htmlDecoded.'%');
                     }
                 })
+                // IMPORTANT: Only include products WITHOUT an existing category
+                ->where(function($q) use ($column) {
+                    $q->whereNull($column)
+                      ->orWhere($column, '=', '');
+                })
                 ->pluck('id');
             
-            // Update only products that haven't been categorized by a higher priority rule
-            $toUpdate = $matchingProducts->diff($categorizedIds)->toArray();
+            // Update only products that haven't been categorized by a higher priority rule in this run
+            $toUpdate = $matchingProducts->diff($newlyCategorizedIds)->toArray();
             
             if (!empty($toUpdate)) {
                 $count = \DB::table('t_crm_prod_product')
@@ -756,33 +771,27 @@ class ProductController extends Controller
                 $updated += (int) $count;
                 
                 // Mark these products as categorized so lower priority rules don't override
-                $categorizedIds = array_merge($categorizedIds, $toUpdate);
+                $newlyCategorizedIds = array_merge($newlyCategorizedIds, $toUpdate);
             }
         }
         
-        // IMPORTANT: Clear categories from products that no longer match any rule
-        // Behaviour: pressing "Apply Rules to All Products" for a level should fully
-        // recalculate that level's categories and remove any stale assignments.
-        //
-        // Any product that has a value in this level's column but was NOT touched
-        // by the rules in this run (i.e. not in $categorizedIds) will be cleared.
-        $cleared = 0;
-        if (!empty($categorizedIds)) {
-            // Clear categories from products that weren't matched by any rule
-            $cleared = \DB::table('t_crm_prod_product')
-                ->whereNotNull($column)
-                ->where($column, '!=', '')
-                ->whereNotIn('id', $categorizedIds)
-                ->update([$column => null, 'updated_at' => now()]);
-        } else {
-            // No rules exist or no products matched - clear ALL categories for this level
-            $cleared = \DB::table('t_crm_prod_product')
-                ->whereNotNull($column)
-                ->where($column, '!=', '')
-                ->update([$column => null, 'updated_at' => now()]);
-        }
+        // Count how many products were skipped because they already had a category
+        $skipped = count($alreadyCategorizedIds);
         
-        return response()->json(['success' => true, 'updated' => $updated, 'cleared' => $cleared]);
+        // NOTE: We no longer clear categories from products that don't match rules
+        // This preserves manual category assignments
+        // If you need to clear a product's category, do it manually on the product edit page
+        
+        return response()->json([
+            'success' => true, 
+            'updated' => $updated, 
+            'skipped' => $skipped,
+            'message' => $updated > 0 
+                ? "Updated {$updated} products. {$skipped} products with existing categories were preserved."
+                : ($skipped > 0 
+                    ? "No new products to categorize. {$skipped} products already have categories assigned."
+                    : "No matching products found.")
+        ]);
     }
 
     public function index(Request $request)
@@ -823,6 +832,11 @@ class ProductController extends Controller
         // Filter by status
         if ($request->has('status') && $request->status) {
             $query->where('status', $request->status);
+        }
+
+        // Filter by lean/non-lean
+        if ($request->has('is_lean') && $request->is_lean !== '' && $request->is_lean !== null) {
+            $query->where('is_lean', (int) $request->is_lean);
         }
 
         // Filter by product category (product_type)
@@ -1075,8 +1089,8 @@ class ProductController extends Controller
     public function previewBulkAdjustPrices(Request $request)
     {
         $validated = $request->validate([
-            'mode' => 'required|in:percent,fixed',
-            'operation' => 'required|in:increase,decrease',
+            'mode' => 'required_unless:operation,set|in:percent,fixed',
+            'operation' => 'required|in:increase,decrease,set',
             'amount' => 'required|numeric|min:0',
             // Optional filters
             'product_type' => 'nullable|string',
@@ -1084,11 +1098,52 @@ class ProductController extends Controller
             'attribute_1' => 'nullable|string',
             'attribute_2' => 'nullable|string',
             'attribute_3' => 'nullable|string',
+            'search' => 'nullable|string',
+            'status' => 'nullable|string',
+            // Optional: specific product IDs (for bulk selection from table)
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'integer',
         ]);
 
         $query = ProductModel::query();
-        foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
-            if ($request->$f) $query->where($f, $request->$f);
+        
+        // If specific product IDs are provided, use those instead of filters
+        if (!empty($validated['product_ids'])) {
+            $query->whereIn('id', $validated['product_ids']);
+        } else {
+            // Use category filters
+            foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
+                if ($request->$f) $query->where($f, $request->$f);
+            }
+            
+            // Handle search filter (same logic as index method)
+            if ($request->search) {
+                $search = $request->search;
+                $searchWords = array_filter(explode(' ', $search));
+                
+                $query->where(function($q) use ($search, $searchWords) {
+                    if (count($searchWords) > 1) {
+                        $q->where(function($titleQuery) use ($searchWords) {
+                            foreach ($searchWords as $word) {
+                                $titleQuery->where('title', 'LIKE', "%{$word}%");
+                            }
+                        });
+                    } else {
+                        $q->where('title', 'LIKE', "%{$search}%");
+                    }
+                    $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                      ->orWhere('product_type', 'LIKE', "%{$search}%")
+                      ->orWhereHas('variants', function($vq) use ($search) {
+                          $vq->where('sku', 'LIKE', "%{$search}%")
+                            ->orWhere('title', 'LIKE', "%{$search}%");
+                      });
+                });
+            }
+            
+            // Handle status filter
+            if ($request->status) {
+                $query->where('status', $request->status);
+            }
         }
 
         $products = $query->with('variants')->get();
@@ -1099,7 +1154,10 @@ class ProductController extends Controller
                 $old = (float) $variant->price;
                 $new = $old;
 
-                if ($validated['mode'] === 'percent') {
+                if ($validated['operation'] === 'set') {
+                    // Set exact price
+                    $new = (float) $validated['amount'];
+                } elseif ($validated['mode'] === 'percent') {
                     $delta = $old * ($validated['amount'] / 100);
                     $new = $validated['operation'] === 'increase' ? $old + $delta : $old - $delta;
                 } else {
@@ -1146,8 +1204,8 @@ class ProductController extends Controller
     public function bulkAdjustPrices(Request $request)
     {
         $validated = $request->validate([
-            'mode' => 'required|in:percent,fixed',
-            'operation' => 'required|in:increase,decrease',
+            'mode' => 'required_unless:operation,set|in:percent,fixed',
+            'operation' => 'required|in:increase,decrease,set',
             'amount' => 'required|numeric|min:0',
             // Optional filters
             'product_type' => 'nullable|string',
@@ -1155,11 +1213,52 @@ class ProductController extends Controller
             'attribute_1' => 'nullable|string',
             'attribute_2' => 'nullable|string',
             'attribute_3' => 'nullable|string',
+            'search' => 'nullable|string',
+            'status' => 'nullable|string',
+            // Optional: specific product IDs (for bulk selection from table)
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'integer',
         ]);
 
         $query = ProductModel::query();
-        foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
-            if ($request->$f) $query->where($f, $request->$f);
+        
+        // If specific product IDs are provided, use those instead of filters
+        if (!empty($validated['product_ids'])) {
+            $query->whereIn('id', $validated['product_ids']);
+        } else {
+            // Use category filters
+            foreach (['product_type','vendor','attribute_1','attribute_2','attribute_3'] as $f) {
+                if ($request->$f) $query->where($f, $request->$f);
+            }
+            
+            // Handle search filter (same logic as index method)
+            if ($request->search) {
+                $search = $request->search;
+                $searchWords = array_filter(explode(' ', $search));
+                
+                $query->where(function($q) use ($search, $searchWords) {
+                    if (count($searchWords) > 1) {
+                        $q->where(function($titleQuery) use ($searchWords) {
+                            foreach ($searchWords as $word) {
+                                $titleQuery->where('title', 'LIKE', "%{$word}%");
+                            }
+                        });
+                    } else {
+                        $q->where('title', 'LIKE', "%{$search}%");
+                    }
+                    $q->orWhere('vendor', 'LIKE', "%{$search}%")
+                      ->orWhere('product_type', 'LIKE', "%{$search}%")
+                      ->orWhereHas('variants', function($vq) use ($search) {
+                          $vq->where('sku', 'LIKE', "%{$search}%")
+                            ->orWhere('title', 'LIKE', "%{$search}%");
+                      });
+                });
+            }
+            
+            // Handle status filter
+            if ($request->status) {
+                $query->where('status', $request->status);
+            }
         }
 
         $products = $query->with('variants')->get();
@@ -1173,7 +1272,10 @@ class ProductController extends Controller
                 $old = (float) $variant->price;
                 $new = $old;
 
-                if ($validated['mode'] === 'percent') {
+                if ($validated['operation'] === 'set') {
+                    // Set exact price
+                    $new = (float) $validated['amount'];
+                } elseif ($validated['mode'] === 'percent') {
                     $delta = $old * ($validated['amount'] / 100);
                     $new = $validated['operation'] === 'increase' ? $old + $delta : $old - $delta;
                 } else {
@@ -1226,6 +1328,77 @@ class ProductController extends Controller
             'message' => $message,
             'changes' => $changes // Return detailed changes for frontend display
         ]);
+    }
+
+    /**
+     * Quick update a single variant's price (for inline editing)
+     */
+    public function quickUpdatePrice(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'variant_id' => 'required|integer|exists:t_crm_prod_product_variant,id',
+                'product_id' => 'required|integer|exists:t_crm_prod_product,id',
+                'price' => 'required|numeric|min:0',
+            ]);
+
+            // Get the variant
+            $variant = \App\Models\CRM\ProductVariantModel::findOrFail($validated['variant_id']);
+            
+            // Verify variant belongs to the product
+            if ($variant->product_id != $validated['product_id']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Variant does not belong to the specified product'
+                ], 400);
+            }
+
+            $oldPrice = (float) $variant->price;
+            $newPrice = round((float) $validated['price'], 2);
+
+            // Update variant price
+            $variant->price = $newPrice;
+            $variant->save();
+
+            // Update product's cached price range
+            $product = ProductModel::findOrFail($validated['product_id']);
+            $prices = $product->variants()->pluck('price')->toArray();
+            if (!empty($prices)) {
+                $product->price_min = min($prices);
+                $product->price_max = max($prices);
+                $product->save();
+            }
+
+            Log::info('Quick price update', [
+                'variant_id' => $variant->id,
+                'product_id' => $product->id,
+                'old_price' => $oldPrice,
+                'new_price' => $newPrice,
+                'user_id' => auth()->id()
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Price updated successfully',
+                'old_price' => $oldPrice,
+                'new_price' => $newPrice,
+                'price_min' => $product->price_min,
+                'price_max' => $product->price_max
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            Log::error('Quick price update error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update price: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**

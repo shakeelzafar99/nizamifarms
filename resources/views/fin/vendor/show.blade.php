@@ -292,10 +292,9 @@
                 @endphp
                 
                 <!-- Date Group Header -->
-                <div class="border-b border-gray-200 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors" 
-                     onclick="toggleDateGroup('{{ $date }}')">
+                <div class="border-b border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors">
                     <div class="px-6 py-3 flex justify-between items-center">
-                        <div class="flex items-center gap-3">
+                        <div class="flex items-center gap-3 cursor-pointer flex-1" onclick="toggleDateGroup('{{ $date }}')">
                             <span class="text-2xl" id="icon-{{ $date }}">{{ $expandAll ? '📂' : '📁' }}</span>
                             <div>
                                 <div class="text-sm font-semibold text-gray-900">
@@ -306,7 +305,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="flex items-center gap-4 text-sm">
+                        <div class="flex items-center gap-3 text-sm">
                             @if($summary['purchases'] > 0)
                                 <div class="text-red-600 font-medium">
                                     📦 Rs. {{ number_format($summary['purchases'], 0) }}
@@ -325,6 +324,33 @@
                             <div class="text-gray-700 font-bold">
                                 Balance: Rs. {{ number_format($summary['end_balance'], 0) }}
                             </div>
+                            
+                            <!-- Quick Add Buttons for this Date -->
+                            @if($date !== 'unknown')
+                                <div class="flex items-center gap-1 ml-2 border-l border-gray-300 pl-3">
+                                    @if(isset($vendor->default_purchase_method) && $vendor->default_purchase_method == 'by_weight')
+                                        <button onclick="event.stopPropagation(); openWeightedPurchaseModalWithDate('{{ $date }}')" 
+                                                class="px-2 py-1 text-xs font-semibold rounded-md transition-all hover:scale-105"
+                                                style="background: #fed7aa; color: #c2410c; border: 1px solid #fdba74;"
+                                                title="Add weighted purchase for {{ $dateObj ? $dateObj->format('M d, Y') : $date }}">
+                                            ＋ ⚖️
+                                        </button>
+                                    @else
+                                        <button onclick="event.stopPropagation(); openPurchaseModalWithDate('{{ $date }}')" 
+                                                class="px-2 py-1 text-xs font-semibold rounded-md transition-all hover:scale-105"
+                                                style="background: #fecaca; color: #dc2626; border: 1px solid #fca5a5;"
+                                                title="Add purchase for {{ $dateObj ? $dateObj->format('M d, Y') : $date }}">
+                                            ＋ 📦
+                                        </button>
+                                    @endif
+                                    <button onclick="event.stopPropagation(); openPaymentModalWithDate('{{ $date }}')" 
+                                            class="px-2 py-1 text-xs font-semibold rounded-md transition-all hover:scale-105"
+                                            style="background: #bbf7d0; color: #15803d; border: 1px solid #86efac;"
+                                            title="Add payment for {{ $dateObj ? $dateObj->format('M d, Y') : $date }}">
+                                        ＋ 💰
+                                    </button>
+                                </div>
+                            @endif
                         </div>
                     </div>
                 </div>
@@ -703,6 +729,11 @@ function fetchVendorProducts() {
 }
 
 function openPurchaseModal() {
+    openPurchaseModalWithDate(null);
+}
+
+// Open purchase modal with a specific date pre-filled
+function openPurchaseModalWithDate(transactionDate) {
     const modal = document.getElementById('purchaseModal');
     if (modal.parentElement !== document.body) {
         document.body.appendChild(modal);
@@ -718,6 +749,21 @@ function openPurchaseModal() {
         zIndex: '99999'
     });
     document.body.style.overflow = 'hidden';
+    
+    // Pre-fill dates if provided
+    if (transactionDate) {
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = transactionDate;
+        if (postedDateInput) postedDateInput.value = transactionDate;
+    } else {
+        // Reset to today's date when opening normally
+        const today = new Date().toISOString().split('T')[0];
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = today;
+        if (postedDateInput) postedDateInput.value = today;
+    }
 }
 
 function closePurchaseModal() {
@@ -730,6 +776,11 @@ function closePurchaseModal() {
 }
 
 function openWeightedPurchaseModal() {
+    openWeightedPurchaseModalWithDate(null);
+}
+
+// Open weighted purchase modal with a specific date pre-filled
+function openWeightedPurchaseModalWithDate(transactionDate) {
     const modal = document.getElementById('weightedPurchaseModal');
     if (modal.parentElement !== document.body) {
         document.body.appendChild(modal);
@@ -745,6 +796,21 @@ function openWeightedPurchaseModal() {
         zIndex: '99999'
     });
     document.body.style.overflow = 'hidden';
+    
+    // Pre-fill dates if provided
+    if (transactionDate) {
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = transactionDate;
+        if (postedDateInput) postedDateInput.value = transactionDate;
+    } else {
+        // Reset to today's date when opening normally
+        const today = new Date().toISOString().split('T')[0];
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = today;
+        if (postedDateInput) postedDateInput.value = today;
+    }
     
     // Automatically add the first product line item with default product pre-selected
     const container = document.getElementById('lineItemsContainer');
@@ -909,6 +975,11 @@ function updateGrandTotal() {
 }
 
 function openPaymentModal() {
+    openPaymentModalWithDate(null);
+}
+
+// Open payment modal with a specific date pre-filled
+function openPaymentModalWithDate(transactionDate) {
     const modal = document.getElementById('paymentModal');
     if (modal.parentElement !== document.body) {
         document.body.appendChild(modal);
@@ -924,6 +995,21 @@ function openPaymentModal() {
         zIndex: '99999'
     });
     document.body.style.overflow = 'hidden';
+    
+    // Pre-fill dates if provided
+    if (transactionDate) {
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = transactionDate;
+        if (postedDateInput) postedDateInput.value = transactionDate;
+    } else {
+        // Reset to today's date when opening normally
+        const today = new Date().toISOString().split('T')[0];
+        const transactionDateInput = modal.querySelector('input[name="transaction_date"]');
+        const postedDateInput = modal.querySelector('input[name="posted_date"]');
+        if (transactionDateInput) transactionDateInput.value = today;
+        if (postedDateInput) postedDateInput.value = today;
+    }
 }
 
 function closePaymentModal() {

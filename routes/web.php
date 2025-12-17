@@ -53,7 +53,9 @@ Route::middleware(['auth:sanctum,web'])->group(function () {
 });
 
 Route::middleware(['auth'])->group(function () {
+    // Dashboard main routes
     Route::get('/dashboard', [DashboardController::class, 'index']);
+    Route::get('/dashboard/enhanced', [DashboardController::class, 'enhanced']); // New enhanced dashboard
     Route::get('/dashboard/kpis', [DashboardController::class, 'getKPIs']);
     Route::get('/dashboard/revenue-chart', [DashboardController::class, 'getRevenueChart']);
     Route::get('/dashboard/customer-growth-chart', [DashboardController::class, 'getCustomerGrowthChart']);
@@ -61,6 +63,17 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/daily-analytics', [DashboardController::class, 'getDailyAnalytics']);
     Route::get('/dashboard/general-stats', [DashboardController::class, 'getGeneralStats']);
     Route::post('/dashboard/clear-cache', [DashboardController::class, 'clearCache']);
+    
+    // Enhanced dashboard analytics routes
+    Route::get('/dashboard/top-cards', [DashboardController::class, 'getTopCards']);
+    Route::get('/dashboard/financial-summary', [DashboardController::class, 'getFinancialSummary']);
+    Route::get('/dashboard/order-source-summary', [DashboardController::class, 'getOrderSourceSummary']);
+    Route::get('/dashboard/customer-analysis', [DashboardController::class, 'getCustomerAnalysis']);
+    Route::get('/dashboard/product-categories', [DashboardController::class, 'getProductCategories']);
+    Route::get('/dashboard/weekly-performance', [DashboardController::class, 'getWeeklyPerformance']);
+    Route::get('/dashboard/mom-growth', [DashboardController::class, 'getMonthOverMonthGrowth']);
+    Route::get('/dashboard/customer-cohort', [DashboardController::class, 'getCustomerCohort']);
+    Route::get('/dashboard/orders-for-date', [DashboardController::class, 'getOrdersForDate']);
     
     // Log viewer routes
     Route::get('/logs', [LogController::class, 'index']);
@@ -80,10 +93,8 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/open-status-counts', [OrderController::class, 'getOpenOrdersStatusCounts'])->name('orders.open-status-counts');
     Route::get('/orders/rider-counts', [OrderController::class, 'getRiderOrdersCounts'])->name('orders.rider-counts');
     
-    // ⭐ RIDERS MAP: Redirect to orders page with modal auto-open
-    Route::get('/riders-map', function () {
-        return redirect()->route('orders.index', ['view' => 'riders_map']);
-    })->name('riders-map');
+    // ⭐ RIDERS MAP: Standalone page
+    Route::get('/riders-map', [OrderController::class, 'ridersMap'])->name('riders-map');
     
     // ⭐ RIDERS MAP: Location tracking API routes (web app)
     Route::get('/orders/riders-map/active', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap'])->name('orders.riders-map.active');
@@ -232,6 +243,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/products/search', [\App\Http\Controllers\CRM\ProductController::class, 'search'])->name('products.search.alt');
     Route::post('/products/bulk-adjust-prices', [\App\Http\Controllers\CRM\ProductController::class, 'bulkAdjustPrices'])->name('products.bulk_adjust_prices');
     Route::post('/products/bulk-adjust-prices/preview', [\App\Http\Controllers\CRM\ProductController::class, 'previewBulkAdjustPrices'])->name('products.bulk_adjust_prices.preview');
+    Route::post('/products/quick-update-price', [\App\Http\Controllers\CRM\ProductController::class, 'quickUpdatePrice'])->name('products.quick_update_price');
     Route::post('/products/bulk-set-weight-factor', [\App\Http\Controllers\CRM\ProductController::class, 'bulkSetWeightFactor'])->name('products.bulk_set_weight_factor');
     Route::post('/api/products/weight-factors', [\App\Http\Controllers\CRM\ProductController::class, 'getWeightFactors'])->name('api.products.weight_factors');
     // Attribute management
