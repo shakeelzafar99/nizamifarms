@@ -13,6 +13,11 @@ Route::get('/', function () {
     return redirect('/auth/login');
 });
 
+// APK Download - always redirects to the latest version (no auth required)
+Route::get('/apk/latest', function () {
+    return redirect('/downloads/NizamiFarms-Rider.apk');
+})->name('apk.latest');
+
 // Serve files from storage/app/public without symlink (no auth required)
 Route::get('/public-storage/{path}', [\App\Http\Controllers\FileController::class, 'publicStorage'])->where('path', '.*');
 
@@ -245,6 +250,10 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products/bulk-adjust-prices/preview', [\App\Http\Controllers\CRM\ProductController::class, 'previewBulkAdjustPrices'])->name('products.bulk_adjust_prices.preview');
     Route::post('/products/quick-update-price', [\App\Http\Controllers\CRM\ProductController::class, 'quickUpdatePrice'])->name('products.quick_update_price');
     Route::post('/products/bulk-set-weight-factor', [\App\Http\Controllers\CRM\ProductController::class, 'bulkSetWeightFactor'])->name('products.bulk_set_weight_factor');
+    // Bulk category assignment
+    Route::post('/products/bulk-category-summary', [\App\Http\Controllers\CRM\ProductController::class, 'bulkCategorySummary'])->name('products.bulk_category_summary');
+    Route::post('/products/bulk-category-preview', [\App\Http\Controllers\CRM\ProductController::class, 'bulkCategoryPreview'])->name('products.bulk_category_preview');
+    Route::post('/products/bulk-category-apply', [\App\Http\Controllers\CRM\ProductController::class, 'bulkCategoryApply'])->name('products.bulk_category_apply');
     Route::post('/api/products/weight-factors', [\App\Http\Controllers\CRM\ProductController::class, 'getWeightFactors'])->name('api.products.weight_factors');
     // Attribute management
     Route::get('/products/attributes', [\App\Http\Controllers\CRM\ProductController::class, 'attributes'])->name('products.attributes');

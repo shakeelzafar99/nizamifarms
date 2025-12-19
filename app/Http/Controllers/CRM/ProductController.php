@@ -1402,6 +1402,272 @@ class ProductController extends Controller
     }
 
     /**
+     * Get category summary for selected products (bulk category assignment)
+     */
+    public function bulkCategorySummary(Request $request)
+    {
+        try {
+            $query = ProductModel::query();
+            
+            // If specific product IDs are provided, use those
+            if ($request->has('product_ids') && is_array($request->product_ids) && !empty($request->product_ids)) {
+                $query->whereIn('id', $request->product_ids);
+            } else {
+                // Use filters
+                foreach (['product_type', 'vendor', 'attribute_1', 'attribute_2', 'attribute_3'] as $f) {
+                    if ($request->$f) {
+                        $query->where($f, $request->$f);
+                    }
+                }
+                
+                // Handle search filter
+                if ($request->search) {
+                    $search = $request->search;
+                    $query->where(function($q) use ($search) {
+                        $q->where('title', 'like', "%{$search}%")
+                          ->orWhere('shopify_handle', 'like', "%{$search}%")
+                          ->orWhereHas('variants', function($vq) use ($search) {
+                              $vq->where('sku', 'like', "%{$search}%");
+                          });
+                    });
+                }
+                
+                // Handle status filter
+                if ($request->status) {
+                    $query->where('status', $request->status);
+                }
+            }
+            
+            $products = $query->get(['id', 'attribute_1', 'attribute_2', 'attribute_3']);
+            
+            // Build category distribution
+            $attribute1Distribution = [];
+            $attribute2Distribution = [];
+            $attribute3Distribution = [];
+            
+            foreach ($products as $product) {
+                $attr1 = $product->attribute_1 ?: '';
+                $attr2 = $product->attribute_2 ?: '';
+                $attr3 = $product->attribute_3 ?: '';
+                
+                $attribute1Distribution[$attr1] = ($attribute1Distribution[$attr1] ?? 0) + 1;
+                $attribute2Distribution[$attr2] = ($attribute2Distribution[$attr2] ?? 0) + 1;
+                $attribute3Distribution[$attr3] = ($attribute3Distribution[$attr3] ?? 0) + 1;
+            }
+            
+            // Sort by count descending
+            arsort($attribute1Distribution);
+            arsort($attribute2Distribution);
+            arsort($attribute3Distribution);
+            
+            return response()->json([
+                'success' => true,
+                'total_products' => $products->count(),
+                'attribute_1' => $attribute1Distribution,
+                'attribute_2' => $attribute2Distribution,
+                'attribute_3' => $attribute3Distribution
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Bulk category summary error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load category summary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Preview bulk category changes
+     */
+    public function bulkCategoryPreview(Request $request)
+    {
+        try {
+            $query = ProductModel::query();
+            
+            // If specific product IDs are provided, use those
+            if ($request->has('product_ids') && is_array($request->product_ids) && !empty($request->product_ids)) {
+                $query->whereIn('id', $request->product_ids);
+            } else {
+                // Use filters
+                foreach (['product_type', 'vendor', 'attribute_1', 'attribute_2', 'attribute_3'] as $f) {
+                    // Skip category attributes from filters since we're changing them
+                    if (in_array($f, ['attribute_1', 'attribute_2', 'attribute_3'])) {
+                        // Only use as filter if it's coming from the original filter, not the new value
+                        if ($request->has('filter_' . $f) && $request->{'filter_' . $f}) {
+                            $query->where($f, $request->{'filter_' . $f});
+                        }
+                    } else {
+                        if ($request->$f) {
+                            $query->where($f, $request->$f);
+                        }
+                    }
+                }
+                
+                // Handle search filter
+                if ($request->search) {
+                    $search = $request->search;
+                    $query->where(function($q) use ($search) {
+                        $q->where('title', 'like', "%{$search}%")
+                          ->orWhere('shopify_handle', 'like', "%{$search}%")
+                          ->orWhereHas('variants', function($vq) use ($search) {
+                              $vq->where('sku', 'like', "%{$search}%");
+                          });
+                    });
+                }
+                
+                // Handle status filter
+                if ($request->status) {
+                    $query->where('status', $request->status);
+                }
+            }
+            
+            $products = $query->with(['variants' => function($q) {
+                $q->select('id', 'product_id', 'sku')->limit(1);
+            }])->get(['id', 'title', 'attribute_1', 'attribute_2', 'attribute_3']);
+            
+            // Determine which changes to apply
+            $changes = [];
+            $newAttr1 = $request->attribute_1;
+            $newAttr2 = $request->attribute_2;
+            $newAttr3 = $request->attribute_3;
+            
+            // Only include changes that are explicitly set (not empty string which means "keep existing")
+            if ($newAttr1 !== null && $newAttr1 !== '') {
+                $changes['attribute_1'] = $newAttr1 === '__clear__' ? null : $newAttr1;
+            }
+            if ($newAttr2 !== null && $newAttr2 !== '') {
+                $changes['attribute_2'] = $newAttr2 === '__clear__' ? null : $newAttr2;
+            }
+            if ($newAttr3 !== null && $newAttr3 !== '') {
+                $changes['attribute_3'] = $newAttr3 === '__clear__' ? null : $newAttr3;
+            }
+            
+            if (empty($changes)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No changes selected. Please select at least one category to update.'
+                ], 400);
+            }
+            
+            // Build sample products list (limit to 20)
+            $sampleProducts = $products->take(20)->map(function($product) {
+                return [
+                    'id' => $product->id,
+                    'name' => $product->title,
+                    'sku' => $product->variants->first()?->sku ?? null,
+                    'attribute_1' => $product->attribute_1,
+                    'attribute_2' => $product->attribute_2,
+                    'attribute_3' => $product->attribute_3
+                ];
+            })->toArray();
+            
+            return response()->json([
+                'success' => true,
+                'affected_count' => $products->count(),
+                'changes' => $changes,
+                'sample_products' => $sampleProducts
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Bulk category preview error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to generate preview: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Apply bulk category changes
+     */
+    public function bulkCategoryApply(Request $request)
+    {
+        try {
+            $query = ProductModel::query();
+            
+            // If specific product IDs are provided, use those
+            if ($request->has('product_ids') && is_array($request->product_ids) && !empty($request->product_ids)) {
+                $query->whereIn('id', $request->product_ids);
+            } else {
+                // Use filters
+                foreach (['product_type', 'vendor'] as $f) {
+                    if ($request->$f) {
+                        $query->where($f, $request->$f);
+                    }
+                }
+                
+                // Handle search filter
+                if ($request->search) {
+                    $search = $request->search;
+                    $query->where(function($q) use ($search) {
+                        $q->where('title', 'like', "%{$search}%")
+                          ->orWhere('shopify_handle', 'like', "%{$search}%")
+                          ->orWhereHas('variants', function($vq) use ($search) {
+                              $vq->where('sku', 'like', "%{$search}%");
+                          });
+                    });
+                }
+                
+                // Handle status filter
+                if ($request->status) {
+                    $query->where('status', $request->status);
+                }
+            }
+            
+            // Determine which changes to apply
+            $updates = [];
+            $newAttr1 = $request->attribute_1;
+            $newAttr2 = $request->attribute_2;
+            $newAttr3 = $request->attribute_3;
+            
+            // Only include changes that are explicitly set (not empty string which means "keep existing")
+            if ($newAttr1 !== null && $newAttr1 !== '') {
+                $updates['attribute_1'] = $newAttr1 === '__clear__' ? null : $newAttr1;
+            }
+            if ($newAttr2 !== null && $newAttr2 !== '') {
+                $updates['attribute_2'] = $newAttr2 === '__clear__' ? null : $newAttr2;
+            }
+            if ($newAttr3 !== null && $newAttr3 !== '') {
+                $updates['attribute_3'] = $newAttr3 === '__clear__' ? null : $newAttr3;
+            }
+            
+            if (empty($updates)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No changes selected. Please select at least one category to update.'
+                ], 400);
+            }
+            
+            // Get count before update
+            $affectedCount = $query->count();
+            
+            // Apply the updates
+            $query->update($updates);
+            
+            Log::info('Bulk category update applied', [
+                'affected_count' => $affectedCount,
+                'updates' => $updates,
+                'user_id' => auth()->id(),
+                'filters' => $request->only(['product_type', 'vendor', 'search', 'status', 'product_ids'])
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'affected_count' => $affectedCount,
+                'message' => "Successfully updated categories for {$affectedCount} products"
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('Bulk category apply error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to apply changes: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Get weight factors for products by name (for invoice editing)
      */
     public function getWeightFactors(Request $request)

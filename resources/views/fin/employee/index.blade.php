@@ -874,8 +874,8 @@ function closeAuditModal() {
                             <span class="text-xs font-mono text-gray-600 bg-gray-100 px-2 py-1 rounded">{{ $account->account_code }}</span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right">
-                            <span class="text-sm font-semibold {{ $account->current_balance > 0 ? 'text-green-600' : ($account->current_balance < 0 ? 'text-red-600' : 'text-gray-900') }}">
-                                Rs. {{ number_format($account->current_balance, 2) }}
+                            <span class="text-sm font-semibold {{ $account->effective_balance > 0 ? 'text-green-600' : ($account->effective_balance < 0 ? 'text-red-600' : 'text-gray-900') }}">
+                                Rs. {{ number_format($account->effective_balance, 2) }}
                             </span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right">

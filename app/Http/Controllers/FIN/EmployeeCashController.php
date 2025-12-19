@@ -70,7 +70,7 @@ class EmployeeCashController extends Controller
             ->orderBy('account_name', 'asc')
             ->paginate(20);
 
-        // Calculate pending approvals for each account (ONLY unapproved requests)
+        // Calculate pending approvals and effective balance for each account
         foreach ($accounts as $account) {
             $pendingApprovals = 0;
             
@@ -106,6 +106,9 @@ class EmployeeCashController extends Controller
             }
             
             $account->pending_approvals = $pendingApprovals ?? 0;
+            
+            // Set effective balance (calculated for employee_cash, stored for others)
+            $account->effective_balance = $account->getEffectiveBalance();
         }
 
         // Get filter parameters
@@ -342,9 +345,8 @@ class EmployeeCashController extends Controller
         
         // === KPI 4: APPROVALS & RIDERS BALANCE ===
         // Main value: Riders Balance (Real-time, NO FILTER)
-        $ridersBalance = AccountModel::where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
-            ->where('is_active', 1)
-            ->sum('current_balance') ?? 0;
+        // Uses CALCULATED balance (excludes salary/personal transactions)
+        $ridersBalance = AccountModel::getTotalEmployeeCashCalculatedBalance();
         
         // Sub-value 1: Pending Deposits (Cash IN)
         $pendingDepositsQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_EMPLOYEE_DEPOSIT)
@@ -890,10 +892,9 @@ class EmployeeCashController extends Controller
             }
             $cashInvoices = $cashInvoicesQuery->sum('amount') ?? 0;
             
-            // Riders Balance: Total current balance held by all riders
-            $ridersBalance = AccountModel::where('account_category', 'employee_cash')
-                ->where('is_active', 1)
-                ->sum('current_balance') ?? 0;
+            // Riders Balance: Total CALCULATED balance held by all riders
+            // Uses calculated balance (excludes salary/personal transactions)
+            $ridersBalance = AccountModel::getTotalEmployeeCashCalculatedBalance();
         }
         
         // Get pending approvals details for Online Bank account (NO DATE FILTER - show all pending)
@@ -913,7 +914,7 @@ class EmployeeCashController extends Controller
         
         $summary = [
             'opening_balance' => $account->opening_balance,
-            'current_balance' => $account->current_balance,
+            'current_balance' => $account->getEffectiveBalance(), // Uses calculated for employee_cash
             'total_invoices' => $invoicesQuery->sum('amount'),
             'total_expenses' => $expensesQuery->sum('amount'),
             'total_deposits' => $depositsQuery->sum('amount'),

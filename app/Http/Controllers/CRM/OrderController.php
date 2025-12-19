@@ -982,13 +982,18 @@ class OrderController extends Controller
                 ]);
             }
             
-            // ⭐ AUTO-GEOCODE: If customer has no coordinates, try to geocode their address
+            // ⭐ AUTO-GEOCODE: If customer has no geocoded coordinates, try to geocode their address
+            // Note: geocoded_latitude/longitude is separate from latitude/longitude (verified location)
             if ($order->customer_id) {
                 $customer = \App\Models\CRM\CustomerModel::find($order->customer_id);
-                if ($customer && !$customer->latitude && !$customer->longitude) {
+                if ($customer && !$customer->geocoded_latitude && !$customer->geocoded_longitude) {
                     // Geocode in background (don't block order creation)
                     try {
                         \App\Services\GeocodingService::geocodeCustomer($order->customer_id);
+                        \Log::info('Auto-geocoding triggered for new order', [
+                            'order_id' => $order->id,
+                            'customer_id' => $order->customer_id
+                        ]);
                     } catch (\Exception $e) {
                         \Log::warning('Auto-geocoding failed for customer', [
                             'customer_id' => $order->customer_id,
@@ -1210,6 +1215,28 @@ class OrderController extends Controller
             
             // Mark original order as converted
             $originalOrder->update(['converted' => 1]);
+            
+            // ⭐ AUTO-GEOCODE: If customer has no coordinates, try to geocode their address
+            // This ensures converted Shopify orders get geocoded addresses just like new orders
+            if ($convertedOrder->customer_id) {
+                $customer = \App\Models\CRM\CustomerModel::find($convertedOrder->customer_id);
+                if ($customer && !$customer->geocoded_latitude && !$customer->geocoded_longitude) {
+                    // Geocode in background (don't block order conversion)
+                    try {
+                        \App\Services\GeocodingService::geocodeCustomer($convertedOrder->customer_id);
+                        \Log::info('Auto-geocoding triggered for Shopify converted order', [
+                            'order_id' => $convertedOrder->id,
+                            'customer_id' => $convertedOrder->customer_id
+                        ]);
+                    } catch (\Exception $e) {
+                        \Log::warning('Auto-geocoding failed for converted Shopify order customer', [
+                            'order_id' => $convertedOrder->id,
+                            'customer_id' => $convertedOrder->customer_id,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+            }
             
             // Prepare response message with any warnings
             $message = 'Order converted successfully with product names and prices from your system';

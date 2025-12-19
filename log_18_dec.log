@@ -1,0 +1,219 @@
+﻿
+[2025-12-18 11:30:20] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers"],"has_store_mode":true,"expense_backdate_days":4} 
+[2025-12-18 11:30:21] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers"],"has_store_mode":true,"expense_backdate_days":4} 
+[2025-12-18 11:30:28] local.DEBUG: Open Quantities Tree - Starting build {"hierarchy":["attribute_1","attribute_2","attribute_3","product_name","orders"],"total_rows":173,"first_row_sample":{"attribute_1":"Beef","attribute_2":"Steaks","attribute_3":"Sirloin Steak Cut per kg (200 to 250 gms steak)","product_title":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight"}} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":0,"row_id":53157,"order_id":7052,"levelIndex":0,"field":"attribute_1","field_value":"Beef"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":1,"row_id":53157,"order_id":7052,"levelIndex":1,"field":"attribute_2","field_value":"Steaks"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":2,"row_id":53157,"order_id":7052,"levelIndex":2,"field":"attribute_3","field_value":"Sirloin Steak Cut per kg (200 to 250 gms steak)"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":3,"row_id":53157,"order_id":7052,"levelIndex":3,"field":"product_name","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":4,"row_id":53157,"order_id":7052,"levelIndex":4,"field":"orders","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: Creating order node {"order_id":7052,"order_number":"SH-15871","current_filters":{"attribute_1":"Beef","attribute_2":"Steaks","attribute_3":"Sirloin Steak Cut per kg (200 to 250 gms steak)","product_name":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight","product_ids":"9620597539105,302"},"product_name_in_row":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight"} 
+[2025-12-18 11:30:28] local.DEBUG: ✅ Order quantity updated {"order_id":7052,"product":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight","qty_before":0,"qty_added":1.0,"qty_after":1.0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":5,"row_id":53154,"order_id":7052,"levelIndex":0,"field":"attribute_1","field_value":"Mutton"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":6,"row_id":53154,"order_id":7052,"levelIndex":1,"field":"attribute_2","field_value":"Back Chops (Puth)"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":7,"row_id":53154,"order_id":7052,"levelIndex":2,"field":"attribute_3","field_value":"Back Chops (Puth) without Kidneys"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":8,"row_id":53154,"order_id":7052,"levelIndex":3,"field":"product_name","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":9,"row_id":53154,"order_id":7052,"levelIndex":4,"field":"orders","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: Creating order node {"order_id":7052,"order_number":"SH-15871","current_filters":{"attribute_1":"Mutton","attribute_2":"Back Chops (Puth)","attribute_3":"Back Chops (Puth) without Kidneys","product_name":"Mutton (BP) LEAN STEAM Cut Back Chops (Puth) without Kidneys per kg – Net Weight","product_ids":"8043970724129,100"},"product_name_in_row":"Mutton (BP) LEAN STEAM Cut Back Chops (Puth) without Kidneys per kg – Net Weight"} 
+[2025-12-18 11:30:28] local.DEBUG: ✅ Order quantity updated {"order_id":7052,"product":"Mutton (BP) LEAN STEAM Cut Back Chops (Puth) without Kidneys per kg – Net Weight","qty_before":0,"qty_added":1.0,"qty_after":1.0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":10,"row_id":53153,"order_id":7052,"levelIndex":0,"field":"attribute_1","field_value":"Chicken"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":11,"row_id":53153,"order_id":7052,"levelIndex":1,"field":"attribute_2","field_value":"Breast Butterfly"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":12,"row_id":53153,"order_id":7052,"levelIndex":2,"field":"attribute_3","field_value":"Breast Butterfly"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":13,"row_id":53153,"order_id":7052,"levelIndex":3,"field":"product_name","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":14,"row_id":53153,"order_id":7052,"levelIndex":4,"field":"orders","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: ✅ Order quantity updated {"order_id":7052,"product":"Chicken (B1) LEAN Breast Butterfly per kg- Net weight","qty_before":0,"qty_added":1.0,"qty_after":1.0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":15,"row_id":53155,"order_id":7052,"levelIndex":0,"field":"attribute_1","field_value":"Raheel"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":16,"row_id":53155,"order_id":7052,"levelIndex":1,"field":"attribute_2","field_value":"Mutton"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":17,"row_id":53155,"order_id":7052,"levelIndex":2,"field":"attribute_3","field_value":"Veal Kaleji with Heart"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":18,"row_id":53155,"order_id":7052,"levelIndex":3,"field":"product_name","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔄 Tree loop {"loop_count":19,"row_id":53155,"order_id":7052,"levelIndex":4,"field":"orders","field_value":"NULL"} 
+[2025-12-18 11:30:28] local.DEBUG: 🔎 Order BEFORE finalize {"product":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight","order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity":1.0,"check_num":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔎 Order BEFORE finalize {"product":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight","order_id":7016,"order_name":"Order #18041 - Haris Anees","quantity":2.0,"check_num":1} 
+[2025-12-18 11:30:28] local.DEBUG: 🔎 Order BEFORE finalize {"product":"Veal Rib Steak per kg (300 to 400 gms per steak)","order_id":7016,"order_name":"Order #18041 - Haris Anees","quantity":2.0,"check_num":2} 
+[2025-12-18 11:30:28] local.DEBUG: 🔎 Order BEFORE finalize {"product":"Veal (BT) LEAN Hunter Beef per kg - Net weight","order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity":1.0,"check_num":3} 
+[2025-12-18 11:30:28] local.DEBUG: 🔎 Order BEFORE finalize {"product":"Veal (BT) LEAN Hunter Beef per kg - Net weight","order_id":7009,"order_name":"Order #18047 - Taimur Nizami","quantity":1.0,"check_num":4} 
+[2025-12-18 11:30:28] local.DEBUG: 🔍 finalizeNode START {"order_id":7052,"quantity_at_start":1.0,"has_children":false,"children_count":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔍 finalizeNode START {"order_id":7016,"quantity_at_start":2.0,"has_children":false,"children_count":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7016,"order_name":"Order #18041 - Haris Anees","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔍 finalizeNode START {"order_id":7016,"quantity_at_start":2.0,"has_children":false,"children_count":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7016,"order_name":"Order #18041 - Haris Anees","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔍 finalizeNode START {"order_id":7052,"quantity_at_start":1.0,"has_children":false,"children_count":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔍 finalizeNode START {"order_id":7009,"quantity_at_start":1.0,"has_children":false,"children_count":0} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7009,"order_name":"Order #18047 - Taimur Nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7045,"order_name":"Order #18049 - Cdr Arsalan Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":1.5,"quantity_after":1.5,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6964,"order_name":"Order #17969 - Mohsin Akhtar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6986,"order_name":"Order #NF-16118 - Shabib Nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7035,"order_name":"Order #18022 - Sarwat Hamid","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7037,"order_name":"Order #18020 - Mian Iftikhar","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7040,"order_name":"Order #18017 - Junaid Amin","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7000,"order_name":"Order #18008 - Romana Changezi","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6850,"order_name":"Order #17857 - Bismah Adam","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7033,"order_name":"Order #18024 - Naveed Solaija","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7036,"order_name":"Order #18021 - Tajamal Hussain","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7046,"order_name":"Order #18050 - Naveed Malik","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7003,"order_name":"Order #18005 - Qasim Rahman Syed","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6991,"order_name":"Order #17995 - Hasham Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6850,"order_name":"Order #17857 - Bismah Adam","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":2.03,"quantity_after":2.03,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7007,"order_name":"Order #18001 - Sadaf Sadaf madeem","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6988,"order_name":"Order #17992 - Maaz Arif","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6988,"order_name":"Order #17992 - Maaz Arif","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7045,"order_name":"Order #18049 - Cdr Arsalan Khan","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7022,"order_name":"Order #18035 - S.Hamza Shirazi","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7030,"order_name":"Order #18027 - Mrs Nasir","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7032,"order_name":"Order #18025 - Ms. Rooshi","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7037,"order_name":"Order #18020 - Mian Iftikhar","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7040,"order_name":"Order #18017 - Junaid Amin","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7041,"order_name":"Order #18016 - Dr. Muneeza","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7003,"order_name":"Order #18005 - Qasim Rahman Syed","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6991,"order_name":"Order #17995 - Hasham Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6985,"order_name":"Order #17990 - Omar Farooki","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":4.05,"quantity_after":4.05,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7042,"order_name":"Order #18015 - Rimsha Shaheryar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7007,"order_name":"Order #18001 - Sadaf Sadaf madeem","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7019,"order_name":"Order #18038 - Huma Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6843,"order_name":"Order #17850 - Abdul Basit Basit","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7027,"order_name":"Order #18030 - Yumna Ghauri","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6998,"order_name":"Order #18010 - Tabinda Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7000,"order_name":"Order #18008 - Romana Changezi","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7012,"order_name":"Order #18045 - Muhammad Ali","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7013,"order_name":"Order #18044 - Saeeda begum Kafeel","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7018,"order_name":"Order #18039 - Mariam Hassan","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":1.5,"quantity_after":1.5,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7017,"order_name":"Order #18040 - Muzafar jilani","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7039,"order_name":"Order #18018 - Raheel Sajjad Khan","quantity_before":6.0,"quantity_after":6.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7022,"order_name":"Order #18035 - S.Hamza Shirazi","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7023,"order_name":"Order #18034 - Shamaoun Bhatti","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":1.5,"quantity_after":1.5,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7037,"order_name":"Order #18020 - Mian Iftikhar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6997,"order_name":"Order #18011 - Mohammad Shahzad","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6990,"order_name":"Order #17994 - rabia Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7026,"order_name":"Order #18031 - Mir Ghulam Abbas Ali Khan","quantity_before":5.0,"quantity_after":5.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6990,"order_name":"Order #17994 - rabia Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7030,"order_name":"Order #18027 - Mrs Nasir","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7036,"order_name":"Order #18021 - Tajamal Hussain","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7043,"order_name":"Order #18013 - Ali Saeed","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6934,"order_name":"Order #17939 - Iram Aamir","quantity_before":0.83,"quantity_after":0.83,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7048,"order_name":"Order #18052 - Abida Shahid","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7004,"order_name":"Order #18004 - Mahwish Kamran","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6986,"order_name":"Order #NF-16118 - Shabib Nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7031,"order_name":"Order #18026 - Muniba Usman","quantity_before":1.08,"quantity_after":1.08,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7025,"order_name":"Order #18032 - Haseeb Saulat","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7027,"order_name":"Order #18030 - Yumna Ghauri","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7042,"order_name":"Order #18015 - Rimsha Shaheryar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7002,"order_name":"Order #18006 - Muhammad Noraiz","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6870,"order_name":"Order #SH-16121 - Imran Latif","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7010,"order_name":"Order #18048 - Ali nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7029,"order_name":"Order #18028 - Mrs Faisal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7039,"order_name":"Order #18018 - Raheel Sajjad Khan","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7017,"order_name":"Order #18040 - Muzafar jilani","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7020,"order_name":"Order #18037 - Cdre M Afsar khan","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6984,"order_name":"Order #17989 - Mrs Bukhari","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7024,"order_name":"Order #18033 - Raheel Fida","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7034,"order_name":"Order #18023 - Shumaila Nasim","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7039,"order_name":"Order #18018 - Raheel Sajjad Khan","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7044,"order_name":"Order #18012 - Nasreen Saeed","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6965,"order_name":"Order #17970 - Fatima Shahid","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7044,"order_name":"Order #18012 - Nasreen Saeed","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6998,"order_name":"Order #18010 - Tabinda Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7003,"order_name":"Order #18005 - Qasim Rahman Syed","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6968,"order_name":"Order #17973 - Samina Burney","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7003,"order_name":"Order #18005 - Qasim Rahman Syed","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6965,"order_name":"Order #17970 - Fatima Shahid","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":2.02,"quantity_after":2.02,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6967,"order_name":"Order #17972 - Mrs Tahir","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7050,"order_name":"Order #NF-16121 - Shabib Nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7049,"order_name":"Order #NF-16120 - Ali nizami","quantity_before":6.0,"quantity_after":6.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7050,"order_name":"Order #NF-16121 - Shabib Nizami","quantity_before":4.0,"quantity_after":4.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7049,"order_name":"Order #NF-16120 - Ali nizami","quantity_before":5.0,"quantity_after":5.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7046,"order_name":"Order #18050 - Naveed Malik","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7018,"order_name":"Order #18039 - Mariam Hassan","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7046,"order_name":"Order #18050 - Naveed Malik","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7006,"order_name":"Order #18002 - amna fasih","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7032,"order_name":"Order #18025 - Ms. Rooshi","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7033,"order_name":"Order #18024 - Naveed Solaija","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7046,"order_name":"Order #18050 - Naveed Malik","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7021,"order_name":"Order #18036 - Aimen Usman","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7027,"order_name":"Order #18030 - Yumna Ghauri","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7006,"order_name":"Order #18002 - amna fasih","quantity_before":1.15,"quantity_after":1.15,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6918,"order_name":"Order #17923 - Sidra Batool","quantity_before":0.64,"quantity_after":0.64,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":2.34,"quantity_after":2.34,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6870,"order_name":"Order #SH-16121 - Imran Latif","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7051,"order_name":"Order #NF-16122 - Dr Shahid Butt","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7050,"order_name":"Order #NF-16121 - Shabib Nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7046,"order_name":"Order #18050 - Naveed Malik","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7025,"order_name":"Order #18032 - Haseeb Saulat","quantity_before":4.0,"quantity_after":4.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7032,"order_name":"Order #18025 - Ms. Rooshi","quantity_before":3.0,"quantity_after":3.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7027,"order_name":"Order #18030 - Yumna Ghauri","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6871,"order_name":"Order #SH-16117 - Iqra bilal Bilal","quantity_before":4.0,"quantity_after":4.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7048,"order_name":"Order #18052 - Abida Shahid","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7037,"order_name":"Order #18020 - Mian Iftikhar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":1.5,"quantity_after":1.5,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7014,"order_name":"Order #18043 - Mrs younus Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6871,"order_name":"Order #SH-16117 - Iqra bilal Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7017,"order_name":"Order #18040 - Muzafar jilani","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7012,"order_name":"Order #18045 - Muhammad Ali","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7028,"order_name":"Order #18029 - Taimur Nizami","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7035,"order_name":"Order #18022 - Sarwat Hamid","quantity_before":6.0,"quantity_after":6.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7052,"order_name":"Order #SH-15871 - Ayesha Akbar","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7048,"order_name":"Order #18052 - Abida Shahid","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7017,"order_name":"Order #18040 - Muzafar jilani","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7011,"order_name":"Order #18046 - Iqra Aftab","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7019,"order_name":"Order #18038 - Huma Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7029,"order_name":"Order #18028 - Mrs Faisal","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7030,"order_name":"Order #18027 - Mrs Nasir","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7038,"order_name":"Order #18019 - Hassam Waheed","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6850,"order_name":"Order #17857 - Bismah Adam","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7010,"order_name":"Order #18048 - Ali nizami","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7012,"order_name":"Order #18045 - Muhammad Ali","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7013,"order_name":"Order #18044 - Saeeda begum Kafeel","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7014,"order_name":"Order #18043 - Mrs younus Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7007,"order_name":"Order #18001 - Sadaf Sadaf madeem","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":0.97,"quantity_after":0.97,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7017,"order_name":"Order #18040 - Muzafar jilani","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7044,"order_name":"Order #18012 - Nasreen Saeed","quantity_before":4.0,"quantity_after":4.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7000,"order_name":"Order #18008 - Romana Changezi","quantity_before":4.0,"quantity_after":4.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7003,"order_name":"Order #18005 - Qasim Rahman Syed","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7047,"order_name":"Order #18051 - Anum Bilal","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7019,"order_name":"Order #18038 - Huma Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7020,"order_name":"Order #18037 - Cdre M Afsar khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7044,"order_name":"Order #18012 - Nasreen Saeed","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6733,"order_name":"Order #SH-16040 - Test Order 3","quantity_before":2.0,"quantity_after":2.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7020,"order_name":"Order #18037 - Cdre M Afsar khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7015,"order_name":"Order #18042 - Fasih Khan","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":7025,"order_name":"Order #18032 - Haseeb Saulat","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: 🔧 finalizeNode on order node {"order_id":6816,"order_name":"Order #17823 - Mrs Umar Siddiqi","quantity_before":1.0,"quantity_after":1.0,"has_children":false} 
+[2025-12-18 11:30:28] local.DEBUG: Open Quantities Tree - After primary builder {"root_count":6,"root_nodes":[{"name":"Beef","field":"attribute_1","level":0,"quantity":111.58,"children_count":10},{"name":"Chicken","field":"attribute_1","level":0,"quantity":70.63,"children_count":9},{"name":"Mutton","field":"attribute_1","level":0,"quantity":56.93,"children_count":16}]} 
+[2025-12-18 11:30:28] local.INFO: Quantities tree built successfully {"root_nodes":6,"hierarchy":["attribute_1","attribute_2","attribute_3","product_name","orders"],"total_orders":70,"total_line_items":173,"level_0_count":6,"level_1_count":42,"level_2_count":69,"level_3_count":69} 
+[2025-12-18 11:30:28] local.DEBUG: 📦 Sample product with orders in final tree {"product_name":"Veal Sirloin Steak Cut per kg (200 to 250 gms steak) - Net weight","product_quantity":3.0,"order_count":2,"first_order_name":"Order #SH-15871 - Ayesha Akbar","first_order_quantity":1.0,"first_order_id":7052,"second_order_name":"Order #18041 - Haris Anees","second_order_quantity":2.0,"second_order_id":7016} 
+[2025-12-18 11:30:28] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2025-12-18 11:30:28] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?, ?) and `o`.`order_date` >= ?","bindings":["","","","shopify","delivered","completed","cancelled","refunded","2025-11-28 11:30:28"]} 
+[2025-12-18 11:30:28] local.DEBUG: Open Quantities Mobile - Results: {"count":6,"first_item":{"stdClass":{"name":"Chicken","quantity":"70.630","lean_quantity":"37.000","non_lean_quantity":"33.630","processing_quantity":"2.150","prepared_quantity":"0.000","order_count":24,"product_count":22}}} 
+[2025-12-18 11:30:51] local.INFO: Logout attempt {"has_token":true,"has_user":true,"user_id":68,"user_name":"Taimur","expects_json":true} 
+[2025-12-18 11:30:51] local.INFO: Logout successful {"user_id":68,"user_name":"Taimur","tokens_before":10,"tokens_after":0} 
+[2025-12-18 11:31:05] local.INFO: Mobile permissions fetched {"user_id":70,"user_name":"Asim Tahir - Indrive","roles_count":1,"permissions":[],"has_store_mode":false,"expense_backdate_days":0} 

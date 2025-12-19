@@ -56,6 +56,7 @@ class OrderModel extends BaseModel
         'raw_products_text',
         'converted',
         'ledger_transaction_id',
+        'delivery_priority', // ⭐ Delivery sequence priority (1=first, 2=second, etc)
         'created_by',
         'updated_by'
     ];
@@ -67,6 +68,7 @@ class OrderModel extends BaseModel
         'shipping_total' => 'decimal:2',
         'total_tax' => 'decimal:2',
         'tip_amount' => 'decimal:2',
+        'delivery_priority' => 'integer',
         'total_price' => 'decimal:2',
         'total_weight' => 'integer',
         'converted' => 'boolean',

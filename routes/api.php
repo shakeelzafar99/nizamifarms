@@ -155,6 +155,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/assign-rider', [\App\Http\Controllers\API\RiderController::class, 'assignRiderToOrder']);
     Route::post('/store/update-status', [\App\Http\Controllers\API\RiderController::class, 'updateOrderStatus']);
     Route::post('/store/update-packets', [\App\Http\Controllers\API\RiderController::class, 'updatePacketInfo']);
+    Route::post('/store/update-delivery-priorities', [\App\Http\Controllers\API\RiderController::class, 'updateDeliveryPriorities']); // ⭐ Set delivery sequence
     
     // Store Mode - Open Order Quantities
     Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);

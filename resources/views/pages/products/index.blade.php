@@ -700,6 +700,105 @@ tr.bg-indigo-50:hover {
     </div>
 </div>
 
+<!-- Bulk Category Assignment Modal -->
+<div id="bulkCategoryModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1001;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 95vw; max-height: 90vh; overflow: hidden; width: 700px; display: flex; flex-direction: column;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 id="bulkCategoryModalTitle" style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">📁 Bulk Assign Categories</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;">Assign categories to multiple products at once. Leave a dropdown unchanged to keep existing values.</p>
+        </div>
+        
+        <div style="flex: 1; overflow-y: auto; padding: 20px;">
+            <!-- Selection Info -->
+            <div id="bulkCategorySelectionInfo" style="margin-bottom: 16px; padding: 12px 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; display: none;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <i class="ki-filled ki-information-2 text-blue-500"></i>
+                    <span id="bulkCategorySelectionText" style="font-size: 13px; color: #0369a1;"></span>
+                </div>
+            </div>
+            
+            <!-- Current Categories Summary -->
+            <div id="bulkCategoryCurrentSummary" style="margin-bottom: 20px; padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+                <div style="font-weight: 600; color: #374151; margin-bottom: 8px;">📊 Current Category Distribution</div>
+                <div id="bulkCategorySummaryContent" style="font-size: 13px; color: #6b7280;">
+                    Loading category information...
+                </div>
+            </div>
+            
+            <!-- Category Assignment Form -->
+            <div style="display: grid; gap: 16px;">
+                <div style="background: #fefce8; border: 1px solid #fde047; border-radius: 8px; padding: 12px 16px;">
+                    <div style="display: flex; align-items: center; gap: 8px; color: #854d0e; font-size: 13px;">
+                        <i class="ki-filled ki-information-2"></i>
+                        <span><strong>Note:</strong> Only categories you explicitly select will be updated. Leave a dropdown on "Keep Existing" to preserve current values.</span>
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="form-label" style="font-weight: 600; color: #374151;">{{ $attributeLabels['1'] ?? 'Category Level 1' }}</label>
+                    <select id="bulkCategoryAttr1" class="select select-sm" style="width: 100%;">
+                        <option value="">— Keep Existing —</option>
+                        <option value="__clear__">❌ Clear (remove category)</option>
+                        @foreach($attribute1s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                    <p id="bulkCategoryAttr1Current" style="font-size: 12px; color: #6b7280; margin-top: 4px;"></p>
+                </div>
+                
+                <div>
+                    <label class="form-label" style="font-weight: 600; color: #374151;">{{ $attributeLabels['2'] ?? 'Category Level 2' }}</label>
+                    <select id="bulkCategoryAttr2" class="select select-sm" style="width: 100%;">
+                        <option value="">— Keep Existing —</option>
+                        <option value="__clear__">❌ Clear (remove category)</option>
+                        @foreach($attribute2s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                    <p id="bulkCategoryAttr2Current" style="font-size: 12px; color: #6b7280; margin-top: 4px;"></p>
+                </div>
+                
+                <div>
+                    <label class="form-label" style="font-weight: 600; color: #374151;">{{ $attributeLabels['3'] ?? 'Category Level 3' }}</label>
+                    <select id="bulkCategoryAttr3" class="select select-sm" style="width: 100%;">
+                        <option value="">— Keep Existing —</option>
+                        <option value="__clear__">❌ Clear (remove category)</option>
+                        @foreach($attribute3s as $val)
+                            <option value="{{ $val }}">{{ $val }}</option>
+                        @endforeach
+                    </select>
+                    <p id="bulkCategoryAttr3Current" style="font-size: 12px; color: #6b7280; margin-top: 4px;"></p>
+                </div>
+            </div>
+        </div>
+        
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 12px;">
+            <button onclick="closeModal('bulkCategoryModal')" class="kt-btn kt-btn-light">Cancel</button>
+            <button onclick="previewBulkCategoryChanges()" class="kt-btn kt-btn-secondary" style="background-color: #6366f1; color: white;">Preview Changes</button>
+            <button onclick="applyBulkCategoryChanges()" class="kt-btn kt-btn-primary">Apply Now</button>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Category Preview Modal -->
+<div id="bulkCategoryPreviewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1002;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); max-width: 95vw; max-height: 90vh; overflow: hidden; width: 900px; display: flex; flex-direction: column;">
+        <div style="padding: 24px; border-bottom: 1px solid #e5e7eb;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">👁️ Preview Category Changes</h3>
+            <p style="margin: 8px 0 0 0; color: #6b7280; font-size: 13px;" id="bulkCategoryPreviewSubtitle">Review changes before applying</p>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding: 20px;">
+            <div id="bulkCategoryPreviewContent">
+                <!-- Content will be dynamically inserted here -->
+            </div>
+        </div>
+        <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; display: flex; justify-content: space-between;">
+            <button onclick="closeModal('bulkCategoryPreviewModal')" class="kt-btn kt-btn-light">← Back to Edit</button>
+            <button onclick="confirmBulkCategoryChanges()" class="kt-btn kt-btn-primary">✅ Confirm & Apply Changes</button>
+        </div>
+    </div>
+</div>
+
 <script>
 // Open unified import modal
 function openImportModal() {
@@ -1725,7 +1824,16 @@ function updateSelectionBar() {
                 font-size: 13px; cursor: pointer; transition: all 0.2s;
             " onmouseover="this.style.background='#f0f0ff'" onmouseout="this.style.background='white'">
                 <i class="ki-filled ki-price-tag"></i>
-                Bulk Update Prices
+                Prices
+            </button>
+            <button onclick="openBulkCategoryModalForSelected()" style="
+                display: flex; align-items: center; gap: 6px;
+                padding: 8px 16px; background: white; color: #667eea;
+                border: none; border-radius: 8px; font-weight: 600;
+                font-size: 13px; cursor: pointer; transition: all 0.2s;
+            " onmouseover="this.style.background='#f0f0ff'" onmouseout="this.style.background='white'">
+                <i class="ki-filled ki-category"></i>
+                Categories
             </button>
             <button onclick="clearProductSelection()" style="
                 display: flex; align-items: center; justify-content: center;
@@ -2548,6 +2656,392 @@ function submitBulkWeightFactor() {
     .catch(err => {
         console.error('Bulk weight factor error', err);
         alert('Network error occurred while updating weight factor.');
+    });
+}
+
+// =============================================
+// BULK CATEGORY ASSIGNMENT FUNCTIONS
+// =============================================
+
+// Store category modal state
+let bulkCategorySelectedProductIds = null;
+let bulkCategorySelectAllMatching = false;
+let bulkCategoryCurrentFilters = null;
+let bulkCategoryPreviewData = null;
+
+function openBulkCategoryModalForSelected() {
+    if (selectedProductIds.size === 0 && !selectAllMatchingMode) {
+        alert('Please select at least one product.');
+        return;
+    }
+    
+    // Determine selection count
+    const selectionCount = selectAllMatchingMode ? totalMatchingProducts : selectedProductIds.size;
+    
+    // Store selection mode and data
+    if (selectAllMatchingMode) {
+        bulkCategorySelectedProductIds = null;
+        bulkCategorySelectAllMatching = true;
+        bulkCategoryCurrentFilters = getCurrentFilterParams();
+    } else {
+        bulkCategorySelectedProductIds = Array.from(selectedProductIds);
+        bulkCategorySelectAllMatching = false;
+        bulkCategoryCurrentFilters = null;
+    }
+    
+    // Show the modal
+    const modal = document.getElementById('bulkCategoryModal');
+    modal.style.display = 'block';
+    
+    // Update modal title
+    const modalTitle = document.getElementById('bulkCategoryModalTitle');
+    const countLabel = selectAllMatchingMode ? `All ${selectionCount} matching` : selectionCount;
+    modalTitle.innerHTML = `📁 Bulk Assign Categories <span style="font-size: 14px; font-weight: 500; color: #6366f1; margin-left: 8px;">(${countLabel} products)</span>`;
+    
+    // Show selection info
+    const selectionInfo = document.getElementById('bulkCategorySelectionInfo');
+    const selectionText = document.getElementById('bulkCategorySelectionText');
+    selectionInfo.style.display = 'block';
+    
+    if (selectAllMatchingMode) {
+        selectionText.innerHTML = `Using current filters to target <strong>${selectionCount}</strong> matching products.`;
+    } else {
+        selectionText.innerHTML = `Applying changes to <strong>${selectionCount}</strong> selected product${selectionCount > 1 ? 's' : ''}.`;
+    }
+    
+    // Reset dropdowns to "Keep Existing"
+    document.getElementById('bulkCategoryAttr1').value = '';
+    document.getElementById('bulkCategoryAttr2').value = '';
+    document.getElementById('bulkCategoryAttr3').value = '';
+    
+    // Load current category distribution
+    loadBulkCategorySummary();
+}
+
+function loadBulkCategorySummary() {
+    const summaryContent = document.getElementById('bulkCategorySummaryContent');
+    summaryContent.innerHTML = '<span style="color: #6b7280;">Loading category information...</span>';
+    
+    // Build request payload
+    const payload = {};
+    if (bulkCategorySelectAllMatching && bulkCategoryCurrentFilters) {
+        Object.assign(payload, bulkCategoryCurrentFilters);
+    } else if (bulkCategorySelectedProductIds) {
+        payload.product_ids = bulkCategorySelectedProductIds;
+    }
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    
+    fetch('/products/bulk-category-summary', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            renderCategorySummary(data);
+        } else {
+            summaryContent.innerHTML = '<span style="color: #ef4444;">Failed to load category summary.</span>';
+        }
+    })
+    .catch(err => {
+        console.error('Error loading category summary:', err);
+        summaryContent.innerHTML = '<span style="color: #ef4444;">Error loading category summary.</span>';
+    });
+}
+
+function renderCategorySummary(data) {
+    const summaryContent = document.getElementById('bulkCategorySummaryContent');
+    
+    // Build summary HTML
+    let html = `<div style="display: grid; gap: 12px;">`;
+    
+    // Category Level 1
+    html += `<div>
+        <div style="font-weight: 500; color: #374151; margin-bottom: 4px;">{{ $attributeLabels['1'] ?? 'Category Level 1' }}:</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px;">`;
+    if (data.attribute_1 && Object.keys(data.attribute_1).length > 0) {
+        for (const [value, count] of Object.entries(data.attribute_1)) {
+            html += `<span style="display: inline-flex; align-items: center; padding: 2px 8px; background: #dbeafe; color: #1e40af; border-radius: 4px; font-size: 12px;">
+                ${value || '(empty)'} <span style="margin-left: 4px; background: #1e40af; color: white; padding: 0 4px; border-radius: 2px;">${count}</span>
+            </span>`;
+        }
+    } else {
+        html += `<span style="color: #9ca3af; font-size: 12px;">No values assigned</span>`;
+    }
+    html += `</div></div>`;
+    
+    // Category Level 2
+    html += `<div>
+        <div style="font-weight: 500; color: #374151; margin-bottom: 4px;">{{ $attributeLabels['2'] ?? 'Category Level 2' }}:</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px;">`;
+    if (data.attribute_2 && Object.keys(data.attribute_2).length > 0) {
+        for (const [value, count] of Object.entries(data.attribute_2)) {
+            html += `<span style="display: inline-flex; align-items: center; padding: 2px 8px; background: #dcfce7; color: #166534; border-radius: 4px; font-size: 12px;">
+                ${value || '(empty)'} <span style="margin-left: 4px; background: #166534; color: white; padding: 0 4px; border-radius: 2px;">${count}</span>
+            </span>`;
+        }
+    } else {
+        html += `<span style="color: #9ca3af; font-size: 12px;">No values assigned</span>`;
+    }
+    html += `</div></div>`;
+    
+    // Category Level 3
+    html += `<div>
+        <div style="font-weight: 500; color: #374151; margin-bottom: 4px;">{{ $attributeLabels['3'] ?? 'Category Level 3' }}:</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 6px;">`;
+    if (data.attribute_3 && Object.keys(data.attribute_3).length > 0) {
+        for (const [value, count] of Object.entries(data.attribute_3)) {
+            html += `<span style="display: inline-flex; align-items: center; padding: 2px 8px; background: #fef3c7; color: #92400e; border-radius: 4px; font-size: 12px;">
+                ${value || '(empty)'} <span style="margin-left: 4px; background: #92400e; color: white; padding: 0 4px; border-radius: 2px;">${count}</span>
+            </span>`;
+        }
+    } else {
+        html += `<span style="color: #9ca3af; font-size: 12px;">No values assigned</span>`;
+    }
+    html += `</div></div>`;
+    
+    html += `</div>`;
+    
+    summaryContent.innerHTML = html;
+    
+    // Update hints below each dropdown
+    updateCategoryDropdownHints(data);
+}
+
+function updateCategoryDropdownHints(data) {
+    // Helper to get top values
+    const getTopValues = (obj) => {
+        if (!obj || Object.keys(obj).length === 0) return 'None assigned';
+        const entries = Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        return entries.map(([val, cnt]) => `${val || '(empty)'}: ${cnt}`).join(', ');
+    };
+    
+    document.getElementById('bulkCategoryAttr1Current').textContent = `Current: ${getTopValues(data.attribute_1)}`;
+    document.getElementById('bulkCategoryAttr2Current').textContent = `Current: ${getTopValues(data.attribute_2)}`;
+    document.getElementById('bulkCategoryAttr3Current').textContent = `Current: ${getTopValues(data.attribute_3)}`;
+}
+
+function previewBulkCategoryChanges() {
+    const attr1 = document.getElementById('bulkCategoryAttr1').value;
+    const attr2 = document.getElementById('bulkCategoryAttr2').value;
+    const attr3 = document.getElementById('bulkCategoryAttr3').value;
+    
+    // Check if any changes are selected
+    if (!attr1 && !attr2 && !attr3) {
+        alert('Please select at least one category to change.');
+        return;
+    }
+    
+    // Build request payload
+    const payload = {
+        attribute_1: attr1 || null,
+        attribute_2: attr2 || null,
+        attribute_3: attr3 || null
+    };
+    
+    if (bulkCategorySelectAllMatching && bulkCategoryCurrentFilters) {
+        Object.assign(payload, bulkCategoryCurrentFilters);
+    } else if (bulkCategorySelectedProductIds) {
+        payload.product_ids = bulkCategorySelectedProductIds;
+    }
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    const previewContent = document.getElementById('bulkCategoryPreviewContent');
+    previewContent.innerHTML = '<div style="text-align: center; padding: 40px; color: #6b7280;">Loading preview...</div>';
+    
+    // Show preview modal
+    document.getElementById('bulkCategoryPreviewModal').style.display = 'block';
+    
+    fetch('/products/bulk-category-preview', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            bulkCategoryPreviewData = data;
+            renderCategoryPreview(data);
+        } else {
+            previewContent.innerHTML = `<div style="text-align: center; padding: 40px; color: #ef4444;">Failed to generate preview: ${data.message || 'Unknown error'}</div>`;
+        }
+    })
+    .catch(err => {
+        console.error('Error generating preview:', err);
+        previewContent.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error generating preview.</div>';
+    });
+}
+
+function renderCategoryPreview(data) {
+    const previewContent = document.getElementById('bulkCategoryPreviewContent');
+    const subtitle = document.getElementById('bulkCategoryPreviewSubtitle');
+    
+    subtitle.textContent = `${data.affected_count} products will be updated`;
+    
+    let html = `
+        <div style="margin-bottom: 16px; padding: 12px 16px; background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px; color: #166534;">
+                <i class="ki-filled ki-check-circle"></i>
+                <span><strong>${data.affected_count}</strong> products will have their categories updated.</span>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+            <h4 style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600; color: #374151;">Changes to Apply:</h4>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+    `;
+    
+    if (data.changes.attribute_1 !== undefined) {
+        const newVal = data.changes.attribute_1 === null ? '(Clear)' : data.changes.attribute_1;
+        html += `<span style="display: inline-flex; align-items: center; padding: 4px 12px; background: #dbeafe; color: #1e40af; border-radius: 6px; font-size: 13px;">
+            <strong>{{ $attributeLabels['1'] ?? 'Category Level 1' }}:</strong>&nbsp;${newVal}
+        </span>`;
+    }
+    if (data.changes.attribute_2 !== undefined) {
+        const newVal = data.changes.attribute_2 === null ? '(Clear)' : data.changes.attribute_2;
+        html += `<span style="display: inline-flex; align-items: center; padding: 4px 12px; background: #dcfce7; color: #166534; border-radius: 6px; font-size: 13px;">
+            <strong>{{ $attributeLabels['2'] ?? 'Category Level 2' }}:</strong>&nbsp;${newVal}
+        </span>`;
+    }
+    if (data.changes.attribute_3 !== undefined) {
+        const newVal = data.changes.attribute_3 === null ? '(Clear)' : data.changes.attribute_3;
+        html += `<span style="display: inline-flex; align-items: center; padding: 4px 12px; background: #fef3c7; color: #92400e; border-radius: 6px; font-size: 13px;">
+            <strong>{{ $attributeLabels['3'] ?? 'Category Level 3' }}:</strong>&nbsp;${newVal}
+        </span>`;
+    }
+    
+    html += `</div></div>`;
+    
+    // Show sample of affected products
+    if (data.sample_products && data.sample_products.length > 0) {
+        html += `
+            <h4 style="margin: 16px 0 8px 0; font-size: 14px; font-weight: 600; color: #374151;">Sample Products (showing up to 20):</h4>
+            <div style="border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead>
+                        <tr style="background: #f8fafc;">
+                            <th style="padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 1px solid #e5e7eb;">Product</th>
+                            <th style="padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 1px solid #e5e7eb;">{{ $attributeLabels['1'] ?? 'Cat 1' }}</th>
+                            <th style="padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 1px solid #e5e7eb;">{{ $attributeLabels['2'] ?? 'Cat 2' }}</th>
+                            <th style="padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 1px solid #e5e7eb;">{{ $attributeLabels['3'] ?? 'Cat 3' }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+        
+        data.sample_products.forEach((product, idx) => {
+            const bgColor = idx % 2 === 0 ? 'white' : '#f9fafb';
+            const renderCell = (current, newVal, hasChange) => {
+                if (!hasChange) return current || '<span style="color: #9ca3af;">—</span>';
+                const newDisplay = newVal === null ? '<span style="color: #ef4444;">(cleared)</span>' : newVal;
+                return `<span style="text-decoration: line-through; color: #9ca3af;">${current || '—'}</span> → <span style="color: #059669; font-weight: 500;">${newDisplay}</span>`;
+            };
+            
+            html += `
+                <tr style="background: ${bgColor};">
+                    <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6;">
+                        <div style="font-weight: 500; color: #111827;">${product.name}</div>
+                        <div style="font-size: 11px; color: #6b7280;">${product.sku || 'No SKU'}</div>
+                    </td>
+                    <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6;">${renderCell(product.attribute_1, data.changes.attribute_1, data.changes.attribute_1 !== undefined)}</td>
+                    <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6;">${renderCell(product.attribute_2, data.changes.attribute_2, data.changes.attribute_2 !== undefined)}</td>
+                    <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6;">${renderCell(product.attribute_3, data.changes.attribute_3, data.changes.attribute_3 !== undefined)}</td>
+                </tr>
+            `;
+        });
+        
+        html += `</tbody></table></div>`;
+        
+        if (data.affected_count > data.sample_products.length) {
+            html += `<p style="margin-top: 8px; font-size: 12px; color: #6b7280; text-align: center;">... and ${data.affected_count - data.sample_products.length} more products</p>`;
+        }
+    }
+    
+    previewContent.innerHTML = html;
+}
+
+function confirmBulkCategoryChanges() {
+    if (!bulkCategoryPreviewData) {
+        alert('Please preview changes first.');
+        return;
+    }
+    
+    applyBulkCategoryChanges(true);
+}
+
+function applyBulkCategoryChanges(skipConfirm = false) {
+    const attr1 = document.getElementById('bulkCategoryAttr1').value;
+    const attr2 = document.getElementById('bulkCategoryAttr2').value;
+    const attr3 = document.getElementById('bulkCategoryAttr3').value;
+    
+    // Check if any changes are selected
+    if (!attr1 && !attr2 && !attr3) {
+        alert('Please select at least one category to change.');
+        return;
+    }
+    
+    if (!skipConfirm) {
+        const confirmMsg = 'Are you sure you want to apply these category changes? This cannot be undone.';
+        if (!confirm(confirmMsg)) return;
+    }
+    
+    // Build request payload
+    const payload = {
+        attribute_1: attr1 || null,
+        attribute_2: attr2 || null,
+        attribute_3: attr3 || null
+    };
+    
+    if (bulkCategorySelectAllMatching && bulkCategoryCurrentFilters) {
+        Object.assign(payload, bulkCategoryCurrentFilters);
+    } else if (bulkCategorySelectedProductIds) {
+        payload.product_ids = bulkCategorySelectedProductIds;
+    }
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    
+    fetch('/products/bulk-category-apply', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Close modals
+            closeModal('bulkCategoryPreviewModal');
+            closeModal('bulkCategoryModal');
+            
+            // Show success message
+            alert(`✅ Success! Updated categories for ${data.affected_count} products.`);
+            
+            // Clear selection and refresh table
+            clearProductSelection();
+            performSearch();
+        } else {
+            alert('❌ Failed to apply changes: ' + (data.message || 'Unknown error'));
+        }
+    })
+    .catch(err => {
+        console.error('Error applying category changes:', err);
+        alert('❌ Network error occurred while applying changes.');
     });
 }
 

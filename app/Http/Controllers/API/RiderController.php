@@ -22,6 +22,50 @@ use App\Services\LocationService;
 class RiderController extends Controller
 {
     /**
+     * Parse coordinates from a Google Maps URL
+     * Handles various URL formats:
+     * - https://www.google.com/maps?q=33.6844,73.0479
+     * - https://maps.google.com/?ll=33.6844,73.0479
+     * - https://www.google.com/maps/place/.../@33.6844,73.0479,15z
+     * - https://www.google.com/maps/@33.6844,73.0479,15z
+     * 
+     * @param string|null $url The Google Maps URL
+     * @return array|null ['latitude' => float, 'longitude' => float] or null if parsing fails
+     */
+    private function parseCoordinatesFromGoogleMapsUrl(?string $url): ?array
+    {
+        if (empty($url)) {
+            return null;
+        }
+        
+        // Pattern 1: ?q=lat,lng or ?ll=lat,lng
+        if (preg_match('/[?&](q|ll)=(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
+            return [
+                'latitude' => (float) $matches[2],
+                'longitude' => (float) $matches[3],
+            ];
+        }
+        
+        // Pattern 2: @lat,lng in URL path (e.g., /maps/@33.6844,73.0479,15z or /maps/place/.../@33.6844,73.0479,15z)
+        if (preg_match('/@(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
+            return [
+                'latitude' => (float) $matches[1],
+                'longitude' => (float) $matches[2],
+            ];
+        }
+        
+        // Pattern 3: place/lat,lng format
+        if (preg_match('/place\/(-?\d+\.?\d*),(-?\d+\.?\d*)/', $url, $matches)) {
+            return [
+                'latitude' => (float) $matches[1],
+                'longitude' => (float) $matches[2],
+            ];
+        }
+        
+        return null;
+    }
+
+    /**
      * Get dashboard summary for logged-in rider
      * Returns: order counts, ledger balance, pending requests, attendance status
      */
@@ -285,8 +329,65 @@ class RiderController extends Controller
     }
 
     /**
+     * Resolve a shortened Google Maps URL to get the final URL with coordinates
+     * Follows redirects for goo.gl, maps.app.goo.gl, etc.
+     * 
+     * @param string $url The potentially shortened URL
+     * @return string The resolved URL (or original if resolution fails)
+     */
+    private function resolveGoogleMapsUrl(string $url): string
+    {
+        // Check if this is a shortened URL that needs resolution
+        $shortenedDomains = ['goo.gl', 'maps.app.goo.gl', 'g.co', 'maps.google.com/goo.gl'];
+        $needsResolution = false;
+        
+        foreach ($shortenedDomains as $domain) {
+            if (stripos($url, $domain) !== false) {
+                $needsResolution = true;
+                break;
+            }
+        }
+        
+        if (!$needsResolution) {
+            return $url;
+        }
+        
+        try {
+            // Use cURL to follow redirects and get final URL
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HEADER, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+            
+            curl_exec($ch);
+            $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            if ($httpCode >= 200 && $httpCode < 400 && !empty($finalUrl)) {
+                \Log::info('Resolved shortened Google Maps URL', [
+                    'original' => $url,
+                    'resolved' => $finalUrl,
+                ]);
+                return $finalUrl;
+            }
+        } catch (\Exception $e) {
+            \Log::warning('Failed to resolve shortened URL', [
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        
+        return $url;
+    }
+
+    /**
      * Set verified location for a customer
      * Accepts either coordinates OR Google Maps URL
+     * For shortened URLs (goo.gl, maps.app.goo.gl), automatically resolves and extracts coordinates
      */
     public function setCustomerVerifiedLocation(Request $request, $customerId)
     {
@@ -322,23 +423,55 @@ class RiderController extends Controller
             ];
             
             if (!empty($validated['url'])) {
-                // URL provided - store it
-                $updateData['verified_location_url'] = $validated['url'];
-                \Log::info('Setting verified location URL for customer', [
-                    'customer_id' => $customerId,
-                    'url' => $validated['url'],
-                    'saved_by' => Auth::user()->fullname,
-                ]);
+                // URL provided - resolve if shortened and extract coordinates
+                $originalUrl = $validated['url'];
+                $resolvedUrl = $this->resolveGoogleMapsUrl($originalUrl);
+                
+                // Store the original URL (user-provided)
+                $updateData['verified_location_url'] = $originalUrl;
+                
+                // Try to parse coordinates from the resolved URL
+                $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($resolvedUrl);
+                
+                if ($parsedCoords) {
+                    // Successfully extracted coordinates - save them too!
+                    $updateData['latitude'] = $parsedCoords['latitude'];
+                    $updateData['longitude'] = $parsedCoords['longitude'];
+                    
+                    \Log::info('Setting verified location from URL with extracted coordinates', [
+                        'customer_id' => $customerId,
+                        'original_url' => $originalUrl,
+                        'resolved_url' => $resolvedUrl,
+                        'latitude' => $parsedCoords['latitude'],
+                        'longitude' => $parsedCoords['longitude'],
+                        'saved_by' => Auth::user()->fullname,
+                    ]);
+                } else {
+                    \Log::info('Setting verified location URL (coordinates not extracted)', [
+                        'customer_id' => $customerId,
+                        'url' => $originalUrl,
+                        'resolved_url' => $resolvedUrl,
+                        'saved_by' => Auth::user()->fullname,
+                    ]);
+                }
             }
             
             if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
-                // Coordinates provided - store them
+                // Coordinates provided directly - store them (overrides URL-extracted coords)
                 $updateData['latitude'] = $validated['latitude'];
                 $updateData['longitude'] = $validated['longitude'];
+                
+                // If no URL was provided in this request, clear the old URL
+                // This ensures "View Location" shows the new pin location, not the old URL
+                if (empty($validated['url'])) {
+                    $updateData['verified_location_url'] = null;
+                }
+                
                 \Log::info('Setting verified location coordinates for customer', [
                     'customer_id' => $customerId,
                     'latitude' => $validated['latitude'],
                     'longitude' => $validated['longitude'],
+                    'cleared_old_url' => empty($validated['url']),
                     'saved_by' => Auth::user()->fullname,
                 ]);
             }
@@ -676,32 +809,25 @@ class RiderController extends Controller
                 ]);
             }
 
-            // Use the account's current_balance (same as web app)
-            // This is the single source of truth - it includes opening balance
-            // and is automatically updated when transactions are approved/reversed
-            $balance = $account->current_balance;
+            // Use CALCULATED balance for employee_cash accounts
+            // This excludes salary/personal transactions - only tracks company cash held
+            $balance = $account->getCalculatedBalance();
 
-            // Get recent transactions (last 30 days)
-            $recentTransactions = \App\Models\FIN\LedgerModel::where(function($q) use ($account) {
-                $q->where('from_account_id', $account->id)
-                  ->orWhere('to_account_id', $account->id);
-            })
-            ->where('transaction_date', '>=', now()->subDays(30))
-            ->orderBy('transaction_date', 'desc')
-            ->limit(20)
-            ->get()
-            ->map(function($txn) use ($account) {
-                return [
-                    'id' => $txn->id,
-                    'date' => $txn->transaction_date->format('Y-m-d'),
-                    'type' => $txn->transaction_type,
-                    'description' => $txn->description,
-                    'amount' => $txn->amount,
-                    'amount_formatted' => 'Rs. ' . number_format($txn->amount, 2),
-                    'is_debit' => $txn->from_account_id == $account->id,
-                    'is_credit' => $txn->to_account_id == $account->id,
-                ];
-            });
+            // Get recent transactions that affect balance (last 30 days)
+            // For employee_cash: excludes salary_payment, salary_advance, etc.
+            $recentTransactions = $account->getBalanceAffectingTransactions(30)
+                ->map(function($txn) use ($account) {
+                    return [
+                        'id' => $txn->id,
+                        'date' => $txn->transaction_date->format('Y-m-d'),
+                        'type' => $txn->transaction_type,
+                        'description' => $txn->description,
+                        'amount' => $txn->amount,
+                        'amount_formatted' => 'Rs. ' . number_format($txn->amount, 0),
+                        'is_debit' => $txn->from_account_id == $account->id,
+                        'is_credit' => $txn->to_account_id == $account->id,
+                    ];
+                });
 
             // Get outstanding invoices count and total
             // IMPORTANT: Include both 'open' and 'partial' statuses, exclude REVERSED transactions
@@ -3783,11 +3909,41 @@ class RiderController extends Controller
                 $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: 'Unknown';
             }
                 
-                // Check if customer has verified location
+                // Check if customer has verified location and build verified_location object
                 $hasVerifiedLocation = false;
+                $verifiedLocation = null;
                 if ($order->customer) {
-                    $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
-                                        || !empty($order->customer->verified_location_url);
+                    $hasCoords = !empty($order->customer->latitude) && !empty($order->customer->longitude);
+                    $hasUrl = !empty($order->customer->verified_location_url);
+                    $hasVerifiedLocation = $hasCoords || $hasUrl;
+                    
+                    if ($hasVerifiedLocation) {
+                        // Get coordinates: prioritize stored coords, else parse from URL
+                        $lat = $order->customer->latitude ? (float)$order->customer->latitude : null;
+                        $lng = $order->customer->longitude ? (float)$order->customer->longitude : null;
+                        
+                        // If no stored coords but URL exists, try to parse coords from URL
+                        if ((!$lat || !$lng) && $hasUrl) {
+                            $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($order->customer->verified_location_url);
+                            if ($parsedCoords) {
+                                $lat = $parsedCoords['latitude'];
+                                $lng = $parsedCoords['longitude'];
+                            }
+                        }
+                        
+                        // Build google_maps_url: prioritize stored URL, else construct from coordinates
+                        $googleMapsUrl = $order->customer->verified_location_url;
+                        if (!$googleMapsUrl && $lat && $lng) {
+                            $googleMapsUrl = "https://www.google.com/maps?q={$lat},{$lng}";
+                        }
+                        
+                        $verifiedLocation = [
+                            'latitude' => $lat,
+                            'longitude' => $lng,
+                            'url' => $order->customer->verified_location_url ?? null,
+                            'google_maps_url' => $googleMapsUrl,
+                        ];
+                    }
                 }
                 
                 // Generate invoice URLs
@@ -3816,6 +3972,7 @@ class RiderController extends Controller
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
                     'has_verified_location' => $hasVerifiedLocation,
+                    'verified_location' => $verifiedLocation,
                     'assigned_rider' => $order->assignedRider ? [
                         'id' => $order->assignedRider->id,
                         'name' => $order->assignedRider->fullname,
@@ -3899,7 +4056,7 @@ class RiderController extends Controller
             // Build optimized query - load line items for immediate "mark prepared" functionality
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
-                    $q->select('id', 'first_name', 'last_name', 'latitude', 'longitude', 'verified_location_url');
+                    $q->select('id', 'first_name', 'last_name', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -3942,11 +4099,41 @@ class RiderController extends Controller
                     $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: 'Unknown';
                 }
                 
-                // Check verified location
+                // Check verified location and build verified_location object
                 $hasVerifiedLocation = false;
+                $verifiedLocation = null;
                 if ($order->customer) {
-                    $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
-                                        || !empty($order->customer->verified_location_url);
+                    $hasCoords = !empty($order->customer->latitude) && !empty($order->customer->longitude);
+                    $hasUrl = !empty($order->customer->verified_location_url);
+                    $hasVerifiedLocation = $hasCoords || $hasUrl;
+                    
+                    if ($hasVerifiedLocation) {
+                        // Get coordinates: prioritize stored coords, else parse from URL
+                        $lat = $order->customer->latitude ? (float)$order->customer->latitude : null;
+                        $lng = $order->customer->longitude ? (float)$order->customer->longitude : null;
+                        
+                        // If no stored coords but URL exists, try to parse coords from URL
+                        if ((!$lat || !$lng) && $hasUrl) {
+                            $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($order->customer->verified_location_url);
+                            if ($parsedCoords) {
+                                $lat = $parsedCoords['latitude'];
+                                $lng = $parsedCoords['longitude'];
+                            }
+                        }
+                        
+                        // Build google_maps_url: prioritize stored URL, else construct from coordinates
+                        $googleMapsUrl = $order->customer->verified_location_url;
+                        if (!$googleMapsUrl && $lat && $lng) {
+                            $googleMapsUrl = "https://www.google.com/maps?q={$lat},{$lng}";
+                        }
+                        
+                        $verifiedLocation = [
+                            'latitude' => $lat,
+                            'longitude' => $lng,
+                            'url' => $order->customer->verified_location_url ?? null,
+                            'google_maps_url' => $googleMapsUrl,
+                        ];
+                    }
                 }
                 
                 // Get preparation summary from pre-fetched data
@@ -3958,6 +4145,7 @@ class RiderController extends Controller
                     'order_date' => $order->order_date,
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
+                    'delivery_priority' => $order->delivery_priority, // ⭐ Delivery sequence priority
                     'customer_id' => $order->customer_id, // Added for verified location functionality
                     'customer_name' => $customerName,
                     // Eager address/phone for immediate display on list
@@ -3978,6 +4166,14 @@ class RiderController extends Controller
                         'total_items' => $prepSummary->total ?? 0,
                     ],
                     'has_verified_location' => $hasVerifiedLocation,
+                    'verified_location' => $verifiedLocation,
+                    // ⭐ Customer location data for route map
+                    'customer' => $order->customer ? [
+                        'latitude' => $order->customer->latitude,
+                        'longitude' => $order->customer->longitude,
+                        'geocoded_latitude' => $order->customer->geocoded_latitude,
+                        'geocoded_longitude' => $order->customer->geocoded_longitude,
+                    ] : null,
                     'external_source' => $order->external_source,
                     'line_items' => $order->lineItems->map(function($item) {
                         return [
@@ -4227,11 +4423,41 @@ class RiderController extends Controller
                 $customerName = $order->customer->name ?? 'Unknown';
             }
             
-            // Check verified location
+            // Check verified location and build verified_location object
             $hasVerifiedLocation = false;
+            $verifiedLocation = null;
             if ($order->customer) {
-                $hasVerifiedLocation = !empty($order->customer->latitude) && !empty($order->customer->longitude) 
-                                    || !empty($order->customer->verified_location_url);
+                $hasCoords = !empty($order->customer->latitude) && !empty($order->customer->longitude);
+                $hasUrl = !empty($order->customer->verified_location_url);
+                $hasVerifiedLocation = $hasCoords || $hasUrl;
+                
+                if ($hasVerifiedLocation) {
+                    // Get coordinates: prioritize stored coords, else parse from URL
+                    $lat = $order->customer->latitude ? (float)$order->customer->latitude : null;
+                    $lng = $order->customer->longitude ? (float)$order->customer->longitude : null;
+                    
+                    // If no stored coords but URL exists, try to parse coords from URL
+                    if ((!$lat || !$lng) && $hasUrl) {
+                        $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($order->customer->verified_location_url);
+                        if ($parsedCoords) {
+                            $lat = $parsedCoords['latitude'];
+                            $lng = $parsedCoords['longitude'];
+                        }
+                    }
+                    
+                    // Build google_maps_url: prioritize stored URL, else construct from coordinates
+                    $googleMapsUrl = $order->customer->verified_location_url;
+                    if (!$googleMapsUrl && $lat && $lng) {
+                        $googleMapsUrl = "https://www.google.com/maps?q={$lat},{$lng}";
+                    }
+                    
+                    $verifiedLocation = [
+                        'latitude' => $lat,
+                        'longitude' => $lng,
+                        'url' => $order->customer->verified_location_url ?? null,
+                        'google_maps_url' => $googleMapsUrl,
+                    ];
+                }
             }
             
             // Generate invoice URLs
@@ -4258,6 +4484,7 @@ class RiderController extends Controller
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
                     'has_verified_location' => $hasVerifiedLocation,
+                    'verified_location' => $verifiedLocation,
                     'items_count' => $order->lineItems->count(),
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
@@ -6462,12 +6689,15 @@ class RiderController extends Controller
             $employeeAccounts = [];
             
             foreach ($accounts as $account) {
+                // Use effective balance: calculated for employee_cash, stored for others
+                $effectiveBalance = $account->getEffectiveBalance();
+                
                 $accountData = [
                     'id' => $account->id,
                     'account_code' => $account->account_code,
                     'account_name' => $account->account_name,
                     'account_category' => $account->account_category,
-                    'current_balance' => $account->current_balance,
+                    'current_balance' => $effectiveBalance,
                     'pending_actions' => $account->pending_actions,
                     'user_id' => $account->user_id,
                     'user_name' => $account->user ? ($account->user->fullname ?? $account->user->name) : null,
@@ -7368,6 +7598,9 @@ class RiderController extends Controller
                 ->where('approval_status', \App\Models\FIN\LedgerModel::STATUS_APPROVED)
                 ->sum('amount');
             
+            // Use effective balance: calculated for employee_cash, stored for others
+            $effectiveBalance = $account->getEffectiveBalance();
+            
             return response()->json([
                 'success' => true,
                 'account' => [
@@ -7375,14 +7608,14 @@ class RiderController extends Controller
                     'account_code' => $account->account_code,
                     'account_name' => $account->account_name,
                     'account_category' => $account->account_category,
-                    'current_balance' => $account->current_balance,
+                    'current_balance' => $effectiveBalance,
                     'user_id' => $account->user_id,
                     'user_name' => $account->user ? ($account->user->fullname ?? $account->user->name) : null,
                 ],
                 'summary' => [
                     'total_in' => $totalIn,
                     'total_out' => $totalOut,
-                    'current_balance' => $account->current_balance,
+                    'current_balance' => $effectiveBalance,
                 ],
                 'grouped_transactions' => $groupedTransactions,
             ]);
@@ -8428,6 +8661,95 @@ class RiderController extends Controller
                 'settlement_data' => $settlementData
             ]);
             throw $e;
+        }
+    }
+    
+    /**
+     * ⭐ Update delivery priorities for orders (Store Mode only)
+     * Used by store managers to set delivery sequence for a rider's out_for_delivery orders
+     */
+    public function updateDeliveryPriorities(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - must have store mode access
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to update delivery priorities'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'rider_id' => 'required|integer|exists:t_sys_user,id',
+                'priorities' => 'required|array',
+                'priorities.*.order_id' => 'required|integer|exists:t_crm_prod_order,id',
+                'priorities.*.priority' => 'required|integer|min:1',
+            ]);
+            
+            $riderId = $validated['rider_id'];
+            $priorities = $validated['priorities'];
+            $updatedCount = 0;
+            
+            \DB::beginTransaction();
+            
+            foreach ($priorities as $item) {
+                $order = OrderModel::where('id', $item['order_id'])
+                    ->where('assigned_rider_user_id', $riderId)
+                    ->where('order_status', 'out_for_delivery') // Only out_for_delivery orders
+                    ->first();
+                
+                if ($order) {
+                    $order->delivery_priority = $item['priority'];
+                    $order->save();
+                    $updatedCount++;
+                }
+            }
+            
+            \DB::commit();
+            
+            \Log::info('Delivery priorities updated (Store Mode)', [
+                'user_id' => $user->id,
+                'rider_id' => $riderId,
+                'orders_updated' => $updatedCount,
+                'total_priorities' => count($priorities)
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Updated priorities for {$updatedCount} orders",
+                'updated_count' => $updatedCount
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Error updating delivery priorities: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update delivery priorities: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Clear delivery priority when order status changes or rider is reassigned
+     * This should be called from OrderModel when status/rider changes
+     */
+    public static function clearDeliveryPriority($orderId)
+    {
+        try {
+            OrderModel::where('id', $orderId)->update(['delivery_priority' => null]);
+        } catch (\Exception $e) {
+            \Log::warning('Failed to clear delivery priority for order ' . $orderId . ': ' . $e->getMessage());
         }
     }
 }

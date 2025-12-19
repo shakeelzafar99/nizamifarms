@@ -961,3 +961,4 @@ SELECT 'Features: Order Source Classification (Shopify Converted vs Manual), Pro
 SELECT 'Run verification queries to test the views!' AS next_step;
 
 
+

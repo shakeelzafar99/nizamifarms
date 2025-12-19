@@ -34,6 +34,10 @@ class CustomerModel extends BaseModel
         'verified_location_url',
         'verified_location_saved_by',
         'verified_location_saved_at',
+        // Geocoded address coordinates (auto-generated from address)
+        'geocoded_latitude',
+        'geocoded_longitude',
+        'geocoded_at',
         'external_customer_ids',
         'first_order_date',
         'last_order_date',
@@ -54,6 +58,9 @@ class CustomerModel extends BaseModel
         'total_spent' => 'decimal:2',
         'latitude' => 'decimal:7',
         'longitude' => 'decimal:7',
+        'geocoded_latitude' => 'decimal:7',
+        'geocoded_longitude' => 'decimal:7',
+        'geocoded_at' => 'datetime',
         'is_active' => 'boolean',
         'total_orders' => 'integer'
     ];

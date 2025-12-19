@@ -246,5 +246,102 @@ class AccountModel extends BaseModel
     {
         return number_format($this->current_balance, 2);
     }
+
+    /**
+     * Transaction types to EXCLUDE from employee cash balance calculation.
+     * These are personal/HR payments, not company cash held by employee.
+     */
+    const EXCLUDED_EMPLOYEE_CASH_TYPES = [
+        'salary_payment',
+        'salary_advance',
+        'reimbursement_payment',
+        'reimbursement_accrual',
+    ];
+
+    /**
+     * Get calculated balance for employee_cash accounts.
+     * For employee_cash: Excludes salary/personal transactions - only tracks company cash.
+     * For other accounts: Returns current_balance (includes all transactions).
+     * 
+     * @return float The calculated balance
+     */
+    public function getCalculatedBalance(): float
+    {
+        // For non-employee accounts, use stored balance (they track everything)
+        if ($this->account_category !== self::CATEGORY_EMPLOYEE_CASH) {
+            return (float) $this->current_balance;
+        }
+
+        // For employee_cash accounts: Calculate from approved transactions
+        // excluding salary/personal types
+        $moneyIn = LedgerModel::where('to_account_id', $this->id)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereNotIn('transaction_type', self::EXCLUDED_EMPLOYEE_CASH_TYPES)
+            ->sum('amount');
+
+        $moneyOut = LedgerModel::where('from_account_id', $this->id)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereNotIn('transaction_type', self::EXCLUDED_EMPLOYEE_CASH_TYPES)
+            ->sum('amount');
+
+        return (float) $this->opening_balance + (float) $moneyIn - (float) $moneyOut;
+    }
+
+    /**
+     * Get ledger transactions that affect employee cash balance.
+     * Excludes salary/personal transactions for employee_cash accounts.
+     * 
+     * @param int $days Number of days to look back (default 30)
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function getBalanceAffectingTransactions(int $days = 30)
+    {
+        $query = LedgerModel::where(function($q) {
+            $q->where('from_account_id', $this->id)
+              ->orWhere('to_account_id', $this->id);
+        })
+        ->where('transaction_date', '>=', now()->subDays($days))
+        ->where('approval_status', LedgerModel::STATUS_APPROVED);
+
+        // For employee_cash accounts, exclude personal/salary transactions
+        if ($this->account_category === self::CATEGORY_EMPLOYEE_CASH) {
+            $query->whereNotIn('transaction_type', self::EXCLUDED_EMPLOYEE_CASH_TYPES);
+        }
+
+        return $query->orderBy('transaction_date', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->get();
+    }
+
+    /**
+     * Get the effective balance for display.
+     * Uses calculated balance for employee_cash, current_balance for others.
+     * 
+     * @return float
+     */
+    public function getEffectiveBalance(): float
+    {
+        if ($this->account_category === self::CATEGORY_EMPLOYEE_CASH) {
+            return $this->getCalculatedBalance();
+        }
+        return (float) $this->current_balance;
+    }
+
+    /**
+     * Static method to get sum of calculated balances for all employee cash accounts.
+     * Used for KPIs/dashboards.
+     * 
+     * @return float
+     */
+    public static function getTotalEmployeeCashCalculatedBalance(): float
+    {
+        $accounts = static::where('account_category', self::CATEGORY_EMPLOYEE_CASH)
+            ->where('is_active', 1)
+            ->get();
+
+        return $accounts->sum(function($account) {
+            return $account->getCalculatedBalance();
+        });
+    }
 }
 
