@@ -29,7 +29,9 @@ class OrderController extends Controller
     {
         $user = auth()->user();
         $source = $request->get('source', 'other'); // 'other' shows non-shopify from prod_order
-        $tab = $request->get('tab', 'all'); // 'all', 'approvals', or 'open'
+        // Default to 'open' (Open Orders) for non-shopify, 'all' for shopify
+        $defaultTab = $source === 'shopify' ? 'all' : 'open';
+        $tab = $request->get('tab', $defaultTab); // 'all', 'approvals', 'open', or 'riders'
         $status = $request->get('status', ''); // Status filter
         $date = $request->get('date', ''); // Order date filter
         $deliveryDate = $request->get('delivery_date', ''); // Delivery date filter (from status history)
@@ -200,13 +202,48 @@ class OrderController extends Controller
                 }
             }
             
+            // ⭐ Get pending approval status if order has a ledger entry
+            $pendingApproval = null;
+            if ($order->ledger_transaction_id) {
+                $ledger = \App\Models\FIN\LedgerModel::select('id', 'approval_status', 'created_at')
+                    ->find($order->ledger_transaction_id);
+                
+                if ($ledger && in_array($ledger->approval_status, [
+                    \App\Models\FIN\LedgerModel::STATUS_PENDING,
+                    \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+                    \App\Models\FIN\LedgerModel::STATUS_PENDING_L2
+                ])) {
+                    $levelLabel = match($ledger->approval_status) {
+                        \App\Models\FIN\LedgerModel::STATUS_PENDING_L2 => 'L2',
+                        default => 'L1'
+                    };
+                    $pendingApproval = [
+                        'ledger_id' => $ledger->id,
+                        'status' => $ledger->approval_status,
+                        'level' => $levelLabel,
+                        'message' => "Pending {$levelLabel} Approval",
+                        'created_at' => $ledger->created_at ? $ledger->created_at->format('M j, Y') : null,
+                        'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'orders'])
+                    ];
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'order' => $order,
                 'lineItems' => $order->lineItems, // Explicitly include line items
                 'discounts' => $order->discounts, // Include discount details for frontend display (backward compat)
                 'delivery_location' => $deliveryLocation, // Include delivery GPS location if available
-                'verified_location' => $verifiedLocation // Include customer's verified location
+                'verified_location' => $verifiedLocation, // Include customer's verified location
+                // ⭐ Customer Notes - important customer-level information
+                'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
+                'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                // ⭐ Order Notes - order-specific notes  
+                'order_note' => $order->note ?? null,
+                'has_order_note' => !empty($order->note),
+                // ⭐ Pending approval status for this order's invoice
+                'pending_approval' => $pendingApproval,
+                'has_pending_approval' => $pendingApproval !== null
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -464,21 +501,34 @@ class OrderController extends Controller
         try {
             $order = $this->findOrder($id, []);
             
-            // Validate request
-            $validated = $request->validate([
+            // ================================================================
+            // PARTIAL UPDATE DETECTION (Pop-out Mode)
+            // ================================================================
+            // Pop-out mode sends _partial_update=true and only includes:
+            // - items, subtotal_price, shipping_total, total_price, discounts, note, order_date
+            // It does NOT include: order_status, expected_packets, payment_method, customer_id, address
+            $isPartialUpdate = $request->boolean('_partial_update') || $request->boolean('_popout_mode');
+            
+            if ($isPartialUpdate) {
+                \Log::info('Partial update detected (pop-out mode)', [
+                    'order_id' => $id,
+                    'order_number' => $order->order_number,
+                    'fields_sent' => array_keys($request->except(['_partial_update', '_popout_mode']))
+                ]);
+            }
+            
+            // Validate request - use different rules for partial vs full update
+            $validationRules = [
                 'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
-                // Ensure we only accept valid status codes from master table
-                'order_status' => 'required|string|exists:t_crm_order_status_master,status_code',
                 'order_date' => 'required|date',
                 'contact_email' => 'nullable|email',
                 'subtotal_price' => 'required|numeric',
                 'discount_total' => 'nullable|numeric',
                 'shipping_total' => 'nullable|numeric',
+                'tip_amount' => 'nullable|numeric|min:0',
                 'total_price' => 'required|numeric',
                 'coupon_code' => 'nullable|string',
-                'payment_method' => 'nullable|string',
                 'note' => 'nullable|string',
-                'expected_packets' => 'nullable|integer|min:0', // Packet tracking (optional)
                 'items' => 'required|array',
                 'items.*.name' => 'required|string',
                 'items.*.quantity' => 'required|numeric|min:0.001',
@@ -487,37 +537,56 @@ class OrderController extends Controller
                 'items.*.sku' => 'nullable|string',
                 'items.*.variant_id' => 'nullable|string',
                 'items.*.product_id' => 'nullable|string',
-                // Address fields
-                'address_first_name' => 'nullable|string',
-                'address_last_name' => 'nullable|string',
-                'address_email' => 'nullable|email',
-                'address_phone' => 'nullable|string',
-                'address_line1' => 'nullable|string',
-                'address_line2' => 'nullable|string',
-                'address_city' => 'nullable|string',
-                'address_province' => 'nullable|string',
-                'address_postal_code' => 'nullable|string',
-                'address_country' => 'nullable|string',
-                // Multiple discounts support (NEW - optional, backward compatible)
+                // Multiple discounts support
                 'discounts' => 'nullable|array',
                 'discounts.*.title' => 'required_with:discounts|string|max:255',
                 'discounts.*.amount' => 'required_with:discounts|numeric|min:0',
                 'discounts.*.type' => 'nullable|in:fixed,percentage',
                 'discounts.*.percentage' => 'nullable|numeric|min:0|max:100',
                 'discounts.*.coupon_code' => 'nullable|string|max:100',
-                'discounts.*.notes' => 'nullable|string'
-            ]);
+                'discounts.*.notes' => 'nullable|string',
+                // Partial update flags
+                '_partial_update' => 'nullable|boolean',
+                '_popout_mode' => 'nullable|boolean',
+            ];
             
-            // If discounts array provided, calculate discount_total from it
-            // This ensures discount_total is always correct
-            if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
-                $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
-                $validated['discount_total'] = $calculatedDiscountTotal;
-                \Log::info('Update: Multiple discounts provided', [
-                    'order_id' => $id,
-                    'count' => count($validated['discounts']),
-                    'calculated_total' => $calculatedDiscountTotal
-                ]);
+            // For FULL updates (not partial), require additional fields
+            if (!$isPartialUpdate) {
+                $validationRules['order_status'] = 'required|string|exists:t_crm_order_status_master,status_code';
+                $validationRules['payment_method'] = 'nullable|string';
+                $validationRules['expected_packets'] = 'nullable|integer|min:0';
+                // Address fields
+                $validationRules['address_first_name'] = 'nullable|string';
+                $validationRules['address_last_name'] = 'nullable|string';
+                $validationRules['address_email'] = 'nullable|email';
+                $validationRules['address_phone'] = 'nullable|string';
+                $validationRules['address_line1'] = 'nullable|string';
+                $validationRules['address_line2'] = 'nullable|string';
+                $validationRules['address_city'] = 'nullable|string';
+                $validationRules['address_province'] = 'nullable|string';
+                $validationRules['address_postal_code'] = 'nullable|string';
+                $validationRules['address_country'] = 'nullable|string';
+            }
+            
+            $validated = $request->validate($validationRules);
+            
+            // ⭐ Calculate discount_total from discounts array
+            // If discounts array is provided (even if empty), update discount_total
+            if (isset($validated['discounts']) && is_array($validated['discounts'])) {
+                if (!empty($validated['discounts'])) {
+                    // Has discounts - sum them up
+                    $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                    $validated['discount_total'] = $calculatedDiscountTotal;
+                    \Log::info('Update: Multiple discounts provided', [
+                        'order_id' => $id,
+                        'count' => count($validated['discounts']),
+                        'calculated_total' => $calculatedDiscountTotal
+                    ]);
+                } else {
+                    // Empty discounts array - all discounts removed, set to 0
+                    $validated['discount_total'] = 0;
+                    \Log::info('Update: All discounts removed', ['order_id' => $id]);
+                }
             }
             
             // ================================================================
@@ -546,8 +615,28 @@ class OrderController extends Controller
                         $category = RequestCategoryModel::where('category_code', 'invoice_adjustment')->first();
                         $categoryConfig = $category ? $category->approvalConfig : null;
                         
+                        // Use category config to determine required approval levels
                         $requiresL1 = $categoryConfig ? $categoryConfig->requires_level_1 : true;
                         $requiresL2 = $categoryConfig ? $categoryConfig->requires_level_2 : false;
+                        
+                        // ⭐ Check if user should get auto-approval (L2 rights OR Taimur)
+                        $currentUser = auth()->user();
+                        $userHasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($currentUser->id, 2);
+                        $isTaimur = strtolower($currentUser->email ?? '') === 'taimur@nizamifarms.pk';
+                        $shouldAutoApprove = $userHasL2Rights || $isTaimur;
+                        
+                        // Determine approval statuses based on auto-approve
+                        if ($shouldAutoApprove) {
+                            // L2 user or Taimur: Auto-approve all levels
+                            $adjustmentStatus = \App\Models\FIN\LedgerAdjustmentModel::STATUS_APPROVED;
+                            $level1Status = \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED;
+                            $level2Status = \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED;
+                        } else {
+                            // Normal pending flow - use category config requirements
+                            $adjustmentStatus = \App\Models\FIN\LedgerAdjustmentModel::STATUS_PENDING;
+                            $level1Status = $requiresL1 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED;
+                            $level2Status = $requiresL2 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED;
+                        }
                         
                         // Create a ledger adjustment request
                         $adjustment = \App\Models\FIN\LedgerAdjustmentModel::create([
@@ -557,28 +646,60 @@ class OrderController extends Controller
                             'new_amount' => $newAmount,
                             'adjustment_amount' => $newAmount - $oldAmount,
                             'reason' => "Order #{$order->order_number} invoice amount changed from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2),
-                            'adjustment_status' => \App\Models\FIN\LedgerAdjustmentModel::STATUS_PENDING,
+                            'adjustment_status' => $adjustmentStatus,
                             'requires_level_1' => $requiresL1,
                             'requires_level_2' => $requiresL2,
-                            'level_1_status' => $requiresL1 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED,
-                            'level_2_status' => $requiresL2 ? \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_PENDING : \App\Models\FIN\LedgerAdjustmentModel::APPROVAL_STATUS_APPROVED,
-                            'requested_by' => auth()->id(),
+                            'level_1_status' => $level1Status,
+                            'level_2_status' => $level2Status,
+                            'level_1_approved_by' => $shouldAutoApprove ? $currentUser->id : null,
+                            'level_1_approved_at' => $shouldAutoApprove ? now() : null,
+                            'level_2_approved_by' => $shouldAutoApprove ? $currentUser->id : null,
+                            'level_2_approved_at' => $shouldAutoApprove ? now() : null,
+                            'finalized_at' => $shouldAutoApprove ? now() : null,
+                            'requested_by' => $currentUser->id,
                             'requested_at' => now()
                         ]);
                         
+                        // ⭐ If auto-approved, immediately apply the adjustment to ledger
+                        if ($shouldAutoApprove) {
+                            // Update the ledger amount directly
+                            $ledger->amount = $newAmount;
+                            $ledger->comments = ($ledger->comments ?? '') . 
+                                " | Amount adjusted from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2) . 
+                                " (Auto-approved by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . ")";
+                            $ledger->save();
+                            
+                            // Also update the order total_price in case there's a mismatch
+                            // (This is already handled by the order update below, but we ensure consistency)
+                            
+                            \Log::info("Ledger adjustment AUTO-APPROVED for order update", [
+                                'order_id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'adjustment_id' => $adjustment->id,
+                                'old_amount' => $oldAmount,
+                                'new_amount' => $newAmount,
+                                'difference' => $newAmount - $oldAmount,
+                                'ledger_id' => $ledger->id,
+                                'auto_approved_by' => $currentUser->fullname,
+                                'user_has_l2_rights' => $userHasL2Rights,
+                                'is_taimur' => $isTaimur,
+                                'source' => 'webapp_manual_edit_auto_approved'
+                            ]);
+                        } else {
+                            \Log::info("Ledger adjustment created for order update (pending approval)", [
+                                'order_id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'adjustment_id' => $adjustment->id,
+                                'old_amount' => $oldAmount,
+                                'new_amount' => $newAmount,
+                                'difference' => $newAmount - $oldAmount,
+                                'ledger_id' => $ledger->id,
+                                'source' => 'webapp_manual_edit'
+                            ]);
+                        }
+                        
                         $ledgerAdjustmentCreated = true;
                         $adjustmentId = $adjustment->id;
-                        
-                        \Log::info("Ledger adjustment created for order update", [
-                            'order_id' => $order->id,
-                            'order_number' => $order->order_number,
-                            'adjustment_id' => $adjustment->id,
-                            'old_amount' => $oldAmount,
-                            'new_amount' => $newAmount,
-                            'difference' => $newAmount - $oldAmount,
-                            'ledger_id' => $ledger->id,
-                            'source' => 'webapp_manual_edit'
-                        ]);
                     }
                 }
             } elseif ($isWebhookUpdate && $order->ledger_transaction_id) {
@@ -598,22 +719,54 @@ class OrderController extends Controller
             $oldPaymentMethod = $order->payment_method;
             
             // ================================================================
-            // UPDATE ORDER FIRST (Before Payment Method Change)
+            // UPDATE ORDER (with Partial Update Support)
             // ================================================================
-            // IMPORTANT: Update the order with new amounts BEFORE handling payment method change
-            // This ensures that when a new ledger entry is created, it uses the NEW amount
-            // not the old amount. This fixes the bug where changing both amount and payment
-            // method would result in the new ledger entry having the old amount.
-            $order->update($validated);
+            // For partial updates (pop-out mode), only update financial fields
+            // Preserve: order_status, expected_packets, payment_method, customer_id, address, rider
+            if ($isPartialUpdate) {
+                // Remove operational fields from update - they should be preserved
+                $fieldsToExclude = [
+                    'order_status', 'expected_packets', 'actual_packets', 'payment_method',
+                    'customer_id', 'assigned_rider_user_id',
+                    'address_first_name', 'address_last_name', 'address_email', 'address_phone',
+                    'address_line1', 'address_line2', 'address_city', 'address_province', 
+                    'address_postal_code', 'address_country',
+                    '_partial_update', '_popout_mode', '_skip_ledger_adjustment'
+                ];
+                
+                $updateData = array_diff_key($validated, array_flip($fieldsToExclude));
+                
+                \Log::info('Partial update - preserving operational fields', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'fields_updated' => array_keys($updateData),
+                    'fields_preserved' => [
+                        'order_status' => $order->order_status,
+                        'expected_packets' => $order->expected_packets,
+                        'payment_method' => $order->payment_method,
+                        'assigned_rider_user_id' => $order->assigned_rider_user_id
+                    ]
+                ]);
+                
+                $order->update($updateData);
+            } else {
+                // Full update - update all validated fields
+                // Remove internal flags before updating
+                $updateData = $validated;
+                unset($updateData['_partial_update'], $updateData['_popout_mode'], $updateData['_skip_ledger_adjustment']);
+                
+                $order->update($updateData);
+            }
             
             // ================================================================
             // PAYMENT METHOD CHANGE DETECTION (After Delivery)
             // ================================================================
             // Check if payment method changed for a delivered order with ledger entry
+            // SKIP for partial updates (pop-out mode) since payment_method is not sent
             $paymentMethodChanged = false;
             $paymentMethodChangeMessage = null;
             
-            if ($order->ledger_transaction_id && !$isWebhookUpdate) {
+            if ($order->ledger_transaction_id && !$isWebhookUpdate && !$isPartialUpdate) {
                 $newPaymentMethod = $validated['payment_method'] ?? $oldPaymentMethod;
                 
                 // Check if payment method actually changed
@@ -708,14 +861,38 @@ class OrderController extends Controller
                 }
                 
                 // Update line items directly since this is an existing order
+                // ⭐ PRESERVE preparation_status: Get existing line items before deleting
+                $existingLineItems = $order->lineItems()->get()->keyBy(function($item) {
+                    // Create a key based on product_id + variant_id, or name + sku as fallback
+                    if ($item->product_id && $item->variant_id) {
+                        return "p{$item->product_id}_v{$item->variant_id}";
+                    }
+                    return "n_" . md5(($item->name ?? '') . '_' . ($item->sku ?? ''));
+                });
+                
                 // Delete existing line items
                 $order->lineItems()->delete();
                 
-                // Create new line items
+                // Create new line items, preserving preparation_status from matching old items
                 $lineItemModels = [];
                 foreach ($formattedLineItems as $lineItem) {
                     $lineItem['order_id'] = $order->id;
                     $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
+                    
+                    // ⭐ Try to find matching old item to preserve preparation_status
+                    $matchKey = null;
+                    if (!empty($lineItem['product_id']) && !empty($lineItem['variant_id'])) {
+                        $matchKey = "p{$lineItem['product_id']}_v{$lineItem['variant_id']}";
+                    } else {
+                        $matchKey = "n_" . md5(($lineItem['name'] ?? '') . '_' . ($lineItem['sku'] ?? ''));
+                    }
+                    
+                    if ($existingLineItems->has($matchKey)) {
+                        $oldItem = $existingLineItems->get($matchKey);
+                        // Preserve preparation_status from old item
+                        $lineItem['preparation_status'] = $oldItem->preparation_status;
+                    }
+                    
                     $lineItemModels[] = new \App\Models\CRM\OrderLineItemModel($lineItem);
                 }
                 
@@ -838,15 +1015,20 @@ class OrderController extends Controller
                 'discounts.*.notes' => 'nullable|string'
             ]);
             
-            // If discounts array provided, calculate discount_total from it
-            // This ensures discount_total is always correct
-            if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
-                $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
-                $validated['discount_total'] = $calculatedDiscountTotal;
-                \Log::info('Multiple discounts provided', [
-                    'count' => count($validated['discounts']),
-                    'calculated_total' => $calculatedDiscountTotal
-                ]);
+            // ⭐ Calculate discount_total from discounts array
+            // If discounts array is provided (even if empty), update discount_total
+            if (isset($validated['discounts']) && is_array($validated['discounts'])) {
+                if (!empty($validated['discounts'])) {
+                    $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                    $validated['discount_total'] = $calculatedDiscountTotal;
+                    \Log::info('Multiple discounts provided', [
+                        'count' => count($validated['discounts']),
+                        'calculated_total' => $calculatedDiscountTotal
+                    ]);
+                } else {
+                    // Empty discounts array
+                    $validated['discount_total'] = 0;
+                }
             }
             
             // Default order status to 'new' if not provided
@@ -855,12 +1037,18 @@ class OrderController extends Controller
             }
 
             // Generate order number for webapp orders
-            $latestOrder = \App\Models\CRM\OrderModel::where('external_source', 'webapp')
-                ->orderBy('id', 'desc')
-                ->first();
-            
-            $nextNumber = $latestOrder ? (intval(substr($latestOrder->order_number, 3)) + 1) : 1;
-            $orderNumber = 'NF-' . str_pad($nextNumber, 4, '0', STR_PAD_LEFT);
+            // ⚠️ FIX: Use database-level locking to prevent race conditions
+            // Look at ALL orders with NF- prefix (not just webapp) and use MAX to get highest number
+            $orderNumber = \DB::transaction(function() {
+                // Lock the orders table to prevent concurrent inserts getting same number
+                $maxOrderNumber = \DB::table('t_crm_prod_order')
+                    ->where('order_number', 'LIKE', 'NF-%')
+                    ->lockForUpdate()
+                    ->max(\DB::raw("CAST(SUBSTRING(order_number, 4) AS UNSIGNED)"));
+                
+                $nextNumber = ($maxOrderNumber ?? 0) + 1;
+                return 'NF-' . $nextNumber;
+            });
             
             // Handle customer selection/population
             $customerId = $validated['customer_id'];
@@ -1019,19 +1207,37 @@ class OrderController extends Controller
 
     public function importOrders(Request $request)
     {
-
-        $validated = $request->validate([
-            'source' => 'required',
-            'from_date' => 'required|date',
-            'to_date'   => 'required|date|after_or_equal:from_date',
-        ]);
-        $orderCount =  0;
-        if ($validated['source']  === "Shopify") {
-            $orderCount = $this->importShopify($validated);
-        } else if ($validated['source']  === "WooCommerce") {
-            $orderCount = $this->importWooOrders($validated);
+        try {
+            $validated = $request->validate([
+                'source' => 'required',
+                'from_date' => 'required|date',
+                'to_date'   => 'required|date|after_or_equal:from_date',
+            ]);
+            
+            $orderCount = 0;
+            
+            if ($validated['source'] === "Shopify") {
+                $orderCount = $this->importShopify($validated);
+            } else if ($validated['source'] === "WooCommerce") {
+                $orderCount = $this->importWooOrders($validated);
+            }
+            
+            if ($orderCount === 0) {
+                return redirect()->back()->with('warning', 'No orders found for the selected date range in ' . $validated['source'] . '.');
+            }
+            
+            return redirect()->back()->with('success', $orderCount . ' ' . $validated['source'] . ' orders imported successfully to approval queue.');
+            
+        } catch (\Exception $e) {
+            \Log::error('Order import failed', [
+                'source' => $request->input('source'),
+                'from_date' => $request->input('from_date'),
+                'to_date' => $request->input('to_date'),
+                'error' => $e->getMessage()
+            ]);
+            
+            return redirect()->back()->with('error', 'Import failed: ' . $e->getMessage());
         }
-        return redirect()->back()->with('success',  $orderCount . ' ' . $validated['source'] . ' orders imported successfully.');
     }
 
 
@@ -1061,50 +1267,84 @@ class OrderController extends Controller
     private function importShopify($validated)
     {
         try {
+            \Log::info('Starting Shopify import', [
+                'from_date' => $validated['from_date'],
+                'to_date' => $validated['to_date'],
+                'user_id' => auth()->id()
+            ]);
 
-
-            // ✅ Step 2: Fetch orders from Shopify Service
+            // ✅ Step 1: Fetch orders from Shopify Service
             $orders = $this->shopify->fetchOrders($validated['from_date'], $validated['to_date']);
 
+            \Log::info('Shopify orders fetched', [
+                'count' => count($orders),
+                'from_date' => $validated['from_date'],
+                'to_date' => $validated['to_date']
+            ]);
+
             if (empty($orders)) {
-                return redirect()->back()->with('warning', 'No orders found for the selected date range.');
+                \Log::warning('No Shopify orders found for date range', [
+                    'from_date' => $validated['from_date'],
+                    'to_date' => $validated['to_date']
+                ]);
+                return 0; // Return 0 count, not a redirect (caller handles that)
             }
 
-            // Store orders in new DB structure
+            // Store orders in new DB structure (ShopifyOrderModel - approval queue)
             $importedCount = 0;
+            $errorCount = 0;
             foreach ($orders as $shopifyOrder) {
                 try {
                     // Map Shopify order to our format
                     $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($shopifyOrder);
                     
                     // Store order with line items and customer management
+                    // Note: storeOrderFromApi routes shopify orders to ShopifyOrderModel automatically
                     \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
                     $importedCount++;
                 } catch (\Exception $e) {
+                    $errorCount++;
                     \Log::error('Failed to import Shopify order: ' . $e->getMessage(), [
                         'shopify_order_id' => $shopifyOrder['id'] ?? 'unknown',
-                        'error' => $e->getMessage()
+                        'order_number' => $shopifyOrder['order_number'] ?? $shopifyOrder['name'] ?? 'unknown',
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
                     ]);
                     // Continue with next order instead of failing completely
                 }
             }
 
-            // Return success
+            \Log::info('Shopify import completed', [
+                'imported' => $importedCount,
+                'errors' => $errorCount,
+                'total_fetched' => count($orders)
+            ]);
+
+            // Return success count
             return $importedCount;
+            
         } catch (\Illuminate\Validation\ValidationException $e) {
-            dd(" Validation errors" . $e->errors());
-            // Validation errors (handled automatically but you can customize)
-            return redirect()->back()->withErrors($e->errors())->withInput();
+            \Log::error('Shopify import validation error', [
+                'errors' => $e->errors(),
+                'user_id' => auth()->id()
+            ]);
+            throw $e; // Re-throw to let Laravel handle validation errors
+            
         } catch (\GuzzleHttp\Exception\RequestException $e) {
             // Shopify API request failure
-            dd("Shopify API request failure" . $e->getMessage());
-            Log::error('Shopify API Error: ' . $e->getMessage());
-            return redirect()->back()->with('error', 'Failed to connect to Shopify API. Please try again.');
+            \Log::error('Shopify API connection error', [
+                'error' => $e->getMessage(),
+                'user_id' => auth()->id()
+            ]);
+            throw new \Exception('Failed to connect to Shopify API: ' . $e->getMessage());
+            
         } catch (\Exception $e) {
-            dd("Catch-all for unexpected errors" . $e->getMessage());
             // Catch-all for unexpected errors
-            Log::error('Shopify Import Error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
-            return redirect()->back()->with('error', 'Something went wrong while importing orders.');
+            \Log::error('Shopify Import Error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+                'user_id' => auth()->id()
+            ]);
+            throw $e; // Re-throw to show proper error message
         }
     }
 
@@ -1944,9 +2184,15 @@ class OrderController extends Controller
             
             $level = (int) $request->get('level', 0); // Current drill-down level
             
-            $filters = json_decode($request->get('filters', '{}'), true);
+            // Handle filters - can be JSON string or already an array (from mobile)
+            $filtersInput = $request->get('filters', '{}');
+            if (is_array($filtersInput)) {
+                $filters = $filtersInput;
+            } else {
+                $filters = json_decode($filtersInput, true);
             if (!is_array($filters)) {
                 $filters = [];
+                }
             }
             
             $dateRange = $request->get('date_range', 0); // Days to look back (0 = all time)
@@ -1979,29 +2225,41 @@ class OrderController extends Controller
             // Priority 2-5: Existing variant/product ID matches (for manual orders without SKU)
             // Priority 6: Direct product_id match
             // Priority 7: Name fallback (lowest priority, for legacy orders without any IDs)
+            // FIX: Use exclusive/priority-based JOIN to prevent duplicate rows
+            // When SKU exists and matches, don't also match via product_id/variant_id
+            // This prevents cross-matches where li.product_id (WooCommerce ID) accidentally 
+            // matches pv.shopify_variant_id of a different product
             $query = \DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function($join) {
-                    // SKU-primary matching with fallbacks
+                    // EXCLUSIVE matching: SKU match OR (fallbacks only when no SKU)
                     $join->where(function($q) {
-                        // PRIORITY 1: SKU match (most reliable)
+                        // PRIORITY 1: SKU match (most reliable) - when SKU exists
                         $q->where(function($skuMatch) {
                             $skuMatch->whereNotNull('li.sku')
                                      ->where('li.sku', '!=', '')
                                      ->whereColumn('li.sku', 'pv.sku');
                         })
-                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
-                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
+                        // PRIORITY 2-5: Fallbacks ONLY when no valid SKU exists
+                        ->orWhere(function($fallback) {
+                            $fallback->where(function($noSku) {
+                                $noSku->whereNull('li.sku')
+                                      ->orWhere('li.sku', '');
+                            })
+                            ->where(function($idMatch) {
+                                $idMatch->whereColumn('li.variant_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.variant_id', 'pv.id')
                           ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
                           ->orWhereColumn('li.product_id', 'pv.id');
+                            });
+                        });
                     });
                 })
                 ->leftJoin('t_crm_prod_product as p', function($join) {
-                    // Product match via variant or direct product_id, with name fallback for legacy
+                    // Product match: via variant (covers SKU match) or name fallback for legacy
                     $join->where(function($q) {
-                        $q->whereColumn('pv.product_id', 'p.id')      // Via variant table (covers SKU match)
-                          ->orWhereColumn('li.product_id', 'p.id')   // Direct product_id match
+                        // Primary: Match via variant's product_id (safe, no cross-match risk)
+                        $q->whereColumn('pv.product_id', 'p.id')
                           // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
                           ->orWhere(function($nameFallback) {
                               // Only use name match when no SKU, variant_id, or product_id exists
@@ -3009,7 +3267,9 @@ class OrderController extends Controller
     }
 
     /**
-     * Change payment method for an order
+     * Change payment method for an order (Quick Change from orders list)
+     * ⭐ NOTE: For delivered orders with ledger entries, this should be blocked
+     *    and the user should use the Edit Order form which properly handles ledger changes
      */
     public function changePaymentMethod(Request $request)
     {
@@ -3023,6 +3283,23 @@ class OrderController extends Controller
             $order = OrderModel::findOrFail($validated['order_id']);
             $oldMethod = $order->payment_method;
             $newMethod = $validated['payment_method'];
+            
+            // ⭐ SECURITY CHECK: Block payment method change for delivered orders with ledger entries
+            // These must go through the Edit Order form which properly handles ledger reversal/recreation
+            if ($order->ledger_transaction_id && in_array($order->order_status, ['delivered', 'completed'])) {
+                \Log::warning('Attempted quick payment method change on delivered order with ledger', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'ledger_id' => $order->ledger_transaction_id,
+                    'user_id' => auth()->id()
+                ]);
+                
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot quick-change payment method for delivered orders with ledger entries. Please use Edit Order to properly handle the ledger update.',
+                    'error_type' => 'delivered_with_ledger'
+                ], 422);
+            }
 
             // Map to existing system values (reuse web app conventions)
             // - Cash → cash_on_delivery
@@ -3033,8 +3310,9 @@ class OrderController extends Controller
             $order->payment_method = $mappedMethod;
             $order->save();
 
-            \Log::info('Payment method changed', [
+            \Log::info('Payment method changed (quick change)', [
                 'order_id' => $order->id,
+                'order_number' => $order->order_number,
                 'old_method' => $oldMethod,
                 'new_method' => $mappedMethod,
                 'user_id' => auth()->id()
@@ -3079,6 +3357,183 @@ class OrderController extends Controller
                 'message' => 'Failed to load timeline',
                 'data' => []
             ]);
+        }
+    }
+    
+    /**
+     * Get complete event history for an order
+     * Includes: order created, status changes, ledger entries, adjustments, and order updates
+     */
+    public function getOrderEventHistory($orderId)
+    {
+        try {
+            $order = OrderModel::findOrFail($orderId);
+            $events = [];
+            
+            // 1. Order Created
+            $events[] = [
+                'type' => 'order_created',
+                'icon' => '📦',
+                'title' => 'Order Created',
+                'description' => "Order #{$order->order_number} created",
+                'details' => [
+                    'Total' => 'Rs. ' . number_format($order->total_price, 2),
+                    'Payment Method' => $order->payment_method ?? 'N/A',
+                ],
+                'timestamp' => $order->created_at,
+                'color' => '#3b82f6' // blue
+            ];
+            
+            // 2. Status Changes from history
+            $statusHistory = \DB::table('t_crm_order_status_history as h')
+                ->leftJoin('t_crm_order_status_master as s', 'h.status_code', '=', 's.status_code')
+                ->leftJoin('t_sys_user as u', 'h.changed_by', '=', 'u.id')
+                ->where('h.order_id', $orderId)
+                ->select('h.*', 's.status_name', 'u.fullname as changed_by_name')
+                ->orderBy('h.changed_at', 'asc')
+                ->get();
+            
+            foreach ($statusHistory as $status) {
+                $statusIcon = match($status->status_code) {
+                    'new' => '🆕',
+                    'processing' => '⚙️',
+                    'on_hold' => '⏸️',
+                    'out_for_delivery' => '🚚',
+                    'delivered' => '✅',
+                    'completed' => '🎉',
+                    'cancelled' => '❌',
+                    'refunded' => '💸',
+                    default => '📋'
+                };
+                
+                $events[] = [
+                    'type' => 'status_change',
+                    'icon' => $statusIcon,
+                    'title' => 'Status: ' . ($status->status_name ?? ucfirst($status->status_code)),
+                    'description' => 'Changed by ' . ($status->changed_by_name ?? 'System'),
+                    'details' => $status->notes ? ['Notes' => $status->notes] : null,
+                    'timestamp' => $status->changed_at,
+                    'color' => match($status->status_code) {
+                        'delivered', 'completed' => '#10b981', // green
+                        'cancelled', 'refunded' => '#ef4444', // red
+                        'processing', 'out_for_delivery' => '#f59e0b', // amber
+                        default => '#6b7280' // gray
+                    }
+                ];
+            }
+            
+            // 3. Ledger Entries
+            $ledgers = \App\Models\FIN\LedgerModel::where('order_id', $orderId)
+                ->with(['toAccount', 'createdBy'])
+                ->orderBy('created_at', 'asc')
+                ->get();
+            
+            foreach ($ledgers as $ledger) {
+                $ledgerIcon = $ledger->mode === 'online' ? '🏦' : '💵';
+                $statusLabel = match($ledger->approval_status) {
+                    'approved' => '✓ Approved',
+                    'pending', 'pending_l1' => '⏳ Pending L1',
+                    'pending_l2' => '⏳ Pending L2',
+                    'rejected' => '✗ Rejected',
+                    'reversed' => '↩️ Reversed',
+                    default => $ledger->approval_status
+                };
+                
+                $events[] = [
+                    'type' => 'ledger_created',
+                    'icon' => $ledgerIcon,
+                    'title' => "Ledger Entry #{$ledger->id}",
+                    'description' => "Invoice posted to ledger",
+                    'details' => [
+                        'Mode' => ucfirst($ledger->mode),
+                        'Amount' => 'Rs. ' . number_format($ledger->amount, 2),
+                        'Account' => $ledger->toAccount ? $ledger->toAccount->account_name : 'N/A',
+                        'Status' => $statusLabel,
+                    ],
+                    'timestamp' => $ledger->created_at,
+                    'color' => $ledger->mode === 'online' ? '#8b5cf6' : '#10b981' // purple for online, green for cash
+                ];
+                
+                // If ledger was updated (approval, etc.)
+                if ($ledger->updated_at && $ledger->updated_at != $ledger->created_at) {
+                    $events[] = [
+                        'type' => 'ledger_updated',
+                        'icon' => '✏️',
+                        'title' => "Ledger #{$ledger->id} Updated",
+                        'description' => "Status: {$statusLabel}",
+                        'details' => [
+                            'Current Amount' => 'Rs. ' . number_format($ledger->amount, 2),
+                        ],
+                        'timestamp' => $ledger->updated_at,
+                        'color' => '#6b7280'
+                    ];
+                }
+            }
+            
+            // 4. Ledger Adjustments
+            $adjustments = \App\Models\FIN\LedgerAdjustmentModel::where('order_id', $orderId)
+                ->with(['requestedBy'])
+                ->orderBy('created_at', 'asc')
+                ->get();
+            
+            foreach ($adjustments as $adj) {
+                $adjStatusIcon = match($adj->adjustment_status) {
+                    'approved' => '✅',
+                    'pending' => '⏳',
+                    'rejected' => '❌',
+                    default => '📋'
+                };
+                
+                $events[] = [
+                    'type' => 'ledger_adjustment',
+                    'icon' => $adjStatusIcon,
+                    'title' => "Ledger Adjustment #{$adj->id}",
+                    'description' => $adj->reason ?? 'Amount adjustment',
+                    'details' => [
+                        'Old Amount' => 'Rs. ' . number_format($adj->old_amount, 2),
+                        'New Amount' => 'Rs. ' . number_format($adj->new_amount, 2),
+                        'Difference' => ($adj->adjustment_amount >= 0 ? '+' : '') . 'Rs. ' . number_format($adj->adjustment_amount, 2),
+                        'Status' => ucfirst($adj->adjustment_status),
+                    ],
+                    'timestamp' => $adj->created_at,
+                    'color' => $adj->adjustment_status === 'approved' ? '#10b981' : '#f59e0b'
+                ];
+            }
+            
+            // 5. Order Updated (if different from created)
+            if ($order->updated_at && $order->updated_at != $order->created_at) {
+                $events[] = [
+                    'type' => 'order_updated',
+                    'icon' => '✏️',
+                    'title' => 'Order Updated',
+                    'description' => 'Order details modified',
+                    'details' => [
+                        'Current Total' => 'Rs. ' . number_format($order->total_price, 2),
+                        'Payment Method' => $order->payment_method ?? 'N/A',
+                    ],
+                    'timestamp' => $order->updated_at,
+                    'color' => '#6b7280'
+                ];
+            }
+            
+            // Sort all events by timestamp
+            usort($events, function($a, $b) {
+                return strtotime($a['timestamp']) - strtotime($b['timestamp']);
+            });
+            
+            return response()->json([
+                'success' => true,
+                'order_number' => $order->order_number,
+                'events' => $events
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get order event history: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load event history',
+                'events' => []
+            ], 500);
         }
     }
 }

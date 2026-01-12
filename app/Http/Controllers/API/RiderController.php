@@ -298,7 +298,13 @@ class RiderController extends Controller
                     'tip_amount' => $order->tip_amount ?? 0,
                     'total_price' => $order->total_price,
                     'discounts' => $discounts,
+                    // ⭐ Order note - specific to this order
                     'notes' => $order->note,
+                    'order_note' => $order->note,
+                    'has_order_note' => !empty($order->note),
+                    // ⭐ Customer notes - customer-level notes (applies to all orders for this customer)
+                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
+                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
                     'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
@@ -734,7 +740,13 @@ class RiderController extends Controller
             
             $newPaymentType = $request->payment_type;
             $oldPaymentMethod = $order->payment_method;
-            $oldPaymentType = in_array($oldPaymentMethod, ['cash', 'cash_on_delivery', 'cod']) ? 'cash' : 'online';
+            
+            // Determine old payment type - treat NULL/empty as 'cash' (default)
+            // This handles orders created from mobile without explicit payment method
+            $normalizedOldMethod = strtolower(trim($oldPaymentMethod ?? ''));
+            $oldPaymentType = (empty($normalizedOldMethod) || in_array($normalizedOldMethod, ['cash', 'cash_on_delivery', 'cod'])) 
+                ? 'cash' 
+                : 'online';
             
             if ($oldPaymentType === $newPaymentType) {
                 return response()->json([
@@ -3840,6 +3852,8 @@ class RiderController extends Controller
         try {
             $statuses = DB::table('t_crm_order_status_master')
                 ->where('is_active', 1)
+                // ⭐ Exclude legacy status codes (keep only underscore versions)
+                ->whereNotIn('status_code', ['on-hold', 'on hold'])
                 ->orderBy('sequence_order')
                 ->get(['status_code', 'status_name', 'icon', 'color_class']);
             
@@ -3971,6 +3985,12 @@ class RiderController extends Controller
                     'customer_province' => $order->customer->province ?? '',
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
+                    // ⭐ Customer Notes - for important customer-level information
+                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
+                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Order Notes - order-specific notes
+                    'order_note' => $order->note ?? null,
+                    'has_order_note' => !empty($order->note),
                     'has_verified_location' => $hasVerifiedLocation,
                     'verified_location' => $verifiedLocation,
                     'assigned_rider' => $order->assignedRider ? [
@@ -4056,7 +4076,8 @@ class RiderController extends Controller
             // Build optimized query - load line items for immediate "mark prepared" functionality
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
-                    $q->select('id', 'first_name', 'last_name', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url');
+                    // ⭐ Include 'notes' for customer notes display, 'phone_original' for contact
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -4065,6 +4086,7 @@ class RiderController extends Controller
                     // Load essential line item fields for marking prepared
                     $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status');
                 }])
+                ->with(['discounts']) // ⭐ Load discounts for invoice view
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
                       ->orWhereNull('external_source');
@@ -4146,6 +4168,9 @@ class RiderController extends Controller
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
                     'delivery_priority' => $order->delivery_priority, // ⭐ Delivery sequence priority
+                    'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
+                    'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
+                    'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
                     'customer_id' => $order->customer_id, // Added for verified location functionality
                     'customer_name' => $customerName,
                     // Eager address/phone for immediate display on list
@@ -4156,6 +4181,12 @@ class RiderController extends Controller
                         $order->address_province
                     ]))),
                     'customer_phone' => $order->address_phone ?? ($order->customer->phone_original ?? null),
+                    // ⭐ Customer Notes - for important customer-level information (e.g., delivery instructions)
+                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
+                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Order Notes - order-specific notes
+                    'order_note' => $order->note ?? null,
+                    'has_order_note' => !empty($order->note),
                     'assigned_rider_id' => $order->assigned_rider_user_id,
                     'assigned_rider' => $order->assignedRider ? [
                         'id' => $order->assignedRider->id,
@@ -4175,6 +4206,17 @@ class RiderController extends Controller
                         'geocoded_longitude' => $order->customer->geocoded_longitude,
                     ] : null,
                     'external_source' => $order->external_source,
+                    // ⭐ Invoice fields - needed for invoice view
+                    'subtotal_price' => $order->subtotal_price ?? 0,
+                    'discount_total' => $order->discount_total ?? 0,
+                    'shipping_total' => $order->shipping_total ?? 0,
+                    'tip_amount' => $order->tip_amount ?? 0,
+                    'discounts' => $order->discounts ? $order->discounts->map(function($discount) {
+                        return [
+                            'discount_amount' => $discount->discount_amount,
+                            'discount_type' => $discount->discount_type,
+                        ];
+                    })->toArray() : [],
                     'line_items' => $order->lineItems->map(function($item) {
                         return [
                             'id' => $item->id,
@@ -4483,6 +4525,12 @@ class RiderController extends Controller
                     'customer_province' => $order->customer->province ?? '',
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
+                    // ⭐ Customer Notes - for important customer-level information
+                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
+                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Order Notes - order-specific notes
+                    'order_note' => $order->note ?? null,
+                    'has_order_note' => !empty($order->note),
                     'has_verified_location' => $hasVerifiedLocation,
                     'verified_location' => $verifiedLocation,
                     'items_count' => $order->lineItems->count(),
@@ -4582,6 +4630,7 @@ class RiderController extends Controller
 
     /**
      * STORE MODE: Assign rider to order
+     * Uses the model's assignRider() method to properly create history records
      */
     public function assignRiderToOrder(Request $request)
     {
@@ -4602,16 +4651,43 @@ class RiderController extends Controller
             ]);
             
             $order = OrderModel::findOrFail($validated['order_id']);
-            $order->assigned_rider_user_id = $validated['rider_id'];
-            $order->save();
+            
+            // ⚠️ SAFETY CHECK: Don't allow rider change for delivered/completed orders
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot change rider for delivered or completed orders'
+                ], 422);
+            }
             
             // Get rider name for response
             $rider = DB::table('t_sys_user')->where('id', $validated['rider_id'])->first();
             
-            \Log::info('Rider assigned to order (Store Mode)', [
+            if (!$rider) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rider not found'
+                ], 404);
+            }
+            
+            // ✅ Use the model method to properly create history records
+            // This ensures rider history is tracked just like web UI does
+            $success = $order->assignRider(
+                $validated['rider_id'],
+                'Assigned via Store Mode',  // Notes
+                $user->id                    // Assigned by user ID
+            );
+            
+            if (!$success) {
+                throw new \Exception('Failed to assign rider - model method returned false');
+            }
+            
+            \Log::info('Rider assigned to order (Store Mode) - with history', [
                 'order_id' => $order->id,
                 'rider_id' => $validated['rider_id'],
-                'assigned_by' => $user->id
+                'rider_name' => $rider->fullname,
+                'assigned_by' => $user->id,
+                'assigned_by_name' => $user->fullname
             ]);
             
             return response()->json([
@@ -4624,9 +4700,10 @@ class RiderController extends Controller
             ]);
             
         } catch (\Exception $e) {
-            \Log::error('Failed to assign rider', [
+            \Log::error('Failed to assign rider (Store Mode)', [
                 'user_id' => Auth::id(),
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
             
             return response()->json([
@@ -4757,6 +4834,151 @@ class RiderController extends Controller
     }
 
     /**
+     * STORE MODE: Update order note/instructions
+     */
+    public function updateOrderNote(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - reuse enter_packet_info permission (general order editing)
+            if (!$user->hasMobilePermission('enter_packet_info')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to edit order instructions'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'order_id' => 'required|exists:t_crm_prod_order,id',
+                'note' => 'nullable|string|max:1000'
+            ]);
+            
+            $order = OrderModel::findOrFail($validated['order_id']);
+            
+            // Don't allow editing if already delivered
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot edit instructions for delivered orders'
+                ], 422);
+            }
+            
+            // Build the new note with attribution
+            $newNote = trim($validated['note'] ?? '');
+            $existingNote = trim($order->note ?? '');
+            
+            if (!empty($newNote)) {
+                // Add attribution: "Note by [User Name]: [note text]"
+                $attribution = "[{$user->fullname} - " . now()->format('d M H:i') . "]";
+                
+                if (!empty($existingNote)) {
+                    // Append to existing note
+                    $finalNote = $existingNote . "\n" . $attribution . " " . $newNote;
+                } else {
+                    // New note
+                    $finalNote = $attribution . " " . $newNote;
+                }
+                
+                $order->note = $finalNote;
+            }
+            
+            $order->save();
+            
+            \Log::info('Order note updated (Store Mode)', [
+                'order_id' => $order->id,
+                'note_length' => strlen($order->note ?? ''),
+                'updated_by' => $user->id,
+                'user_name' => $user->fullname
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Order instructions updated successfully',
+                'note' => $order->note
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to update order note', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update order instructions: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE MODE: Update payment method for an order
+     */
+    public function updatePaymentMethod(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - reuse change_order_status permission
+            if (!$user->hasMobilePermission('change_order_status')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to change payment method'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'order_id' => 'required|exists:t_crm_prod_order,id',
+                'payment_type' => 'required|in:cash,online'
+            ]);
+            
+            $order = OrderModel::findOrFail($validated['order_id']);
+            
+            // Don't allow editing if already delivered
+            if (in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot change payment method for delivered orders'
+                ], 422);
+            }
+            
+            $oldPaymentMethod = $order->payment_method;
+            
+            // Map payment type to method (consistent with Rider Mode)
+            // Using 'cash_on_delivery' and 'online_payment' for consistency across the system
+            $newPaymentMethod = $validated['payment_type'] === 'cash' ? 'cash_on_delivery' : 'online_payment';
+            
+            $order->payment_method = $newPaymentMethod;
+            $order->save();
+            
+            \Log::info('Payment method updated (Store Mode)', [
+                'order_id' => $order->id,
+                'old_payment_method' => $oldPaymentMethod,
+                'new_payment_method' => $newPaymentMethod,
+                'updated_by' => $user->id
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment method updated successfully',
+                'payment_method' => $newPaymentMethod,
+                'payment_type' => $validated['payment_type']
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to update payment method', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update payment method: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * STORE MODE: Get open order quantities with drill-down
      * Reuses webapp logic from OrderController::openQuantitiesData
      */
@@ -4803,28 +5025,41 @@ class RiderController extends Controller
                 $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             }
 
-            // SKU-primary matching with fallbacks for manual orders
+            // FIX: Use exclusive/priority-based JOIN to prevent duplicate rows
+            // When SKU exists and matches, don't also match via product_id/variant_id
+            // This prevents cross-matches where li.product_id (WooCommerce ID) accidentally 
+            // matches pv.shopify_variant_id of a different product
             $query = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->leftJoin('t_crm_prod_product_variant as pv', function ($join) {
+                    // EXCLUSIVE matching: SKU match OR (fallbacks only when no SKU)
                     $join->where(function ($q) {
-                        // PRIORITY 1: SKU match (most reliable)
+                        // PRIORITY 1: SKU match (most reliable) - when SKU exists
                         $q->where(function($skuMatch) {
                             $skuMatch->whereNotNull('li.sku')
                                      ->where('li.sku', '!=', '')
                                      ->whereColumn('li.sku', 'pv.sku');
                         })
-                        // PRIORITY 2-5: Fallbacks for manual orders without SKU
-                          ->orWhereColumn('li.variant_id', 'pv.shopify_variant_id')
-                          ->orWhereColumn('li.variant_id', 'pv.id')
-                          ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
-                          ->orWhereColumn('li.product_id', 'pv.id');
+                        // PRIORITY 2-5: Fallbacks ONLY when no valid SKU exists
+                        ->orWhere(function($fallback) {
+                            $fallback->where(function($noSku) {
+                                $noSku->whereNull('li.sku')
+                                      ->orWhere('li.sku', '');
+                            })
+                            ->where(function($idMatch) {
+                                $idMatch->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.variant_id', 'pv.id')
+                                        ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.product_id', 'pv.id');
+                            });
+                        });
                     });
                 })
                 ->leftJoin('t_crm_prod_product as p', function ($join) {
+                    // Product match: via variant (covers SKU match) or name fallback for legacy
                     $join->where(function ($q) {
+                        // Primary: Match via variant's product_id (safe, no cross-match risk)
                         $q->whereColumn('pv.product_id', 'p.id')
-                          ->orWhereColumn('li.product_id', 'p.id')
                           // PRIORITY 7: Name fallback for legacy orders without SKU/IDs
                           ->orWhere(function($nameFallback) {
                               $nameFallback->whereNull('li.sku')
@@ -4886,18 +5121,6 @@ class RiderController extends Controller
 
             $tree = [];
             $rootMap = [];
-            
-            // Debug: Log hierarchy being used
-            Log::debug('Open Quantities Tree - Starting build', [
-                'hierarchy' => $hierarchy,
-                'total_rows' => count($rows),
-                'first_row_sample' => $rows->isNotEmpty() ? [
-                    'attribute_1' => $rows[0]->attribute_1 ?? 'NULL',
-                    'attribute_2' => $rows[0]->attribute_2 ?? 'NULL',
-                    'attribute_3' => $rows[0]->attribute_3 ?? 'NULL',
-                    'product_title' => $rows[0]->product_title ?? 'NULL',
-                ] : 'NO ROWS',
-            ]);
 
             $addMetrics = function (&$node, $row) {
                 $qty = (float) ($row->line_item_quantity ?? 0);
@@ -4951,20 +5174,6 @@ class RiderController extends Controller
                 $currentFilters = [];
 
                 foreach ($hierarchy as $levelIndex => $field) {
-                    // ALWAYS log to debug the loop
-                    static $loopCount = 0;
-                    if ($loopCount < 20) {
-                        Log::debug("🔄 Tree loop", [
-                            'loop_count' => $loopCount,
-                            'row_id' => $row->line_item_id,
-                            'order_id' => $row->order_id,
-                            'levelIndex' => $levelIndex,
-                            'field' => $field,
-                            'field_value' => $row->{$field} ?? 'NULL',
-                        ]);
-                        $loopCount++;
-                    }
-                    
                     if ($field === 'orders') {
                         // CRITICAL FIX: Order nodes must be unique per product
                         // Use a composite key: product_name + order_id
@@ -4975,18 +5184,6 @@ class RiderController extends Controller
                             $orderLabel = $row->order_number ? 'Order #' . $row->order_number : 'Order ' . $row->order_id;
                             if (!empty($row->customer_name)) {
                                 $orderLabel .= ' - ' . $row->customer_name;
-                            }
-                            
-                            // DEBUG: Log what filters we're under when creating order node
-                            static $orderDebugCount = 0;
-                            if ($orderDebugCount < 2) {
-                                Log::debug("Creating order node", [
-                                    'order_id' => $row->order_id,
-                                    'order_number' => $row->order_number,
-                                    'current_filters' => $currentFilters,
-                                    'product_name_in_row' => $row->line_item_name ?? $row->product_title,
-                                ]);
-                                $orderDebugCount++;
                             }
 
                             $orderNode = [
@@ -5051,19 +5248,6 @@ class RiderController extends Controller
                                 }
                             }
                         unset($listItem);
-                        
-                        // Log successful update (only first few for debugging)
-                        static $updateLogCount = 0;
-                        if ($updateLogCount < 3) {
-                            Log::debug("✅ Order quantity updated", [
-                                'order_id' => $row->order_id,
-                                'product' => $productContext,
-                                'qty_before' => $qtyBefore,
-                                'qty_added' => $qty,
-                                'qty_after' => $currentMap[$orderKey]['quantity'],
-                            ]);
-                            $updateLogCount++;
-                        }
 
                         if ($row->line_item_product_id) {
                             $currentMap[$orderKey]['_product_ids'][(int) $row->line_item_product_id] = true;
@@ -5258,23 +5442,6 @@ class RiderController extends Controller
             usort($tree, function ($a, $b) {
                 return $b['quantity'] <=> $a['quantity'];
             });
-            
-            // Debug: Log tree structure after primary builder
-            $treeStats = [
-                'root_count' => count($tree),
-                'root_nodes' => [],
-            ];
-            foreach ($tree as $idx => $node) {
-                $treeStats['root_nodes'][] = [
-                    'name' => $node['name'],
-                    'field' => $node['field'],
-                    'level' => $node['level'],
-                    'quantity' => $node['quantity'],
-                    'children_count' => count($node['children'] ?? []),
-                ];
-                if ($idx >= 2) break; // Only log first 3 nodes
-            }
-            Log::debug('Open Quantities Tree - After primary builder', $treeStats);
 
             // DISABLED: Fallback logic - the primary tree builder handles all hierarchies correctly
             // including NULL values as "Uncategorized" and builds the full depth.
@@ -5478,68 +5645,6 @@ class RiderController extends Controller
                 $orderStatusCounts[$status] = ($orderStatusCounts[$status] ?? 0) + 1;
             }
 
-            // Log detailed tree structure for debugging
-            $treeStats = [
-                'root_nodes' => count($tree),
-                'hierarchy' => $hierarchy,
-                'total_orders' => count($uniqueOrderIds),
-                'total_line_items' => $totalLineItems,
-            ];
-            
-            // Count nodes at each level
-            foreach ($tree as $rootNode) {
-                $treeStats['level_0_count'] = ($treeStats['level_0_count'] ?? 0) + 1;
-                if (!empty($rootNode['children'])) {
-                    foreach ($rootNode['children'] as $l1Node) {
-                        $treeStats['level_1_count'] = ($treeStats['level_1_count'] ?? 0) + 1;
-                        if (!empty($l1Node['children'])) {
-                            foreach ($l1Node['children'] as $l2Node) {
-                                $treeStats['level_2_count'] = ($treeStats['level_2_count'] ?? 0) + 1;
-                                if (!empty($l2Node['children'])) {
-                                    $treeStats['level_3_count'] = ($treeStats['level_3_count'] ?? 0) + 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            Log::info('Quantities tree built successfully', $treeStats);
-            
-            // DEBUG: Check a sample order node before sending
-            if (!empty($tree)) {
-                foreach ($tree as $l0) {
-                    if (!empty($l0['children'])) {
-                        foreach ($l0['children'] as $l1) {
-                            if (!empty($l1['children'])) {
-                                foreach ($l1['children'] as $l2) {
-                                    if (!empty($l2['children'])) {
-                                        foreach ($l2['children'] as $l3Product) {
-                                            if (!empty($l3Product['children'])) {
-                                                $firstOrder = $l3Product['children'][0];
-                                                $secondOrder = $l3Product['children'][1] ?? null;
-                                                Log::debug('📦 Sample product with orders in final tree', [
-                                                    'product_name' => $l3Product['name'],
-                                                    'product_quantity' => $l3Product['quantity'],
-                                                    'order_count' => count($l3Product['children']),
-                                                    'first_order_name' => $firstOrder['name'] ?? 'N/A',
-                                                    'first_order_quantity' => $firstOrder['quantity'] ?? 'MISSING',
-                                                    'first_order_id' => $firstOrder['order_id'] ?? 'N/A',
-                                                    'second_order_name' => $secondOrder['name'] ?? 'N/A',
-                                                    'second_order_quantity' => $secondOrder['quantity'] ?? 'N/A',
-                                                    'second_order_id' => $secondOrder['order_id'] ?? 'N/A',
-                                                ]);
-                                                break 4; // Exit all loops after first sample
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // ✅ CRITICAL: Break all PHP references before JSON encoding
             // The tree uses references (&) for performance during building,
             // but these create circular references that break json_encode()
@@ -5588,13 +5693,22 @@ class RiderController extends Controller
             
             // Get parameters
             $level = (int) $request->get('level', 0);
-            $filters = json_decode($request->get('filters', '{}'), true) ?: [];
+            
+            // Handle filters - can be JSON string or already an array (from mobile)
+            $filtersInput = $request->get('filters', '{}');
+            if (is_array($filtersInput)) {
+                $filters = $filtersInput;
+            } else {
+                $filters = json_decode($filtersInput, true) ?: [];
+            }
+            
             $statusFilter = $request->get('status_filter'); // Optional status filter
             
             // Allow mobile to override hierarchy (same as tree endpoint)
             $overrideHierarchy = $request->get('hierarchy_override');
             if ($overrideHierarchy) {
-                $hierarchy = json_decode($overrideHierarchy, true);
+                // Handle both JSON string and array
+                $hierarchy = is_array($overrideHierarchy) ? $overrideHierarchy : json_decode($overrideHierarchy, true);
             }
             
             // If no override, get global settings from database (same as web app)
@@ -8750,6 +8864,832 @@ class RiderController extends Controller
             OrderModel::where('id', $orderId)->update(['delivery_priority' => null]);
         } catch (\Exception $e) {
             \Log::warning('Failed to clear delivery priority for order ' . $orderId . ': ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * ⭐ Get delivered orders for Store Mode - grouped by DELIVERY DATE
+     * 
+     * Delivery date is determined from t_crm_order_status_history.changed_at
+     * where status_code = 'delivered'
+     * 
+     * Returns orders grouped by delivery date for the last 60 days (2 months)
+     * Includes: line items (products), delivery location (rider's GPS when delivered)
+     */
+    public function getStoreDeliveredOrders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - same as view_open_orders (store mode access)
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view delivered orders'
+                ], 403);
+            }
+            
+            // Get date range (default: last 60 days / 2 months for performance)
+            $daysBack = $request->get('days', 60);
+            $startDate = now()->subDays($daysBack)->format('Y-m-d');
+            
+            // ⭐ FIXED: Use subquery to get only the FIRST 'delivered' status entry per order
+            // This prevents duplicates when an order is marked delivered multiple times
+            $deliveredSubquery = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MIN(id) as first_delivered_id'))
+                ->where('status_code', 'delivered')
+                ->where('changed_at', '>=', $startDate)
+                ->groupBy('order_id');
+            
+            // Get all delivered orders with delivery date and location from status history
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->joinSub($deliveredSubquery, 'first_osh', function($join) {
+                    $join->on('o.id', '=', 'first_osh.order_id');
+                })
+                ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'first_osh.first_delivered_id')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.total_price',
+                    'o.payment_method',
+                    'o.assigned_rider_user_id as rider_id',
+                    'o.customer_id',
+                    'o.address_line1',
+                    'o.address_line2',
+                    'o.address_city',
+                    'o.address_phone',
+                    'o.order_date',
+                    'o.expected_packets',
+                    'o.actual_packets',
+                    'u.fullname as rider_name',
+                    'osh.changed_at as delivered_at',
+                    \DB::raw('DATE(osh.changed_at) as delivery_date'),
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.phone_original as customer_phone_from_customer',
+                    // ⭐ Delivery location (GPS captured when rider marked delivered)
+                    'osh.delivery_latitude',
+                    'osh.delivery_longitude',
+                ])
+                ->orderBy('osh.changed_at', 'desc')
+                ->get();
+            
+            // Get order IDs for batch fetching line items
+            $orderIds = $orders->pluck('id')->toArray();
+            
+            // ⭐ Batch fetch line items for all orders (avoid N+1 queries)
+            $lineItems = \DB::table('t_crm_prod_order_line_item')
+                ->whereIn('order_id', $orderIds)
+                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total'])
+                ->get()
+                ->groupBy('order_id');
+            
+            // Group by delivery date
+            $dateGroups = [];
+            foreach ($orders as $order) {
+                $dateKey = $order->delivery_date;
+                
+                if (!isset($dateGroups[$dateKey])) {
+                    $dateGroups[$dateKey] = [
+                        'date' => $dateKey,
+                        'date_display' => \Carbon\Carbon::parse($dateKey)->format('D, M j, Y'),
+                        'is_today' => $dateKey === now()->format('Y-m-d'),
+                        'cash_count' => 0,
+                        'cash_total' => 0,
+                        'online_count' => 0,
+                        'online_total' => 0,
+                        'total_delivered' => 0,
+                        'total_amount' => 0,
+                        'orders' => [],
+                    ];
+                }
+                
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                $amount = (float)$order->total_price;
+                
+                if ($isCash) {
+                    $dateGroups[$dateKey]['cash_count']++;
+                    $dateGroups[$dateKey]['cash_total'] += $amount;
+                } else {
+                    $dateGroups[$dateKey]['online_count']++;
+                    $dateGroups[$dateKey]['online_total'] += $amount;
+                }
+                
+                $dateGroups[$dateKey]['total_delivered']++;
+                $dateGroups[$dateKey]['total_amount'] += $amount;
+                
+                // Build customer address
+                $customerAddress = trim(implode(', ', array_filter([
+                    $order->address_line1,
+                    $order->address_line2,
+                    $order->address_city,
+                ])));
+                
+                // ⭐ Build delivery location object (GPS when rider marked delivered)
+                $deliveryLocation = null;
+                if ($order->delivery_latitude && $order->delivery_longitude) {
+                    $deliveryLocation = [
+                        'latitude' => (float)$order->delivery_latitude,
+                        'longitude' => (float)$order->delivery_longitude,
+                        'google_maps_url' => "https://www.google.com/maps?q={$order->delivery_latitude},{$order->delivery_longitude}",
+                    ];
+                }
+                
+                // ⭐ Get line items (products) for this order
+                $orderLineItems = $lineItems->get($order->id, collect())->map(function($item) {
+                    return [
+                        'name' => $item->name ?? 'Product',
+                        'sku' => $item->sku,
+                        'quantity' => (int)$item->quantity,
+                        'unit_price' => (float)$item->unit_price,
+                        'line_total' => (float)$item->line_total,
+                    ];
+                })->values()->toArray();
+                
+                $dateGroups[$dateKey]['orders'][] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'customer_address' => $customerAddress,
+                    'customer_phone' => $order->address_phone ?? $order->customer_phone_from_customer,
+                    'rider_id' => $order->rider_id,
+                    'rider_name' => $order->rider_name ?: 'Unassigned',
+                    'total_price' => $amount,
+                    'payment_method' => $order->payment_method,
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'order_date' => $order->order_date,
+                    'delivered_at' => $order->delivered_at,
+                    'delivered_at_display' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                    'expected_packets' => $order->expected_packets,
+                    'actual_packets' => $order->actual_packets,
+                    'delivery_location' => $deliveryLocation, // ⭐ GPS location when delivered
+                    'line_items' => $orderLineItems,          // ⭐ Products in this order
+                    'items_count' => count($orderLineItems),
+                ];
+            }
+            
+            // Convert to array and sort by date descending (most recent first)
+            $dateGroupsArray = collect($dateGroups)->sortByDesc('date')->values()->toArray();
+            
+            // Calculate summary stats
+            $totalOrders = $orders->count();
+            $totalCash = $orders->filter(function($o) {
+                return in_array(strtolower($o->payment_method ?? 'cash'), ['cash', 'cash_on_delivery', 'cod']);
+            })->sum('total_price');
+            $totalOnline = $orders->reject(function($o) {
+                return in_array(strtolower($o->payment_method ?? 'cash'), ['cash', 'cash_on_delivery', 'cod']);
+            })->sum('total_price');
+            
+            return response()->json([
+                'success' => true,
+                'summary' => [
+                    'total_orders' => $totalOrders,
+                    'total_cash' => $totalCash,
+                    'total_online' => $totalOnline,
+                    'total_amount' => $totalCash + $totalOnline,
+                    'days_included' => count($dateGroupsArray),
+                ],
+                'date_groups' => $dateGroupsArray,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error fetching delivered orders for store: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch delivered orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get FULL delivered quantities tree for Store Mode (pre-loaded for instant access)
+     * 
+     * Returns a complete nested tree structure for a date window:
+     * dates → category1 → category2 → category3 → products
+     * 
+     * Supports windowed loading:
+     * - Window 1: days 0-20 (most recent)
+     * - Window 2: days 20-40
+     * - Window 3: days 40-60
+     * 
+     * Orders are NOT included (lazy-loaded separately to keep payload small)
+     * Default: 20 days per window, max: 60 days total
+     */
+    public function getDeliveredQuantitiesFullTree(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view delivered quantities'
+                ], 403);
+            }
+            
+            // Window-based loading: offset_days determines which window to load
+            // Window 0: days 0-20 (default)
+            // Window 1: days 20-40
+            // Window 2: days 40-60
+            $windowSize = 20;
+            $offsetDays = max(0, min((int)$request->get('offset_days', 0), 40)); // 0, 20, or 40
+            $maxDays = 60;
+            
+            // Calculate date range for this window
+            $endDate = now()->subDays($offsetDays)->format('Y-m-d');
+            $startDate = now()->subDays(min($offsetDays + $windowSize, $maxDays))->format('Y-m-d');
+            
+            // Subquery to get ONE delivered status entry per order within date range
+            $deliveredSubquery = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MIN(id) as first_delivered_id'))
+                ->where('status_code', 'delivered')
+                ->where('changed_at', '>=', $startDate)
+                ->where('changed_at', '<=', $endDate . ' 23:59:59')
+                ->groupBy('order_id');
+            
+            // Get all line items with their categories for delivered orders
+            $rawData = \DB::table('t_crm_prod_order as o')
+                ->joinSub($deliveredSubquery, 'first_osh', function($join) {
+                    $join->on('o.id', '=', 'first_osh.order_id');
+                })
+                ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'first_osh.first_delivered_id')
+                ->join('t_crm_prod_order_line_item as li', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product_variant as pv', function ($join) {
+                    $join->where(function ($q) {
+                        $q->where(function($skuMatch) {
+                            $skuMatch->whereNotNull('li.sku')
+                                     ->where('li.sku', '!=', '')
+                                     ->whereColumn('li.sku', 'pv.sku');
+                        })
+                        ->orWhere(function($fallback) {
+                            $fallback->where(function($noSku) {
+                                $noSku->whereNull('li.sku')
+                                      ->orWhere('li.sku', '');
+                            })
+                            ->where(function($idMatch) {
+                                $idMatch->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.variant_id', 'pv.id')
+                                        ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.product_id', 'pv.id');
+                            });
+                        });
+                    });
+                })
+                ->leftJoin('t_crm_prod_product as p', function ($join) {
+                    $join->where(function ($q) {
+                        $q->whereColumn('pv.product_id', 'p.id')
+                          ->orWhere(function($nameFallback) {
+                              $nameFallback->whereNull('li.sku')
+                                           ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          });
+                    });
+                })
+                ->where(function ($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->select([
+                    \DB::raw('DATE(osh.changed_at) as delivery_date'),
+                    \DB::raw('COALESCE(NULLIF(p.attribute_1, ""), "Uncategorized") as attr1'),
+                    \DB::raw('COALESCE(NULLIF(p.attribute_2, ""), "Uncategorized") as attr2'),
+                    \DB::raw('COALESCE(NULLIF(p.attribute_3, ""), "Uncategorized") as attr3'),
+                    'p.id as product_id',
+                    \DB::raw('COALESCE(p.title, li.name) as product_name'),
+                    'o.id as order_id',
+                    'li.quantity',
+                ])
+                ->get();
+            
+            // Build nested tree structure
+            $tree = [];
+            $ordersByDate = []; // Track unique orders per date
+            
+            foreach ($rawData as $row) {
+                $date = $row->delivery_date;
+                $attr1 = $row->attr1;
+                $attr2 = $row->attr2;
+                $attr3 = $row->attr3;
+                $productId = $row->product_id ?? 'unknown';
+                $productName = $row->product_name ?? 'Unknown Product';
+                $qty = round((float)$row->quantity, 2); // Preserve decimals up to 2 places
+                $orderId = $row->order_id;
+                
+                // Initialize date level
+                if (!isset($tree[$date])) {
+                    $tree[$date] = [
+                        'name' => $date,
+                        'display_name' => \Carbon\Carbon::parse($date)->format('D, M j, Y'),
+                        'is_today' => $date === now()->format('Y-m-d'),
+                        'total_quantity' => 0,
+                        'order_count' => 0,
+                        'children' => [],
+                    ];
+                    $ordersByDate[$date] = [];
+                }
+                
+                // Track unique orders for this date
+                if (!in_array($orderId, $ordersByDate[$date])) {
+                    $ordersByDate[$date][] = $orderId;
+                    $tree[$date]['order_count'] = count($ordersByDate[$date]);
+                }
+                
+                $tree[$date]['total_quantity'] += $qty;
+                
+                // Initialize attr1 level
+                if (!isset($tree[$date]['children'][$attr1])) {
+                    $tree[$date]['children'][$attr1] = [
+                        'name' => $attr1,
+                        'total_quantity' => 0,
+                        'order_count' => 0,
+                        'children' => [],
+                        '_orders' => [],
+                    ];
+                }
+                $tree[$date]['children'][$attr1]['total_quantity'] += $qty;
+                if (!in_array($orderId, $tree[$date]['children'][$attr1]['_orders'])) {
+                    $tree[$date]['children'][$attr1]['_orders'][] = $orderId;
+                    $tree[$date]['children'][$attr1]['order_count'] = count($tree[$date]['children'][$attr1]['_orders']);
+                }
+                
+                // Initialize attr2 level
+                if (!isset($tree[$date]['children'][$attr1]['children'][$attr2])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2] = [
+                        'name' => $attr2,
+                        'total_quantity' => 0,
+                        'order_count' => 0,
+                        'children' => [],
+                        '_orders' => [],
+                    ];
+                }
+                $tree[$date]['children'][$attr1]['children'][$attr2]['total_quantity'] += $qty;
+                if (!in_array($orderId, $tree[$date]['children'][$attr1]['children'][$attr2]['_orders'])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['_orders'][] = $orderId;
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['order_count'] = count($tree[$date]['children'][$attr1]['children'][$attr2]['_orders']);
+                }
+                
+                // Initialize attr3 level
+                if (!isset($tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3] = [
+                        'name' => $attr3,
+                        'total_quantity' => 0,
+                        'order_count' => 0,
+                        'children' => [],
+                        '_orders' => [],
+                    ];
+                }
+                $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['total_quantity'] += $qty;
+                if (!in_array($orderId, $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['_orders'])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['_orders'][] = $orderId;
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['order_count'] = count($tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['_orders']);
+                }
+                
+                // Initialize product level
+                $productKey = $productId . '-' . $productName;
+                if (!isset($tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey] = [
+                        'name' => $productName,
+                        'product_id' => $productId,
+                        'total_quantity' => 0,
+                        'order_count' => 0,
+                        '_orders' => [],
+                    ];
+                }
+                $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey]['total_quantity'] += $qty;
+                if (!in_array($orderId, $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey]['_orders'])) {
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey]['_orders'][] = $orderId;
+                    $tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey]['order_count'] = count($tree[$date]['children'][$attr1]['children'][$attr2]['children'][$attr3]['children'][$productKey]['_orders']);
+                }
+            }
+            
+            // Convert associative arrays to indexed arrays and remove _orders tracking
+            $convertToArray = function($node, $level = 0) use (&$convertToArray) {
+                unset($node['_orders']);
+                
+                // Round total_quantity to 2 decimal places
+                if (isset($node['total_quantity'])) {
+                    $node['total_quantity'] = round($node['total_quantity'], 2);
+                }
+                
+                if (isset($node['children']) && is_array($node['children'])) {
+                    $children = [];
+                    foreach ($node['children'] as $child) {
+                        $children[] = $convertToArray($child, $level + 1);
+                    }
+                    // Sort by quantity descending
+                    usort($children, function($a, $b) {
+                        return ($b['total_quantity'] ?? 0) - ($a['total_quantity'] ?? 0);
+                    });
+                    $node['children'] = $children;
+                    $node['has_children'] = count($children) > 0;
+                } else {
+                    $node['has_children'] = false;
+                }
+                
+                return $node;
+            };
+            
+            $result = [];
+            // Sort dates descending
+            krsort($tree);
+            foreach ($tree as $dateNode) {
+                $result[] = $convertToArray($dateNode);
+            }
+            
+            // Calculate totals
+            $totalQty = array_sum(array_column($result, 'total_quantity'));
+            $totalOrders = array_sum(array_column($result, 'order_count'));
+            
+            // Determine if there's more data to load
+            $nextOffsetDays = $offsetDays + $windowSize;
+            $hasMore = $nextOffsetDays < $maxDays;
+            
+            return response()->json([
+                'success' => true,
+                'window_size' => $windowSize,
+                'offset_days' => $offsetDays,
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+                'has_more' => $hasMore,
+                'next_offset_days' => $hasMore ? $nextOffsetDays : null,
+                'total_quantity' => round($totalQty, 2),
+                'total_orders' => $totalOrders,
+                'dates' => $result,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error fetching delivered quantities full tree: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch delivered quantities: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get delivered quantities tree for Store Mode (lazy-load for older data)
+     * 
+     * Returns quantities grouped by:
+     * - Delivery Date (from status history) 
+     * - Category Level 1 (attribute_1)
+     * - Category Level 2 (attribute_2)  
+     * - Category Level 3 (attribute_3)
+     * - Product
+     * - Orders
+     * 
+     * Limited to last 60 days (2 months) for performance
+     */
+    public function getDeliveredQuantitiesTree(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view delivered quantities'
+                ], 403);
+            }
+            
+            // Limit to 60 days for performance
+            $daysBack = min($request->get('days', 60), 60);
+            $startDate = now()->subDays($daysBack)->format('Y-m-d');
+            
+            // Get the drill-down level and filters from request
+            $drillLevel = $request->get('level', 'dates'); // dates, category1, category2, category3, products, orders
+            $dateFilter = $request->get('date'); // YYYY-MM-DD
+            $attr1Filter = $request->get('attribute_1');
+            $attr2Filter = $request->get('attribute_2');
+            $attr3Filter = $request->get('attribute_3');
+            $productFilter = $request->get('product_id');
+            
+            // ⭐ FIXED: Use subquery to get only ONE 'delivered' status entry per order
+            // This prevents duplicates when an order is marked delivered multiple times
+            $deliveredSubquery = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MIN(id) as first_delivered_id'))
+                ->where('status_code', 'delivered')
+                ->where('changed_at', '>=', $startDate)
+                ->groupBy('order_id');
+            
+            // ⭐ For DATES level, start from ORDERS table to include ALL delivered orders
+            // This ensures order counts match the Orders tab exactly
+            if ($drillLevel === 'dates') {
+                $ordersQuery = \DB::table('t_crm_prod_order as o')
+                    ->joinSub($deliveredSubquery, 'first_osh', function($join) {
+                        $join->on('o.id', '=', 'first_osh.order_id');
+                    })
+                    ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'first_osh.first_delivered_id')
+                    ->leftJoin('t_crm_prod_order_line_item as li', 'li.order_id', '=', 'o.id')
+                    ->where(function ($q) {
+                        $q->where('o.external_source', '!=', 'shopify')
+                          ->orWhereNull('o.external_source');
+                    });
+                
+                $items = $ordersQuery
+                    ->select([
+                        \DB::raw('DATE(osh.changed_at) as name'),
+                        \DB::raw('COALESCE(SUM(li.quantity), 0) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    ])
+                    ->groupBy(\DB::raw('DATE(osh.changed_at)'))
+                    ->orderBy('name', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'name' => $item->name,
+                            'display_name' => \Carbon\Carbon::parse($item->name)->format('D, M j, Y'),
+                            'is_today' => $item->name === now()->format('Y-m-d'),
+                            'total_quantity' => (int)$item->total_quantity,
+                            'order_count' => (int)$item->order_count,
+                            'has_children' => true,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'dates',
+                    'total_quantity' => $items->sum('total_quantity'),
+                    'total_orders' => $items->sum('order_count'),
+                    'items' => $items,
+                ]);
+            }
+            
+            // ⭐ For drill-down levels (category/products), use line items query
+            // This makes sense because we're drilling into product categories
+            // Use same deduplication subquery to prevent duplicates
+            $baseQuery = \DB::table('t_crm_prod_order as o')
+                ->joinSub($deliveredSubquery, 'first_osh_drill', function($join) {
+                    $join->on('o.id', '=', 'first_osh_drill.order_id');
+                })
+                ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'first_osh_drill.first_delivered_id')
+                ->join('t_crm_prod_order_line_item as li', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product_variant as pv', function ($join) {
+                    $join->where(function ($q) {
+                        $q->where(function($skuMatch) {
+                            $skuMatch->whereNotNull('li.sku')
+                                     ->where('li.sku', '!=', '')
+                                     ->whereColumn('li.sku', 'pv.sku');
+                        })
+                        ->orWhere(function($fallback) {
+                            $fallback->where(function($noSku) {
+                                $noSku->whereNull('li.sku')
+                                      ->orWhere('li.sku', '');
+                            })
+                            ->where(function($idMatch) {
+                                $idMatch->whereColumn('li.variant_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.variant_id', 'pv.id')
+                                        ->orWhereColumn('li.product_id', 'pv.shopify_variant_id')
+                                        ->orWhereColumn('li.product_id', 'pv.id');
+                            });
+                        });
+                    });
+                })
+                ->leftJoin('t_crm_prod_product as p', function ($join) {
+                    $join->where(function ($q) {
+                        $q->whereColumn('pv.product_id', 'p.id')
+                          ->orWhere(function($nameFallback) {
+                              $nameFallback->whereNull('li.sku')
+                                           ->whereRaw('LOWER(TRIM(li.name)) = LOWER(TRIM(p.title))');
+                          });
+                    });
+                })
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where(function ($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->where('osh.changed_at', '>=', $startDate);
+            
+            // Apply filters based on drill level
+            if ($dateFilter) {
+                $baseQuery->whereDate('osh.changed_at', $dateFilter);
+            }
+            if ($attr1Filter) {
+                if ($attr1Filter === 'Uncategorized') {
+                    $baseQuery->where(function($q) {
+                        $q->whereNull('p.attribute_1')->orWhere('p.attribute_1', '');
+                    });
+                } else {
+                    $baseQuery->where('p.attribute_1', $attr1Filter);
+                }
+            }
+            if ($attr2Filter) {
+                if ($attr2Filter === 'Uncategorized') {
+                    $baseQuery->where(function($q) {
+                        $q->whereNull('p.attribute_2')->orWhere('p.attribute_2', '');
+                    });
+                } else {
+                    $baseQuery->where('p.attribute_2', $attr2Filter);
+                }
+            }
+            if ($attr3Filter) {
+                if ($attr3Filter === 'Uncategorized') {
+                    $baseQuery->where(function($q) {
+                        $q->whereNull('p.attribute_3')->orWhere('p.attribute_3', '');
+                    });
+                } else {
+                    $baseQuery->where('p.attribute_3', $attr3Filter);
+                }
+            }
+            if ($productFilter) {
+                $baseQuery->where('p.id', $productFilter);
+            }
+            
+            if ($drillLevel === 'category1') {
+                // Level 2: Group by attribute_1 (Category Level 1)
+                $items = (clone $baseQuery)
+                    ->select([
+                        \DB::raw('COALESCE(NULLIF(p.attribute_1, ""), "Uncategorized") as name'),
+                        \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    ])
+                    ->groupBy('name')
+                    ->orderBy('total_quantity', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'name' => $item->name,
+                            'total_quantity' => (int)$item->total_quantity,
+                            'order_count' => (int)$item->order_count,
+                            'has_children' => true,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'category1',
+                    'date' => $dateFilter,
+                    'total_quantity' => $items->sum('total_quantity'),
+                    'items' => $items,
+                ]);
+            }
+            
+            if ($drillLevel === 'category2') {
+                // Level 3: Group by attribute_2 (Category Level 2)
+                $items = (clone $baseQuery)
+                    ->select([
+                        \DB::raw('COALESCE(NULLIF(p.attribute_2, ""), "Uncategorized") as name'),
+                        \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    ])
+                    ->groupBy('name')
+                    ->orderBy('total_quantity', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'name' => $item->name,
+                            'total_quantity' => (int)$item->total_quantity,
+                            'order_count' => (int)$item->order_count,
+                            'has_children' => true,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'category2',
+                    'date' => $dateFilter,
+                    'attribute_1' => $attr1Filter,
+                    'total_quantity' => $items->sum('total_quantity'),
+                    'items' => $items,
+                ]);
+            }
+            
+            if ($drillLevel === 'category3') {
+                // Level 4: Group by attribute_3 (Category Level 3)
+                $items = (clone $baseQuery)
+                    ->select([
+                        \DB::raw('COALESCE(NULLIF(p.attribute_3, ""), "Uncategorized") as name'),
+                        \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    ])
+                    ->groupBy('name')
+                    ->orderBy('total_quantity', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'name' => $item->name,
+                            'total_quantity' => (int)$item->total_quantity,
+                            'order_count' => (int)$item->order_count,
+                            'has_children' => true,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'category3',
+                    'date' => $dateFilter,
+                    'attribute_1' => $attr1Filter,
+                    'attribute_2' => $attr2Filter,
+                    'total_quantity' => $items->sum('total_quantity'),
+                    'items' => $items,
+                ]);
+            }
+            
+            if ($drillLevel === 'products') {
+                // Level 5: Group by product
+                $items = (clone $baseQuery)
+                    ->select([
+                        'p.id as product_id',
+                        \DB::raw('COALESCE(p.title, li.name) as name'),
+                        \DB::raw('SUM(li.quantity) as total_quantity'),
+                        \DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    ])
+                    ->groupBy('p.id', 'name')
+                    ->orderBy('total_quantity', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        return [
+                            'name' => $item->name,
+                            'product_id' => $item->product_id,
+                            'total_quantity' => (int)$item->total_quantity,
+                            'order_count' => (int)$item->order_count,
+                            'has_children' => true,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'products',
+                    'date' => $dateFilter,
+                    'attribute_1' => $attr1Filter,
+                    'attribute_2' => $attr2Filter,
+                    'attribute_3' => $attr3Filter,
+                    'total_quantity' => $items->sum('total_quantity'),
+                    'items' => $items,
+                ]);
+            }
+            
+            if ($drillLevel === 'orders') {
+                // Final level: Show individual orders
+                $items = (clone $baseQuery)
+                    ->select([
+                        'o.id',
+                        'o.order_number',
+                        'o.total_price',
+                        'o.payment_method',
+                        'li.quantity',
+                        'li.name as product_name',
+                        'osh.changed_at as delivered_at',
+                        \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                        'u.fullname as rider_name',
+                    ])
+                    ->orderBy('osh.changed_at', 'desc')
+                    ->get()
+                    ->map(function($item) {
+                        $paymentMethod = strtolower($item->payment_method ?? 'cash');
+                        $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                        
+                        return [
+                            'id' => $item->id,
+                            'order_number' => $item->order_number ?? 'NF-' . str_pad($item->id, 4, '0', STR_PAD_LEFT),
+                            'customer_name' => trim($item->customer_name) ?: 'Unknown',
+                            'rider_name' => $item->rider_name ?: 'Unassigned',
+                            'quantity' => (int)$item->quantity,
+                            'product_name' => $item->product_name,
+                            'total_price' => (float)$item->total_price,
+                            'payment_type' => $isCash ? 'cash' : 'online',
+                            'delivered_at' => $item->delivered_at,
+                            'delivered_at_display' => \Carbon\Carbon::parse($item->delivered_at)->format('h:i A'),
+                            'has_children' => false,
+                        ];
+                    });
+                    
+                return response()->json([
+                    'success' => true,
+                    'level' => 'orders',
+                    'date' => $dateFilter,
+                    'attribute_1' => $attr1Filter,
+                    'attribute_2' => $attr2Filter,
+                    'attribute_3' => $attr3Filter,
+                    'product_id' => $productFilter,
+                    'total_quantity' => $items->sum('quantity'),
+                    'items' => $items,
+                ]);
+            }
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid drill level'
+            ], 400);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error fetching delivered quantities tree: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch delivered quantities: ' . $e->getMessage()
+            ], 500);
         }
     }
 }

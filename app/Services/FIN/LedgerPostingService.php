@@ -76,19 +76,21 @@ class LedgerPostingService
                     // Auto-approve small invoices if threshold is set
                     if ($config && $config->canAutoApprove((float) $order->total_price)) {
                         $approvalStatus = LedgerModel::STATUS_APPROVED;
-                    } elseif ($requiresL2) {
-                        // If L2 is required, treat this as a Level 2 pending item
-                        $approvalStatus = LedgerModel::STATUS_PENDING_L2;
                     } elseif ($requiresL1) {
-                        // Only L1 required
+                        // ⭐ FIX: Always start at L1 if L1 is required, regardless of L2
+                        // After L1 approval, the approve() method will move it to L2 if needed
                         $approvalStatus = LedgerModel::STATUS_PENDING_L1;
+                    } elseif ($requiresL2) {
+                        // Only L2 required (no L1) - unlikely but handle it
+                        $approvalStatus = LedgerModel::STATUS_PENDING_L2;
                     } else {
                         // No approval required
                         $approvalStatus = LedgerModel::STATUS_APPROVED;
                     }
                 } else {
-                    // Fallback: require L2 approval for online invoices by default
-                    $approvalStatus = LedgerModel::STATUS_PENDING_L2;
+                    // Fallback: require L1 approval for online invoices by default
+                    // L1 approval will move to L2 if needed based on category config
+                    $approvalStatus = LedgerModel::STATUS_PENDING_L1;
                 }
             } else {
                 // Cash payment - find rider's cash account

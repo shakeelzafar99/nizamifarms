@@ -329,6 +329,7 @@ class ApprovalController extends Controller
             'amount' => $request->amount ?? 0,
             'leave_days' => $request->leave_days ?? 0,
             'date' => $request->submitted_at ? $request->submitted_at->format('Y-m-d H:i:s') : null,
+            'approved_at' => $request->completed_at ? $request->completed_at->format('Y-m-d H:i:s') : null, // ⭐ Approved date
             'level' => $level,
             'area' => $area,
             'status' => $overrideStatus ?? 'pending',
@@ -354,10 +355,10 @@ class ApprovalController extends Controller
         if ($ledger->order) {
             $title = "Invoice #{$ledger->order->order_number}";
             
-            // Add customer name and order date to description for better context
+            // Add customer name from CUSTOMERS TABLE and order date to description for better context
             $customerName = 'Unknown Customer';
             if ($ledger->order->customer) {
-                // Use the full_name accessor (getFullNameAttribute)
+                // Use the full_name accessor (getFullNameAttribute) from customers table
                 $fullName = trim($ledger->order->customer->full_name ?? '');
                 $customerName = $fullName ?: 
                                $ledger->order->customer->company ?: 
@@ -374,7 +375,7 @@ class ApprovalController extends Controller
             // For employee deposits, show the employee name (from_account)
             $requester = $ledger->fromAccount ? $ledger->fromAccount->account_name : 'Unknown';
         } elseif ($ledger->transaction_type === \App\Models\FIN\LedgerModel::TYPE_INVOICE && $ledger->order) {
-            // For invoices, show the customer name (use full_name accessor, company, or phone as fallback)
+            // For invoices, show the customer name from CUSTOMERS TABLE (for grouping by customer)
             if ($ledger->order->customer) {
                 $fullName = trim($ledger->order->customer->full_name ?? '');
                 $requester = $fullName ?: 
@@ -389,10 +390,53 @@ class ApprovalController extends Controller
             $requester = $ledger->createdBy ? $ledger->createdBy->fullname : 'System';
         }
         
+        // ⭐ For ONLINE invoices: use order number instead of TXN-ID, and delivery date instead of transaction date
+        $displayNumber = "TXN-{$ledger->id}";
+        $displayDate = $ledger->created_at ? $ledger->created_at->format('Y-m-d H:i:s') : $ledger->transaction_date;
+        $deliveryDate = null;
+        $orderNumber = null;
+        
+        if ($ledger->order && $area === self::AREA_ONLINE) {
+            // Use order number for display
+            $orderNumber = $ledger->order->order_number;
+            $displayNumber = $orderNumber;
+            
+            // Get delivery date from the order's accessor (returns date when order was marked as delivered)
+            $deliveryDate = $ledger->order->delivery_date;
+            if ($deliveryDate) {
+                // Add time component for consistent display (show as start of day)
+                $displayDate = $deliveryDate . ' 00:00:00';
+            }
+        }
+        
+        // ⭐ Check if there's a pending adjustment for this ledger (amount change waiting approval)
+        $pendingAdjustment = null;
+        $pendingNewAmount = null;
+        $hasPendingAdjustment = false;
+        
+        $pendingAdj = LedgerAdjustmentModel::where('ledger_id', $ledger->id)
+            ->where('adjustment_status', LedgerAdjustmentModel::STATUS_PENDING)
+            ->orderBy('created_at', 'desc')
+            ->first();
+        
+        if ($pendingAdj) {
+            $hasPendingAdjustment = true;
+            $pendingNewAmount = $pendingAdj->new_amount;
+            $pendingAdjustment = [
+                'id' => $pendingAdj->id,
+                'old_amount' => $pendingAdj->old_amount,
+                'new_amount' => $pendingAdj->new_amount,
+                'adjustment_amount' => $pendingAdj->adjustment_amount,
+                'reason' => $pendingAdj->reason,
+                'requested_at' => $pendingAdj->requested_at ? $pendingAdj->requested_at->format('M j, Y') : null,
+            ];
+        }
+        
         return [
             'type' => 'ledger',
             'id' => $ledger->id,
-            'number' => "TXN-{$ledger->id}",
+            'number' => $displayNumber,
+            'order_number' => $orderNumber, // ⭐ Separate field for order number
             'category' => ucfirst(str_replace('_', ' ', $ledger->transaction_type)),
             'category_code' => $ledger->transaction_type,
             'requester' => $requester,
@@ -400,12 +444,23 @@ class ApprovalController extends Controller
             'description' => $description,
             'amount' => $ledger->amount ?? 0,
             'leave_days' => 0,
-            'date' => $ledger->created_at ? $ledger->created_at->format('Y-m-d H:i:s') : $ledger->transaction_date,
+            'date' => $displayDate,
+            'delivery_date' => $deliveryDate, // ⭐ Separate field for delivery date
+            // ⭐ Approved date with time - use updated_at for time since approval_date is DATE type
+            'approved_at' => $ledger->approval_date ? (
+                $ledger->approval_status === LedgerModel::STATUS_APPROVED && $ledger->updated_at 
+                    ? $ledger->updated_at->format('Y-m-d H:i:s') 
+                    : $ledger->approval_date
+            ) : null,
             'level' => $level, // Ledger transactions now participate in L1/L2 based on status
             'area' => $area,
             'status' => $overrideStatus ?? $ledger->approval_status,
             'assigned_to_id' => $assignedToId,
-            'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'approvals'])
+            'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'approvals']),
+            // ⭐ Pending adjustment info - shows if there's an amount change waiting approval
+            'has_pending_adjustment' => $hasPendingAdjustment,
+            'pending_new_amount' => $pendingNewAmount,
+            'pending_adjustment' => $pendingAdjustment,
         ];
     }
 

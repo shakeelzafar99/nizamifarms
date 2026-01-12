@@ -13,9 +13,15 @@ Route::get('/', function () {
     return redirect('/auth/login');
 });
 
-// APK Download - always redirects to the latest version (no auth required)
+// APK Download - serves the latest version directly (no auth required)
 Route::get('/apk/latest', function () {
-    return redirect('/downloads/NizamiFarms-Rider.apk');
+    $path = public_path('downloads/NizamiFarms-Rider.apk');
+    if (file_exists($path)) {
+        return response()->download($path, 'NizamiFarms-Rider.apk', [
+            'Content-Type' => 'application/vnd.android.package-archive',
+        ]);
+    }
+    return abort(404, 'APK not found');
 })->name('apk.latest');
 
 // Serve files from storage/app/public without symlink (no auth required)
@@ -129,6 +135,7 @@ Route::middleware(['auth'])->group(function () {
     // Payment method APIs
     Route::post('/orders/api/change-payment-method', [OrderController::class, 'changePaymentMethod'])->name('orders.api.change-payment-method');
     Route::get('/orders/{id}/payment-method/timeline', [OrderController::class, 'getPaymentMethodTimeline'])->name('orders.payment-method.timeline');
+    Route::get('/orders/{id}/event-history', [OrderController::class, 'getOrderEventHistory'])->name('orders.event-history');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
     Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');
@@ -274,6 +281,7 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/products', [\App\Http\Controllers\CRM\ProductController::class, 'store'])->name('products.store');
     Route::get('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show'])->name('products.show');
     Route::get('/products/{id}/edit', [\App\Http\Controllers\CRM\ProductController::class, 'edit'])->name('products.edit');
+    Route::get('/products/{id}/history', [\App\Http\Controllers\CRM\ProductController::class, 'getHistory'])->name('products.history');
     Route::put('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update'])->name('products.update');
     Route::post('/products/import', [\App\Http\Controllers\CRM\ProductController::class, 'importProducts'])->name('products.import');
     Route::post('/products/import-all', [\App\Http\Controllers\CRM\ProductController::class, 'importAllProducts'])->name('products.import-all');
@@ -519,6 +527,7 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'settle'])->name('settle');
             Route::post('/bulk-settle', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'bulkSettle'])->name('bulk-settle');
             Route::get('/{id}/settlement-details', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'getSettlementDetails'])->name('settlement-details');
+            Route::delete('/{id}', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'destroy'])->name('destroy');
         });
     });
     

@@ -85,7 +85,10 @@ window.viewCustomer = function(id) {
                             </div>
                             <div style="margin-bottom: 12px;">
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Phone (Original)</label>
-                                <p style="margin: 4px 0 0 0;">${customer.phone_original || customer.phone || 'N/A'}</p>
+                                <p style="margin: 4px 0 0 0;">
+                                    ${customer.phone_original || customer.phone || 'N/A'}
+                                    ${(customer.phone_original || customer.phone) ? `<button onclick="openCustomerWhatsApp('${escapeForJs(customer.first_name + ' ' + customer.last_name)}', '${escapeForJs(customer.phone_original || customer.phone)}')" style="padding: 2px 8px; background: #25D366; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 6px;" title="Send WhatsApp Message">💬 WhatsApp</button>` : ''}
+                                </p>
                             </div>
                             <div style="margin-bottom: 12px;">
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Phone (Normalized)</label>
@@ -777,11 +780,15 @@ window.saveCustomer = function(event, customerId) {
     const form = event.target;
     const formData = new FormData(form);
     
+    // Add _method field for Laravel to recognize PUT request
+    formData.append('_method', 'PUT');
+    
     fetch(`/customers/${customerId}`, {
-        method: 'PUT',
+        method: 'POST',  // Use POST with _method override for FormData
         body: formData,
         headers: {
-            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
         }
     })
     .then(response => response.json())
@@ -1752,6 +1759,83 @@ window.viewOrderDetails = function(orderId) {
         content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading order details</div>';
     });
 };
+
+// ========================================
+// WhatsApp Messaging Functions for Customers
+// ========================================
+let customerWhatsappData = { customerName: '', phone: '' };
+
+function escapeForJs(text) {
+    if (!text) return '';
+    return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+function openCustomerWhatsApp(customerName, phone) {
+    customerWhatsappData = { customerName, phone };
+    document.getElementById('customerWhatsappRecipient').textContent = 'To: ' + customerName + ' (' + phone + ')';
+    document.getElementById('customerWhatsappModal').style.display = 'block';
+}
+
+function closeCustomerWhatsAppModal() {
+    document.getElementById('customerWhatsappModal').style.display = 'none';
+    customerWhatsappData = { customerName: '', phone: '' };
+}
+
+function formatPhoneForWhatsApp(phone) {
+    if (!phone) return null;
+    
+    // Remove all non-digit characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // If starts with 92, already has country code
+    if (cleaned.startsWith('92') && cleaned.length >= 11) {
+        return cleaned;
+    }
+    
+    // If starts with 0, remove it
+    if (cleaned.startsWith('0')) {
+        cleaned = cleaned.substring(1);
+    }
+    
+    // Take last 10 digits
+    if (cleaned.length > 10) {
+        cleaned = cleaned.slice(-10);
+    }
+    
+    // Add Pakistan country code
+    return '92' + cleaned;
+}
+
+function openWhatsAppWeb(phone, message = '') {
+    const formattedPhone = formatPhoneForWhatsApp(phone);
+    if (!formattedPhone) {
+        alert('Invalid phone number');
+        return;
+    }
+    
+    let url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
+    if (message) {
+        url += '&text=' + encodeURIComponent(message);
+    }
+    
+    window.open(url, '_blank');
+    closeCustomerWhatsAppModal();
+}
+
+function sendCustomerWhatsAppDefault() {
+    openWhatsAppWeb(customerWhatsappData.phone);
+}
+
+function sendCustomerWhatsAppGreeting() {
+    const message = `Assalam-o-Alaikum ${customerWhatsappData.customerName},
+
+This is Nizami Farms. How can we help you today?
+
+Best regards,
+Nizami Farms Team`;
+    
+    openWhatsAppWeb(customerWhatsappData.phone, message);
+}
 </script>
 
 @section('content')
@@ -2080,6 +2164,43 @@ window.viewOrderDetails = function(orderId) {
         </div>
         <div id="viewCustomerContent" style="padding: 24px;">
             <!-- Content will be populated by JavaScript -->
+        </div>
+    </div>
+</div>
+
+<!-- WhatsApp Modal for Customers -->
+<div id="customerWhatsappModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10200;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 400px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 18px; font-weight: 600; margin: 0;">💬 Send WhatsApp Message</h3>
+                <button onclick="closeCustomerWhatsAppModal()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+            </div>
+            <p id="customerWhatsappRecipient" style="margin: 8px 0 0 0; font-size: 14px; color: #6b7280;"></p>
+        </div>
+        <div style="padding: 20px;">
+            <!-- Default WhatsApp -->
+            <button onclick="sendCustomerWhatsAppDefault()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+                <span style="font-size: 24px;">💬</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Open WhatsApp</div>
+                    <div style="font-size: 12px; color: #6b7280;">Start chat without pre-filled message</div>
+                </div>
+            </button>
+            
+            <!-- Welcome/Greeting -->
+            <button onclick="sendCustomerWhatsAppGreeting()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+                <span style="font-size: 24px;">👋</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Greeting</div>
+                    <div style="font-size: 12px; color: #6b7280;">Send a friendly hello message</div>
+                </div>
+            </button>
+            
+            <!-- Cancel -->
+            <button onclick="closeCustomerWhatsAppModal()" style="width: 100%; padding: 12px 16px; background: #e5e7eb; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151; transition: all 0.2s;" onmouseover="this.style.background='#d1d5db'" onmouseout="this.style.background='#e5e7eb'">
+                Cancel
+            </button>
         </div>
     </div>
 </div>
@@ -2585,6 +2706,49 @@ function selectCustomerMode(mode) {
 }
 
 // Line item management
+
+// ⭐ Handle Tab navigation from Qty field - skip to next row's product name
+function handleQtyTabNavigation(event, currentIndex) {
+    if (event.key === 'Tab' && !event.shiftKey) {
+        event.preventDefault();
+        
+        const container = document.getElementById('lineItemsContainer');
+        if (!container) return;
+        
+        const lineItems = Array.from(container.querySelectorAll('.line-item'));
+        
+        // Find current line item position
+        let currentPosition = -1;
+        lineItems.forEach((item, idx) => {
+            const qtyInput = item.querySelector(`input[name="items[${currentIndex}][quantity]"]`);
+            if (qtyInput) currentPosition = idx;
+        });
+        
+        // Find next line item
+        if (currentPosition >= 0 && currentPosition < lineItems.length - 1) {
+            const nextItem = lineItems[currentPosition + 1];
+            const nextNameInput = nextItem.querySelector('input[name*="[name]"]');
+            if (nextNameInput && !nextNameInput.readOnly) {
+                nextNameInput.focus();
+                return;
+            }
+        }
+        
+        // If we're on the last row or next row's name is readonly, add new row and focus it
+        addLineItem();
+        setTimeout(() => {
+            const newLineItems = container.querySelectorAll('.line-item');
+            if (newLineItems.length > 0) {
+                const newItem = newLineItems[newLineItems.length - 1];
+                const newNameInput = newItem.querySelector('input[name*="[name]"]');
+                if (newNameInput) {
+                    newNameInput.focus();
+                }
+            }
+        }, 50);
+    }
+}
+
 function addLineItem() {
     const container = document.getElementById('lineItemsContainer');
     
@@ -2605,6 +2769,7 @@ function addLineItem() {
                            onfocus="showProductDropdown(${lineItemIndex})"
                            onblur="hideProductDropdown(${lineItemIndex})">
                     <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                    <span id="skuDisplay_${lineItemIndex}" style="display: none; margin-top: 4px; font-size: 11px; color: #0369a1; background: #dbeafe; padding: 2px 6px; border-radius: 3px;"></span>
                     <input type="hidden" name="items[${lineItemIndex}][id]" value="">
                     <input type="hidden" name="items[${lineItemIndex}][sku]" value="">
                     <input type="hidden" name="items[${lineItemIndex}][variant_id]" value="">
@@ -2614,11 +2779,12 @@ function addLineItem() {
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
                     <input type="number" name="items[${lineItemIndex}][quantity]" step="0.01" min="0" value="1" 
                            style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
-                           onchange="updateLineTotal(${lineItemIndex})">
+                           onchange="updateLineTotal(${lineItemIndex})"
+                           onkeydown="handleQtyTabNavigation(event, ${lineItemIndex})">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
-                    <input type="number" name="items[${lineItemIndex}][unit_price]" step="0.01" min="0" value="0" 
+                    <input type="number" name="items[${lineItemIndex}][unit_price]" step="0.01" min="0" value="0" tabindex="-1"
                            style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;"
                            onchange="updateLineTotal(${lineItemIndex})">
                 </div>
@@ -3048,10 +3214,12 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
     // Fill in the product details
     const nameInput = document.querySelector(`input[name="items[${index}][name]"]`);
     const priceInput = document.querySelector(`input[name="items[${index}][unit_price]"]`);
+    const qtyInput = document.querySelector(`input[name="items[${index}][quantity]"]`);
     const hiddenInput = document.querySelector(`input[name="items[${index}][id]"]`);
     const skuInput = document.querySelector(`input[name="items[${index}][sku]"]`);
     const variantIdInput = document.querySelector(`input[name="items[${index}][variant_id]"]`);
     const productIdInput = document.querySelector(`input[name="items[${index}][product_id]"]`);
+    const skuDisplay = document.getElementById(`skuDisplay_${index}`);
     
     if (nameInput) nameInput.value = productName;
     if (priceInput) {
@@ -3068,11 +3236,27 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
     if (variantIdInput) variantIdInput.value = variantId || '';
     if (productIdInput) productIdInput.value = productIdFromSearch || '';
     
+    // ⭐ Display SKU if available
+    if (skuDisplay && sku) {
+        skuDisplay.textContent = `SKU: ${sku}`;
+        skuDisplay.style.display = 'inline-block';
+    } else if (skuDisplay) {
+        skuDisplay.style.display = 'none';
+    }
+    
     // Update the line total
     updateLineTotal(index);
     
     // Hide dropdown
     hideProductDropdown(index);
+    
+    // ⭐ Focus on quantity field after product selection
+    setTimeout(() => {
+        if (qtyInput) {
+            qtyInput.focus();
+            qtyInput.select(); // Select the value so user can type new qty directly
+        }
+    }, 60);
 }
 
 // Coupon search functionality
@@ -3179,6 +3363,7 @@ selectProduct = function(index, productId, productName, price) {
     }, 100);
 };
 
+// ⭐ Auto-add new line item silently - does NOT steal focus from qty field
 function autoAddNextLineItem() {
     const container = document.getElementById('lineItemsContainer');
     if (!container) return;
@@ -3191,17 +3376,7 @@ function autoAddNextLineItem() {
     
     if (lastNameInput && lastNameInput.value.trim()) {
         addLineItem();
-        
-        setTimeout(() => {
-            const newLineItems = container.querySelectorAll('.line-item');
-            if (newLineItems.length > lineItems.length) {
-                const newItem = newLineItems[newLineItems.length - 1];
-                const newNameInput = newItem.querySelector('input[name*="[name]"]');
-                if (newNameInput) {
-                    newNameInput.focus();
-                }
-            }
-        }, 50);
+        // ⭐ No focus change - user stays on quantity field and can Tab when ready
     }
 }
 

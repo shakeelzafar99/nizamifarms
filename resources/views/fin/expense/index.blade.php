@@ -397,18 +397,29 @@ document.addEventListener('DOMContentLoaded', function() {
                                     @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    @if(isset($expense->type) && $expense->type === 'salary')
-                                        <span class="text-gray-400 text-xs">{{ ucfirst($expense->status) }}</span>
-                                    @elseif($expense->settlement_status === 'pending')
-                                        <button onclick="openSettlementModal({{ is_string($expense->id) ? 0 : $expense->id }})" 
-                                                class="text-blue-600 hover:text-blue-800 font-medium">
-                                            ⚙️ Settle
-                                        </button>
-                                    @elseif($expense->settlement_status === 'settled')
-                                        <span class="text-gray-400 text-xs">
-                                            {{ isset($expense->settled_at) ? $expense->settled_at->format('M d') : 'N/A' }} by {{ isset($expense->settledBy) ? ($expense->settledBy->name ?? 'System') : 'System' }}
-                                        </span>
-                                    @endif
+                                    <div class="flex items-center gap-2">
+                                        @if(isset($expense->type) && $expense->type === 'salary')
+                                            <span class="text-gray-400 text-xs">{{ ucfirst($expense->status) }}</span>
+                                        @elseif($expense->settlement_status === 'pending')
+                                            <button onclick="openSettlementModal({{ is_string($expense->id) ? 0 : $expense->id }})" 
+                                                    class="text-blue-600 hover:text-blue-800 font-medium">
+                                                ⚙️ Settle
+                                            </button>
+                                        @elseif($expense->settlement_status === 'settled')
+                                            <span class="text-gray-400 text-xs">
+                                                {{ isset($expense->settled_at) ? $expense->settled_at->format('M d') : 'N/A' }} by {{ isset($expense->settledBy) ? ($expense->settledBy->name ?? 'System') : 'System' }}
+                                            </span>
+                                        @endif
+                                        
+                                        {{-- Delete button - only for non-salary expenses and L2 users --}}
+                                        @if(!isset($expense->type) || $expense->type !== 'salary')
+                                            <button onclick="confirmDeleteExpense({{ $expense->id }}, '{{ $expense->request_number }}', {{ $expense->amount }})" 
+                                                    class="text-red-500 hover:text-red-700 ml-2" 
+                                                    title="Delete expense">
+                                                🗑️
+                                            </button>
+                                        @endif
+                                    </div>
                                 </td>
                             </tr>
                             @empty
@@ -1688,6 +1699,58 @@ console.log('Expense Management JS loaded. Functions:', {
     openPendingApprovalsModal: typeof window.openPendingApprovalsModal,
     openNewRequestModal: typeof window.openNewRequestModal
 });
+
+// ⭐ Delete Expense Confirmation
+async function confirmDeleteExpense(expenseId, requestNumber, amount) {
+    const reason = prompt(
+        `⚠️ DELETE EXPENSE\n\n` +
+        `Request #: ${requestNumber}\n` +
+        `Amount: Rs. ${amount.toLocaleString()}\n\n` +
+        `This will:\n` +
+        `• Mark the expense as cancelled\n` +
+        `• Reverse all ledger entries\n` +
+        `• Restore account balances\n\n` +
+        `Enter reason for deletion (or Cancel to abort):`
+    );
+    
+    if (reason === null) {
+        // User clicked Cancel
+        return;
+    }
+    
+    if (!reason.trim()) {
+        alert('Please provide a reason for deletion.');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/finance/expenses/${expenseId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({ notes: reason.trim() })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('✅ ' + data.message);
+            // Refresh the page to show updated list
+            window.location.reload();
+        } else {
+            alert('❌ ' + (data.message || 'Failed to delete expense'));
+        }
+    } catch (error) {
+        console.error('Delete expense error:', error);
+        alert('❌ An error occurred while deleting the expense. Please try again.');
+    }
+}
+
+// Make function globally available
+window.confirmDeleteExpense = confirmDeleteExpense;
 </script>
 
 

@@ -451,6 +451,11 @@
                     <td class="label">Shipping:</td>
                     <td class="amount">Rs.{{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
+                @else
+                <tr>
+                    <td class="label">Shipping:</td>
+                    <td class="amount" style="color: #059669; font-weight: 600;">Free Delivery</td>
+                </tr>
                 @endif
                 <tr class="total-row">
                     <td class="label">Total:</td>

@@ -434,5 +434,159 @@ class ExpenseManagementController extends Controller
             ]
         ]);
     }
+    
+    /**
+     * Delete an expense request and reverse ledger entries
+     * Only users with L2 approval rights can delete
+     */
+    public function destroy(Request $request, $id)
+    {
+        try {
+            $user = auth()->user();
+            
+            Log::info('Delete expense attempt (web)', [
+                'expense_id' => $id,
+                'user_id' => $user->id,
+                'user_name' => $user->fullname ?? $user->name
+            ]);
+            
+            // Check if user has L2 approval rights (required for delete)
+            $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+            
+            if (!$hasL2Rights) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only Level 2 approvers can delete expenses'
+                ], 403);
+            }
+            
+            $expenseRequest = RequestModel::with(['paymentSourceAccount', 'category'])
+                ->findOrFail($id);
+            
+            // Check if expense is approved
+            if ($expenseRequest->status !== RequestModel::STATUS_APPROVED) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only approved expenses can be deleted'
+                ], 400);
+            }
+            
+            $notes = $request->input('notes', '');
+            
+            DB::beginTransaction();
+            
+            // If expense has ledger entry, reverse it
+            if ($expenseRequest->ledger_transaction_id) {
+                $ledger = LedgerModel::find($expenseRequest->ledger_transaction_id);
+                
+                if ($ledger && $ledger->approval_status === LedgerModel::STATUS_APPROVED) {
+                    // Reverse account balances
+                    $fromAccount = $ledger->fromAccount;
+                    $toAccount = $ledger->toAccount;
+                    
+                    if ($fromAccount) {
+                        // Add amount back to from_account (was deducted)
+                        $fromAccount->current_balance += $ledger->amount;
+                        $fromAccount->save();
+                        
+                        Log::info("Reversed from_account balance", [
+                            'account_id' => $fromAccount->id,
+                            'account_name' => $fromAccount->account_name,
+                            'amount_added' => $ledger->amount,
+                            'new_balance' => $fromAccount->current_balance
+                        ]);
+                    }
+                    
+                    if ($toAccount) {
+                        // Subtract amount from to_account (was added)
+                        $toAccount->current_balance -= $ledger->amount;
+                        $toAccount->save();
+                        
+                        Log::info("Reversed to_account balance", [
+                            'account_id' => $toAccount->id,
+                            'account_name' => $toAccount->account_name,
+                            'amount_subtracted' => $ledger->amount,
+                            'new_balance' => $toAccount->current_balance
+                        ]);
+                    }
+                    
+                    // Mark ledger entry as reversed
+                    $ledger->approval_status = LedgerModel::STATUS_REVERSED;
+                    $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') . 
+                        "DELETED by {$user->fullname} on " . now()->format('Y-m-d H:i:s') . 
+                        ($notes ? " - Reason: {$notes}" : '');
+                    $ledger->save();
+                }
+            }
+            
+            // If expense has settlement transaction, reverse it too
+            if ($expenseRequest->settlement_transaction_id) {
+                $settlementLedger = LedgerModel::find($expenseRequest->settlement_transaction_id);
+                
+                if ($settlementLedger && $settlementLedger->approval_status === LedgerModel::STATUS_APPROVED) {
+                    // Reverse settlement balances
+                    $fromAccount = $settlementLedger->fromAccount;
+                    $toAccount = $settlementLedger->toAccount;
+                    
+                    if ($fromAccount) {
+                        $fromAccount->current_balance += $settlementLedger->amount;
+                        $fromAccount->save();
+                    }
+                    
+                    if ($toAccount) {
+                        $toAccount->current_balance -= $settlementLedger->amount;
+                        $toAccount->save();
+                    }
+                    
+                    $settlementLedger->approval_status = LedgerModel::STATUS_REVERSED;
+                    $settlementLedger->comments = ($settlementLedger->comments ? $settlementLedger->comments . "\n" : '') . 
+                        "DELETED (settlement reversal) by {$user->fullname} on " . now()->format('Y-m-d H:i:s');
+                    $settlementLedger->save();
+                    
+                    Log::info("Reversed settlement transaction", [
+                        'settlement_ledger_id' => $settlementLedger->id,
+                        'amount' => $settlementLedger->amount
+                    ]);
+                }
+            }
+            
+            // Mark request as deleted/cancelled
+            $expenseRequest->status = 'cancelled';
+            $expenseRequest->rejection_reason = "DELETED by {$user->fullname} on " . now()->format('Y-m-d H:i:s') . 
+                ($notes ? " - Reason: {$notes}" : '');
+            $expenseRequest->updated_by = $user->id;
+            $expenseRequest->save();
+            
+            DB::commit();
+            
+            Log::info('Expense deleted successfully (web)', [
+                'expense_id' => $id,
+                'request_number' => $expenseRequest->request_number,
+                'amount' => $expenseRequest->amount,
+                'deleted_by' => $user->id,
+                'ledger_reversed' => $expenseRequest->ledger_transaction_id ? true : false,
+                'settlement_reversed' => $expenseRequest->settlement_transaction_id ? true : false
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Expense #{$expenseRequest->request_number} deleted successfully. Ledger entries reversed."
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            Log::error('Expense delete failed (web)', [
+                'expense_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete expense: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 }
 

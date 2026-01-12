@@ -381,10 +381,31 @@
                                 </div>
                                 
                                 <div class="flex flex-col gap-2">
-                                    <label class="form-label text-sm font-medium">SKU</label>
-                                    <input type="text" name="variants[{{ $index }}][sku]" class="form-control" 
-                                           value="{{ old('variants.'.$index.'.sku', $variant->sku) }}"
-                                           placeholder="e.g., PROD-SM-RED">
+                                    <label class="form-label text-sm font-medium">🔒 SKU</label>
+                                    <div class="flex gap-2">
+                                        <input type="text" 
+                                               name="variants[{{ $index }}][sku]" 
+                                               id="sku_input_{{ $index }}"
+                                               class="form-control sku-protected-input flex-1" 
+                                               value="{{ old('variants.'.$index.'.sku', $variant->sku) }}"
+                                               placeholder="e.g., PROD-SM-RED"
+                                               {{ $variant->sku ? 'readonly' : '' }}
+                                               data-original-sku="{{ $variant->sku }}"
+                                               style="{{ $variant->sku ? 'background-color: #f3f4f6; cursor: not-allowed;' : '' }}">
+                                        @if($variant->sku)
+                                        <button type="button" 
+                                                onclick="unlockSkuField({{ $index }})" 
+                                                id="sku_lock_btn_{{ $index }}"
+                                                class="btn btn-sm"
+                                                style="padding: 6px 10px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px;"
+                                                title="Click to unlock and edit SKU">
+                                            🔓
+                                        </button>
+                                        @endif
+                                    </div>
+                                    @if($variant->sku)
+                                    <span class="text-xs text-amber-600">⚠️ SKU is protected. Click 🔓 to edit.</span>
+                                    @endif
                                 </div>
                                 
                                 <div class="flex flex-col gap-2">
@@ -521,6 +542,86 @@ function toggleVariantAdvanced(index) {
     } else {
         section.style.display = 'none';
         icon.textContent = '▶️';
+    }
+}
+
+// ⭐ SKU Protection: Unlock SKU field with confirmation
+function unlockSkuField(index) {
+    const input = document.getElementById('sku_input_' + index);
+    const btn = document.getElementById('sku_lock_btn_' + index);
+    const originalSku = input.dataset.originalSku;
+    
+    // Show confirmation dialog
+    const confirmed = confirm(
+        '⚠️ SKU PROTECTION WARNING\n\n' +
+        'Are you sure you want to edit this SKU?\n\n' +
+        'Current SKU: ' + originalSku + '\n\n' +
+        'Changing the SKU may affect:\n' +
+        '• Order matching\n' +
+        '• Inventory tracking\n' +
+        '• Shopify synchronization\n\n' +
+        'Click OK to unlock and edit, or Cancel to keep it protected.'
+    );
+    
+    if (confirmed) {
+        // Unlock the field
+        input.removeAttribute('readonly');
+        input.style.backgroundColor = '#fefce8'; // Light yellow to indicate editable
+        input.style.cursor = 'text';
+        input.style.border = '2px solid #f59e0b';
+        input.focus();
+        input.select();
+        
+        // Change button to show locked state is off
+        btn.innerHTML = '✏️';
+        btn.title = 'SKU is now editable';
+        btn.style.background = '#fef3c7';
+        btn.onclick = function() {
+            // Allow re-locking
+            lockSkuField(index);
+        };
+        
+        // Add warning message
+        const wrapper = input.closest('.flex.flex-col.gap-2');
+        let warning = wrapper.querySelector('.sku-edit-warning');
+        if (!warning) {
+            warning = document.createElement('span');
+            warning.className = 'text-xs text-red-600 sku-edit-warning';
+            warning.innerHTML = '⚠️ SKU unlocked for editing. Save carefully!';
+            wrapper.appendChild(warning);
+        }
+    }
+}
+
+// Re-lock SKU field and restore original value
+function lockSkuField(index) {
+    const input = document.getElementById('sku_input_' + index);
+    const btn = document.getElementById('sku_lock_btn_' + index);
+    const originalSku = input.dataset.originalSku;
+    
+    // Restore original value and lock
+    input.value = originalSku;
+    input.setAttribute('readonly', true);
+    input.style.backgroundColor = '#f3f4f6';
+    input.style.cursor = 'not-allowed';
+    input.style.border = '';
+    
+    // Reset button
+    btn.innerHTML = '🔓';
+    btn.title = 'Click to unlock and edit SKU';
+    btn.onclick = function() {
+        unlockSkuField(index);
+    };
+    
+    // Remove warning
+    const wrapper = input.closest('.flex.flex-col.gap-2');
+    const warning = wrapper.querySelector('.sku-edit-warning');
+    if (warning) warning.remove();
+    
+    // Update the protected message
+    const protectedMsg = wrapper.querySelector('.text-amber-600');
+    if (protectedMsg) {
+        protectedMsg.innerHTML = '⚠️ SKU is protected. Click 🔓 to edit.';
     }
 }
 

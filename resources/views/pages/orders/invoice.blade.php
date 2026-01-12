@@ -719,6 +719,7 @@ $autoPrint = request('print_pdf') == '1';
 $autoPng = request('auto_png') == '1'; 
 $viewAndDownloadPng = request('view_and_download_png') == '1';
 $isPngDownload = $autoPng || $viewAndDownloadPng;
+$hideUnitPrice = request('hide_unit_price') == '1';
 @endphp
     <div class="invoice-container">
         <!-- Header -->
@@ -861,10 +862,16 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
         <table class="products-table">
             <thead>
                 <tr>
+                    @if($hideUnitPrice)
+                    <th style="width: 60%;">PRODUCTS</th>
+                    <th class="text-center" style="width: 20%;">Qty</th>
+                    <th class="text-right" style="width: 20%;">Total</th>
+                    @else
                     <th style="width: 55%;">PRODUCTS</th>
                     <th class="text-center" style="width: 12%;">Qty</th>
                     <th class="text-center" style="width: 15%;">Unit Price</th>
                     <th class="text-right" style="width: 18%;">Total</th>
+                    @endif
                 </tr>
             </thead>
             <tbody>
@@ -874,7 +881,9 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                         <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
                     </td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
+                    @if(!$hideUnitPrice)
                     <td class="text-center">Rs {{ number_format($item->unit_price, 0) }}</td>
+                    @endif
                     <td class="text-right" style="font-weight: 600;">Rs {{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
                 </tr>
                 @endforeach
@@ -912,6 +921,11 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                     <td class="label">Shipping</td>
                     <td class="amount">Rs {{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
+                @else
+                <tr>
+                    <td class="label">Shipping</td>
+                    <td class="amount" style="color: #059669; font-weight: 600;">Free Delivery</td>
+                </tr>
                 @endif
                 
                 @if(isset($order->tip_amount) && $order->tip_amount > 0)
@@ -921,9 +935,16 @@ $isPngDownload = $autoPng || $viewAndDownloadPng;
                 </tr>
                 @endif
                 
+                @php
+                    // Calculate actual total including tip (in case stored total_price doesn't include it)
+                    $calculatedTotal = $subtotal - $totalDiscounts + ($order->shipping_total ?? 0) + ($order->tip_amount ?? 0);
+                    // Use the higher of stored total or calculated total (to avoid showing less than owed)
+                    $displayTotal = max($order->total_price ?? 0, $calculatedTotal);
+                @endphp
+                
                 <tr class="total-row">
                     <td class="label">Total</td>
-                    <td class="amount">Rs {{ number_format($order->total_price, 0) }}</td>
+                    <td class="amount">Rs {{ number_format($displayTotal, 0) }}</td>
                 </tr>
             </table>
         </div>

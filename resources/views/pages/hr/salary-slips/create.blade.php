@@ -427,7 +427,8 @@ function renderSalaryCalendar() {
             year: date.getFullYear(),
             month: date.getMonth(),
             monthName: months[date.getMonth()],
-            monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`
+            // Use 2nd of month to prevent timezone shift issues (UTC conversion won't cross month boundary)
+            monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-02`
         });
     }
     
@@ -443,8 +444,9 @@ function renderSalaryCalendar() {
     monthsToDisplay.forEach(monthData => {
         const { year, monthName, monthKey } = monthData;
         
-        // Find existing slip for this month
-        const existingSlip = employeeSalarySlips.find(slip => slip.salary_month === monthKey);
+        // Find existing slip for this month (compare YYYY-MM only to handle both old -01 and new -02 dates)
+        const monthPrefix = monthKey.substring(0, 7); // Extract YYYY-MM
+        const existingSlip = employeeSalarySlips.find(slip => slip.salary_month && slip.salary_month.substring(0, 7) === monthPrefix);
         
         // Debug logging
         if (monthName === 'October' && year === 2025) {
@@ -592,7 +594,7 @@ function calculateSalary(monthKey = null) {
         },
         body: JSON.stringify({
             user_id: userId,
-            month: monthKey || (month + '-01')  // monthKey is already in YYYY-MM-DD format
+            month: monthKey || (month + '-02')  // Use 2nd of month to prevent timezone shift issues
         })
     })
     .then(response => {
@@ -793,7 +795,7 @@ function updateAdjustmentsInfo() {
 
 function saveSalarySlip(status) {
     const userId = currentUserId || document.getElementById('employee-select').value;
-    const month = currentMonth ? currentMonth + '-01' : null;
+    const month = currentMonth ? currentMonth + '-02' : null;  // Use 2nd of month to prevent timezone shift
     
     if (!userId || !month) {
         alert('❌ Error: Missing employee or month information');
@@ -927,7 +929,7 @@ function showSalaryAttendanceModal(employee) {
     
     // Populate header
     modalName.textContent = employee.fullname || 'Unknown';
-    modalMonth.textContent = new Date(currentMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    modalMonth.textContent = new Date(currentMonth + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     
     // Populate stats
     modalPresent.textContent = employee.present_days || 0;

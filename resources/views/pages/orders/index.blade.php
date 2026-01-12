@@ -1259,15 +1259,13 @@ input:focus, select:focus, button:focus {
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Invoice Details</h3>
             <div class="modal-header-buttons" style="display: flex; align-items: center; gap: 12px;">
                 <!-- Primary Actions -->
-                <button id="viewInvoiceBtn" onclick="viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                <button id="printWithoutUnitBtn" onclick="printInvoiceWithoutUnit()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Print invoice without unit price column">
                     <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
-                        <polyline points="14,2 14,8 20,8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10,9 9,9 8,9"/>
+                        <path d="M6 9V2h12v7"/>
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                        <rect x="6" y="14" width="12" height="8"/>
                     </svg>
-                    View Invoice
+                    Print without Unit
                 </button>
                 <button onclick="editOrderFromView()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                         <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
@@ -1340,15 +1338,13 @@ input:focus, select:focus, button:focus {
             <h3 style="font-size: 18px; font-weight: 600; margin: 0;">Edit Invoice</h3>
             <div style="display: flex; align-items: center; gap: 12px;">
                 <!-- Primary Actions -->
-                <button onclick="viewInvoiceFromEdit()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                <button onclick="printInvoiceWithoutUnit()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Print invoice without unit price column">
                     <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
-                        <polyline points="14,2 14,8 20,8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10,9 9,9 8,9"/>
+                        <path d="M6 9V2h12v7"/>
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                        <rect x="6" y="14" width="12" height="8"/>
                     </svg>
-                    View Invoice
+                    Print without Unit
                 </button>
                 
                 <!-- Secondary Actions Group -->
@@ -1417,6 +1413,52 @@ input:focus, select:focus, button:focus {
         </div>
     </div>
 </div>
+<!-- WhatsApp Messages Modal -->
+<div id="whatsappModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10200;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 400px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 18px; font-weight: 600; margin: 0;">💬 Send WhatsApp Message</h3>
+                <button onclick="closeWhatsAppModal()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+            </div>
+            <p id="whatsappRecipient" style="margin: 8px 0 0 0; font-size: 14px; color: #6b7280;"></p>
+        </div>
+        <div style="padding: 20px;">
+            <!-- Default WhatsApp -->
+            <button onclick="sendWhatsAppDefault()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+                <span style="font-size: 24px;">💬</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Open WhatsApp</div>
+                    <div style="font-size: 12px; color: #6b7280;">Start chat without pre-filled message</div>
+                </div>
+            </button>
+            
+            <!-- Next Day Delivery -->
+            <button onclick="sendWhatsAppNextDay()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+                <span style="font-size: 24px;">📅</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Next Day Delivery</div>
+                    <div style="font-size: 12px; color: #6b7280;">Inform about tomorrow delivery</div>
+                </div>
+            </button>
+            
+            <!-- Meatless Days -->
+            <button onclick="sendWhatsAppMeatlessDays()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+                <span style="font-size: 24px;">🥬</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Meatless Days</div>
+                    <div style="font-size: 12px; color: #6b7280;">Tuesday/Wednesday closed, Thursday delivery</div>
+                </div>
+            </button>
+            
+            <!-- Cancel -->
+            <button onclick="closeWhatsAppModal()" style="width: 100%; padding: 12px 16px; background: #e5e7eb; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151; transition: all 0.2s;" onmouseover="this.style.background='#d1d5db'" onmouseout="this.style.background='#e5e7eb'">
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- Column Settings Modal -->
 <div id="columnSettingsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 9999; overflow-y: auto;">
     <div style="display: flex; min-height: 100%; align-items: center; justify-content: center; padding: 20px;">
@@ -1814,7 +1856,14 @@ function viewOrderDetails(orderId) {
             }
             html += '<p><strong>Customer:</strong> ' + customerDisplay + '</p>';
             html += '<p><strong>Address:</strong> ' + fullAddress + '</p>';
-            html += '<p><strong>Phone:</strong> ' + (order.address_phone || order.customer_phone || 'N/A') + '</p>';
+            
+            // Phone with WhatsApp button
+            var phoneNumber = order.address_phone || order.customer_phone || '';
+            html += '<p><strong>Phone:</strong> ' + (phoneNumber || 'N/A');
+            if (phoneNumber) {
+                html += ' <button onclick="openWhatsAppMenu(\'' + escapeForJs(customerName) + '\', \'' + escapeForJs(phoneNumber) + '\', \'' + escapeForJs(order.order_number || '') + '\')" style="padding: 2px 8px; background: #25D366; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 6px;" title="Send WhatsApp Message">💬 WhatsApp</button>';
+            }
+            html += '</p>';
             
             // Add verified location if available
             if (order.verified_location) {
@@ -1869,6 +1918,29 @@ function viewOrderDetails(orderId) {
             html += '<p><strong>Items:</strong> ' + (order.line_items ? order.line_items.length : 0) + '</p>';
             html += '</div>';
             html += '</div>';
+            
+            // ⭐ Customer Notes - Important customer-level information (from API response)
+            if (data.customer_notes) {
+                html += '<div style="margin-top: 16px; padding: 12px; background-color: #fef3c7; border-radius: 8px; border-left: 4px solid #f59e0b;">';
+                html += '<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">';
+                html += '<span style="font-size: 14px;">👤</span>';
+                html += '<strong style="color: #92400e; font-size: 13px;">Customer Notes</strong>';
+                html += '</div>';
+                html += '<p style="margin: 0; color: #78350f; font-size: 13px; line-height: 1.5;">' + escapeHtml(data.customer_notes) + '</p>';
+                html += '</div>';
+            }
+            
+            // ⭐ Order Notes - Order-specific notes
+            if (data.order_note) {
+                html += '<div style="margin-top: 12px; padding: 12px; background-color: #f3f4f6; border-radius: 8px; border-left: 4px solid #6b7280;">';
+                html += '<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">';
+                html += '<span style="font-size: 14px;">📝</span>';
+                html += '<strong style="color: #374151; font-size: 13px;">Order Notes</strong>';
+                html += '</div>';
+                html += '<p style="margin: 0; color: #4b5563; font-size: 13px; line-height: 1.5;">' + escapeHtml(data.order_note) + '</p>';
+                html += '</div>';
+            }
+            
             html += '</div>';
             html += '</div>';
             // Line Items with preparation status (only for open orders, not Shopify)
@@ -2050,12 +2122,29 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             html += '</div>';
             
-            // Status Timeline Section
+            // Timeline Section with Tabs
             html += '<div style="padding: 20px; background-color: #f9fafb; border-radius: 8px; margin: 20px 0 0 0;">';
-            html += '<h3 style="margin: 0 0 16px 0; color: #111827; font-size: 16px;">Status History</h3>';
-            html += '<div id="viewOrderTimeline" style="max-height: 250px; overflow-y: auto;">';
+            
+            // Tab buttons
+            html += '<div style="display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px;">';
+            html += '<button id="viewOrderTabStatus" onclick="switchViewOrderTab(\'status\')" style="padding: 8px 16px; background: #10b981; color: white; border: none; border-radius: 6px 6px 0 0; cursor: pointer; font-weight: 600; font-size: 13px;">📋 Status History</button>';
+            html += '<button id="viewOrderTabEvents" onclick="switchViewOrderTab(\'events\')" style="padding: 8px 16px; background: #e5e7eb; color: #374151; border: none; border-radius: 6px 6px 0 0; cursor: pointer; font-weight: 500; font-size: 13px;">📜 Full Event Timeline</button>';
+            html += '</div>';
+            
+            // Status History Tab Content
+            html += '<div id="viewOrderStatusContent" style="display: block;">';
+            html += '<div id="viewOrderTimeline" style="max-height: 300px; overflow-y: auto;">';
             html += '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>';
             html += '</div>';
+            html += '</div>';
+            
+            // Full Event Timeline Tab Content
+            html += '<div id="viewOrderEventsContent" style="display: none;">';
+            html += '<div id="viewOrderEventTimeline" style="max-height: 300px; overflow-y: auto;">';
+            html += '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Click to load full event timeline...</div>';
+            html += '</div>';
+            html += '</div>';
+            
             html += '</div>';
 
             html += '</div>';
@@ -2063,6 +2152,10 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             
             content.innerHTML = html;
+            
+            // Store orderId for tab switching and reset event timeline loaded flag
+            window._viewOrderId = orderId;
+            _eventTimelineLoaded = false;
             
             // Load status timeline after content is rendered
             try {
@@ -2315,6 +2408,30 @@ function printInvoicePdf() {
         console.error('No order ID available for PDF printing');
     }
 }
+
+// Print invoice WITHOUT unit price column (hides unit price from users)
+function printInvoiceWithoutUnit() {
+    if (currentOrderId) {
+        // Show loading state on button
+        const button = event.target;
+        const originalText = button.innerHTML;
+        button.innerHTML = '⏳ Printing...';
+        button.disabled = true;
+        
+        // Open invoice with hide_unit_price=1 and view_and_download_png=1 
+        // This will render and auto-download PNG without unit price column
+        window.open('/orders/' + currentOrderId + '/invoice?hide_unit_price=1&view_and_download_png=1', '_blank');
+        
+        // Reset button after download attempt
+        setTimeout(() => {
+            button.innerHTML = originalText;
+            button.disabled = false;
+        }, 3000);
+    } else {
+        console.error('No order ID available for printing without unit');
+    }
+}
+
 // Edit order from view modal
 function editOrderFromView() {
     if (currentOrderId) {
@@ -2392,15 +2509,13 @@ function updateViewModalButtons(order) {
         // Non-Shopify order - show full functionality (restore original buttons)
         buttonContainer.innerHTML = `
             <!-- Primary Actions -->
-            <button id="viewInvoiceBtn" onclick="viewInvoice()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+            <button id="printWithoutUnitBtn" onclick="printInvoiceWithoutUnit()" style="background-color: #2563eb; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Print invoice without unit price column">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
-                    <polyline points="14,2 14,8 20,8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                    <polyline points="10,9 9,9 8,9"/>
+                    <path d="M6 9V2h12v7"/>
+                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                    <rect x="6" y="14" width="12" height="8"/>
                 </svg>
-                View Invoice
+                Print without Unit
             </button>
             <button onclick="editOrderFromView()" style="background-color: #10b981; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
@@ -2818,9 +2933,21 @@ function editOrderDetails(orderId) {
                 order.verified_location = data.verified_location;
             }
             
+            // ⭐ Attach pending_approval to order for display in form
+            if (data.pending_approval) {
+                order.pending_approval = data.pending_approval;
+                order.has_pending_approval = data.has_pending_approval;
+            }
+            
             // Store order globally for ledger adjustment detection
             window.currentOrder = order;
             loadEditForm(order);
+            
+            // Initialize notification tracking AFTER loadEditForm sets the title
+            // This ensures the correct customer name title is captured
+            if (window.isPopoutMode) {
+                initPopoutNotification(order.id);
+            }
         } else {
             showEditError('Error loading order: ' + (data.message || 'Unknown error'));
         }
@@ -2831,11 +2958,22 @@ function editOrderDetails(orderId) {
     });
 }
 function loadEditForm(order) {
-    // Update tab title if in pop-out mode
+    // Update tab title if in pop-out mode - show customer name instead of order number
     if (window.isPopoutMode) {
-        const orderNumber = order.order_number || `NF-${String(order.id).padStart(4, '0')}`;
-        document.title = `${orderNumber}`;
+        const customerName = order.customer_name || 
+                            (order.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() : '') ||
+                            'Customer';
+        document.title = customerName;
     }
+    
+    // Build summary info for pop-out mode
+    const summaryCustomerName = order.address_first_name && order.address_last_name 
+        ? `${order.address_first_name} ${order.address_last_name}` 
+        : (order.name || 'N/A');
+    const summaryPhone = order.address_phone || 'N/A';
+    const summaryAddress = [order.address_line1, order.address_city].filter(Boolean).join(', ') || 'N/A';
+    const summaryStatus = order.order_status || 'N/A';
+    const summaryPayment = order.payment_method ? order.payment_method.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'N/A';
     
     const content = document.getElementById('editOrderContent');
     content.innerHTML = `
@@ -2843,7 +2981,74 @@ function loadEditForm(order) {
             <input type="hidden" name="order_id" value="${order.id}">
             <input type="hidden" name="customer_id" id="editCustomerId" value="${order.customer_id || ''}">
             
-            <!-- Order Information -->
+            ${window.isPopoutMode ? `
+            <!-- Pop-out Mode: Compact Summary Bar -->
+            <div id="orderDetailsSummary" style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); padding: 16px 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #7dd3fc;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">📋</span>
+                            <div>
+                                <div style="font-size: 11px; color: #0369a1; font-weight: 600; text-transform: uppercase;">Order</div>
+                                <div style="font-size: 15px; font-weight: 700; color: #0c4a6e;">${order.order_number || 'N/A'}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">👤</span>
+                            <div>
+                                <div style="font-size: 11px; color: #0369a1; font-weight: 600; text-transform: uppercase;">Customer</div>
+                                <div style="font-size: 15px; font-weight: 600; color: #0c4a6e;">${summaryCustomerName}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">📞</span>
+                            <div>
+                                <div style="font-size: 11px; color: #0369a1; font-weight: 600; text-transform: uppercase;">Phone</div>
+                                <div style="font-size: 14px; color: #0c4a6e;">${summaryPhone}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">📍</span>
+                            <div>
+                                <div style="font-size: 11px; color: #0369a1; font-weight: 600; text-transform: uppercase;">Address</div>
+                                <div style="font-size: 14px; color: #0c4a6e; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${summaryAddress}</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">💳</span>
+                            <div>
+                                <div style="font-size: 11px; color: #0369a1; font-weight: 600; text-transform: uppercase;">Payment</div>
+                                <div style="font-size: 14px; color: #0c4a6e;">${summaryPayment}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="toggleOrderDetails()" id="toggleDetailsBtn" 
+                            style="background: #0ea5e9; color: white; border: none; padding: 10px 18px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: all 0.2s;">
+                        <span id="toggleIcon">▼</span> Edit Details
+                    </button>
+                </div>
+            </div>
+            ` : ''}
+            
+            ${order.pending_approval ? `
+            <!-- ⭐ Pending Approval Banner -->
+            <div id="pendingApprovalBanner" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; border: 2px solid #f59e0b; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">⏳</span>
+                    <div>
+                        <div style="font-weight: 700; color: #92400e; font-size: 14px;">${order.pending_approval.message}</div>
+                        <div style="font-size: 12px; color: #a16207;">Invoice submitted on ${order.pending_approval.created_at || 'N/A'}</div>
+                    </div>
+                </div>
+                <a href="${order.pending_approval.view_url}" target="_blank" rel="noopener noreferrer"
+                   style="background: #f59e0b; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+                    <span>🔍</span> View Approval
+                </a>
+            </div>
+            ` : ''}
+            
+            <!-- Order Information (Collapsible in pop-out mode) -->
+            <div id="orderDetailsExpanded" style="${window.isPopoutMode ? 'display: none;' : ''}">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
                 <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px;">
                     <h4 style="font-weight: 600; color: #374151; margin: 0 0 16px 0;">Order Information</h4>
@@ -2967,9 +3172,41 @@ function loadEditForm(order) {
                 </div>
             </div>
             
+            </div><!-- End of orderDetailsExpanded -->
+            
             <!-- Customer Notes Display (if available) -->
             <div id="editCustomerNotesDisplay" style="margin-bottom: 20px; display: none;"></div>
             
+            ${window.isPopoutMode ? `
+            <!-- Pop-out Mode: Notes & Packets Summary Bar -->
+            <div id="notesPacketsSummary" style="background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%); padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; border: 1px solid #facc15;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 16px;">📝</span>
+                            <div>
+                                <span style="font-size: 11px; color: #854d0e; font-weight: 600;">Notes:</span>
+                                <span style="font-size: 13px; color: #713f12; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom;">${order.note ? order.note.substring(0, 30) + (order.note.length > 30 ? '...' : '') : 'None'}</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 16px;">📦</span>
+                            <div>
+                                <span style="font-size: 11px; color: #854d0e; font-weight: 600;">Packets:</span>
+                                <span style="font-size: 13px; color: #713f12;">${order.expected_packets || '-'} expected${order.actual_packets ? ', ' + order.actual_packets + ' delivered' : ''}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="toggleNotesPackets()" id="toggleNotesPacketsBtn" 
+                            style="background: #eab308; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 4px;">
+                        <span id="toggleNotesIcon">▼</span> Edit
+                    </button>
+                </div>
+            </div>
+            ` : ''}
+            
+            <!-- Notes & Packets Section (Collapsible in pop-out mode) -->
+            <div id="notesPacketsExpanded" style="${window.isPopoutMode ? 'display: none;' : ''}">
             <!-- Notes Section -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Order Notes</label>
@@ -3010,6 +3247,7 @@ function loadEditForm(order) {
                     </div>
                 </div>
             </div>
+            </div><!-- End of notesPacketsExpanded -->
 
             <!-- Line Items Section -->
             <div style="background-color: #fefefe; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px;">
@@ -3022,11 +3260,12 @@ function loadEditForm(order) {
                 <div id="lineItemsContainer" style="padding: 16px;">
                     ${order.line_items && order.line_items.length > 0 ? 
                         order.line_items.map((item, index) => `
-                        <div class="line-item" data-index="${index}" data-product-name="${(item.name || item.title || '').replace(/"/g, '&quot;')}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
+                        <div class="line-item" data-index="${index}" data-product-id="${item.product_id || ''}" data-product-name="${(item.name || item.title || '').replace(/"/g, '&quot;')}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked (delete to change)</span></label>
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed; color: #6b7280;" readonly>
+                                ${item.sku ? `<span style="display: inline-block; margin-top: 4px; font-size: 11px; color: #0369a1; background: #dbeafe; padding: 2px 6px; border-radius: 3px;">SKU: ${item.sku}</span>` : ''}
                                 <input type="hidden" name="items[${index}][id]" value="${item.id || ''}">
                                 <input type="hidden" name="items[${index}][sku]" value="${item.sku || ''}">
                                 <input type="hidden" name="items[${index}][variant_id]" value="${item.variant_id || ''}">
@@ -3042,11 +3281,12 @@ function loadEditForm(order) {
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
                                        onfocus="showWeightFactorFeedbackOnFocus(${index})"
                                        onblur="applyWeightFactorToQuantity(${index})" 
-                                       onchange="updateLineTotal(${index})">
+                                       onchange="updateLineTotal(${index})"
+                                       onkeydown="handleQtyTabNavigation(event, ${index})">
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked</span></label>
-                                <input type="number" step="0.01" name="items[${index}][unit_price]" value="${item.unit_price || item.price || 0}" 
+                                <input type="number" step="0.01" name="items[${index}][unit_price]" value="${item.unit_price || item.price || 0}" tabindex="-1"
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; background-color: #f3f4f6; cursor: not-allowed;" 
                                        readonly title="Price is set from product catalog and cannot be edited" onchange="updateLineTotal(${index})">
                             </div>
@@ -3097,6 +3337,13 @@ function loadEditForm(order) {
                                style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()" placeholder="Enter shipping cost">
                     </div>
                 </div>
+                <div style="margin-bottom: 16px;">
+                    <div>
+                        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Tip</label>
+                        <input type="number" step="0.01" name="tip_amount" value="${order.tip_amount || 0}" 
+                               style="width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;" onchange="updateOrderTotal()" placeholder="Enter tip amount">
+                    </div>
+                </div>
                 <div style="padding-top: 12px; border-top: 1px solid #e5e7eb;">
                     <div>
                         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 4px;">Total Price</label>
@@ -3106,13 +3353,34 @@ function loadEditForm(order) {
                 </div>
             </div>
 
-            <!-- Status Timeline Section -->
+            <!-- Status Timeline Section (Collapsible in pop-out mode) -->
+            ${window.isPopoutMode ? `
+            <div style="background-color: #f9fafb; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e5e7eb;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 16px;">📜</span>
+                        <span style="font-weight: 600; color: #374151; font-size: 14px;">Status History</span>
+                        <span style="font-size: 12px; color: #6b7280;">(click to expand)</span>
+                    </div>
+                    <button type="button" onclick="toggleStatusHistory()" id="toggleStatusHistoryBtn" 
+                            style="background: #6b7280; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px;">
+                        <span id="toggleHistoryIcon">▼</span> Show
+                    </button>
+                </div>
+                <div id="editOrderTimelineWrapper" style="display: none; margin-top: 12px;">
+                    <div id="editOrderTimeline" style="max-height: 200px; overflow-y: auto;">
+                        <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>
+                    </div>
+                </div>
+            </div>
+            ` : `
             <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
                 <h4 style="font-weight: 600; color: #374151; margin: 0 0 12px 0;">Status History</h4>
                 <div id="editOrderTimeline" style="max-height: 200px; overflow-y: auto;">
                     <div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading timeline...</div>
                 </div>
             </div>
+            `}
 
             <!-- Form Actions -->
             <div style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
@@ -3304,7 +3572,8 @@ function loadEditForm(order) {
 }
 
 // Global storage for weight factors
-window.lineItemWeightFactors = {};
+window.lineItemWeightFactors = {};       // By product name
+window.lineItemWeightFactorsById = {};   // ⭐ By product_id (more reliable)
 window.originalQuantityInputs = {};
 
 function initializeWeightFactors(order) {
@@ -3312,10 +3581,11 @@ function initializeWeightFactors(order) {
         return;
     }
     
-    // Extract unique product names from line items
+    // ⭐ Extract unique product IDs (primary) and names (fallback)
+    const productIds = [...new Set(order.line_items.map(item => item.product_id).filter(id => id && id > 0))];
     const productNames = [...new Set(order.line_items.map(item => item.name || item.title).filter(Boolean))];
     
-    if (productNames.length === 0) {
+    if (productIds.length === 0 && productNames.length === 0) {
         return;
     }
     
@@ -3328,18 +3598,38 @@ function initializeWeightFactors(order) {
             'X-Requested-With': 'XMLHttpRequest',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
         },
-        body: JSON.stringify({ product_names: productNames })
+        body: JSON.stringify({ 
+            product_ids: productIds,      // ⭐ Primary lookup
+            product_names: productNames   // Fallback lookup
+        })
     })
     .then(r => r.json())
     .then(data => {
-        if (data.success && data.weight_factors) {
-            window.lineItemWeightFactors = data.weight_factors;
-            console.log('Weight factors loaded:', window.lineItemWeightFactors);
+        if (data.success) {
+            window.lineItemWeightFactors = data.weight_factors || {};
+            window.lineItemWeightFactorsById = data.weight_factors_by_id || {};
+            console.log('Weight factors loaded:', {
+                byName: window.lineItemWeightFactors,
+                byId: window.lineItemWeightFactorsById
+            });
         }
     })
     .catch(err => {
         console.warn('Could not load weight factors:', err);
     });
+}
+
+// ⭐ Helper: Get weight factor by product_id first, then by name
+function getWeightFactorForLineItem(productId, productName) {
+    // Try by product_id first (most reliable)
+    if (productId && window.lineItemWeightFactorsById[productId]) {
+        return window.lineItemWeightFactorsById[productId];
+    }
+    // Fallback to name matching
+    if (productName && window.lineItemWeightFactors[productName]) {
+        return window.lineItemWeightFactors[productName];
+    }
+    return 1; // Default
 }
 
 function showWeightFactorFeedbackOnLoad(index) {
@@ -3348,12 +3638,13 @@ function showWeightFactorFeedbackOnLoad(index) {
     
     const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
     const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productId = item.getAttribute('data-product-id');
     const productName = item.getAttribute('data-product-name');
     
-    if (!quantityInput || !productName || !feedbackSpan) return;
+    if (!quantityInput || !feedbackSpan) return;
     
-    // Get the weight factor for this product
-    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    // ⭐ Get weight factor by product_id first, then by name
+    const weightFactor = getWeightFactorForLineItem(productId, productName);
     
     // Only show if weight factor exists and is not 1
     if (weightFactor !== 1 && weightFactor > 0) {
@@ -3368,12 +3659,13 @@ function showWeightFactorFeedbackOnFocus(index) {
     
     const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
     const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productId = item.getAttribute('data-product-id');
     const productName = item.getAttribute('data-product-name');
     
-    if (!quantityInput || !productName || !feedbackSpan) return;
+    if (!quantityInput || !feedbackSpan) return;
     
-    // Get the weight factor for this product
-    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    // ⭐ Get weight factor by product_id first, then by name
+    const weightFactor = getWeightFactorForLineItem(productId, productName);
     
     // Only show if weight factor exists and is not 1
     if (weightFactor !== 1 && weightFactor > 0) {
@@ -3398,12 +3690,13 @@ function applyWeightFactorToQuantity(index) {
     
     const quantityInput = item.querySelector(`input[name="items[${index}][quantity]"]`);
     const feedbackSpan = document.getElementById(`weightFactorFeedback_${index}`);
+    const productId = item.getAttribute('data-product-id');
     const productName = item.getAttribute('data-product-name');
     
-    if (!quantityInput || !productName) return;
+    if (!quantityInput) return;
     
-    // Get the weight factor for this product
-    const weightFactor = window.lineItemWeightFactors[productName] || 1;
+    // ⭐ Get weight factor by product_id first, then by name
+    const weightFactor = getWeightFactorForLineItem(productId, productName);
     
     // Skip if no weight factor
     if (weightFactor === 1 || weightFactor <= 0) {
@@ -3513,6 +3806,43 @@ function showSuccessMessage(message, duration = 3000) {
 // Line item management functions
 let lineItemIndex = 1000; // Start high to avoid conflicts with existing items
 
+// ⭐ Handle Tab navigation from Qty field - skip to next row's product name
+function handleQtyTabNavigation(event, currentIndex) {
+    if (event.key === 'Tab' && !event.shiftKey) {
+        event.preventDefault();
+        
+        const container = document.getElementById('lineItemsContainer');
+        if (!container) return;
+        
+        const lineItems = Array.from(container.querySelectorAll('.line-item'));
+        const currentItem = document.querySelector(`.line-item[data-index="${currentIndex}"]`);
+        const currentItemIndex = lineItems.indexOf(currentItem);
+        
+        // Find next line item
+        if (currentItemIndex < lineItems.length - 1) {
+            const nextItem = lineItems[currentItemIndex + 1];
+            const nextNameInput = nextItem.querySelector('input[name*="[name]"]');
+            if (nextNameInput && !nextNameInput.readOnly) {
+                nextNameInput.focus();
+                return;
+            }
+        }
+        
+        // If we're on the last row or next row's name is readonly, add new row and focus it
+        addLineItem();
+        setTimeout(() => {
+            const newLineItems = container.querySelectorAll('.line-item');
+            if (newLineItems.length > 0) {
+                const newItem = newLineItems[newLineItems.length - 1];
+                const newNameInput = newItem.querySelector('input[name*="[name]"]');
+                if (newNameInput) {
+                    newNameInput.focus();
+                }
+            }
+        }, 50);
+    }
+}
+
 function addLineItem() {
     const container = document.getElementById('lineItemsContainer');
     const emptyMessage = container.querySelector('div[style*="text-align: center"]');
@@ -3537,6 +3867,7 @@ function addLineItem() {
                    placeholder="Type to search products..."
                    autocomplete="off">
             <div id="productDropdown_${lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+            <span id="skuDisplay_${lineItemIndex}" style="display: none; margin-top: 4px; font-size: 11px; color: #0369a1; background: #dbeafe; padding: 2px 6px; border-radius: 3px;"></span>
             <input type="hidden" name="items[${lineItemIndex}][id]" value="">
             <input type="hidden" name="items[${lineItemIndex}][sku]" value="">
             <input type="hidden" name="items[${lineItemIndex}][variant_id]" value="">
@@ -3546,11 +3877,12 @@ function addLineItem() {
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
             <input type="number" step="0.01" name="items[${lineItemIndex}][quantity]" value="1" min="0.01"
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
-                   onchange="updateLineTotal(${lineItemIndex}); freezeProductName(${lineItemIndex})">
+                   onchange="updateLineTotal(${lineItemIndex}); freezeProductName(${lineItemIndex})"
+                   onkeydown="handleQtyTabNavigation(event, ${lineItemIndex})">
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
-            <input type="number" step="0.01" name="items[${lineItemIndex}][unit_price]" value="0" 
+            <input type="number" step="0.01" name="items[${lineItemIndex}][unit_price]" value="0" tabindex="-1"
                    style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${lineItemIndex})">
         </div>
         <div>
@@ -4466,6 +4798,107 @@ async function loadViewOrderTimeline(orderId) {
     }
 }
 
+// ============================================
+// VIEW ORDER TABS: Status vs Full Event Timeline
+// ============================================
+let _eventTimelineLoaded = false;
+
+function switchViewOrderTab(tab) {
+    const statusTab = document.getElementById('viewOrderTabStatus');
+    const eventsTab = document.getElementById('viewOrderTabEvents');
+    const statusContent = document.getElementById('viewOrderStatusContent');
+    const eventsContent = document.getElementById('viewOrderEventsContent');
+    
+    if (!statusTab || !eventsTab || !statusContent || !eventsContent) return;
+    
+    if (tab === 'status') {
+        statusTab.style.background = '#10b981';
+        statusTab.style.color = 'white';
+        statusTab.style.fontWeight = '600';
+        eventsTab.style.background = '#e5e7eb';
+        eventsTab.style.color = '#374151';
+        eventsTab.style.fontWeight = '500';
+        statusContent.style.display = 'block';
+        eventsContent.style.display = 'none';
+    } else {
+        eventsTab.style.background = '#8b5cf6';
+        eventsTab.style.color = 'white';
+        eventsTab.style.fontWeight = '600';
+        statusTab.style.background = '#e5e7eb';
+        statusTab.style.color = '#374151';
+        statusTab.style.fontWeight = '500';
+        statusContent.style.display = 'none';
+        eventsContent.style.display = 'block';
+        
+        // Load event timeline on first switch
+        if (!_eventTimelineLoaded && window._viewOrderId) {
+            loadViewOrderEventTimeline(window._viewOrderId);
+            _eventTimelineLoaded = true;
+        }
+    }
+}
+
+async function loadViewOrderEventTimeline(orderId) {
+    try {
+        const container = document.getElementById('viewOrderEventTimeline');
+        if (!container) return;
+        
+        container.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px;">Loading full event timeline...</div>';
+        
+        const response = await fetch(`/orders/${orderId}/event-history`, {
+            headers: { 
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest' 
+            },
+            credentials: 'same-origin'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.events && data.events.length > 0) {
+            const timelineHtml = data.events.map((event, index) => {
+                const date = new Date(event.timestamp);
+                const formattedDate = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+                const formattedTime = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+                
+                // Build details HTML
+                let detailsHtml = '';
+                if (event.details) {
+                    detailsHtml = '<div style="margin-top: 6px; background: #fff; padding: 8px 12px; border-radius: 6px; border-left: 3px solid ' + event.color + ';">';
+                    for (const [key, value] of Object.entries(event.details)) {
+                        detailsHtml += `<div style="font-size: 12px; color: #6b7280;"><span style="font-weight: 500;">${key}:</span> ${value}</div>`;
+                    }
+                    detailsHtml += '</div>';
+                }
+                
+                return `
+                    <div style="display: flex; align-items: start; gap: 14px; margin-bottom: ${index === data.events.length - 1 ? '0' : '16px'};">
+                        <div style="width: 32px; height: 32px; border-radius: 50%; background: ${event.color}20; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 2px solid ${event.color}; font-size: 14px;">
+                            ${event.icon}
+                        </div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div style="font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 2px;">${event.title}</div>
+                            <div style="font-size: 13px; color: #6b7280;">${event.description}</div>
+                            <div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">${formattedDate} at ${formattedTime}</div>
+                            ${detailsHtml}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            container.innerHTML = timelineHtml;
+        } else {
+            container.innerHTML = '<div style="text-align:center;color:#6b7280;font-size:14px;padding:30px;">No event history available</div>';
+        }
+    } catch (error) {
+        console.error('Failed to load event timeline:', error);
+        const container = document.getElementById('viewOrderEventTimeline');
+        if (container) {
+            container.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:14px;padding:30px;">Failed to load event timeline</div>';
+        }
+    }
+}
+
 // Quick Status Change Modal
 function openQuickStatusChange(orderId, currentStatus) {
     console.log('Opening quick status change for order ID:', orderId, 'Current status:', currentStatus); // Debug log
@@ -4684,12 +5117,13 @@ function saveOrderChanges(orderId) {
     // Collect discounts
     const discounts = [];
     document.querySelectorAll('.discount-row').forEach((row) => {
-        const title = row.querySelector('[name$="[title]"]')?.value;
+        const title = row.querySelector('[name$="[title]"]')?.value || '';
         const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
         
-        if (title && amount > 0) {
+        // ⭐ Allow discounts with just amount - default title to "Discount" if empty
+        if (amount > 0) {
             discounts.push({
-                title: title,
+                title: title.trim() || 'Discount',
                 amount: amount,
                 type: 'fixed'
             });
@@ -4700,29 +5134,71 @@ function saveOrderChanges(orderId) {
     const rawOrderDate = formData.get('order_date');
     const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
     
-    const orderData = {
-        customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
-        order_status: formData.get('order_status'),
-        order_date: formattedOrderDate,
-        contact_email: formData.get('contact_email'),
-        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
-        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
-        total_price: parseFloat(formData.get('total_price')) || 0,
-        payment_method: formData.get('payment_method'),
-        note: formData.get('note'),
-        expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
-        items: items,
-        discounts: discounts, // NEW: Include discounts array
-        // Address fields
-        address_first_name: formData.get('address_first_name'),
-        address_last_name: formData.get('address_last_name'),
-        address_email: formData.get('address_email'),
-        address_phone: formData.get('address_phone'),
-        address_line1: formData.get('address_line1'),
-        address_line2: formData.get('address_line2'),
-        address_city: formData.get('address_city'),
-        address_country: formData.get('address_country')
-    };
+    // ================================================================
+    // POP-OUT MODE: PARTIAL UPDATE
+    // ================================================================
+    // In pop-out mode, we ONLY send line items, totals, discounts, tips, notes, and order date
+    // We do NOT send: order_status, expected_packets, payment_method, customer info, rider, address
+    // This prevents long-running pop-out windows from overwriting changes made via mobile app
+    const isPopoutMode = window.isPopoutMode === true;
+    
+    // Debug: Log pop-out mode status
+    console.log('🔍 Save check - isPopoutMode:', isPopoutMode, 'orderId:', orderId, 'window.isPopoutMode:', window.isPopoutMode);
+    
+    let orderData;
+    
+    if (isPopoutMode) {
+        // POP-OUT MODE: Only invoice/line item data
+        console.log('📋 Pop-out mode detected - sending partial update (line items + totals only)');
+        orderData = {
+            // ✅ INCLUDE: Financial data that pop-out is meant to edit
+            order_date: formattedOrderDate,
+            subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+            shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+            tip_amount: parseFloat(formData.get('tip_amount')) || 0,
+            total_price: parseFloat(formData.get('total_price')) || 0,
+            note: formData.get('note'),
+            items: items,
+            discounts: discounts,
+            
+            // ❌ NOT INCLUDED (managed via mobile/quick actions):
+            // - order_status (set via mobile Store/Rider mode)
+            // - expected_packets (set via mobile Store mode)
+            // - payment_method (set via mobile or dedicated button)
+            // - assigned_rider_user_id (set via mobile Store mode or web quick action)
+            // - customer_id, address fields (not typically changed in pop-out)
+            
+            // Flag to tell backend this is a partial update
+            _partial_update: true,
+            _popout_mode: true
+        };
+    } else {
+        // REGULAR MODE: Full update with all fields
+        orderData = {
+            customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
+            order_status: formData.get('order_status'),
+            order_date: formattedOrderDate,
+            contact_email: formData.get('contact_email'),
+            subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+            shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+            tip_amount: parseFloat(formData.get('tip_amount')) || 0,
+            total_price: parseFloat(formData.get('total_price')) || 0,
+            payment_method: formData.get('payment_method'),
+            note: formData.get('note'),
+            expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
+            items: items,
+            discounts: discounts,
+            // Address fields
+            address_first_name: formData.get('address_first_name'),
+            address_last_name: formData.get('address_last_name'),
+            address_email: formData.get('address_email'),
+            address_phone: formData.get('address_phone'),
+            address_line1: formData.get('address_line1'),
+            address_line2: formData.get('address_line2'),
+            address_city: formData.get('address_city'),
+            address_country: formData.get('address_country')
+        };
+    }
     
     // ================================================================
     // LEDGER ADJUSTMENT CONFIRMATION
@@ -4865,12 +5341,13 @@ function saveAndCloseOrder(orderId) {
     // Collect discounts (same as saveOrderChanges)
     const discounts = [];
     document.querySelectorAll('.discount-row').forEach((row) => {
-        const title = row.querySelector('[name$="[title]"]')?.value;
+        const title = row.querySelector('[name$="[title]"]')?.value || '';
         const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
         
-        if (title && amount > 0) {
+        // ⭐ Allow discounts with just amount - default title to "Discount" if empty
+        if (amount > 0) {
             discounts.push({
-                title: title,
+                title: title.trim() || 'Discount',
                 amount: amount,
                 type: 'fixed'
             });
@@ -4881,29 +5358,57 @@ function saveAndCloseOrder(orderId) {
     const rawOrderDate = formData.get('order_date');
     const formattedOrderDate = rawOrderDate ? rawOrderDate.replace('T', ' ') + ':00' : getCurrentLocalDateTime().replace('T', ' ') + ':00';
     
-    const orderData = {
-        customer_id: formData.get('customer_id'), // ✅ CRITICAL: Include customer_id for linking
-        order_status: formData.get('order_status'),
-        order_date: formattedOrderDate,
-        contact_email: formData.get('contact_email'),
-        subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
-        shipping_total: parseFloat(formData.get('shipping_total')) || 0,
-        total_price: parseFloat(formData.get('total_price')) || 0,
-        payment_method: formData.get('payment_method'),
-        note: formData.get('note'),
-        expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
-        items: items,
-        discounts: discounts, // NEW: Include discounts array
-        // Address fields
-        address_first_name: formData.get('address_first_name'),
-        address_last_name: formData.get('address_last_name'),
-        address_email: formData.get('address_email'),
-        address_phone: formData.get('address_phone'),
-        address_line1: formData.get('address_line1'),
-        address_line2: formData.get('address_line2'),
-        address_city: formData.get('address_city'),
-        address_country: formData.get('address_country')
-    };
+    // ================================================================
+    // POP-OUT MODE: PARTIAL UPDATE (same as saveOrderChanges)
+    // ================================================================
+    const isPopoutMode = window.isPopoutMode === true;
+    
+    // Debug: Log pop-out mode status
+    console.log('🔍 Save & Close check - isPopoutMode:', isPopoutMode, 'orderId:', orderId, 'window.isPopoutMode:', window.isPopoutMode);
+    
+    let orderData;
+    
+    if (isPopoutMode) {
+        // POP-OUT MODE: Only invoice/line item data
+        console.log('📋 Pop-out mode (Save & Close) - sending partial update (line items + totals only)');
+        orderData = {
+            order_date: formattedOrderDate,
+            subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+            shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+            tip_amount: parseFloat(formData.get('tip_amount')) || 0,
+            total_price: parseFloat(formData.get('total_price')) || 0,
+            note: formData.get('note'),
+            items: items,
+            discounts: discounts,
+            _partial_update: true,
+            _popout_mode: true
+        };
+    } else {
+        // REGULAR MODE: Full update with all fields
+        orderData = {
+            customer_id: formData.get('customer_id'),
+            order_status: formData.get('order_status'),
+            order_date: formattedOrderDate,
+            contact_email: formData.get('contact_email'),
+            subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
+            shipping_total: parseFloat(formData.get('shipping_total')) || 0,
+            tip_amount: parseFloat(formData.get('tip_amount')) || 0,
+            total_price: parseFloat(formData.get('total_price')) || 0,
+            payment_method: formData.get('payment_method'),
+            note: formData.get('note'),
+            expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null,
+            items: items,
+            discounts: discounts,
+            address_first_name: formData.get('address_first_name'),
+            address_last_name: formData.get('address_last_name'),
+            address_email: formData.get('address_email'),
+            address_phone: formData.get('address_phone'),
+            address_line1: formData.get('address_line1'),
+            address_line2: formData.get('address_line2'),
+            address_city: formData.get('address_city'),
+            address_country: formData.get('address_country')
+        };
+    }
     
     // ================================================================
     // LEDGER ADJUSTMENT CONFIRMATION (same as saveOrderChanges)
@@ -5113,6 +5618,7 @@ function popoutOrder() {
         newWindow.updateOrderSubtotal = updateOrderSubtotal;
         newWindow.showSuccessMessage = showSuccessMessage;
         newWindow.updateOrderTotal = updateOrderTotal;
+        newWindow.handleQtyTabNavigation = handleQtyTabNavigation;
         
         // Line item management functions
         newWindow.lineItemIndex = 1000; // Initialize line item index
@@ -5141,6 +5647,7 @@ function popoutOrder() {
                            placeholder="Type to search products..."
                            autocomplete="off">
                     <div id="productDropdown_${newWindow.lineItemIndex}" class="product-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #d1d5db; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></div>
+                    <span id="skuDisplay_${newWindow.lineItemIndex}" style="display: none; margin-top: 4px; font-size: 11px; color: #0369a1; background: #dbeafe; padding: 2px 6px; border-radius: 3px;"></span>
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][id]" value="">
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][sku]" value="">
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][variant_id]" value="">
@@ -5149,11 +5656,13 @@ function popoutOrder() {
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
                     <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][quantity]" value="1" min="0.01"
-                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex}); freezeProductName(${newWindow.lineItemIndex})">
+                           style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" 
+                           onchange="updateLineTotal(${newWindow.lineItemIndex}); freezeProductName(${newWindow.lineItemIndex})"
+                           onkeydown="handleQtyTabNavigation(event, ${newWindow.lineItemIndex})">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Unit Price</label>
-                    <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][unit_price]" value="0" 
+                    <input type="number" step="0.01" name="items[${newWindow.lineItemIndex}][unit_price]" value="0" tabindex="-1"
                            style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;" onchange="updateLineTotal(${newWindow.lineItemIndex})">
                 </div>
                 <div>
@@ -5607,9 +6116,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Mark this as a pop-out mode for full-screen styling
             window.isPopoutMode = true;
             editOrderDetails(editId);
-            
-            // Initialize notification tracking for pop-out mode
-            initPopoutNotification(editId);
+            // Note: initPopoutNotification is now called inside editOrderDetails after loadEditForm
         } else if (createNew === '1') {
             // Mark this as a pop-out mode for full-screen styling
             window.isPopoutMode = true;
@@ -5782,10 +6289,12 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
     // Fill in the product details using the specific line item context
     const nameInput = lineItem.querySelector(`input[name="items[${index}][name]"]`);
     const priceInput = lineItem.querySelector(`input[name="items[${index}][unit_price]"]`);
+    const qtyInput = lineItem.querySelector(`input[name="items[${index}][quantity]"]`);
     const idInput = lineItem.querySelector(`input[name="items[${index}][id]"]`);
     const skuInput = lineItem.querySelector(`input[name="items[${index}][sku]"]`);
     const variantIdInput = lineItem.querySelector(`input[name="items[${index}][variant_id]"]`);
     const productIdInput = lineItem.querySelector(`input[name="items[${index}][product_id]"]`);
+    const skuDisplay = lineItem.querySelector(`#skuDisplay_${index}`) || document.getElementById(`skuDisplay_${index}`);
     
     if (nameInput) nameInput.value = productName;
     if (idInput) idInput.value = productId;
@@ -5793,6 +6302,14 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
     if (variantIdInput) variantIdInput.value = variantId || '';
     // product_id will be resolved on backend from variant_id
     if (productIdInput) productIdInput.value = '';
+    
+    // ⭐ Display SKU if available
+    if (skuDisplay && sku) {
+        skuDisplay.textContent = `SKU: ${sku}`;
+        skuDisplay.style.display = 'inline-block';
+    } else if (skuDisplay) {
+        skuDisplay.style.display = 'none';
+    }
     
     if (priceInput) {
         priceInput.value = price;
@@ -5815,6 +6332,14 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
         freezeProductName(index);
     }, 50);
     
+    // ⭐ Focus on quantity field after product selection
+    setTimeout(() => {
+        if (qtyInput) {
+            qtyInput.focus();
+            qtyInput.select(); // Select the value so user can type new qty directly
+        }
+    }, 60);
+    
     // Auto-add new line item after a short delay to allow current selection to complete
     setTimeout(() => {
         autoAddNextLineItem();
@@ -5822,6 +6347,7 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
 }
 
 // Auto-add a new line item if the current one is the last and has content
+// ⭐ NOTE: This only ADDS the row silently - does NOT steal focus from qty field
 function autoAddNextLineItem() {
     const container = document.getElementById('lineItemsContainer');
     if (!container) return;
@@ -5835,20 +6361,10 @@ function autoAddNextLineItem() {
     // Check if the last line item has a product selected
     if (lastNameInput && lastNameInput.value.trim()) {
         // Add new line item using the existing function
+        // ⭐ Do NOT focus the new row - user stays on qty field and can Tab when ready
         if (typeof addLineItem === 'function') {
             addLineItem();
-            
-            // Focus on the new line item's name input
-            setTimeout(() => {
-                const newLineItems = container.querySelectorAll('.line-item');
-                if (newLineItems.length > lineItems.length) {
-                    const newItem = newLineItems[newLineItems.length - 1];
-                    const newNameInput = newItem.querySelector('input[name*="[name]"]');
-                    if (newNameInput) {
-                        newNameInput.focus();
-                    }
-                }
-            }, 50);
+            // No focus change - let user stay on quantity field
         }
     }
 }
@@ -5877,6 +6393,7 @@ function updateOrderTotal() {
     });
     
     const shipping = parseFloat(document.querySelector('input[name="shipping_total"]')?.value) || 0;
+    const tip = parseFloat(document.querySelector('input[name="tip_amount"]')?.value) || 0;
     
     // Update discount display
     const discountDisplay = document.getElementById('totalDiscountDisplay');
@@ -5884,8 +6401,8 @@ function updateOrderTotal() {
         discountDisplay.textContent = 'Rs. ' + totalDiscount.toFixed(2);
     }
     
-    // Calculate final total
-    const total = subtotal - totalDiscount + shipping;
+    // Calculate final total (subtotal - discount + shipping + tip)
+    const total = subtotal - totalDiscount + shipping + tip;
     const totalInput = document.querySelector('input[name="total_price"]');
     if (totalInput) {
         totalInput.value = total.toFixed(2);
@@ -6307,6 +6824,7 @@ const availableColumns = {
     id: { label: 'ID', width: 'w-16', key: 'id' },
     order_number: { label: 'Order #', width: 'w-24', key: 'order_number' },
     order_date: { label: 'Order Date', width: 'w-40', key: 'order_date' },
+    delivery_date: { label: 'Delivery Date', width: 'w-36', key: 'delivery_date' },
     order_status: { label: 'Status', width: 'w-32', key: 'order_status' },
     external_source: { label: 'Source', width: 'w-20', key: 'external_source' },
     external_id: { label: 'External ID', width: 'w-24', key: 'external_id' },
@@ -6361,6 +6879,7 @@ const defaultColumns = [
     { id: 'id', visible: true },
     { id: 'order_number', visible: true },
     { id: 'order_date', visible: true },
+    { id: 'delivery_date', visible: false },
     { id: 'order_status', visible: true },
     { id: 'customer_name', visible: true },
     { id: 'contact_email', visible: true },
@@ -6440,6 +6959,16 @@ if (!currentColumns.find(col => col.id === 'rider')) {
 }
 if (!currentColumns.find(col => col.id === 'rider_id')) {
     currentColumns.push({ id: 'rider_id', visible: false });
+}
+// Migration: Ensure delivery_date column exists for existing users
+if (!currentColumns.find(col => col.id === 'delivery_date')) {
+    // Insert after order_date for logical ordering
+    const orderDateIndex = currentColumns.findIndex(col => col.id === 'order_date');
+    if (orderDateIndex !== -1) {
+        currentColumns.splice(orderDateIndex + 1, 0, { id: 'delivery_date', visible: false });
+    } else {
+        currentColumns.push({ id: 'delivery_date', visible: false });
+    }
 }
 // Save the updated columns to localStorage
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
@@ -6749,6 +7278,13 @@ function getCellContent_DEPRECATED(order, columnId) {
             return order.order_number || '';
         case 'order_date':
             return formatDate(order.order_date);
+        case 'delivery_date':
+            // Get delivery date from status history if available
+            const deliveryHistory = order.current_status_history || order.statusHistory;
+            if (deliveryHistory && deliveryHistory.status_code === 'delivered' && deliveryHistory.changed_at) {
+                return formatDate(deliveryHistory.changed_at);
+            }
+            return order.delivery_date ? formatDate(order.delivery_date) : '-';
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
@@ -6966,6 +7502,17 @@ if (!currentColumns.find(col => col.id === 'rider_id')) {
     currentColumns.push({ id: 'rider_id', visible: false });
 }
 
+// Migration: Ensure delivery_date column exists for existing users
+if (!currentColumns.find(col => col.id === 'delivery_date')) {
+    // Insert after order_date for logical ordering
+    const orderDateIndex = currentColumns.findIndex(col => col.id === 'order_date');
+    if (orderDateIndex !== -1) {
+        currentColumns.splice(orderDateIndex + 1, 0, { id: 'delivery_date', visible: false });
+    } else {
+        currentColumns.push({ id: 'delivery_date', visible: false });
+    }
+}
+
 // Save the updated columns to localStorage
 localStorage.setItem('orderTableColumns', JSON.stringify(currentColumns));
 
@@ -7164,6 +7711,16 @@ function getCellContent(order, columnId) {
             return `<div class="table-cell-order-number">${order.order_number || ''}</div>`;
         case 'order_date':
             return `<div class="table-cell-date">${formatDate(order.order_date)}</div>`;
+        case 'delivery_date':
+            // Get delivery date from status history if available
+            const deliveryHist = order.current_status_history || order.statusHistory;
+            let deliveryDateVal = '-';
+            if (deliveryHist && deliveryHist.status_code === 'delivered' && deliveryHist.changed_at) {
+                deliveryDateVal = formatDate(deliveryHist.changed_at);
+            } else if (order.delivery_date) {
+                deliveryDateVal = formatDate(order.delivery_date);
+            }
+            return `<div class="table-cell-date">${deliveryDateVal}</div>`;
         case 'order_status':
             const status = order.order_status || 'pending';
             const statusConfig = {
@@ -8118,12 +8675,13 @@ function saveNewOrder() {
     // Collect discounts
     const discounts = [];
     document.querySelectorAll('.discount-row').forEach((row) => {
-        const title = row.querySelector('[name$="[title]"]')?.value;
+        const title = row.querySelector('[name$="[title]"]')?.value || '';
         const amount = parseFloat(row.querySelector('[name$="[amount]"]')?.value) || 0;
         
-        if (title && amount > 0) {
+        // ⭐ Allow discounts with just amount - default title to "Discount" if empty
+        if (amount > 0) {
             discounts.push({
-                title: title,
+                title: title.trim() || 'Discount',
                 amount: amount,
                 type: 'fixed'
             });
@@ -8281,6 +8839,80 @@ function hideCustomerSelector() {
     if (dd) dd.style.display = 'none';
 }
 
+// Toggle order/customer details in pop-out mode
+function toggleOrderDetails() {
+    const expandedSection = document.getElementById('orderDetailsExpanded');
+    const toggleBtn = document.getElementById('toggleDetailsBtn');
+    
+    if (!expandedSection) return;
+    
+    const isHidden = expandedSection.style.display === 'none';
+    
+    if (isHidden) {
+        // Expand
+        expandedSection.style.display = '';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleIcon">▲</span> Hide Details';
+            toggleBtn.style.background = '#64748b';
+        }
+    } else {
+        // Collapse
+        expandedSection.style.display = 'none';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleIcon">▼</span> Edit Details';
+            toggleBtn.style.background = '#0ea5e9';
+        }
+    }
+}
+
+// Toggle notes/packets section in pop-out mode
+function toggleNotesPackets() {
+    const expandedSection = document.getElementById('notesPacketsExpanded');
+    const toggleBtn = document.getElementById('toggleNotesPacketsBtn');
+    
+    if (!expandedSection) return;
+    
+    const isHidden = expandedSection.style.display === 'none';
+    
+    if (isHidden) {
+        expandedSection.style.display = '';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleNotesIcon">▲</span> Hide';
+            toggleBtn.style.background = '#a16207';
+        }
+    } else {
+        expandedSection.style.display = 'none';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleNotesIcon">▼</span> Edit';
+            toggleBtn.style.background = '#eab308';
+        }
+    }
+}
+
+// Toggle status history in pop-out mode
+function toggleStatusHistory() {
+    const wrapper = document.getElementById('editOrderTimelineWrapper');
+    const toggleBtn = document.getElementById('toggleStatusHistoryBtn');
+    
+    if (!wrapper) return;
+    
+    const isHidden = wrapper.style.display === 'none';
+    
+    if (isHidden) {
+        wrapper.style.display = '';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleHistoryIcon">▲</span> Hide';
+            toggleBtn.style.background = '#374151';
+        }
+    } else {
+        wrapper.style.display = 'none';
+        if (toggleBtn) {
+            toggleBtn.innerHTML = '<span id="toggleHistoryIcon">▼</span> Show';
+            toggleBtn.style.background = '#6b7280';
+        }
+    }
+}
+
 function searchCustomersForEdit(inputEl) {
     const query = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
     clearTimeout(customerSearchTimeout);
@@ -8403,6 +9035,103 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text || '';
     return div.innerHTML;
+}
+
+// Escape string for use in JavaScript onclick handlers
+function escapeForJs(text) {
+    if (!text) return '';
+    return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+// ========================================
+// WhatsApp Messaging Functions
+// ========================================
+let whatsappData = { customerName: '', phone: '', orderNumber: '' };
+
+function openWhatsAppMenu(customerName, phone, orderNumber) {
+    whatsappData = { customerName, phone, orderNumber };
+    document.getElementById('whatsappRecipient').textContent = 'To: ' + customerName + ' (' + phone + ')';
+    document.getElementById('whatsappModal').style.display = 'block';
+}
+
+function closeWhatsAppModal() {
+    document.getElementById('whatsappModal').style.display = 'none';
+    whatsappData = { customerName: '', phone: '', orderNumber: '' };
+}
+
+function formatPhoneForWhatsApp(phone) {
+    if (!phone) return null;
+    
+    // Remove all non-digit characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // If starts with 92, already has country code
+    if (cleaned.startsWith('92') && cleaned.length >= 11) {
+        return cleaned;
+    }
+    
+    // If starts with 0, remove it
+    if (cleaned.startsWith('0')) {
+        cleaned = cleaned.substring(1);
+    }
+    
+    // Take last 10 digits
+    if (cleaned.length > 10) {
+        cleaned = cleaned.slice(-10);
+    }
+    
+    // Add Pakistan country code
+    return '92' + cleaned;
+}
+
+function openWhatsAppWeb(phone, message = '') {
+    const formattedPhone = formatPhoneForWhatsApp(phone);
+    if (!formattedPhone) {
+        alert('Invalid phone number');
+        return;
+    }
+    
+    let url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
+    if (message) {
+        url += '&text=' + encodeURIComponent(message);
+    }
+    
+    window.open(url, '_blank');
+    closeWhatsAppModal();
+}
+
+function sendWhatsAppDefault() {
+    openWhatsAppWeb(whatsappData.phone);
+}
+
+function sendWhatsAppNextDay() {
+    const message = `Dear ${whatsappData.customerName},
+
+Thank you for placing your order ${whatsappData.orderNumber} with Nizami Farms!
+
+This order can be delivered to you fresh tomorrow, as we are fully occupied today. Would you like to have this order delivered tomorrow?
+
+Please confirm by replying to this message.
+
+Best regards,
+Nizami Farms Team`;
+    
+    openWhatsAppWeb(whatsappData.phone, message);
+}
+
+function sendWhatsAppMeatlessDays() {
+    const message = `Dear ${whatsappData.customerName},
+
+Thank you for placing your order ${whatsappData.orderNumber} with Nizami Farms! We confirm receipt of your order.
+
+Please note that Tuesday and Wednesday are non-meat days, and our operations are closed. Your order will be delivered on Thursday.
+
+To confirm, kindly reply to this message. We will process your order for Thursday delivery.
+
+Best regards,
+Nizami Farms Team`;
+    
+    openWhatsAppWeb(whatsappData.phone, message);
 }
 
 function searchCustomers(inputEl) {
@@ -9039,7 +9768,8 @@ function switchToShopifyApprovals() {
 // Return to the non-Shopify Invoices list from the dynamic Shopify view
 function switchToInvoices() {
     // Use full navigation to restore server-rendered pagination and correct pagination links
-    window.location.href = '/orders?source=other';
+    // Explicitly pass tab=all to go to Invoices tab (since default is now 'open')
+    window.location.href = '/orders?source=other&tab=all';
     return false;
 }
 

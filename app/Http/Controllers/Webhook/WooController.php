@@ -12,6 +12,16 @@ use Illuminate\Support\Facades\Log;
 
 class WooController extends Controller
 {
+    /**
+     * ⚠️ WOOCOMMERCE INTEGRATION DISABLED
+     * 
+     * All WooCommerce sync operations have been permanently disabled.
+     * Products are now managed exclusively through web UI and mobile app.
+     * This prevents accidental data overwrites and preserves SKU/category data.
+     * 
+     * Disabled on: December 2024
+     */
+    private const DISABLED_MESSAGE = 'WooCommerce integration has been permanently disabled. Products are managed via web UI and mobile app only.';
 
 
     protected $orderModel;
@@ -34,92 +44,51 @@ class WooController extends Controller
 
     function test(Request $request) // TEST endpoint for debugging
     {
-        try {
-            $rawBody = $request->getContent();
-            $payload = json_decode($rawBody, true);
-            
-            // Log everything for debugging
-            $this->createLog([
-                'headers' => $request->headers->all(),
-                'body' => $payload,
-                'raw_body' => $rawBody
-            ], "json", "debug", "woo_test");
-            
-            return response()->json(['success' => 'test completed', 'received' => $payload], 200);
-        } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
-        }
+        Log::warning('WooCommerce test endpoint called but is DISABLED');
+        return response()->json([
+            'error' => self::DISABLED_MESSAGE,
+            'status' => 'disabled'
+        ], 403);
     }
 
     function store(Request $request) //ADD   
     {
-
-        try {
-            // Log the incoming request for debugging
-            $this->createLog($request->all(), "json", "request", "woo_webhook");
-            
-            $sharedSecret = Config::get('woocommerce.webhook_secret');
-            // Get the raw POST body
-            $rawBody = $request->getContent();
-            
-            // Get HMAC header from WooCommerce
-            $hmacHeader = $request->header('X-WC-Webhook-Signature');
-
-            // Skip signature verification if no secret is configured (for testing)
-            if ($sharedSecret) {
-                // Calculate HMAC hash
-                $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
-
-                // Verify webhook
-                if (!$hmacHeader || !hash_equals($calculatedHmac, $hmacHeader)) {
-                    Log::warning('Invalid WooCommerce Webhook Signature');
-                    return response()->json(['error' => 'Unauthorized'], 401);
-                }
-            }
-            
-            $payload = json_decode($rawBody, true);
-            
-            // Check if payload is valid JSON
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new \Exception('Invalid JSON payload: ' . json_last_error_msg());
-            }
-            
-            // Log the payload for debugging
-            $this->createLog($payload, "json", "payload", "woo_order");
-            
-            // Map and store using new structure
-            $orderData = \App\Models\CRM\OrderModel::mapWooCommerceOrder($payload);
-            \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
-
-            return response()->json(['success' => 'completed'], 200);
-        } catch (\Exception $e) {
-            $errorString =
-                "Message: " . $e->getMessage() . PHP_EOL .
-                "File: " . $e->getFile() . PHP_EOL .
-                "Line: " . $e->getLine() . PHP_EOL .
-                "Trace: " . $e->getTraceAsString();
-            $this->createLog($errorString, "txt", "error", "e1");
-
-            // Log the error
-            Log::error('WooCommerce Webhook Error: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
-            ]);
-            
-            return response()->json([
-                'error' => 'Internal Server Error',
-                'message' => $e->getMessage()
-            ], 500);
-        }
+        // ⚠️ WOOCOMMERCE WEBHOOK DISABLED - Log attempts for security monitoring
+        Log::warning('WooCommerce store webhook called but is DISABLED', [
+            'timestamp' => now()->toISOString(),
+            'ip' => $request->ip(),
+            'content_length' => strlen($request->getContent())
+        ]);
+        
+        // Log the attempt to file for audit trail
+        $this->createLog([
+            'message' => 'BLOCKED: WooCommerce webhook attempted',
+            'timestamp' => now()->toISOString(),
+            'ip' => $request->ip(),
+        ], "json", "blocked", "woo_blocked");
+        
+        return response()->json([
+            'error' => self::DISABLED_MESSAGE,
+            'status' => 'disabled',
+            'action' => 'no_changes_made'
+        ], 403);
     }
 
     function remove(Request $request) //DELETE
     {
-        try {
-            $id = $request->id;
-            $response = $this->shopifyModel->Remove($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        Log::warning('WooCommerce remove endpoint called but is DISABLED', ['id' => $request->id]);
+        return response()->json(['error' => self::DISABLED_MESSAGE, 'status' => 'disabled'], 403);
+    }
+    
+    function get($id) 
+    {
+        Log::warning('WooCommerce get endpoint called but is DISABLED', ['id' => $id]);
+        return response()->json(['error' => self::DISABLED_MESSAGE, 'status' => 'disabled'], 403);
+    }
+    
+    function list(Request $request)
+    {
+        Log::warning('WooCommerce list endpoint called but is DISABLED');
+        return response()->json(['error' => self::DISABLED_MESSAGE, 'status' => 'disabled'], 403);
     }
 }

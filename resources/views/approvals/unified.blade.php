@@ -309,14 +309,15 @@
                                 title="Clear search">✕</button>
                     </div>
                 </div>
-                <!-- ⭐ Sort option (only visible for Online area) -->
+                <!-- ⭐ Sort option (visible for Online area or Approved view) -->
                 <div class="flex items-center gap-2" id="sortContainer" style="display: none;">
                     <label for="sortFilter" class="text-xs font-medium text-gray-600">Sort:</label>
                     <select id="sortFilter"
-                            class="kt-select kt-select-sm min-w-[140px]"
+                            class="kt-select kt-select-sm min-w-[160px]"
                             onchange="onSortChange()">
-                        <option value="date">📅 By Date</option>
+                        <option value="date">📅 By Request Date</option>
                         <option value="name">👤 By Customer</option>
+                        <option value="approved_date" id="sortApprovedOption" style="display: none;">✅ By Approved Date</option>
                     </select>
                 </div>
                 <!-- Assignee filter (My assignments / specific user / all) -->
@@ -336,6 +337,12 @@
                         @endforeach
                     </select>
                 </div>
+                <!-- ⭐ Bulk Approve Button (hidden by default, shown when items selected) -->
+                <button id="bulkApproveBtn" 
+                        onclick="bulkApproveSelected()" 
+                        style="display: none; padding: 8px 16px; font-size: 14px; font-weight: 600; color: white; background-color: #16a34a; border-radius: 8px; border: none; cursor: pointer; box-shadow: 0 2px 8px rgba(22, 163, 74, 0.4); animation: pulse 2s infinite;">
+                    ✓ Approve Selected (<span id="selectedCount">0</span>)
+                </button>
                 <button id="clearFiltersBtn" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition">
                     Clear Filters
                 </button>
@@ -351,7 +358,7 @@
         <!-- Table -->
         <div class="overflow-x-auto">
             <table class="min-w-full approvals-table" id="approvalsTable">
-                <thead class="bg-gray-50">
+                <thead class="bg-gray-50" id="tableHead">
                     <tr>
                         <th class="text-left">REQUEST #</th>
                         <th class="text-left">REQUESTER</th>
@@ -414,6 +421,27 @@
             return dateString;
         }
     }
+    
+    // ⭐ Format date only (without time) - for delivery dates
+    function formatDateOnly(dateString) {
+        if (!dateString || dateString === '-') return '-';
+        
+        try {
+            const date = new Date(dateString);
+            if (isNaN(date.getTime())) return dateString; // Invalid date
+            
+            // Format as: Oct 20, 2025
+            const options = {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            };
+            
+            return date.toLocaleString('en-US', options);
+        } catch (e) {
+            return dateString;
+        }
+    }
 
     // Filter by level
     function filterByLevel(level) {
@@ -425,6 +453,17 @@
 
         window.approvalFilters.level = level;
         window.approvalFilters.area = null; // Reset area filter
+        
+        // ⭐ Set default sort based on view type
+        if (level === 'approved') {
+            window.approvalFilters.sort = 'approved_date'; // Default to approved date for approved view
+            const sortFilter = document.getElementById('sortFilter');
+            if (sortFilter) sortFilter.value = 'approved_date';
+        } else {
+            window.approvalFilters.sort = 'date'; // Default to request date for other views
+            const sortFilter = document.getElementById('sortFilter');
+            if (sortFilter) sortFilter.value = 'date';
+        }
 
         // Update card active states
         document.querySelectorAll('.level-card').forEach(card => card.classList.remove('active'));
@@ -434,11 +473,8 @@
         // Collapse Layer 1, Show Layer 2
         document.getElementById('layer1Container').classList.add('collapsed');
         
-        if (level === 'l1' || level === 'l2') {
-            showLayer2(level);
-        } else {
-            hideLayer2();
-        }
+        // ⭐ Show Layer 2 for all levels (so back button is always visible)
+        showLayer2(level);
 
         // Load data
         loadTableData();
@@ -456,6 +492,13 @@
             // Replace underscores with hyphens for ID matching
             const cardId = 'area-' + area.replace(/_/g, '-');
             document.getElementById(cardId).classList.add('active');
+            
+            // ⭐ Set default sort to 'name' (customer) for Online area
+            if (area === 'online') {
+                window.approvalFilters.sort = 'name';
+                const sortFilter = document.getElementById('sortFilter');
+                if (sortFilter) sortFilter.value = 'name';
+            }
         }
 
         // Load data
@@ -679,10 +722,26 @@
     // ⭐ Show/hide sort container based on area
     function updateSortVisibility() {
         const sortContainer = document.getElementById('sortContainer');
+        const sortApprovedOption = document.getElementById('sortApprovedOption');
+        const sortFilter = document.getElementById('sortFilter');
+        
         if (sortContainer) {
-            // Show sort option only for online area
-            if (window.approvalFilters.area === 'online') {
+            const isApprovedView = window.approvalFilters.level === 'approved';
+            const isOnlineArea = window.approvalFilters.area === 'online';
+            
+            // Show sort option for online area OR approved view
+            if (isOnlineArea || isApprovedView) {
                 sortContainer.style.display = 'flex';
+                
+                // Show/hide approved date option based on view
+                if (sortApprovedOption) {
+                    sortApprovedOption.style.display = isApprovedView ? 'block' : 'none';
+                }
+                
+                // If in approved view and current sort is invalid, reset to date
+                if (isApprovedView && !isOnlineArea && sortFilter.value === 'name') {
+                    sortFilter.value = 'date';
+                }
             } else {
                 sortContainer.style.display = 'none';
             }
@@ -722,10 +781,12 @@
 
         // Render rows
         const tbody = document.getElementById('tableBody');
+        const colSpan = window.approvalFilters.level === 'approved' ? 9 : 8;
+        
         if (items.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="8" class="p-8 text-center text-gray-500">
+                    <td colspan="${colSpan}" class="p-8 text-center text-gray-500">
                         No items found
                     </td>
                 </tr>
@@ -733,9 +794,48 @@
             return;
         }
         
+        // Reset bulk selection when data changes
+        document.getElementById('bulkApproveBtn').style.display = 'none';
+        document.getElementById('selectedCount').textContent = '0';
+        document.getElementById('floatingActionBar').style.display = 'none';
+        
         // ⭐ For ONLINE area, group items by customer name (requester)
         const isOnlineArea = window.approvalFilters.area === 'online';
+        const isApprovedView = window.approvalFilters.level === 'approved';
         const sortBy = window.approvalFilters.sort || 'date';
+        
+        // ⭐ Apply client-side sorting for approved view
+        if (isApprovedView && !isOnlineArea) {
+            let sortedItems = [...items];
+            if (sortBy === 'approved_date') {
+                // Sort by approved date (newest first)
+                sortedItems.sort((a, b) => {
+                    const dateA = new Date(a.approved_at || '1970-01-01');
+                    const dateB = new Date(b.approved_at || '1970-01-01');
+                    return dateB - dateA;
+                });
+            } else if (sortBy === 'name') {
+                // Sort by customer name (requester)
+                sortedItems.sort((a, b) => {
+                    const nameA = (a.requester || '').toLowerCase();
+                    const nameB = (b.requester || '').toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+            } else {
+                // Sort by request date (newest first)
+                sortedItems.sort((a, b) => {
+                    const dateA = new Date(a.date || '1970-01-01');
+                    const dateB = new Date(b.date || '1970-01-01');
+                    return dateB - dateA;
+                });
+            }
+            
+            // Update table header for approved view
+            updateTableHeaderForGrouped(false);
+            
+            tbody.innerHTML = sortedItems.map(item => renderItemRow(item, false, null)).join('');
+            return;
+        }
         
         if (isOnlineArea) {
             // Sort items based on selected sort option
@@ -767,7 +867,8 @@
                     };
                 }
                 grouped[name].items.push(item);
-                grouped[name].totalAmount += (item.amount || 0);
+                // ⭐ FIX: Parse amount as float to prevent string concatenation
+                grouped[name].totalAmount += parseFloat(item.amount) || 0;
             });
             
             // Render grouped table
@@ -784,41 +885,58 @@
                 const itemCount = group.items.length;
                 const bgColor = groupIndex % 2 === 0 ? '#f0f9ff' : '#fef3c7'; // Alternate blue/yellow
                 
-                // Customer group header
+                // Customer group header - Format total with thousand separators, no decimals
+                const formattedTotal = Math.round(group.totalAmount).toLocaleString('en-PK');
+                const groupId = `group_${groupIndex}`;
+                
                 html += `
-                    <tr style="background: ${bgColor}; border-top: 2px solid #3b82f6;">
-                        <td colspan="8" style="padding: 10px 16px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div style="display: flex; align-items: center; gap: 12px;">
-                                    <span style="font-size: 20px;">👤</span>
-                                    <span style="font-weight: 700; font-size: 15px; color: #1e40af;">${name}</span>
-                                    <span style="background: #3b82f6; color: white; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;">
+                    <tr style="background: ${bgColor}; border-top: 2px solid #3b82f6;" class="customer-group-header" data-group-id="${groupId}">
+                        <td colspan="7" style="padding: 10px 16px;">
+                            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; width: 100%;">
+                                <input type="checkbox" class="group-checkbox" 
+                                       data-group-id="${groupId}"
+                                       onchange="toggleGroupSelection('${groupId}')"
+                                       style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0;"
+                                       title="Select all ${itemCount} invoices">
+                                <span style="font-size: 20px; flex-shrink: 0;">👤</span>
+                                <span style="font-weight: 700; font-size: 15px; color: #1e40af; white-space: nowrap;">${name}</span>
+                                <span style="background: #3b82f6; color: white; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">
                                         ${itemCount} invoice${itemCount > 1 ? 's' : ''}
                                     </span>
-                                </div>
-                                <div style="font-weight: 700; color: #059669; font-size: 14px;">
-                                    Rs. ${group.totalAmount.toLocaleString()}
-                                </div>
+                                <span style="font-weight: 700; color: #059669; font-size: 14px; white-space: nowrap; flex-shrink: 0;">
+                                    Rs. ${formattedTotal}
+                                </span>
+                                <button onclick="approveCustomerGroup('${groupId}'); event.stopPropagation();" 
+                                        class="px-3 py-1 text-xs font-medium text-white rounded-md transition"
+                                        style="margin-left: auto; background: #16a34a; flex-shrink: 0; white-space: nowrap;">
+                                    ✓ Approve All ${itemCount}
+                                </button>
                             </div>
                         </td>
                     </tr>
                 `;
                 
-                // Items in this group
+                // Items in this group - pass group ID for selection
                 group.items.forEach(item => {
-                    html += renderItemRow(item, true);
+                    html += renderItemRow(item, true, groupId);
                 });
             });
+            
+            // Update table header for grouped view (different columns)
+            updateTableHeaderForGrouped(true);
             
             tbody.innerHTML = html;
         } else {
             // Regular rendering (non-grouped)
-            tbody.innerHTML = items.map(item => renderItemRow(item, false)).join('');
+            updateTableHeaderForGrouped(false);
+            tbody.innerHTML = items.map(item => renderItemRow(item, false, null)).join('');
         }
     }
     
     // ⭐ Helper function to render a single item row
-    function renderItemRow(item, isGrouped) {
+    // isGrouped = true for online area grouped display (different column order + checkbox)
+    // groupId = identifier for the customer group (for bulk selection)
+    function renderItemRow(item, isGrouped, groupId) {
         const areaLabels = {
             'exp_fund': '💰 EXP FUND',
             'nf_cash': '💵 NF CASH',
@@ -830,28 +948,96 @@
             `<span class="badge badge-${item.level === 1 ? 'yellow' : 'blue'}">L${item.level}</span>` : 
             '<span class="badge badge-gray">-</span>';
         
-        // For grouped items (online), don't repeat the requester name
-        const requesterCell = isGrouped ? 
-            `<td class="text-gray-400 text-xs">↳</td>` : 
-            `<td>${item.requester}</td>`;
+        const formattedAmount = parseFloat(item.amount) > 0 
+            ? 'Rs. ' + Math.round(parseFloat(item.amount)).toLocaleString('en-PK') 
+            : (item.leave_days > 0 ? item.leave_days + ' days' : '-');
+        
+        // ⭐ Build pending adjustment indicator if there's a pending amount change
+        let pendingAdjustmentHtml = '';
+        if (item.has_pending_adjustment && item.pending_new_amount !== null) {
+            const pendingFormattedAmount = 'Rs. ' + Math.round(parseFloat(item.pending_new_amount)).toLocaleString('en-PK');
+            pendingAdjustmentHtml = `
+                <div style="margin-top: 4px;">
+                    <span style="font-size: 10px; color: #f59e0b; font-weight: 600; background-color: #fef3c7; padding: 2px 6px; border-radius: 4px; display: inline-block;">
+                        ⏳ Pending: ${pendingFormattedAmount}
+                    </span>
+                </div>
+            `;
+        }
 
+        // For grouped items (online), use different column order: Checkbox, Request#, Amount, Date, Level, Category, Action
+        if (isGrouped && groupId) {
+            // ⭐ For ONLINE grouped view: use delivery_date field (date-only format) or fall back to date
+            const displayDate = item.delivery_date 
+                ? formatDateOnly(item.delivery_date) 
+                : formatDateOnly(item.date);
+                
         return `
-            <tr class="hover:bg-gray-50">
-                <td class="font-medium text-blue-600">${item.number}</td>
-                ${requesterCell}
-                <td>${item.category}</td>
-                <td class="text-sm">${areaLabels[item.area] || item.area}</td>
-                <td class="text-right font-semibold">
-                    ${item.amount > 0 ? 'Rs. ' + item.amount.toLocaleString() : 
-                      item.leave_days > 0 ? item.leave_days + ' days' : '-'}
+                <tr class="hover:bg-gray-50 group-item" data-item-id="${item.id}" data-item-type="${item.type}" data-item-level="${item.level}" data-group-id="${groupId}">
+                    <td class="text-center" style="width: 40px;">
+                        <input type="checkbox" class="item-checkbox" 
+                               data-id="${item.id}" 
+                               data-type="${item.type}" 
+                               data-level="${item.level}"
+                               data-amount="${item.amount}"
+                               data-group-id="${groupId}"
+                               onchange="updateBulkSelection()"
+                               style="width: 16px; height: 16px; cursor: pointer;">
                 </td>
-                <td class="text-center">${levelBadge}</td>
-                <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
+                    <td class="font-medium text-blue-600">${item.number}</td>
+                    <td class="text-right font-semibold">
+                        ${formattedAmount}
+                        ${pendingAdjustmentHtml}
+                    </td>
+                <td class="text-sm text-gray-600">${displayDate}</td>
+                    <td class="text-center">${levelBadge}</td>
+                    <td class="text-sm">${item.category}</td>
                 <td class="text-center">
                     <button onclick="openApprovalModal('${item.view_url}')" 
                        class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">
                         View & Approve
                     </button>
+                    </td>
+                </tr>
+            `;
+        }
+        
+        // Regular (non-grouped) display
+        const isApprovedView = window.approvalFilters.level === 'approved';
+        const isRejectedView = window.approvalFilters.level === 'rejected';
+        const approvedDateCell = isApprovedView 
+            ? `<td class="text-sm text-green-600 font-medium">${formatDateTime(item.approved_at)}</td>` 
+            : '';
+        
+        // Different button styles based on view
+        let actionButton;
+        if (isApprovedView || isRejectedView) {
+            actionButton = `<button onclick="openApprovalModal('${item.view_url}')" 
+                   style="display: inline-block; padding: 4px 12px; font-size: 12px; font-weight: 500; color: white; background-color: #6b7280; border-radius: 6px; cursor: pointer; border: none;">
+                    View Details
+                </button>`;
+        } else {
+            actionButton = `<button onclick="openApprovalModal('${item.view_url}')" 
+                   class="inline-block px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition">
+                    View & Approve
+                </button>`;
+        }
+        
+        return `
+            <tr class="hover:bg-gray-50">
+                <td class="font-medium text-blue-600">${item.number}</td>
+                <td>${item.requester}</td>
+                <td>${item.category}</td>
+                <td class="text-sm">${areaLabels[item.area] || item.area}</td>
+                <td class="text-right font-semibold">
+                    ${formattedAmount}
+                    ${pendingAdjustmentHtml}
+                </td>
+                <td class="text-center">${levelBadge}</td>
+                <td class="text-sm text-gray-600">${formatDateTime(item.date)}</td>
+                ${approvedDateCell}
+                <td class="text-center">
+                    ${actionButton}
                 </td>
             </tr>
         `;
@@ -995,8 +1181,338 @@
             closeApprovalModal();
         }
     });
+
+    // ==================== BULK APPROVAL FUNCTIONS ====================
+    
+    // Update table header for grouped vs non-grouped view
+    function updateTableHeaderForGrouped(isGrouped) {
+        const thead = document.getElementById('tableHead');
+        if (!thead) return;
+        
+        const isApprovedView = window.approvalFilters.level === 'approved';
+        const isOnlineArea = window.approvalFilters.area === 'online';
+        
+        if (isGrouped) {
+            // ⭐ Grouped columns for ONLINE: Checkbox, ORDER #, Amount, DELIVERY DATE, Level, Category, Action
+            thead.innerHTML = `
+                <tr>
+                    <th class="text-center" style="width: 40px;">
+                        <input type="checkbox" id="selectAllCheckbox" 
+                               onchange="toggleSelectAll(this.checked)"
+                               style="width: 16px; height: 16px; cursor: pointer;"
+                               title="Select All">
+                    </th>
+                    <th class="text-left">ORDER #</th>
+                    <th class="text-right">AMOUNT</th>
+                    <th class="text-left">DELIVERY DATE</th>
+                    <th class="text-center">LEVEL</th>
+                    <th class="text-left">CATEGORY</th>
+                    <th class="text-center">ACTION</th>
+                </tr>
+            `;
+        } else if (isApprovedView) {
+            // Approved view columns: includes APPROVED DATE
+            thead.innerHTML = `
+                <tr>
+                    <th class="text-left">REQUEST #</th>
+                    <th class="text-left">REQUESTER</th>
+                    <th class="text-left">CATEGORY</th>
+                    <th class="text-left">AREA</th>
+                    <th class="text-right">AMOUNT</th>
+                    <th class="text-center">LEVEL</th>
+                    <th class="text-left">REQUEST DATE</th>
+                    <th class="text-left">APPROVED DATE</th>
+                    <th class="text-center">ACTION</th>
+                </tr>
+            `;
+        } else {
+            // Default columns for pending
+            thead.innerHTML = `
+                <tr>
+                    <th class="text-left">REQUEST #</th>
+                    <th class="text-left">REQUESTER</th>
+                    <th class="text-left">CATEGORY</th>
+                    <th class="text-left">AREA</th>
+                    <th class="text-right">AMOUNT</th>
+                    <th class="text-center">LEVEL</th>
+                    <th class="text-left">DATE</th>
+                    <th class="text-center">ACTION</th>
+                </tr>
+            `;
+        }
+    }
+    
+    // Toggle selection of all items in a specific group
+    function toggleGroupSelection(groupId) {
+        const groupCheckbox = document.querySelector(`.group-checkbox[data-group-id="${groupId}"]`);
+        const isChecked = groupCheckbox ? groupCheckbox.checked : false;
+        
+        // Select/deselect all items in this group
+        document.querySelectorAll(`.item-checkbox[data-group-id="${groupId}"]`).forEach(cb => {
+            cb.checked = isChecked;
+        });
+        
+        updateBulkSelection();
+    }
+    
+    // Toggle selection of all items
+    function toggleSelectAll(checked) {
+        document.querySelectorAll('.item-checkbox').forEach(cb => {
+            cb.checked = checked;
+        });
+        document.querySelectorAll('.group-checkbox').forEach(cb => {
+            cb.checked = checked;
+        });
+        updateBulkSelection();
+    }
+    
+    // Update bulk selection count and button visibility
+    function updateBulkSelection() {
+        const selectedItems = document.querySelectorAll('.item-checkbox:checked');
+        const count = selectedItems.length;
+        const btn = document.getElementById('bulkApproveBtn');
+        const countSpan = document.getElementById('selectedCount');
+        const floatingBar = document.getElementById('floatingActionBar');
+        const floatingCount = document.getElementById('floatingSelectedCount');
+        const floatingAmount = document.getElementById('floatingSelectedAmount');
+        
+        console.log('updateBulkSelection called, count:', count); // Debug log
+        
+        // Calculate total amount of selected items
+        let totalAmount = 0;
+        selectedItems.forEach(cb => {
+            totalAmount += parseFloat(cb.dataset.amount) || 0;
+        });
+        
+        if (count > 0) {
+            // Show header button
+            btn.style.display = 'inline-flex';
+            countSpan.textContent = count;
+            
+            // Show floating action bar
+            floatingBar.style.display = 'block';
+            floatingCount.textContent = count + ' item' + (count > 1 ? 's' : '') + ' selected';
+            floatingAmount.textContent = 'Rs. ' + Math.round(totalAmount).toLocaleString('en-PK');
+            
+            // Add padding to body to prevent content from being hidden behind floating bar
+            document.body.style.paddingBottom = '80px';
+        } else {
+            btn.style.display = 'none';
+            floatingBar.style.display = 'none';
+            
+            // Remove padding when floating bar is hidden
+            document.body.style.paddingBottom = '0px';
+        }
+        
+        // Update group checkboxes state
+        document.querySelectorAll('.group-checkbox').forEach(groupCb => {
+            const groupId = groupCb.dataset.groupId;
+            const groupItems = document.querySelectorAll(`.item-checkbox[data-group-id="${groupId}"]`);
+            const checkedItems = document.querySelectorAll(`.item-checkbox[data-group-id="${groupId}"]:checked`);
+            
+            groupCb.checked = groupItems.length > 0 && groupItems.length === checkedItems.length;
+            groupCb.indeterminate = checkedItems.length > 0 && checkedItems.length < groupItems.length;
+        });
+        
+        // Update select all checkbox
+        const allItems = document.querySelectorAll('.item-checkbox');
+        const allChecked = document.querySelectorAll('.item-checkbox:checked');
+        const selectAllCb = document.getElementById('selectAllCheckbox');
+        if (selectAllCb) {
+            selectAllCb.checked = allItems.length > 0 && allItems.length === allChecked.length;
+            selectAllCb.indeterminate = allChecked.length > 0 && allChecked.length < allItems.length;
+        }
+    }
+    
+    // Clear all selections
+    function clearAllSelections() {
+        document.querySelectorAll('.item-checkbox').forEach(cb => cb.checked = false);
+        document.querySelectorAll('.group-checkbox').forEach(cb => cb.checked = false);
+        const selectAllCb = document.getElementById('selectAllCheckbox');
+        if (selectAllCb) selectAllCb.checked = false;
+        updateBulkSelection();
+    }
+    
+    // Approve all items in a customer group
+    async function approveCustomerGroup(groupId) {
+        const items = document.querySelectorAll(`.item-checkbox[data-group-id="${groupId}"]`);
+        if (items.length === 0) {
+            alert('No items found in this group');
+            return;
+        }
+        
+        const approvalType = document.getElementById('bulkApprovalType')?.value || 'full';
+        const approvalText = approvalType === 'l1_only' ? 'L1-ONLY approve (move to L2)' : 'FULLY approve';
+        
+        const confirmed = confirm(`Are you sure you want to ${approvalText} all ${items.length} invoice(s) in this group?`);
+        if (!confirmed) return;
+        
+        await bulkApproveItems(Array.from(items));
+    }
+    
+    // Approve all selected items
+    async function bulkApproveSelected() {
+        const selectedItems = document.querySelectorAll('.item-checkbox:checked');
+        if (selectedItems.length === 0) {
+            alert('No items selected');
+            return;
+        }
+        
+        const approvalType = document.getElementById('bulkApprovalType')?.value || 'full';
+        const approvalText = approvalType === 'l1_only' ? 'L1-ONLY approve (move to L2)' : 'FULLY approve';
+        
+        const confirmed = confirm(`Are you sure you want to ${approvalText} ${selectedItems.length} selected item(s)?`);
+        if (!confirmed) return;
+        
+        await bulkApproveItems(Array.from(selectedItems));
+    }
+    
+    // Perform bulk approval
+    async function bulkApproveItems(checkboxes, approvalTypeOverride = null) {
+        const btn = document.getElementById('bulkApproveBtn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '⏳ Processing...';
+        btn.disabled = true;
+        
+        // Get approval type from dropdown (or use override for group approvals)
+        const approvalType = approvalTypeOverride || document.getElementById('bulkApprovalType')?.value || 'full';
+        const isL1Only = approvalType === 'l1_only';
+        
+        let successCount = 0;
+        let errorCount = 0;
+        const errors = [];
+        
+        for (const cb of checkboxes) {
+            const itemId = cb.dataset.id;
+            const itemType = cb.dataset.type;
+            const itemLevel = cb.dataset.level;
+            
+            try {
+                let endpoint;
+                const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+                
+                // Determine the correct endpoint based on item type and approval type
+                // ⭐ Use web routes (session auth) instead of API routes (token auth)
+                if (itemType === 'ledger') {
+                    // For ledger items, support L1-only approval
+                    if (isL1Only && itemLevel == 1) {
+                        endpoint = `/finance/ledger/${itemId}/approve-l1-only`;
+                    } else {
+                        endpoint = `/finance/ledger/${itemId}/approve`;
+                    }
+                } else if (itemType === 'request') {
+                    endpoint = `/requests/${itemId}/approve`;
+                } else if (itemType === 'adjustment') {
+                    endpoint = `/finance/ledger/adjustments/${itemId}/approve`;
+                } else {
+                    throw new Error(`Unknown item type: ${itemType}`);
+                }
+                
+                // Build the request body based on item type
+                let bodyData = {};
+                const noteText = isL1Only ? 'Bulk L1-approved from approvals dashboard' : 'Bulk approved from approvals dashboard';
+                if (itemType === 'ledger') {
+                    bodyData = { 
+                        approval_notes: noteText,
+                        force_full_approval: !isL1Only // ⭐ Request full approval if not L1-only
+                    };
+                } else if (itemType === 'request') {
+                    bodyData = { level: parseInt(itemLevel) || 1, notes: noteText };
+                } else if (itemType === 'adjustment') {
+                    bodyData = { level: parseInt(itemLevel) || 1, comments: noteText };
+                }
+                
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: JSON.stringify(bodyData)
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && (data.success !== false)) {
+                    successCount++;
+                    // Disable the checkbox and mark as approved
+                    cb.disabled = true;
+                    cb.closest('tr').style.opacity = '0.5';
+                    cb.closest('tr').style.backgroundColor = '#d1fae5';
+                } else {
+                    errorCount++;
+                    errors.push(`${itemId}: ${data.message || 'Unknown error'}`);
+                }
+            } catch (error) {
+                errorCount++;
+                errors.push(`${itemId}: ${error.message}`);
+            }
+        }
+        
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        
+        // Show result
+        let message = `✅ Successfully approved: ${successCount}`;
+        if (errorCount > 0) {
+            message += `\n❌ Failed: ${errorCount}`;
+            if (errors.length > 0) {
+                message += '\n\nErrors:\n' + errors.slice(0, 5).join('\n');
+                if (errors.length > 5) {
+                    message += `\n... and ${errors.length - 5} more`;
+                }
+            }
+        }
+        alert(message);
+        
+        // Refresh the data
+        if (window.approvalFilters.level || window.approvalFilters.area || window.approvalFilters.search) {
+            loadTableData();
+        } else {
+            loadAllPendingItems();
+        }
+    }
+    
+    // Add CSS animation for pulse effect
+    const styleSheet = document.createElement('style');
+    styleSheet.textContent = `
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+    `;
+    document.head.appendChild(styleSheet);
 </script>
 @endpush
+
+<!-- ⭐ Floating Action Bar for Bulk Selection -->
+<div id="floatingActionBar" style="display: none; position: fixed; bottom: 0; left: 0; right: 0; background: linear-gradient(135deg, #1f2937 0%, #111827 100%); padding: 16px 24px; box-shadow: 0 -4px 20px rgba(0,0,0,0.3); z-index: 99998; border-top: 3px solid #16a34a;">
+    <div style="max-width: 1400px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center; gap: 16px;">
+            <span style="font-size: 24px;">✅</span>
+            <div>
+                <span style="color: white; font-weight: 700; font-size: 16px;" id="floatingSelectedCount">0 items selected</span>
+                <span style="color: #9ca3af; font-size: 13px; margin-left: 12px;" id="floatingSelectedAmount">Rs. 0</span>
+            </div>
+            <button onclick="clearAllSelections()" style="padding: 6px 12px; font-size: 12px; color: #d1d5db; background: #374151; border: none; border-radius: 6px; cursor: pointer;">
+                Clear Selection
+            </button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <!-- Approval Type Selection -->
+            <select id="bulkApprovalType" style="padding: 10px 14px; font-size: 14px; font-weight: 600; background: #374151; color: white; border: 1px solid #4b5563; border-radius: 8px; cursor: pointer;">
+                <option value="full">Full Approval</option>
+                <option value="l1_only">L1 Only (Move to L2)</option>
+            </select>
+            <button onclick="bulkApproveSelected()" id="floatingApproveBtn" style="padding: 12px 24px; font-size: 15px; font-weight: 700; color: white; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 12px rgba(22, 163, 74, 0.4); display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 18px;">✓</span>
+                <span>Approve Selected</span>
+            </button>
+        </div>
+    </div>
+</div>
 
 <!-- Approval Modal -->
 <div id="approvalModal" class="hidden" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 20px;" onclick="closeApprovalModal()">

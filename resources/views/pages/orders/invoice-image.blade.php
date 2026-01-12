@@ -467,6 +467,11 @@
                     <td class="label">Shipping</td>
                     <td class="amount">Rs {{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
+                @else
+                <tr>
+                    <td class="label">Shipping</td>
+                    <td class="amount" style="color: #059669; font-weight: 600;">Free Delivery</td>
+                </tr>
                 @endif
                 
                 @if(isset($order->tip_amount) && $order->tip_amount > 0)
@@ -476,9 +481,16 @@
                 </tr>
                 @endif
                 
+                @php
+                    // Calculate actual total including tip (in case stored total_price doesn't include it)
+                    $calculatedTotal = $subtotal - $totalDiscounts + ($order->shipping_total ?? 0) + ($order->tip_amount ?? 0);
+                    // Use the higher of stored total or calculated total (to avoid showing less than owed)
+                    $displayTotal = max($order->total_price ?? 0, $calculatedTotal);
+                @endphp
+                
                 <tr class="total-row">
                     <td class="label">Total</td>
-                    <td class="amount">Rs {{ number_format($order->total_price, 0) }}</td>
+                    <td class="amount">Rs {{ number_format($displayTotal, 0) }}</td>
                 </tr>
             </table>
         </div>

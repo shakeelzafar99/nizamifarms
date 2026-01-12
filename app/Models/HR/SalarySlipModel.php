@@ -172,10 +172,13 @@ class SalarySlipModel extends BaseModel
 
     /**
      * For a specific month
+     * Uses date range to handle both old (-01) and new (-02) date formats
      */
     public function scopeForMonth($query, string $month)
     {
-        return $query->where('salary_month', $month);
+        $monthStart = date('Y-m-01', strtotime($month));
+        $monthEnd = date('Y-m-t', strtotime($month));
+        return $query->whereBetween('salary_month', [$monthStart, $monthEnd]);
     }
 
     /**
@@ -410,11 +413,16 @@ class SalarySlipModel extends BaseModel
 
     /**
      * Check if slip already exists for user and month
+     * Uses date range to handle both old (-01) and new (-02) date formats
      */
     public static function existsForUserMonth(int $userId, string $month, ?string $status = null): bool
     {
+        // Use year-month range comparison instead of exact date match
+        $monthStart = date('Y-m-01', strtotime($month));
+        $monthEnd = date('Y-m-t', strtotime($month));
+        
         $query = self::where('user_id', $userId)
-            ->where('salary_month', $month);
+            ->whereBetween('salary_month', [$monthStart, $monthEnd]);
         
         if ($status) {
             $query->where('slip_status', $status);

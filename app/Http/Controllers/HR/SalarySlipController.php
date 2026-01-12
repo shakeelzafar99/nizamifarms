@@ -48,9 +48,11 @@ class SalarySlipController extends Controller
             $query->where('user_id', $request->user_id);
         }
 
-        // Filter by month
+        // Filter by month (use date range to handle both -01 and -02 formats)
         if ($request->filled('month')) {
-            $query->where('salary_month', $request->month);
+            $filterMonthStart = date('Y-m-01', strtotime($request->month));
+            $filterMonthEnd = date('Y-m-t', strtotime($request->month));
+            $query->whereBetween('salary_month', [$filterMonthStart, $filterMonthEnd]);
         }
 
         // Filter by status
@@ -162,8 +164,11 @@ class SalarySlipController extends Controller
             ]);
 
             // Check if salary slip already exists for this user and month
+            // Use year-month comparison to handle both old (-01) and new (-02) date formats
+            $monthStart = date('Y-m-01', strtotime($validated['month']));
+            $monthEnd = date('Y-m-t', strtotime($validated['month']));
             $existingSlip = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
-                ->where('salary_month', $validated['month'])
+                ->whereBetween('salary_month', [$monthStart, $monthEnd])
                 ->whereIn('slip_status', ['draft', 'approved', 'paid'])
                 ->first();
             
@@ -260,8 +265,11 @@ class SalarySlipController extends Controller
             DB::beginTransaction();
             
             // Check if salary slip already exists for this user and month
+            // Use year-month range to handle both old (-01) and new (-02) date formats
+            $storeMonthStart = date('Y-m-01', strtotime($validated['salary_month']));
+            $storeMonthEnd = date('Y-m-t', strtotime($validated['salary_month']));
             $existingSlip = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
-                ->where('salary_month', $validated['salary_month'])
+                ->whereBetween('salary_month', [$storeMonthStart, $storeMonthEnd])
                 ->whereIn('slip_status', ['draft', 'approved', 'paid'])
                 ->first();
             

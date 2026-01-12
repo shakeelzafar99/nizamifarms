@@ -180,6 +180,92 @@ class ProductModel extends BaseModel
         return $this->hasMany(ProductVariantModel::class, 'product_id');
     }
 
+    public function changeHistory(): HasMany
+    {
+        return $this->hasMany(ProductChangeHistory::class, 'product_id')->orderBy('created_at', 'desc');
+    }
+
+    /**
+     * Tracked fields for change logging
+     */
+    private static $trackedProductFields = [
+        'title' => ['type' => ProductChangeHistory::TYPE_NAME_CHANGE, 'label' => 'Title'],
+        'vendor' => ['type' => ProductChangeHistory::TYPE_VENDOR_CHANGE, 'label' => 'Vendor'],
+        'attribute_1' => ['type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE, 'label' => 'Category Level 1'],
+        'attribute_2' => ['type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE, 'label' => 'Category Level 2'],
+        'attribute_3' => ['type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE, 'label' => 'Category Level 3'],
+        'product_type' => ['type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE, 'label' => 'Product Type'],
+        'status' => ['type' => ProductChangeHistory::TYPE_STATUS_CHANGE, 'label' => 'Status'],
+        'weight_factor' => ['type' => ProductChangeHistory::TYPE_WEIGHT_FACTOR_CHANGE, 'label' => 'Weight Factor'],
+        'is_lean' => ['type' => ProductChangeHistory::TYPE_LEAN_STATUS_CHANGE, 'label' => 'Lean Product'],
+    ];
+
+    private static $trackedVariantFields = [
+        'sku' => ['type' => ProductChangeHistory::TYPE_SKU_CHANGE, 'label' => 'SKU'],
+        'price' => ['type' => ProductChangeHistory::TYPE_PRICE_CHANGE, 'label' => 'Price'],
+        'inventory_quantity' => ['type' => ProductChangeHistory::TYPE_INVENTORY_CHANGE, 'label' => 'Inventory'],
+    ];
+
+    /**
+     * Compare and log changes between old and new product data
+     */
+    private static function logProductChanges(self $product, array $oldData, array $newData, string $source = 'web'): void
+    {
+        foreach (self::$trackedProductFields as $field => $config) {
+            $oldValue = $oldData[$field] ?? null;
+            $newValue = $newData[$field] ?? null;
+            
+            // Normalize for comparison
+            $oldNormalized = is_bool($oldValue) ? ($oldValue ? '1' : '0') : (string)($oldValue ?? '');
+            $newNormalized = is_bool($newValue) ? ($newValue ? '1' : '0') : (string)($newValue ?? '');
+            
+            if ($oldNormalized !== $newNormalized) {
+                ProductChangeHistory::logChange([
+                    'product_id' => $product->id,
+                    'change_type' => $config['type'],
+                    'field_name' => $config['label'],
+                    'old_value' => $oldValue === null ? null : (string)$oldValue,
+                    'new_value' => $newValue === null ? null : (string)$newValue,
+                    'change_source' => $source,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Compare and log changes between old and new variant data
+     */
+    private static function logVariantChanges(int $productId, int $variantId, array $oldData, array $newData, string $source = 'web'): void
+    {
+        foreach (self::$trackedVariantFields as $field => $config) {
+            $oldValue = $oldData[$field] ?? null;
+            $newValue = $newData[$field] ?? null;
+            
+            // Normalize for comparison (handle decimals and integers)
+            $oldNormalized = $oldValue === null ? '' : (string)$oldValue;
+            $newNormalized = $newValue === null ? '' : (string)$newValue;
+            
+            // For price/inventory, compare as numbers to avoid "100.00" vs "100" issues
+            if (in_array($field, ['price', 'inventory_quantity'])) {
+                $oldNum = (float)($oldValue ?? 0);
+                $newNum = (float)($newValue ?? 0);
+                if (abs($oldNum - $newNum) < 0.001) continue; // No significant change
+            } elseif ($oldNormalized === $newNormalized) {
+                continue; // No change
+            }
+            
+            ProductChangeHistory::logChange([
+                'product_id' => $productId,
+                'variant_id' => $variantId,
+                'change_type' => $config['type'],
+                'field_name' => $config['label'],
+                'old_value' => $oldValue === null ? null : (string)$oldValue,
+                'new_value' => $newValue === null ? null : (string)$newValue,
+                'change_source' => $source,
+            ]);
+        }
+    }
+
     /**
      * Apply attribute group mapping to this product for a given attribute key (1..3)
      */
@@ -381,10 +467,16 @@ class ProductModel extends BaseModel
             // Check for existing product
             $existingProduct = null;
             $matchedBySku = false;
+            $isWebUIUpdate = false; // Flag for updates via web UI (uses internal variant IDs)
             
-            // First check if we have an explicit existing product ID (for manual updates)
+            // First check if we have an explicit existing product ID (for manual/web UI updates)
             if (isset($productData['existing_product_id'])) {
                 $existingProduct = static::find($productData['existing_product_id']);
+                // Web UI updates should ALWAYS use internal variant IDs, regardless of sync status
+                // This prevents the bug where internal IDs are confused with shopify_variant_ids
+                if ($existingProduct) {
+                    $isWebUIUpdate = true;
+                }
                 unset($productData['existing_product_id']); // Remove from data to avoid DB issues
             }
             // SKU-Primary mode: Check SKU FIRST before platform ID (for WooCommerce sync)
@@ -449,8 +541,14 @@ class ProductModel extends BaseModel
             $variants = $productAttributes['variants'] ?? [];
             unset($productAttributes['variants']);
 
+            // Determine change source for logging
+            $changeSource = $isWebUIUpdate ? 'web' : ($skuPrimary ? 'system' : ProductChangeHistory::detectSource());
+            
             // Create or update product
             if ($existingProduct) {
+                // ⭐ Capture old values for change logging
+                $oldProductData = $existingProduct->only(array_keys(self::$trackedProductFields));
+                
                 if ($priceOnlyUpdate || $skuPrimary) {
                     // For price-only updates or SKU-primary mode (WooCommerce), 
                     // only update title, price, and sync fields - PRESERVE categories
@@ -488,12 +586,40 @@ class ProductModel extends BaseModel
                     $existingProduct->update($updateFields);
                     \Log::info(($skuPrimary ? "SKU-primary" : "Price-only") . " update for product: {$existingProduct->title}");
                 } else {
-                    // Full update - update all fields except categories/attributes
+                    // Full update - but PRESERVE existing category values if new values are empty
+                    // This prevents accidental overwrites when editing products via web UI or mobile app
+                    $categoryFields = ['attribute_1', 'attribute_2', 'attribute_3', 'product_type', 'vendor'];
+                    foreach ($categoryFields as $field) {
+                        // If new value is empty/null but existing has a value, preserve the existing value
+                        $newValue = $productAttributes[$field] ?? null;
+                        $existingValue = $existingProduct->{$field};
+                        
+                        if ((empty($newValue) || $newValue === '') && !empty($existingValue)) {
+                            // Preserve existing value - don't include in update
+                            $productAttributes[$field] = $existingValue;
+                            \Log::info("Preserved {$field} for product #{$existingProduct->id}: '{$existingValue}' (new value was empty)");
+                        }
+                    }
+                    
                     $existingProduct->update($productAttributes);
+                    
+                    // ⭐ Log product changes
+                    self::logProductChanges($existingProduct, $oldProductData, $productAttributes, $changeSource);
                 }
                 $product = $existingProduct;
             } else {
                 $product = static::create($productAttributes);
+                
+                // ⭐ Log product creation
+                ProductChangeHistory::logChange([
+                    'product_id' => $product->id,
+                    'change_type' => ProductChangeHistory::TYPE_PRODUCT_CREATED,
+                    'field_name' => 'Product',
+                    'old_value' => null,
+                    'new_value' => $product->title,
+                    'change_source' => $changeSource,
+                    'notes' => 'Product created',
+                ]);
             }
 
             // Store variants
@@ -546,8 +672,142 @@ class ProductModel extends BaseModel
                             \Log::info("Added new variant SKU: {$sku}" . ($variantId ? ", ID: {$variantId}" : ""));
                         }
                     }
+                } elseif ($isWebUIUpdate && $existingProduct) {
+                    // ⭐ WEB UI UPDATE: Update variants in place using internal ID
+                    // This applies to BOTH manual products AND synced products edited via web UI
+                    // This prevents the bug where internal variant IDs are mistakenly used as shopify_variant_id
+                    \Log::info("Web UI update for product #{$product->id} - updating variants in place");
+                    
+                    // Collect variant IDs that should remain
+                    $incomingVariantIds = [];
+                    $newVariants = [];
+                    
+                    foreach ($variants as $variant) {
+                        $variantInternalId = $variant['id'] ?? null;
+                        
+                        if ($variantInternalId) {
+                            // Existing variant - update it by internal ID
+                            $incomingVariantIds[] = $variantInternalId;
+                            
+                            $existingVariant = $product->variants()->where('id', $variantInternalId)->first();
+                            if ($existingVariant) {
+                                // ⭐ Capture old values for change logging
+                                $oldVariantData = [
+                                    'sku' => $existingVariant->sku,
+                                    'price' => $existingVariant->price,
+                                    'inventory_quantity' => $existingVariant->inventory_quantity,
+                                ];
+                                
+                                // ⭐ SKU PROTECTION: Never overwrite existing SKU with empty/null
+                                // Only update SKU if new value is non-empty AND different from existing
+                                $newSku = $variant['sku'] ?? null;
+                                $preservedSku = $existingVariant->sku;
+                                if (!empty($newSku) && $newSku !== $existingVariant->sku) {
+                                    $preservedSku = $newSku;
+                                    \Log::info("SKU changed for variant #{$existingVariant->id}: '{$existingVariant->sku}' → '{$newSku}'");
+                                } elseif (empty($newSku) && !empty($existingVariant->sku)) {
+                                    \Log::warning("Blocked attempt to clear SKU for variant #{$existingVariant->id}, preserving: '{$existingVariant->sku}'");
+                                }
+                                
+                                // Prepare new values
+                                $newPrice = $variant['price'] ?? $existingVariant->price;
+                                $newInventory = $variant['inventory_quantity'] ?? $existingVariant->inventory_quantity;
+                                
+                                // Update only the editable fields, NEVER touch shopify_variant_id
+                                $existingVariant->update([
+                                    'title' => $variant['title'] ?? $existingVariant->title,
+                                    'sku' => $preservedSku,
+                                    'barcode' => $variant['barcode'] ?? $existingVariant->barcode,
+                                    'price' => $newPrice,
+                                    'compare_at_price' => $variant['compare_at_price'] ?? $existingVariant->compare_at_price,
+                                    'cost_price' => $variant['cost_price'] ?? $existingVariant->cost_price,
+                                    'inventory_quantity' => $newInventory,
+                                    'inventory_policy' => $variant['inventory_policy'] ?? $existingVariant->inventory_policy,
+                                    'weight' => $variant['weight'] ?? $existingVariant->weight,
+                                    'weight_unit' => $variant['weight_unit'] ?? $existingVariant->weight_unit,
+                                    'position' => $variant['position'] ?? $existingVariant->position,
+                                    'available' => $variant['available'] ?? $existingVariant->available,
+                                    'updated_by' => auth()->check() ? auth()->id() : null,
+                                ]);
+                                
+                                // ⭐ Log variant changes
+                                $newVariantData = [
+                                    'sku' => $preservedSku,
+                                    'price' => $newPrice,
+                                    'inventory_quantity' => $newInventory,
+                                ];
+                                self::logVariantChanges($product->id, $existingVariant->id, $oldVariantData, $newVariantData, $changeSource);
+                                
+                                \Log::info("Updated variant ID: {$variantInternalId} for product #{$product->id}");
+                            } else {
+                                \Log::warning("Variant ID {$variantInternalId} not found for product #{$product->id}, treating as new");
+                                $newVariants[] = $variant;
+                            }
+                        } else {
+                            // New variant (no ID) - will be created
+                            $newVariants[] = $variant;
+                        }
+                    }
+                    
+                    // Delete variants that are no longer in the incoming list
+                    if (!empty($incomingVariantIds)) {
+                        // ⭐ Log variant deletions before deleting
+                        $variantsToDelete = $product->variants()->whereNotIn('id', $incomingVariantIds)->get();
+                        foreach ($variantsToDelete as $deletedVariant) {
+                            ProductChangeHistory::logChange([
+                                'product_id' => $product->id,
+                                'variant_id' => $deletedVariant->id,
+                                'change_type' => ProductChangeHistory::TYPE_VARIANT_DELETED,
+                                'field_name' => 'Variant',
+                                'old_value' => $deletedVariant->title . ' (SKU: ' . ($deletedVariant->sku ?? 'none') . ')',
+                                'new_value' => null,
+                                'change_source' => $changeSource,
+                            ]);
+                        }
+                        
+                        $deletedCount = $product->variants()->whereNotIn('id', $incomingVariantIds)->delete();
+                        if ($deletedCount > 0) {
+                            \Log::info("Deleted {$deletedCount} removed variants from product #{$product->id}");
+                        }
+                    }
+                    
+                    // Create any new variants
+                    // Note: New variants added via web UI don't get shopify_variant_id
+                    // They will get linked if/when synced from Shopify later (matched by SKU)
+                    foreach ($newVariants as $variant) {
+                        $newVariantModel = ProductVariantModel::create([
+                            'product_id' => $product->id,
+                            'shopify_variant_id' => null, // New variants don't have Shopify IDs until synced
+                            'title' => $variant['title'] ?? $product->title,
+                            'sku' => $variant['sku'] ?? null,
+                            'barcode' => $variant['barcode'] ?? null,
+                            'price' => $variant['price'] ?? 0,
+                            'compare_at_price' => $variant['compare_at_price'] ?? null,
+                            'cost_price' => $variant['cost_price'] ?? null,
+                            'inventory_quantity' => $variant['inventory_quantity'] ?? 0,
+                            'inventory_policy' => $variant['inventory_policy'] ?? 'deny',
+                            'weight' => $variant['weight'] ?? null,
+                            'weight_unit' => $variant['weight_unit'] ?? 'g',
+                            'position' => $variant['position'] ?? 1,
+                            'available' => $variant['available'] ?? true,
+                            'created_by' => auth()->check() ? auth()->id() : null,
+                        ]);
+                        
+                        // ⭐ Log new variant creation
+                        ProductChangeHistory::logChange([
+                            'product_id' => $product->id,
+                            'variant_id' => $newVariantModel->id,
+                            'change_type' => ProductChangeHistory::TYPE_VARIANT_CREATED,
+                            'field_name' => 'Variant',
+                            'old_value' => null,
+                            'new_value' => ($newVariantModel->title ?? 'Default') . ' (SKU: ' . ($newVariantModel->sku ?? 'none') . ', Price: ' . $newVariantModel->price . ')',
+                            'change_source' => $changeSource,
+                        ]);
+                        
+                        \Log::info("Created new variant for product #{$product->id}");
+                    }
                 } else {
-                    // Full update or new product - delete and recreate variants
+                    // Full update or new product (Shopify/WooCommerce) - delete and recreate variants
                     if ($existingProduct) {
                         $product->variants()->delete();
                     }
@@ -565,13 +825,16 @@ class ProductModel extends BaseModel
             }
 
             // Auto-assign optional attribute labels by match rules stored in JSON (title contains)
-            // Skip this for price-only updates and SKU-primary mode to preserve existing categories
-            if ((!$priceOnlyUpdate && !$skuPrimary) || !$existingProduct) {
+            // ⚠️ ONLY run for NEW products to avoid accidentally changing existing products
+            // For existing products, categories should be changed explicitly via the UI
+            if (!$existingProduct) {
                 try {
                     $title = (string) ($product->title ?? '');
                     $labelsPath = storage_path('app/private/attribute_auto_rules.json');
                     if (is_file($labelsPath) && $title !== '') {
                         $rules = json_decode(file_get_contents($labelsPath), true) ?: [];
+                        $autoAssigned = false;
+                        
                         foreach ([1,2,3] as $key) {
                             $column = 'attribute_' . $key;
                             if (!empty($rules[(string)$key]) && empty($product->{$column})) {
@@ -580,14 +843,33 @@ class ProductModel extends BaseModel
                                     $groupName = (string) ($rule['group'] ?? '');
                                     if ($needle !== '' && $groupName !== '' && stripos($title, $needle) !== false) {
                                         $product->{$column} = $groupName;
+                                        $autoAssigned = true;
+                                        
+                                        // ⭐ Log the auto-assignment
+                                        ProductChangeHistory::logChange([
+                                            'product_id' => $product->id,
+                                            'change_type' => ProductChangeHistory::TYPE_CATEGORY_CHANGE,
+                                            'field_name' => 'Category Level ' . $key . ' (Auto)',
+                                            'old_value' => null,
+                                            'new_value' => $groupName,
+                                            'change_source' => 'system',
+                                            'notes' => "Auto-assigned based on title match: '{$needle}'",
+                                        ]);
+                                        
+                                        \Log::info("Auto-assigned {$column} = '{$groupName}' to new product #{$product->id} (matched: '{$needle}')");
                                         break;
                                     }
                                 }
                             }
                         }
-                        $product->save();
+                        
+                        // Only save if we actually made changes
+                        if ($autoAssigned) {
+                            $product->save();
+                        }
                     }
                 } catch (\Throwable $e) {
+                    \Log::warning("Auto-assign category failed for product #{$product->id}: " . $e->getMessage());
                     // fail silently to avoid impacting core flows
                 }
             }

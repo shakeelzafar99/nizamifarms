@@ -147,7 +147,26 @@ class ProductController extends Controller
                 $assign = true;
             }
             if ($assign) {
-                $product->{$column} = $validated['group_name'];
+                $oldValue = $product->{$column};
+                $newValue = $validated['group_name'];
+                
+                if ($oldValue !== $newValue) {
+                    // Log the change
+                    $levelNum = str_replace('attribute_', '', $column);
+                    \App\Models\CRM\ProductChangeHistory::logChange([
+                        'product_id' => $product->id,
+                        'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_CATEGORY_CHANGE,
+                        'field_name' => "Category Level {$levelNum}",
+                        'old_value' => $oldValue,
+                        'new_value' => $newValue,
+                        'change_source' => 'web',
+                        'notes' => $validated['match_string'] 
+                            ? "Applied rule: title contains '{$validated['match_string']}'" 
+                            : 'Manual selection',
+                    ]);
+                }
+                
+                $product->{$column} = $newValue;
                 $product->save();
                 $updated++;
             }
@@ -765,6 +784,20 @@ class ProductController extends Controller
             $toUpdate = $matchingProducts->diff($newlyCategorizedIds)->toArray();
             
             if (!empty($toUpdate)) {
+                // Log individual changes for each product
+                foreach ($toUpdate as $productId) {
+                    $levelNum = str_replace('attribute_', '', $column);
+                    \App\Models\CRM\ProductChangeHistory::logChange([
+                        'product_id' => $productId,
+                        'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_CATEGORY_CHANGE,
+                        'field_name' => "Category Level {$levelNum} (Auto Rule)",
+                        'old_value' => null,
+                        'new_value' => $group,
+                        'change_source' => 'system',
+                        'notes' => "Applied saved rule: title contains '{$needle}'",
+                    ]);
+                }
+                
                 $count = \DB::table('t_crm_prod_product')
                     ->whereIn('id', $toUpdate)
                     ->update([$column => $group, 'updated_at' => now()]);
@@ -1291,6 +1324,18 @@ class ProductController extends Controller
                     $affectedVariants++;
                     $productUpdated = true;
                     
+                    // ⭐ Log price change
+                    \App\Models\CRM\ProductChangeHistory::logChange([
+                        'product_id' => $product->id,
+                        'variant_id' => $variant->id,
+                        'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_PRICE_CHANGE,
+                        'field_name' => 'Price (Bulk Adjust)',
+                        'old_value' => (string)$old,
+                        'new_value' => (string)$new,
+                        'change_source' => 'web',
+                        'notes' => "Bulk price {$validated['operation']} operation",
+                    ]);
+                    
                     // Record this change for the summary
                     $changes[] = [
                         'product_title' => $product->title,
@@ -1367,6 +1412,20 @@ class ProductController extends Controller
                 $product->price_min = min($prices);
                 $product->price_max = max($prices);
                 $product->save();
+            }
+
+            // ⭐ Log price change to history
+            if (abs($oldPrice - $newPrice) >= 0.01) {
+                \App\Models\CRM\ProductChangeHistory::logChange([
+                    'product_id' => $product->id,
+                    'variant_id' => $variant->id,
+                    'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_PRICE_CHANGE,
+                    'field_name' => 'Price',
+                    'old_value' => (string)$oldPrice,
+                    'new_value' => (string)$newPrice,
+                    'change_source' => 'web',
+                    'notes' => 'Quick inline price edit',
+                ]);
             }
 
             Log::info('Quick price update', [
@@ -1639,10 +1698,53 @@ class ProductController extends Controller
                 ], 400);
             }
             
-            // Get count before update
-            $affectedCount = $query->count();
+            // Get products before update to log changes
+            $products = $query->get(['id', 'title', 'attribute_1', 'attribute_2', 'attribute_3']);
+            $affectedCount = $products->count();
+            
+            // Log individual changes for each product
+            foreach ($products as $product) {
+                foreach ($updates as $field => $newValue) {
+                    $oldValue = $product->{$field};
+                    if ($oldValue !== $newValue) {
+                        $levelNum = str_replace('attribute_', '', $field);
+                        \App\Models\CRM\ProductChangeHistory::logChange([
+                            'product_id' => $product->id,
+                            'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_CATEGORY_CHANGE,
+                            'field_name' => "Category Level {$levelNum} (Bulk)",
+                            'old_value' => $oldValue,
+                            'new_value' => $newValue,
+                            'change_source' => 'web',
+                            'notes' => 'Bulk category update',
+                        ]);
+                    }
+                }
+            }
             
             // Apply the updates
+            $query = ProductModel::query();
+            if ($request->has('product_ids') && is_array($request->product_ids) && !empty($request->product_ids)) {
+                $query->whereIn('id', $request->product_ids);
+            } else {
+                foreach (['product_type', 'vendor'] as $f) {
+                    if ($request->$f) {
+                        $query->where($f, $request->$f);
+                    }
+                }
+                if ($request->search) {
+                    $search = $request->search;
+                    $query->where(function($q) use ($search) {
+                        $q->where('title', 'like', "%{$search}%")
+                          ->orWhere('shopify_handle', 'like', "%{$search}%")
+                          ->orWhereHas('variants', function($vq) use ($search) {
+                              $vq->where('sku', 'like', "%{$search}%");
+                          });
+                    });
+                }
+                if ($request->status) {
+                    $query->where('status', $request->status);
+                }
+            }
             $query->update($updates);
             
             Log::info('Bulk category update applied', [
@@ -1668,37 +1770,67 @@ class ProductController extends Controller
     }
 
     /**
-     * Get weight factors for products by name (for invoice editing)
+     * Get weight factors for products by ID or name (for invoice editing)
+     * Priority: product_id (reliable) > name matching (fallback)
      */
     public function getWeightFactors(Request $request)
     {
         $validated = $request->validate([
-            'product_names' => 'required|array',
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'nullable|integer',
+            'product_names' => 'nullable|array',
             'product_names.*' => 'string'
         ]);
         
-        $productNames = $validated['product_names'];
+        $productIds = $validated['product_ids'] ?? [];
+        $productNames = $validated['product_names'] ?? [];
         $weightFactors = [];
+        $weightFactorsByProductId = [];
         
-        // Query products and get their weight factors
-        $products = ProductModel::whereIn('title', $productNames)
-            ->select('title', 'weight_factor')
-            ->get();
-        
-        foreach ($products as $product) {
-            $weightFactors[$product->title] = floatval($product->weight_factor ?? 1.0);
+        // ⭐ PRIMARY: Get weight factors by product_id (most reliable)
+        if (!empty($productIds)) {
+            $validIds = array_filter($productIds, fn($id) => !empty($id) && is_numeric($id));
+            if (!empty($validIds)) {
+                $productsById = ProductModel::whereIn('id', $validIds)
+                    ->select('id', 'title', 'weight_factor')
+                    ->get();
+                
+                foreach ($productsById as $product) {
+                    $weightFactorsByProductId[$product->id] = floatval($product->weight_factor ?? 1.0);
+                    // Also add by title for cross-reference
+                    $weightFactors[$product->title] = floatval($product->weight_factor ?? 1.0);
+                }
+            }
         }
         
-        // For products not found, default to 1
-        foreach ($productNames as $name) {
-            if (!isset($weightFactors[$name])) {
-                $weightFactors[$name] = 1.0;
+        // ⭐ FALLBACK: Get weight factors by product name (for items without product_id)
+        if (!empty($productNames)) {
+            // Filter out names we already have from product_id lookup
+            $namesToLookup = array_filter($productNames, fn($name) => !isset($weightFactors[$name]));
+            
+            if (!empty($namesToLookup)) {
+                $productsByName = ProductModel::whereIn('title', $namesToLookup)
+                    ->select('id', 'title', 'weight_factor')
+                    ->get();
+                
+                foreach ($productsByName as $product) {
+                    $weightFactors[$product->title] = floatval($product->weight_factor ?? 1.0);
+                    $weightFactorsByProductId[$product->id] = floatval($product->weight_factor ?? 1.0);
+                }
+            }
+            
+            // Default to 1 for products not found
+            foreach ($productNames as $name) {
+                if (!isset($weightFactors[$name])) {
+                    $weightFactors[$name] = 1.0;
+                }
             }
         }
         
         return response()->json([
             'success' => true,
-            'weight_factors' => $weightFactors
+            'weight_factors' => $weightFactors,
+            'weight_factors_by_id' => $weightFactorsByProductId
         ]);
     }
 
@@ -1914,263 +2046,73 @@ class ProductController extends Controller
     }
 
     /**
-     * Import products from Shopify (limited)
+     * Import products from Shopify (DISABLED)
+     * 
+     * ⚠️ SHOPIFY/WOOCOMMERCE INTEGRATION DISABLED
+     * Products are now managed exclusively through web UI and mobile app.
+     * This prevents accidental data overwrites and preserves SKU/category data.
+     * 
+     * Disabled on: December 2024
      */
     public function importProducts(Request $request)
     {
-        try {
-            $validated = $request->validate([
-                'limit' => 'nullable|integer|min:1|max:250'
-            ]);
-
-            $limit = $validated['limit'] ?? 50;
-
-            // Fetch products from Shopify
-            $products = $this->shopify->fetchProducts($limit);
-
-            if (empty($products)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No products found in Shopify store. This could mean: 1) Your store has no products, 2) API credentials are incorrect, or 3) Products are in draft status.'
-                ]);
-            }
-
-            // Store products in database
-            $importedCount = 0;
-            $updatedCount = 0;
-            $errorCount = 0;
-            $errors = [];
-
-            foreach ($products as $shopifyProduct) {
-                try {
-                    // Check if product already exists
-                    $existingProduct = ProductModel::findByShopifyId($shopifyProduct['id']);
-                    $isUpdate = $existingProduct !== null;
-                    
-                    // Create or update product
-                    ProductModel::createOrUpdateFromShopify($shopifyProduct);
-                    
-                    if ($isUpdate) {
-                        $updatedCount++;
-                    } else {
-                        $importedCount++;
-                    }
-                } catch (\Exception $e) {
-                    $errorCount++;
-                    $errors[] = "Product ID {$shopifyProduct['id']}: " . $e->getMessage();
-                    
-                    Log::error('Failed to import Shopify product: ' . $e->getMessage(), [
-                        'shopify_product_id' => $shopifyProduct['id'] ?? 'unknown',
-                        'error' => $e->getMessage()
-                    ]);
-                }
-            }
-
-            $message = "Successfully processed " . ($importedCount + $updatedCount) . " products from Shopify.";
-            if ($importedCount > 0) {
-                $message .= " {$importedCount} new products imported.";
-            }
-            if ($updatedCount > 0) {
-                $message .= " {$updatedCount} existing products updated.";
-            }
-            if ($errorCount > 0) {
-                $message .= " {$errorCount} products failed to process.";
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => $message,
-                'imported_count' => $importedCount,
-                'updated_count' => $updatedCount,
-                'error_count' => $errorCount,
-                'errors' => $errors
-            ]);
-
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation error',
-                'errors' => $e->errors()
-            ], 422);
-        } catch (\Exception $e) {
-            Log::error('Shopify Products Import Error: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
-            ]);
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Something went wrong while importing products: ' . $e->getMessage()
-            ], 500);
-        }
+        Log::warning('Shopify product import attempted but is DISABLED', [
+            'user_id' => auth()->id(),
+            'ip' => $request->ip()
+        ]);
+        
+        return response()->json([
+            'success' => false,
+            'message' => 'Product import from Shopify has been permanently disabled. Products are now managed exclusively through the web UI and mobile app to prevent data loss (SKU, categories).',
+            'status' => 'disabled'
+        ], 403);
     }
 
     /**
-     * Sync single product from Shopify
+     * Sync single product from Shopify (DISABLED)
+     * 
+     * ⚠️ SHOPIFY SYNC DISABLED
+     * Products are now managed exclusively through web UI and mobile app.
+     * 
+     * Disabled on: December 2024
      */
     public function syncProduct(Request $request, $id)
     {
-        try {
-            $product = ProductModel::findOrFail($id);
-
-            if (!$product->shopify_product_id) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Product is not linked to Shopify'
-                ], 400);
-            }
-
-            // Fetch single product from Shopify
-            $shopifyProduct = $this->shopify->fetchProduct($product->shopify_product_id);
-
-            if (!$shopifyProduct) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Product not found in Shopify'
-                ], 404);
-            }
-
-            // Map and update product
-            $productData = ProductModel::mapShopifyProduct($shopifyProduct);
-            ProductModel::storeProductFromApi($productData);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Product synced successfully',
-                'product' => $product->fresh(['variants'])
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Product sync error: ' . $e->getMessage());
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to sync product: ' . $e->getMessage()
-            ], 500);
-        }
+        Log::warning('Shopify product sync attempted but is DISABLED', [
+            'product_id' => $id,
+            'user_id' => auth()->id(),
+            'ip' => $request->ip()
+        ]);
+        
+        return response()->json([
+            'success' => false,
+            'message' => 'Product sync with Shopify has been permanently disabled. Products are now managed exclusively through the web UI and mobile app.',
+            'status' => 'disabled'
+        ], 403);
     }
 
     /**
-     * Import ALL products from Shopify
+     * Import ALL products from Shopify (DISABLED)
+     * 
+     * ⚠️ BULK IMPORT DISABLED
+     * Products are now managed exclusively through web UI and mobile app.
+     * This prevents accidental data overwrites and preserves SKU/category data.
+     * 
+     * Disabled on: December 2024
      */
     public function importAllProducts(Request $request)
     {
-        try {
-            \Log::info('Starting bulk import of all products from Shopify');
-
-            $source = $request->get('source', 'Shopify');
-            $priceOnlyUpdate = $request->get('price_only_update', false);
-            $isWooCommerce = strcasecmp($source, 'WooCommerce') === 0;
-            
-            \Log::info('Import settings', [
-                'source' => $source,
-                'price_only_update' => $priceOnlyUpdate,
-                'sku_primary' => $isWooCommerce
-            ]);
-            
-            if ($isWooCommerce) {
-                \Log::info('Bulk import source selected: WooCommerce');
-                $wooProductsRaw = $this->wooCommerce->fetchAllProducts();
-                $products = [];
-                foreach ($wooProductsRaw as $wooProduct) {
-                    $variations = [];
-                    if (($wooProduct['type'] ?? '') === 'variable') {
-                        $variations = $this->wooCommerce->fetchProductVariations((int)$wooProduct['id']);
-                    }
-                    $products[] = $this->wooCommerce->mapWooProduct($wooProduct, $variations);
-                }
-            } else {
-                // Fetch ALL products from Shopify
-                $products = $this->shopify->fetchAllProducts();
-            }
-
-            if (empty($products)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No products found in Shopify store. This could mean: 1) Your store has no products, 2) API credentials are incorrect, or 3) Products are in draft status.'
-                ]);
-            }
-
-            \Log::info('Fetched ' . count($products) . ' products from Shopify, starting import process');
-
-            // Store products in database
-            $importedCount = 0;
-            $updatedCount = 0;
-            $errorCount = 0;
-            $errors = [];
-            $totalProducts = count($products);
-
-            foreach ($products as $index => $productPayload) {
-                try {
-                    // Add price_only_update flag to payload
-                    if ($priceOnlyUpdate) {
-                        $productPayload['_price_only_update'] = true;
-                    }
-                    
-                    // For WooCommerce, use SKU as primary matching key (prevents duplicates)
-                    if ($isWooCommerce) {
-                        $productPayload['_sku_primary'] = true;
-                    }
-                    
-                    // Reuse store method that expects canonical payload
-                    $stored = ProductModel::storeProductFromApi($productPayload);
-                    $isUpdate = $stored->wasRecentlyCreated === false;
-                    
-                    if ($isUpdate) {
-                        $updatedCount++;
-                    } else {
-                        $importedCount++;
-                    }
-
-                    // Log progress every 10 products
-                    if (($index + 1) % 10 === 0) {
-                        \Log::info("Processed " . ($index + 1) . "/{$totalProducts} products");
-                    }
-                } catch (\Exception $e) {
-                    $errorCount++;
-                    $errors[] = $e->getMessage();
-                    Log::error('Failed to import product: ' . $e->getMessage());
-                }
-            }
-
-            \Log::info('Completed bulk import', [
-                'total_products' => $totalProducts,
-                'imported_count' => $importedCount,
-                'updated_count' => $updatedCount,
-                'error_count' => $errorCount
-            ]);
-
-            $message = "Successfully processed {$totalProducts} products from Shopify.";
-            if ($importedCount > 0) {
-                $message .= " {$importedCount} new products imported.";
-            }
-            if ($updatedCount > 0) {
-                if ($priceOnlyUpdate) {
-                    $message .= " {$updatedCount} existing products updated (prices only, categories/attributes preserved).";
-                } else {
-                    $message .= " {$updatedCount} existing products updated.";
-                }
-            }
-            if ($errorCount > 0) {
-                $message .= " {$errorCount} products failed to process.";
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => $message,
-                'total_products' => $totalProducts,
-                'imported_count' => $importedCount,
-                'updated_count' => $updatedCount,
-                'error_count' => $errorCount,
-                'errors' => $errors
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Bulk product import error: ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => 'An error occurred while importing all products: ' . $e->getMessage()
-            ], 500);
-        }
+        Log::warning('Bulk product import attempted but is DISABLED', [
+            'source' => $request->get('source', 'Shopify'),
+            'user_id' => auth()->id(),
+            'ip' => $request->ip()
+        ]);
+        
+        return response()->json([
+            'success' => false,
+            'message' => 'Bulk product import from Shopify/WooCommerce has been permanently disabled. Products are now managed exclusively through the web UI and mobile app to prevent data loss (SKU, categories).',
+            'status' => 'disabled'
+        ], 403);
     }
 
     /**
@@ -2250,6 +2192,24 @@ class ProductController extends Controller
             \DB::beginTransaction();
             
             try {
+                // Get product IDs first for logging
+                $productIds = \DB::table('t_crm_prod_product')
+                    ->where($column, $oldName)
+                    ->pluck('id');
+                
+                // Log category rename for each product
+                foreach ($productIds as $productId) {
+                    \App\Models\CRM\ProductChangeHistory::logChange([
+                        'product_id' => $productId,
+                        'change_type' => \App\Models\CRM\ProductChangeHistory::TYPE_CATEGORY_CHANGE,
+                        'field_name' => "Category Level {$attributeKey} (Rename)",
+                        'old_value' => $oldName,
+                        'new_value' => $newName,
+                        'change_source' => 'web',
+                        'notes' => "Category renamed from '{$oldName}' to '{$newName}'",
+                    ]);
+                }
+                
                 // Update all products with old category name to new category name
                 $updatedCount = \DB::table('t_crm_prod_product')
                     ->where($column, $oldName)
@@ -2679,5 +2639,34 @@ class ProductController extends Controller
             // Variants
             'variants' => $variants
         ];
+    }
+
+    /**
+     * Get product change history
+     */
+    public function getHistory($id)
+    {
+        try {
+            $product = ProductModel::findOrFail($id);
+            
+            $limit = request()->input('limit', 3);
+            $limit = min((int)$limit, 50); // Max 50 records
+            
+            $history = \App\Models\CRM\ProductChangeHistory::getRecentChanges($product->id, $limit);
+            
+            return response()->json([
+                'success' => true,
+                'product_id' => $product->id,
+                'product_title' => $product->title,
+                'history' => $history,
+                'total_changes' => $product->changeHistory()->count(),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching product history: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch product history: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }

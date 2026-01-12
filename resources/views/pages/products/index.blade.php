@@ -332,14 +332,14 @@ tr.bg-indigo-50:hover {
                     @endforeach
                 </select>
 
-                <select name="attribute_1" id="attr1Filter" onchange="performSearch()" style="min-width: 110px;">
+                <select name="attribute_1" id="attr1Filter" onchange="onAttr1Change()" style="min-width: 110px;">
                     <option value="">{{ $attributeLabels['1'] ?? 'Level 1' }}</option>
                     @foreach($attribute1s as $val)
                         <option value="{{ $val }}" {{ request('attribute_1') == $val ? 'selected' : '' }}>{{ $val }}</option>
                     @endforeach
                 </select>
 
-                <select name="attribute_2" id="attr2Filter" onchange="performSearch()" style="min-width: 110px;">
+                <select name="attribute_2" id="attr2Filter" onchange="onAttr2Change()" style="min-width: 110px;">
                     <option value="">{{ $attributeLabels['2'] ?? 'Level 2' }}</option>
                     @foreach($attribute2s as $val)
                         <option value="{{ $val }}" {{ request('attribute_2') == $val ? 'selected' : '' }}>{{ $val }}</option>
@@ -1126,6 +1126,229 @@ document.addEventListener('DOMContentLoaded', function() {
 // Real-time search functionality
 let searchTimeout = null;
 
+// ⭐ CASCADING FILTER CACHE - stores filter options to avoid redundant API calls
+// Cache key format: "attr1=value" or "attr1=value&attr2=value"
+const filterOptionsCache = new Map();
+const CACHE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes cache expiry
+
+// Store original options for reset
+const originalFilterOptions = {
+    attr2: [],
+    attr3: []
+};
+
+// Initialize original options on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const attr2Select = document.getElementById('attr2Filter');
+    const attr3Select = document.getElementById('attr3Filter');
+    
+    if (attr2Select) {
+        originalFilterOptions.attr2 = Array.from(attr2Select.options).map(opt => ({
+            value: opt.value,
+            text: opt.text
+        }));
+    }
+    if (attr3Select) {
+        originalFilterOptions.attr3 = Array.from(attr3Select.options).map(opt => ({
+            value: opt.value,
+            text: opt.text
+        }));
+    }
+});
+
+// When Level 1 changes: update Level 2 and Level 3 options, then search
+function onAttr1Change() {
+    const attr1Value = document.getElementById('attr1Filter').value;
+    const attr2Select = document.getElementById('attr2Filter');
+    const attr3Select = document.getElementById('attr3Filter');
+    
+    if (!attr1Value) {
+        // Level 1 cleared - restore all options for Level 2 and Level 3
+        restoreFilterOptions(attr2Select, originalFilterOptions.attr2, attr2Select.value);
+        restoreFilterOptions(attr3Select, originalFilterOptions.attr3, attr3Select.value);
+        performSearch();
+        return;
+    }
+    
+    // Show loading state
+    setFilterLoading(attr2Select, true);
+    setFilterLoading(attr3Select, true);
+    
+    // Check cache first
+    const cacheKey = `attr1=${attr1Value}`;
+    const cached = getFromCache(cacheKey);
+    
+    if (cached) {
+        updateFilterDropdown(attr2Select, cached.attribute_2s, '');
+        updateFilterDropdown(attr3Select, cached.attribute_3s, '');
+        setFilterLoading(attr2Select, false);
+        setFilterLoading(attr3Select, false);
+        performSearch();
+        return;
+    }
+    
+    // Fetch from server
+    fetchFilterOptions({ attribute_1: attr1Value })
+        .then(data => {
+            if (data.success && data.filter_options) {
+                // Cache the result
+                saveToCache(cacheKey, data.filter_options);
+                
+                // Update Level 2 and Level 3 dropdowns
+                updateFilterDropdown(attr2Select, data.filter_options.attribute_2s, '');
+                updateFilterDropdown(attr3Select, data.filter_options.attribute_3s, '');
+            }
+        })
+        .finally(() => {
+            setFilterLoading(attr2Select, false);
+            setFilterLoading(attr3Select, false);
+            performSearch();
+        });
+}
+
+// When Level 2 changes: update Level 3 options, then search
+function onAttr2Change() {
+    const attr1Value = document.getElementById('attr1Filter').value;
+    const attr2Value = document.getElementById('attr2Filter').value;
+    const attr3Select = document.getElementById('attr3Filter');
+    
+    if (!attr2Value) {
+        // Level 2 cleared - if Level 1 is set, restore Level 3 based on Level 1 only
+        if (attr1Value) {
+            const cacheKey = `attr1=${attr1Value}`;
+            const cached = getFromCache(cacheKey);
+            if (cached) {
+                updateFilterDropdown(attr3Select, cached.attribute_3s, '');
+            } else {
+                restoreFilterOptions(attr3Select, originalFilterOptions.attr3, '');
+            }
+        } else {
+            restoreFilterOptions(attr3Select, originalFilterOptions.attr3, attr3Select.value);
+        }
+        performSearch();
+        return;
+    }
+    
+    // Show loading state
+    setFilterLoading(attr3Select, true);
+    
+    // Check cache first
+    const cacheKey = attr1Value ? `attr1=${attr1Value}&attr2=${attr2Value}` : `attr2=${attr2Value}`;
+    const cached = getFromCache(cacheKey);
+    
+    if (cached) {
+        updateFilterDropdown(attr3Select, cached.attribute_3s, '');
+        setFilterLoading(attr3Select, false);
+        performSearch();
+        return;
+    }
+    
+    // Fetch from server
+    const params = { attribute_2: attr2Value };
+    if (attr1Value) params.attribute_1 = attr1Value;
+    
+    fetchFilterOptions(params)
+        .then(data => {
+            if (data.success && data.filter_options) {
+                // Cache the result
+                saveToCache(cacheKey, data.filter_options);
+                
+                // Update Level 3 dropdown
+                updateFilterDropdown(attr3Select, data.filter_options.attribute_3s, '');
+            }
+        })
+        .finally(() => {
+            setFilterLoading(attr3Select, false);
+            performSearch();
+        });
+}
+
+// Fetch filter options from server
+function fetchFilterOptions(params) {
+    const queryParams = new URLSearchParams(params);
+    return fetch(`/products?${queryParams.toString()}`, {
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(r => r.json())
+    .catch(err => {
+        console.warn('Could not fetch filter options:', err);
+        return { success: false };
+    });
+}
+
+// Update a filter dropdown with new options
+function updateFilterDropdown(selectElement, options, selectedValue) {
+    if (!selectElement) return;
+    
+    const firstOption = selectElement.options[0]; // Keep the placeholder
+    const placeholderText = firstOption ? firstOption.text : 'Select...';
+    
+    selectElement.innerHTML = `<option value="">${placeholderText}</option>`;
+    
+    if (options && options.length > 0) {
+        options.forEach(option => {
+            const opt = document.createElement('option');
+            opt.value = option;
+            opt.text = option;
+            if (option === selectedValue) opt.selected = true;
+            selectElement.appendChild(opt);
+        });
+    }
+}
+
+// Restore original filter options
+function restoreFilterOptions(selectElement, originalOptions, selectedValue) {
+    if (!selectElement || !originalOptions) return;
+    
+    selectElement.innerHTML = '';
+    originalOptions.forEach(opt => {
+        const option = document.createElement('option');
+        option.value = opt.value;
+        option.text = opt.text;
+        if (opt.value === selectedValue) option.selected = true;
+        selectElement.appendChild(option);
+    });
+}
+
+// Show/hide loading state on filter
+function setFilterLoading(selectElement, isLoading) {
+    if (!selectElement) return;
+    
+    if (isLoading) {
+        selectElement.style.opacity = '0.6';
+        selectElement.style.pointerEvents = 'none';
+    } else {
+        selectElement.style.opacity = '1';
+        selectElement.style.pointerEvents = 'auto';
+    }
+}
+
+// Cache helpers
+function getFromCache(key) {
+    const cached = filterOptionsCache.get(key);
+    if (cached && (Date.now() - cached.timestamp) < CACHE_EXPIRY_MS) {
+        return cached.data;
+    }
+    // Remove expired entry
+    if (cached) filterOptionsCache.delete(key);
+    return null;
+}
+
+function saveToCache(key, data) {
+    filterOptionsCache.set(key, {
+        data: data,
+        timestamp: Date.now()
+    });
+}
+
+// Clear cache when product data changes (e.g., after bulk update)
+function clearFilterCache() {
+    filterOptionsCache.clear();
+}
+
 function initializeRealTimeSearch() {
     const searchInput = document.getElementById('productSearchInput');
     const leanFilter = document.getElementById('leanFilter');
@@ -1620,6 +1843,11 @@ function getCellContent(columnKey, product) {
             
         case 'actions':
             return `<div class="actions flex items-center gap-1.5">
+                <button onclick="showProductHistory(${product.id}, '${(product.title || '').replace(/'/g, "\\'")}', event)" 
+                        class="btn flex items-center justify-center w-7 h-7 rounded-md bg-amber-50 text-amber-600 hover:bg-amber-100 transition-colors duration-200 border border-amber-200" 
+                        title="View Change History">
+                    <i class="ki-filled ki-information-2 text-xs"></i>
+                </button>
                 <button onclick="viewProduct(${product.id})" 
                         class="btn flex items-center justify-center w-7 h-7 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors duration-200 border border-blue-200" 
                         title="View Details">
@@ -3105,6 +3333,193 @@ function editProduct(productId) {
 // Open product in new browser tab
 function openProductInNewTab(productId) {
     window.open(`/products/${productId}/edit`, '_blank');
+}
+
+// ========================================
+// PRODUCT HISTORY FUNCTIONS
+// ========================================
+
+// Show product change history in a popover
+async function showProductHistory(productId, productTitle, event) {
+    event.stopPropagation();
+    
+    // Create or get the history popover
+    let popover = document.getElementById('productHistoryPopover');
+    if (!popover) {
+        popover = document.createElement('div');
+        popover.id = 'productHistoryPopover';
+        popover.className = 'fixed z-50 bg-white rounded-lg shadow-xl border border-gray-200 max-w-md w-96';
+        popover.style.display = 'none';
+        document.body.appendChild(popover);
+        
+        // Close popover when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!popover.contains(e.target) && !e.target.closest('[onclick*="showProductHistory"]')) {
+                popover.style.display = 'none';
+            }
+        });
+    }
+    
+    // Position the popover near the button
+    const rect = event.target.closest('button').getBoundingClientRect();
+    popover.style.top = `${rect.bottom + 5}px`;
+    popover.style.left = `${Math.max(10, rect.left - 200)}px`;
+    popover.style.display = 'block';
+    
+    // Show loading state
+    popover.innerHTML = `
+        <div class="p-4">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="font-semibold text-gray-800 text-sm">📋 Change History</h3>
+                <button onclick="document.getElementById('productHistoryPopover').style.display='none'" 
+                        class="text-gray-400 hover:text-gray-600">
+                    <i class="ki-filled ki-cross text-sm"></i>
+                </button>
+            </div>
+            <div class="text-center py-4">
+                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500 mx-auto"></div>
+                <p class="text-xs text-gray-500 mt-2">Loading history...</p>
+            </div>
+        </div>
+    `;
+    
+    try {
+        const response = await fetch(`/products/${productId}/history`);
+        const data = await response.json();
+        
+        if (data.success) {
+            let historyHtml = '';
+            
+            if (data.history && data.history.length > 0) {
+                data.history.forEach((change, index) => {
+                    const changeIcon = getChangeIcon(change.change_type);
+                    const sourceBadge = getSourceBadge(change.change_source);
+                    
+                    historyHtml += `
+                        <div class="py-2.5 ${index > 0 ? 'border-t border-gray-100' : ''}">
+                            <div class="flex items-start gap-2">
+                                <span class="text-base flex-shrink-0">${changeIcon}</span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 flex-wrap">
+                                        <span class="font-medium text-gray-800 text-xs">${change.change_type_label}</span>
+                                        ${sourceBadge}
+                                    </div>
+                                    <p class="text-xs text-gray-600 mt-0.5 truncate" title="${escapeHtml(change.description)}">
+                                        ${escapeHtml(change.description)}
+                                    </p>
+                                    <div class="flex items-center gap-2 mt-1 text-xs text-gray-400">
+                                        <span title="${change.created_at}">${change.created_at_human}</span>
+                                        <span>•</span>
+                                        <span class="font-medium text-gray-500">${escapeHtml(change.user_name)}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                if (data.total_changes > 3) {
+                    historyHtml += `
+                        <div class="pt-2 border-t border-gray-100 text-center">
+                            <span class="text-xs text-gray-400">Showing 3 of ${data.total_changes} changes</span>
+                        </div>
+                    `;
+                }
+            } else {
+                historyHtml = `
+                    <div class="text-center py-4">
+                        <i class="ki-filled ki-information text-gray-300 text-2xl"></i>
+                        <p class="text-xs text-gray-500 mt-2">No changes recorded yet</p>
+                    </div>
+                `;
+            }
+            
+            popover.innerHTML = `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-semibold text-gray-800 text-sm">📋 Change History</h3>
+                        <button onclick="document.getElementById('productHistoryPopover').style.display='none'" 
+                                class="text-gray-400 hover:text-gray-600">
+                            <i class="ki-filled ki-cross text-sm"></i>
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-3 truncate" title="${escapeHtml(productTitle)}">${escapeHtml(productTitle)}</p>
+                    ${historyHtml}
+                </div>
+            `;
+        } else {
+            popover.innerHTML = `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-semibold text-gray-800 text-sm">📋 Change History</h3>
+                        <button onclick="document.getElementById('productHistoryPopover').style.display='none'" 
+                                class="text-gray-400 hover:text-gray-600">
+                            <i class="ki-filled ki-cross text-sm"></i>
+                        </button>
+                    </div>
+                    <div class="text-center py-4">
+                        <i class="ki-filled ki-cross-circle text-red-400 text-xl"></i>
+                        <p class="text-xs text-red-500 mt-2">${data.message || 'Failed to load history'}</p>
+                    </div>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error fetching product history:', error);
+        popover.innerHTML = `
+            <div class="p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-semibold text-gray-800 text-sm">📋 Change History</h3>
+                    <button onclick="document.getElementById('productHistoryPopover').style.display='none'" 
+                            class="text-gray-400 hover:text-gray-600">
+                        <i class="ki-filled ki-cross text-sm"></i>
+                    </button>
+                </div>
+                <div class="text-center py-4">
+                    <i class="ki-filled ki-cross-circle text-red-400 text-xl"></i>
+                    <p class="text-xs text-red-500 mt-2">Error loading history</p>
+                </div>
+            </div>
+        `;
+    }
+}
+
+// Get icon for change type
+function getChangeIcon(changeType) {
+    const icons = {
+        'sku_change': '🏷️',
+        'price_change': '💰',
+        'category_change': '📁',
+        'name_change': '✏️',
+        'vendor_change': '🏪',
+        'status_change': '🔄',
+        'inventory_change': '📦',
+        'weight_factor_change': '⚖️',
+        'lean_status_change': '🥗',
+        'product_created': '🆕',
+        'variant_created': '➕',
+        'variant_deleted': '➖'
+    };
+    return icons[changeType] || 'ℹ️';
+}
+
+// Get source badge HTML
+function getSourceBadge(source) {
+    const badges = {
+        'web': '<span class="px-1.5 py-0.5 text-xs rounded bg-blue-100 text-blue-700">Web</span>',
+        'mobile': '<span class="px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-700">Mobile</span>',
+        'api': '<span class="px-1.5 py-0.5 text-xs rounded bg-purple-100 text-purple-700">API</span>',
+        'system': '<span class="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-700">System</span>'
+    };
+    return badges[source] || '';
+}
+
+// Escape HTML to prevent XSS
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 function viewProduct(productId) {

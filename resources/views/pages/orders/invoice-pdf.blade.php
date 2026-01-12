@@ -383,6 +383,11 @@
                     <div class="totals-label">SHIPPING</div>
                     <div class="totals-amount">Rs&nbsp;{{ number_format($order->shipping_total, 0) }}</div>
                 </div>
+                @else
+                <div class="totals-row">
+                    <div class="totals-label">SHIPPING</div>
+                    <div class="totals-amount" style="color: #059669; font-weight: 600;">Free Delivery</div>
+                </div>
                 @endif
                 @if(isset($order->tip_amount) && $order->tip_amount > 0)
                 <div class="totals-row">
@@ -390,9 +395,15 @@
                     <div class="totals-amount">Rs&nbsp;{{ number_format($order->tip_amount, 0) }}</div>
                 </div>
                 @endif
+                @php
+                    // Calculate actual total including tip (in case stored total_price doesn't include it)
+                    $calculatedTotal = $subtotal - $totalDiscounts + ($order->shipping_total ?? 0) + ($order->tip_amount ?? 0);
+                    // Use the higher of stored total or calculated total (to avoid showing less than owed)
+                    $displayTotal = max($order->total_price ?? 0, $calculatedTotal);
+                @endphp
                 <div class="totals-row totals-total">
                     <div class="totals-label">TOTAL</div>
-                    <div class="totals-amount">Rs&nbsp;{{ number_format($order->total_price, 0) }}</div>
+                    <div class="totals-amount">Rs&nbsp;{{ number_format($displayTotal, 0) }}</div>
                 </div>
             </div>
         </div>

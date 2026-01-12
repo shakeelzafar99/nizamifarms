@@ -76,16 +76,15 @@ Route::prefix('webhook')->group(function () {
 // Authentication (uses existing AuthController)
 Route::post('/auth/authenticate', [AuthController::class, 'authenticate']);
 
+// App version check - PUBLIC endpoint (no auth required - anyone can check for updates)
+Route::get('/app/version', [\App\Http\Controllers\API\AppController::class, 'getLatestVersion']);
+
 // Authenticated mobile routes
 Route::middleware('auth:sanctum')->group(function () {
     
     // Auth endpoints
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::get('/auth/logout', [AuthController::class, 'logout']);
-    
-    // Rider-specific routes
-    // App version check (no auth required - anyone can check)
-    Route::get('/app/version', [\App\Http\Controllers\API\AppController::class, 'getLatestVersion']);
 
     Route::prefix('rider')->group(function () {
         // Dashboard
@@ -151,10 +150,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrders']);
     Route::get('/store/open-orders-light', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrdersLight']); // Lightweight for list
     Route::get('/store/open-orders/{id}/details', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrderDetails']); // Full details when expanded
+    Route::get('/store/delivered-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreDeliveredOrders']); // ⭐ Delivered orders grouped by date
+    Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
+    Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
     Route::get('/store/riders', [\App\Http\Controllers\API\RiderController::class, 'getActiveRiders']);
     Route::post('/store/assign-rider', [\App\Http\Controllers\API\RiderController::class, 'assignRiderToOrder']);
     Route::post('/store/update-status', [\App\Http\Controllers\API\RiderController::class, 'updateOrderStatus']);
     Route::post('/store/update-packets', [\App\Http\Controllers\API\RiderController::class, 'updatePacketInfo']);
+    Route::post('/store/update-order-note', [\App\Http\Controllers\API\RiderController::class, 'updateOrderNote']); // ⭐ Add order instructions
+    Route::post('/store/update-payment-method', [\App\Http\Controllers\API\RiderController::class, 'updatePaymentMethod']); // ⭐ Change payment type
     Route::post('/store/update-delivery-priorities', [\App\Http\Controllers\API\RiderController::class, 'updateDeliveryPriorities']); // ⭐ Set delivery sequence
     
     // Store Mode - Open Order Quantities
@@ -253,6 +257,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Ledger transaction details (used by mobile vendor view - mirrors web route)
     Route::get('/finance/ledger/transaction/{id}', [\App\Http\Controllers\FIN\LedgerController::class, 'getTransactionDetails']);
     
+    // Shipping price endpoint (for mobile order creation)
+    Route::get('/shipping/price', [\App\Http\Controllers\ShippingController::class, 'getPrice']);
+    
     // Payment source accounts (for vendor payments in mobile)
     Route::get('/finance/accounts/payment-sources', [\App\Http\Controllers\FIN\AccountController::class, 'getPaymentSources']);
     
@@ -263,6 +270,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\ProductController::class, 'index']);
         Route::get('/search', [\App\Http\Controllers\CRM\ProductController::class, 'search']);
         Route::get('/dropdown-options', [\App\Http\Controllers\CRM\ProductController::class, 'getDropdownOptions']);
+        Route::get('/{id}/history', [\App\Http\Controllers\CRM\ProductController::class, 'getHistory']); // Product change history
         Route::get('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show']);
         Route::put('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update']);
         Route::post('/', [\App\Http\Controllers\CRM\ProductController::class, 'store']);

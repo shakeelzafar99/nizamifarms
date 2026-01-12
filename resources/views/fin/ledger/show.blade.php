@@ -241,6 +241,68 @@ body.in-iframe .kt-main {
         </div>
     </div>
 
+    <!-- ⭐ Related Approvals for Same Order -->
+    @if(isset($relatedApprovals) && count($relatedApprovals) > 0)
+    <div class="bg-white border border-amber-300 rounded-lg shadow-sm overflow-hidden mb-6">
+        <div class="px-6 py-4 bg-amber-50 border-b border-amber-200">
+            <div class="flex items-center gap-3">
+                <svg class="w-6 h-6 text-amber-600" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/>
+                </svg>
+                <span class="text-lg font-semibold text-amber-900">📋 Related Approvals for This Order</span>
+                <span class="ml-auto px-3 py-1 bg-amber-200 text-amber-900 text-sm font-bold rounded-full">
+                    {{ count($relatedApprovals) }} item(s)
+                </span>
+            </div>
+            <p class="text-sm text-amber-700 mt-1">Other pending or approved transactions for the same order</p>
+        </div>
+        
+        <div class="px-6 py-4">
+            <div class="space-y-3">
+                @foreach($relatedApprovals as $related)
+                <div class="flex items-center justify-between p-3 rounded-lg border 
+                    {{ $related['is_pending'] ? 'bg-yellow-50 border-yellow-300' : 'bg-green-50 border-green-200' }}">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                            @if($related['type'] === 'adjustment')
+                                <span class="text-xs font-bold px-2 py-1 bg-purple-200 text-purple-800 rounded">ADJUSTMENT</span>
+                            @else
+                                <span class="text-xs font-bold px-2 py-1 bg-blue-200 text-blue-800 rounded">LEDGER</span>
+                            @endif
+                            <span class="font-semibold text-gray-900">{{ $related['title'] }}</span>
+                        </div>
+                        <div class="text-sm text-gray-600 mt-1">{{ Str::limit($related['description'], 60) }}</div>
+                        <div class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                            <span>Rs. {{ number_format($related['amount'], 2) }}</span>
+                            <span>{{ $related['date'] }}</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="px-2 py-1 text-xs font-bold rounded-full 
+                            {{ $related['is_pending'] ? 'bg-yellow-200 text-yellow-800' : 'bg-green-200 text-green-800' }}">
+                            {{ $related['status_label'] }}
+                        </span>
+                        @if($related['is_pending'])
+                            <a href="{{ $related['view_url'] }}" 
+                               onclick="openRelatedApproval('{{ $related['view_url'] }}'); return false;"
+                               class="inline-flex items-center px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-md transition">
+                                View & Approve
+                            </a>
+                        @else
+                            <a href="{{ $related['view_url'] }}" 
+                               onclick="openRelatedApproval('{{ $related['view_url'] }}'); return false;"
+                               class="inline-flex items-center px-3 py-1 bg-gray-500 hover:bg-gray-600 text-white text-xs font-medium rounded-md transition">
+                                View Details
+                            </a>
+                        @endif
+                    </div>
+                </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+    @endif
+
     <!-- Approval Actions (Only if pending at any level) -->
     @if(in_array($transaction->approval_status, ['pending', 'pending_l1', 'pending_l2']))
     @php
@@ -541,6 +603,17 @@ if (!isInIframe) {
     // Normal redirect handling for non-iframe loads
 }
 @endif
+
+// ⭐ Open related approval - navigate in iframe or new modal
+function openRelatedApproval(url) {
+    if (isInIframe) {
+        // Navigate within the iframe
+        window.location.href = url;
+    } else {
+        // If not in iframe, just navigate normally
+        window.location.href = url;
+    }
+}
 </script>
 @endsection
 

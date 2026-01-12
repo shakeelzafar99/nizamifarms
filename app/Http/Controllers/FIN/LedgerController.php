@@ -8,6 +8,7 @@ use App\Models\FIN\LedgerModel;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\InvoiceSettlementModel;
 use App\Models\Request\RequestCategoryModel;
+use App\Models\SysAdmin\RoleApprovalLevelModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -438,7 +439,109 @@ class LedgerController extends Controller
         $transaction = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'approvedBy', 'order.customer', 'request'])
                                   ->findOrFail($id);
 
-        return view('fin.ledger.show', compact('transaction'));
+        // ⭐ Fetch related approvals for the same order (if this is an invoice transaction)
+        $relatedApprovals = $this->getRelatedApprovalsForOrder($transaction);
+
+        return view('fin.ledger.show', compact('transaction', 'relatedApprovals'));
+    }
+    
+    /**
+     * Get related pending/approved approvals for the same order
+     * This helps approvers see all related items for the same order at a glance
+     */
+    private function getRelatedApprovalsForOrder(LedgerModel $transaction): array
+    {
+        $relatedApprovals = [];
+        
+        // Only applicable for invoice transactions with an order_id
+        if (!$transaction->order_id || $transaction->transaction_type !== LedgerModel::TYPE_INVOICE) {
+            return $relatedApprovals;
+        }
+        
+        $orderId = $transaction->order_id;
+        $currentLedgerId = $transaction->id;
+        
+        // 1. Find other ledger transactions for the same order (excluding current)
+        $relatedLedgers = LedgerModel::where('order_id', $orderId)
+            ->where('id', '!=', $currentLedgerId)
+            ->whereIn('approval_status', [
+                LedgerModel::STATUS_PENDING,
+                LedgerModel::STATUS_PENDING_L1,
+                LedgerModel::STATUS_PENDING_L2,
+                LedgerModel::STATUS_APPROVED
+            ])
+            ->with(['fromAccount', 'toAccount'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        foreach ($relatedLedgers as $ledger) {
+            $relatedApprovals[] = [
+                'type' => 'ledger',
+                'id' => $ledger->id,
+                'title' => 'Invoice Transaction #' . $ledger->id,
+                'description' => $ledger->description,
+                'amount' => $ledger->amount,
+                'status' => $ledger->approval_status,
+                'status_label' => $this->formatApprovalStatus($ledger->approval_status),
+                'date' => $ledger->created_at ? $ledger->created_at->format('M j, Y') : '-',
+                'is_pending' => $ledger->isPending(),
+                'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'approvals'])
+            ];
+        }
+        
+        // 2. Find ledger adjustments for the same order
+        $relatedAdjustments = \App\Models\FIN\LedgerAdjustmentModel::where('order_id', $orderId)
+            ->whereIn('adjustment_status', [
+                \App\Models\FIN\LedgerAdjustmentModel::STATUS_PENDING,
+                \App\Models\FIN\LedgerAdjustmentModel::STATUS_APPROVED
+            ])
+            ->with(['ledger', 'requestedBy'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        foreach ($relatedAdjustments as $adj) {
+            $isPending = $adj->adjustment_status === \App\Models\FIN\LedgerAdjustmentModel::STATUS_PENDING;
+            $statusLabel = $isPending ? 'Pending' : 'Approved';
+            
+            // Check approval levels for pending adjustments
+            if ($isPending) {
+                if ($adj->level_1_status === 'pending') {
+                    $statusLabel = 'Pending L1';
+                } elseif ($adj->level_1_status === 'approved' && $adj->level_2_status === 'pending') {
+                    $statusLabel = 'Pending L2';
+                }
+            }
+            
+            $relatedApprovals[] = [
+                'type' => 'adjustment',
+                'id' => $adj->id,
+                'title' => 'Ledger Adjustment #' . $adj->id,
+                'description' => $adj->adjustment_reason ?? 'Amount adjustment: Rs. ' . number_format(abs($adj->adjustment_amount), 2),
+                'amount' => abs($adj->adjustment_amount),
+                'status' => $adj->adjustment_status,
+                'status_label' => $statusLabel,
+                'date' => $adj->requested_at ? $adj->requested_at->format('M j, Y') : '-',
+                'is_pending' => $isPending,
+                'view_url' => route('fin.ledger.adjustments.show', $adj->id)
+            ];
+        }
+        
+        return $relatedApprovals;
+    }
+    
+    /**
+     * Format approval status for display
+     */
+    private function formatApprovalStatus(string $status): string
+    {
+        return match($status) {
+            LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1 => 'Pending L1',
+            LedgerModel::STATUS_PENDING_L2 => 'Pending L2',
+            LedgerModel::STATUS_APPROVED => 'Approved',
+            LedgerModel::STATUS_REJECTED => 'Rejected',
+            LedgerModel::STATUS_REVERSED => 'Reversed',
+            default => ucfirst($status)
+        };
     }
 
     /**
@@ -449,7 +552,8 @@ class LedgerController extends Controller
         $request->validate([
             'approval_notes' => 'nullable|string|max:500',
             'override_destination_account_id' => 'nullable|exists:t_fin_accounts,id',
-            'override_source_account_id' => 'nullable|exists:t_fin_accounts,id'
+            'override_source_account_id' => 'nullable|exists:t_fin_accounts,id',
+            'force_full_approval' => 'nullable|boolean' // ⭐ Allow bypassing L2 if user has L2 rights
         ]);
 
         try {
@@ -512,17 +616,28 @@ class LedgerController extends Controller
 
             // Decide new status
             $finalApproval = false;
-            if ($currentLevel === 1 && $requiresL2) {
-                // Move from L1 -> L2 pending
+            $forceFullApproval = $request->boolean('force_full_approval', false);
+            
+            // ⭐ If force_full_approval is requested, check if user has L2 rights
+            $userHasL2Rights = RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
+            
+            if ($currentLevel === 1 && $requiresL2 && !($forceFullApproval && $userHasL2Rights)) {
+                // Move from L1 -> L2 pending (normal workflow)
                 $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
                 $ledger->comments = ($ledger->comments ?? '') .
                     " | L1 approved by User ID " . auth()->id();
             } else {
-                // Final approval (either single-level or L2)
+                // Final approval: either single-level, at L2, or force_full with L2 rights
                 $ledger->approval_status = LedgerModel::STATUS_APPROVED;
                 $ledger->approved_by = auth()->id();
-                $ledger->approval_date = now()->toDateString();
+                $ledger->approval_date = now(); // ⭐ Store full datetime instead of just date
                 $finalApproval = true;
+                
+                // Add note if this was a forced full approval
+                if ($forceFullApproval && $currentLevel === 1 && $requiresL2 && $userHasL2Rights) {
+                    $ledger->comments = ($ledger->comments ?? '') .
+                        " | Fully approved (L1+L2) by User ID " . auth()->id() . " with L2 rights";
+                }
             }
 
             // Add approval notes to comments field

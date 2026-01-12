@@ -22,6 +22,8 @@ class ShopifyService
 
     /**
      * Fetch orders from Shopify between given dates
+     * 
+     * Note: Shopify API requires 'status=any' to get all orders (not just open)
      */
     public function fetchOrders(string $fromDate, string $toDate): array
     {
@@ -29,32 +31,79 @@ class ShopifyService
 
         $orders = [];
         $dateRange = 7; // days per request
+        
+        // Parse dates and set proper times
         $startDate = new \DateTime($fromDate);
+        $startDate->setTime(0, 0, 0); // Start of day
+        
         $endDate = new \DateTime($toDate);
+        $endDate->setTime(23, 59, 59); // End of day
 
+        \Log::info('Shopify fetchOrders starting', [
+            'base_url' => $baseUrl,
+            'from_date' => $startDate->format('Y-m-d H:i:s'),
+            'to_date' => $endDate->format('Y-m-d H:i:s'),
+            'store_name' => $this->storeName,
+            'api_version' => $this->apiVersion,
+            'api_key_set' => !empty($this->apiKey),
+            'password_set' => !empty($this->password)
+        ]);
+
+        $pageCount = 0;
         while ($startDate <= $endDate) {
+            $pageCount++;
             $nextDate = clone $startDate;
             $nextDate->modify("+{$dateRange} days");
+            
+            // Don't go past end date
+            if ($nextDate > $endDate) {
+                $nextDate = clone $endDate;
+            }
+
+            $params = [
+                'limit' => 250,
+                'status' => 'any', // ✅ IMPORTANT: Get ALL orders, not just open
+                'created_at_min' => $startDate->format('c'), // ISO 8601 format
+                'created_at_max' => $nextDate->format('c'),  // ISO 8601 format
+            ];
+
+            \Log::info("Shopify API request page {$pageCount}", [
+                'params' => $params
+            ]);
 
             $response = Http::withBasicAuth($this->apiKey, $this->password)
-                ->withOptions(['verify' => $this->verifySsl]) // ✅ Fix SSL issue    
-                ->get($baseUrl, [
-                    'limit' => 250,
-                    'created_at_min' => $startDate->format('Y-m-d\TH:i:s'),
-                    'created_at_max' => $nextDate->format('Y-m-d\TH:i:s'),
-                ]);
+                ->withOptions(['verify' => $this->verifySsl])
+                ->timeout(30)
+                ->get($baseUrl, $params);
 
             if ($response->failed()) {
+                \Log::error("Shopify API request failed on page {$pageCount}", [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'params' => $params
+                ]);
                 break; // stop on error
             }
 
             $data = $response->json();
+            
+            \Log::info("Shopify API response page {$pageCount}", [
+                'orders_count' => count($data['orders'] ?? []),
+                'response_keys' => array_keys($data)
+            ]);
+            
             if (!empty($data['orders'])) {
                 $orders = array_merge($orders, $data['orders']);
             }
 
             $startDate = $nextDate;
+            $startDate->modify('+1 second'); // Avoid overlap
         }
+
+        \Log::info('Shopify fetchOrders completed', [
+            'total_orders' => count($orders),
+            'pages_fetched' => $pageCount
+        ]);
 
         return $orders;
     }

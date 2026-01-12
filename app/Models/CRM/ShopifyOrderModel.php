@@ -184,12 +184,22 @@ class ShopifyOrderModel extends BaseModel
 
     public function getCustomerAddressAttribute(): ?string
     {
-        // First try to get from relationship if loaded
+        // First try to get from customer relationship if loaded
         if ($this->relationLoaded('customer') && $this->customer) {
-            return $this->customer->address;
+            // Build address from customer's address fields
+            $customerParts = array_filter([
+                $this->customer->address1,
+                $this->customer->address2,
+                $this->customer->city,
+                $this->customer->province,
+            ]);
+            
+            if (!empty($customerParts)) {
+                return implode(', ', $customerParts);
+            }
         }
         
-        // Fallback: combine address fields
+        // Fallback: combine order's own address fields
         $parts = array_filter([
             $this->address_line1,
             $this->address_line2,

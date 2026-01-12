@@ -12,6 +12,17 @@ use Illuminate\Support\Facades\Log;
 
 class ShopifyController extends Controller
 {
+    /**
+     * ⚠️ SHOPIFY PRODUCT SYNC DISABLED
+     * 
+     * Product sync operations remain disabled to protect SKU/category data.
+     * 
+     * ✅ ORDER WEBHOOKS RE-ENABLED (December 2024)
+     * New orders from Shopify go to approval queue (t_crm_shopify_order)
+     * They must be manually approved/converted before going to main orders table.
+     * This preserves all business rules for SKU validation during conversion.
+     */
+    private const PRODUCT_DISABLED_MESSAGE = 'Shopify product sync is disabled. Products are managed via web UI and mobile app only.';
 
 
     protected $shopifyModel;
@@ -19,36 +30,24 @@ class ShopifyController extends Controller
     {
         $this->shopifyModel = $shopifyModel;
     }
+    
     function list(Request $request)
     {
-        try {
-            $response = $this->shopifyModel->List($request->all());
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        Log::warning('Shopify list endpoint called but is DISABLED');
+        return response()->json(['error' => self::PRODUCT_DISABLED_MESSAGE, 'status' => 'disabled'], 403);
     }
 
     function getdetail($id)
     {
-
-        try {
-            $response = $this->shopifyModel->GetDetail($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        Log::warning('Shopify getdetail endpoint called but is DISABLED', ['id' => $id]);
+        return response()->json(['error' => self::PRODUCT_DISABLED_MESSAGE, 'status' => 'disabled'], 403);
     }
 
 
     function get($id)
     {
-        try {
-            $response = $this->shopifyModel->Get($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        Log::warning('Shopify get endpoint called but is DISABLED', ['id' => $id]);
+        return response()->json(['error' => self::PRODUCT_DISABLED_MESSAGE, 'status' => 'disabled'], 403);
     }
 
 
@@ -87,80 +86,87 @@ class ShopifyController extends Controller
         Storage::disk('public')->put($filename, $data);
     }
 
-    function store(Request $request) //ADD   
+    /**
+     * ✅ SHOPIFY ORDER WEBHOOK - RE-ENABLED
+     * 
+     * Receives new orders from Shopify and stores them in the approval queue.
+     * Orders go to t_crm_shopify_order table with converted=0 (pending approval).
+     * 
+     * During conversion (approval), the system:
+     * - Validates all SKUs exist in local products
+     * - Recalculates prices using local product prices
+     * - Creates the order in main table (t_crm_prod_order)
+     * 
+     * ⚠️ This does NOT sync products - products are managed manually via web/mobile.
+     */
+    function store(Request $request)
     {
         try {
-            // Log webhook received
-            \Log::info('Shopify webhook received', [
-                'timestamp' => now()->toISOString(),
-                'headers' => $request->headers->all(),
-                'content_length' => strlen($request->getContent())
-            ]);
-
-            $sharedSecret = Config::get('shopify.webhook_secret'); 
-            // Get the raw POST body
-            $rawBody = $request->getContent();
-            $this->createLog($request->all(), "json", "request", "t1");
-            // Get HMAC header from Shopify
-            $hmacHeader = $request->header('x-shopify-hmac-sha256');
-
-            // Calculate HMAC hash
-            $calculatedHmac = base64_encode(hash_hmac('sha256', $rawBody, $sharedSecret, true));
-
-            // Verify webhook
-            if (!$hmacHeader || !hash_equals($calculatedHmac, $hmacHeader)) {
-                \Log::warning('Invalid Shopify Webhook Signature', [
-                    'hmac_header' => $hmacHeader,
-                    'calculated_hmac' => $calculatedHmac,
-                    'has_secret' => !empty($sharedSecret)
+            // Get raw payload
+            $rawContent = $request->getContent();
+            $shopifyOrder = json_decode($rawContent, true);
+            
+            if (!$shopifyOrder || !isset($shopifyOrder['id'])) {
+                Log::warning('Shopify webhook: Invalid payload received', [
+                    'ip' => $request->ip(),
+                    'content_length' => strlen($rawContent)
                 ]);
-                return response()->json(['error' => 'Unauthorized'], 401);
+                return response()->json(['error' => 'Invalid payload'], 400);
             }
-            $payload = json_decode($rawBody, true);
             
-            // Log successful processing
-            \Log::info('Shopify webhook processing order', [
-                'order_id' => $payload['id'] ?? 'unknown',
-                'order_number' => $payload['order_number'] ?? 'unknown',
-                'customer_email' => $payload['customer']['email'] ?? 'unknown'
+            // Log the incoming order
+            Log::info('Shopify order webhook received', [
+                'shopify_order_id' => $shopifyOrder['id'],
+                'order_number' => $shopifyOrder['order_number'] ?? $shopifyOrder['name'] ?? 'unknown',
+                'total' => $shopifyOrder['total_price'] ?? 0,
+                'ip' => $request->ip()
             ]);
             
-            // Map and store using new structure
-            $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($payload);
-            \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
-
-            \Log::info('Shopify webhook completed successfully', [
-                'order_id' => $payload['id'] ?? 'unknown'
-            ]);
-
-            return response()->json(['success' => 'completed'], 200);
-        } catch (\Exception $e) { 
-            \Log::error('Shopify webhook error', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString()
+            // Save raw payload to file for debugging if needed
+            $this->createLog($shopifyOrder, "json", "orders", "order_" . ($shopifyOrder['order_number'] ?? $shopifyOrder['id']));
+            
+            // Map Shopify order to our format
+            $orderData = \App\Models\CRM\OrderModel::mapShopifyOrder($shopifyOrder);
+            
+            // Store in approval queue (ShopifyOrderModel → t_crm_shopify_order)
+            // storeOrderFromApi routes shopify orders to ShopifyOrderModel automatically
+            $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+            
+            Log::info('Shopify order stored in approval queue', [
+                'local_id' => $order->id,
+                'shopify_order_id' => $shopifyOrder['id'],
+                'order_number' => $order->order_number,
+                'table' => 't_crm_shopify_order',
+                'converted' => 0
             ]);
             
-            $errorString =
-                "Message: " . $e->getMessage() . PHP_EOL .
-                "File: " . $e->getFile() . PHP_EOL .
-                "Line: " . $e->getLine() . PHP_EOL .
-                "Trace: " . $e->getTraceAsString();
-            $this->createLog($errorString, "txt", "error", "e1");
-           
-            return response()->json(['error' => 'Internal Server Error'], 500);
+            return response()->json([
+                'success' => true,
+                'message' => 'Order received and queued for approval',
+                'local_id' => $order->id,
+                'status' => 'pending_approval'
+            ], 200);
+            
+        } catch (\Exception $e) {
+            Log::error('Shopify webhook processing failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'ip' => $request->ip()
+            ]);
+            
+            // Still return 200 to prevent Shopify from retrying
+            // Log the error for manual investigation
+            return response()->json([
+                'success' => false,
+                'message' => 'Order logged but processing failed - will be investigated',
+                'error' => $e->getMessage()
+            ], 200);
         }
     }
 
     function remove(Request $request) //DELETE
     {
-        try {
-            $id = $request->id;
-            $response = $this->shopifyModel->Remove($id);
-            return $this->success($response);
-        } catch (\Exception $e) {
-            return $this->error($e->getMessage(), $e->getCode());
-        }
+        Log::warning('Shopify remove endpoint called but is DISABLED', ['id' => $request->id]);
+        return response()->json(['error' => self::PRODUCT_DISABLED_MESSAGE, 'status' => 'disabled'], 403);
     }
 }
