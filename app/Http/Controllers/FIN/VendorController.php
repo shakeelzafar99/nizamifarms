@@ -18,7 +18,7 @@ class VendorController extends Controller
      */
     public function index(Request $request)
     {
-        $query = VendorModel::with('account');
+        $query = VendorModel::with(['account', 'defaultPaymentSource']);
 
         // Search
         if ($request->has('search') && $request->search) {
@@ -105,6 +105,7 @@ class VendorController extends Controller
             'contact_email' => 'nullable|email|max:255',
             'contact_phone' => 'nullable|string|max:50',
             'default_purchase_method' => 'required|in:by_weight,by_total',
+            'default_payment_source_id' => 'nullable|exists:t_fin_accounts,id',
             'opening_balance' => 'nullable|numeric|min:0'
         ], [
             'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
@@ -151,6 +152,7 @@ class VendorController extends Controller
                 'contact_phone' => $request->contact_phone,
                 'contact_email' => $request->contact_email,
                 'default_purchase_method' => $request->default_purchase_method,
+                'default_payment_source_id' => $request->default_payment_source_id,
                 'account_id' => $account->id,
                 'is_active' => 1,
                 'created_by' => auth()->id()
@@ -175,7 +177,7 @@ class VendorController extends Controller
      */
     public function show(Request $request, $id)
     {
-        $vendor = VendorModel::with('account')->findOrFail($id);
+        $vendor = VendorModel::with(['account', 'defaultPaymentSource'])->findOrFail($id);
         
         // Get date range from request
         $dateFrom = $request->input('date_from');
@@ -376,7 +378,8 @@ class VendorController extends Controller
             'contact_person' => 'nullable|string|max:255',
             'contact_email' => 'nullable|email|max:255',
             'contact_phone' => 'nullable|string|max:50',
-            'default_purchase_method' => 'required|in:by_weight,by_total'
+            'default_purchase_method' => 'required|in:by_weight,by_total',
+            'default_payment_source_id' => 'nullable|exists:t_fin_accounts,id'
         ], [
             'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
         ]);
@@ -390,6 +393,7 @@ class VendorController extends Controller
                 'contact_phone' => $request->contact_phone,
                 'contact_email' => $request->contact_email,
                 'default_purchase_method' => $request->default_purchase_method,
+                'default_payment_source_id' => $request->default_payment_source_id,
                 'updated_by' => auth()->id()
             ]);
 
@@ -713,6 +717,7 @@ class VendorController extends Controller
             'transaction_date' => 'required|date',
             'description' => 'nullable|string|max:500',
             'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // Max 5MB
+            'adjustment_amount' => 'nullable|numeric', // Can be positive or negative
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:t_fin_vendor_products,id',
             'items.*.quantity' => 'required|numeric|min:0.001',
@@ -735,18 +740,26 @@ class VendorController extends Controller
             $billImagePath = $this->handleImageUpload($request, 'bill_image', $vendor);
 
             // Calculate grand total from line items
-            $grandTotal = 0;
+            $itemsTotal = 0;
             $itemsSummary = [];
             
             foreach ($request->items as $item) {
                 $lineTotal = $item['quantity'] * $item['rate'];
-                $grandTotal += $lineTotal;
+                $itemsTotal += $lineTotal;
                 
                 $itemsSummary[] = "{$item['product_name']} ({$item['quantity']} {$item['unit']} @ Rs.{$item['rate']})";
             }
 
+            // Apply adjustment amount (can be positive or negative)
+            $adjustmentAmount = floatval($request->adjustment_amount ?? 0);
+            $grandTotal = $itemsTotal + $adjustmentAmount;
+
             // Create description
             $description = $request->description ?? "Weighted purchase with " . count($request->items) . " items";
+            if ($adjustmentAmount != 0) {
+                $adjustmentLabel = $adjustmentAmount > 0 ? '+' : '';
+                $description .= " (Adjustment: {$adjustmentLabel}" . number_format($adjustmentAmount, 2) . ")";
+            }
             $comments = implode(', ', $itemsSummary);
 
             // Create ledger entry
@@ -757,6 +770,7 @@ class VendorController extends Controller
                 'from_account_id' => $purchaseAccount->id,
                 'to_account_id' => $vendor->account->id,
                 'amount' => $grandTotal,
+                'adjustment_amount' => $adjustmentAmount,
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'bill_image' => $billImagePath,
@@ -926,6 +940,7 @@ class VendorController extends Controller
                         'transaction_id' => $txn->transaction_id,
                         'type' => $isPurchase ? 'purchase' : 'payment',
                         'amount' => $amount,
+                        'adjustment_amount' => $txn->adjustment_amount ?? 0,
                         'description' => $txn->description,
                         'line_items' => $lineItems,
                         'payment_mode' => $paymentMode
@@ -1084,6 +1099,7 @@ class VendorController extends Controller
             'transaction_date' => 'required|date',
             'posted_date' => 'nullable|date',
             'amount' => 'nullable|numeric|min:0.01',
+            'adjustment_amount' => 'nullable|numeric', // Can be positive or negative
             'description' => 'nullable|string|max:500',
             'bill_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120',
             'items' => 'nullable|array',
@@ -1119,10 +1135,10 @@ class VendorController extends Controller
                 \App\Models\FIN\VendorPurchaseItemModel::where('ledger_id', $transaction->id)->delete();
                 
                 // Calculate new total from items
-                $newAmount = 0;
+                $itemsTotal = 0;
                 foreach ($request->items as $item) {
                     $lineTotal = $item['quantity'] * $item['rate'];
-                    $newAmount += $lineTotal;
+                    $itemsTotal += $lineTotal;
                     
                     // Create new line item
                     \App\Models\FIN\VendorPurchaseItemModel::create([
@@ -1136,7 +1152,12 @@ class VendorController extends Controller
                     ]);
                 }
                 
+                // Apply adjustment amount (can be positive or negative)
+                $adjustmentAmount = floatval($request->adjustment_amount ?? 0);
+                $newAmount = $itemsTotal + $adjustmentAmount;
+                
                 $transaction->amount = $newAmount;
+                $transaction->adjustment_amount = $adjustmentAmount;
             } elseif ($request->has('amount')) {
                 // Simple transaction - use provided amount
                 $newAmount = $request->amount;

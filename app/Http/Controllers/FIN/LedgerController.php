@@ -1169,7 +1169,8 @@ class LedgerController extends Controller
                     'transaction_type' => ucfirst(str_replace('_', ' ', $transaction->transaction_type)),
                     'description' => $transaction->description,
                     'amount' => (float) $transaction->amount, // Ensure numeric
-                    'bill_image' => $billImageUrl, // Full URL
+                    'adjustment_amount' => (float) ($transaction->adjustment_amount ?? 0), // For weighted purchases
+                    'bill_image' => $transaction->bill_image, // Relative path - frontend constructs URL
                     'line_items' => $lineItems,
                     'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : '-',
                     'from_account_id' => $transaction->from_account_id,

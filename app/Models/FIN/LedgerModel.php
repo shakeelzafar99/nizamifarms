@@ -24,6 +24,7 @@ class LedgerModel extends BaseModel
         'from_account_id',
         'to_account_id',
         'amount',
+        'adjustment_amount',
         'mode',
         'approval_status',
         'settlement_status',
@@ -53,6 +54,7 @@ class LedgerModel extends BaseModel
         'approval_date' => 'date',
         'settled_at' => 'datetime',
         'amount' => 'decimal:2',
+        'adjustment_amount' => 'decimal:2',
         'settled_amount' => 'decimal:2',
         'settlement_metadata' => 'array'
     ];

@@ -26,6 +26,7 @@ class VendorModel extends BaseModel
         'payment_terms',
         'account_id',
         'default_purchase_method',
+        'default_payment_source_id',
         'is_active',
         'notes',
         'created_by',
@@ -44,6 +45,11 @@ class VendorModel extends BaseModel
     public function account(): BelongsTo
     {
         return $this->belongsTo(AccountModel::class, 'account_id', 'id');
+    }
+
+    public function defaultPaymentSource(): BelongsTo
+    {
+        return $this->belongsTo(AccountModel::class, 'default_payment_source_id', 'id');
     }
 
     public function createdBy(): BelongsTo
