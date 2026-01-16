@@ -23,6 +23,8 @@ class OrderStatusMaster extends BaseModel
         'is_final',
         'color_class',
         'icon',
+        'show_in_mobile',          // Whether this status appears in mobile app
+        'visible_to_roles',         // JSON array of role IDs (null = all roles)
         'created_by',
         'updated_by'
     ];
@@ -30,6 +32,8 @@ class OrderStatusMaster extends BaseModel
     protected $casts = [
         'is_active' => 'boolean',
         'is_final' => 'boolean',
+        'show_in_mobile' => 'boolean',
+        'visible_to_roles' => 'array',  // Auto JSON encode/decode
         'sequence_order' => 'integer'
     ];
 
@@ -101,5 +105,38 @@ class OrderStatusMaster extends BaseModel
     public static function getNextSequenceOrder(): int
     {
         return (static::max('sequence_order') ?? 0) + 1;
+    }
+    
+    /**
+     * Check if this status is visible to a specific user (based on their roles)
+     */
+    public function isVisibleToUser($user): bool
+    {
+        // If no role restriction, visible to all
+        if (empty($this->visible_to_roles)) {
+            return true;
+        }
+        
+        // Get user's role IDs
+        $userRoleIds = $user->roles()->pluck('id')->toArray();
+        
+        // Check if any of user's roles are in the visible_to_roles array
+        return !empty(array_intersect($userRoleIds, $this->visible_to_roles));
+    }
+    
+    /**
+     * Get statuses visible to a specific user in mobile app
+     */
+    public static function getStatusesForMobile($user)
+    {
+        $statuses = static::active()
+            ->where('show_in_mobile', true)
+            ->ordered()
+            ->get();
+        
+        // Filter by role visibility
+        return $statuses->filter(function($status) use ($user) {
+            return $status->isVisibleToUser($user);
+        })->values();
     }
 }

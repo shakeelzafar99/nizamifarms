@@ -106,6 +106,134 @@ class ApprovalsAPIController extends Controller
     }
 
     /**
+     * ⭐ FAST: Get online approvals only (dedicated endpoint for Online Approvals screen)
+     * Much faster because it only queries online area and skips user list fetching
+     * 
+     * GET /api/mobile/approvals/online
+     */
+    public function onlineOnly(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            
+            // Check if user has L1 or L2 approval rights
+            $hasLevel1Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
+            $hasLevel2Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+            
+            if (!$hasLevel1Rights && !$hasLevel2Rights) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have approval rights'
+                ], 403);
+            }
+
+            // ⭐ Direct query for online area only - much faster than full approvals
+            $items = [];
+            
+            // Get the ONLINE account ID
+            $onlineAccount = \App\Models\FIN\AccountModel::getByCode('ONLINE');
+            $onlineAccountId = $onlineAccount ? $onlineAccount->id : null;
+            
+            // Get pending ledger entries for online area
+            // ⭐ OPTIMIZED: Use select() to limit columns and constrained eager loading
+            $pendingLedger = \App\Models\FIN\LedgerModel::select([
+                    'id', 'order_id', 'created_by', 'approval_status', 
+                    'amount', 'description', 'transaction_date', 'mode'
+                ])
+                ->whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
+                ->whereNull('request_id') // Exclude ledger entries linked to requests
+                ->where('mode', 'online') // ⭐ Simplified: Only online mode (most common case)
+                ->with([
+                    'order:id,order_number,order_date,customer_id', // Only needed columns
+                    'order.customer:id,first_name,last_name,company,phone', // Only needed columns
+                    'createdBy:id,fullname'
+                ])
+                ->orderBy('transaction_date', 'desc')
+                ->get();
+            
+            foreach ($pendingLedger as $ledger) {
+                // Determine level: pending_l2 = level 2, otherwise level 1
+                $level = $ledger->approval_status === 'pending_l2' ? 2 : 1;
+                
+                // Use order number if available
+                $displayNumber = $ledger->order ? $ledger->order->order_number : ('TXN-' . $ledger->id);
+                
+                // Use order_date if available, otherwise transaction_date
+                $displayDate = $ledger->order && $ledger->order->order_date 
+                    ? $ledger->order->order_date->format('Y-m-d') 
+                    : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null);
+                
+                // ⭐ For invoices, requester = CUSTOMER NAME (for grouping by customer)
+                $requester = 'Unknown';
+                if ($ledger->order && $ledger->order->customer) {
+                    $customer = $ledger->order->customer;
+                    $fullName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
+                    $requester = $fullName ?: $customer->company ?: $customer->phone ?: 'Unknown';
+                } elseif ($ledger->createdBy) {
+                    $requester = $ledger->createdBy->fullname ?? 'System';
+                }
+                
+                $items[] = [
+                    'id' => $ledger->id,
+                    'type' => 'ledger',
+                    'number' => $displayNumber,
+                    'title' => 'Online Invoice',
+                    'description' => $ledger->description,
+                    'amount' => (float) $ledger->amount,
+                    'date' => $displayDate,
+                    'level' => $level,
+                    'area' => 'online',
+                    'requester' => $requester,
+                    'category' => 'Invoice',
+                    'category_color' => '#DBEAFE',
+                ];
+            }
+
+            // Sort by date descending
+            usort($items, function($a, $b) {
+                return strtotime($b['date'] ?? '1970-01-01') - strtotime($a['date'] ?? '1970-01-01');
+            });
+
+            // Calculate summary
+            $l1Items = array_filter($items, fn($i) => $i['level'] === 1);
+            $l2Items = array_filter($items, fn($i) => $i['level'] === 2);
+            
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'items' => $items,
+                    'count' => count($items),
+                    'summary' => [
+                        'total' => count($items),
+                        'total_amount' => array_sum(array_column($items, 'amount')),
+                        'l1' => [
+                            'count' => count($l1Items),
+                            'amount' => array_sum(array_column($l1Items, 'amount'))
+                        ],
+                        'l2' => [
+                            'count' => count($l2Items),
+                            'amount' => array_sum(array_column($l2Items, 'amount'))
+                        ]
+                    ],
+                    'has_level_1_rights' => $hasLevel1Rights,
+                    'has_level_2_rights' => $hasLevel2Rights,
+                    'last_synced' => now()->toIso8601String()
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Mobile online approvals error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred while loading online approvals'
+            ], 500);
+        }
+    }
+
+    /**
      * Get summary statistics only (lightweight endpoint for sync)
      * 
      * GET /api/mobile/approvals/summaries

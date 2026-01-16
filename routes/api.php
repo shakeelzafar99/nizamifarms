@@ -137,6 +137,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('approvals')->group(function () {
         Route::get('/', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'index']);
         Route::get('/summaries', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'summaries']);
+        Route::get('/online', [\App\Http\Controllers\API\ApprovalsAPIController::class, 'onlineOnly']); // ⭐ Fast endpoint for online only
     });
     
     // Mobile Permissions
@@ -158,6 +159,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/update-status', [\App\Http\Controllers\API\RiderController::class, 'updateOrderStatus']);
     Route::post('/store/update-packets', [\App\Http\Controllers\API\RiderController::class, 'updatePacketInfo']);
     Route::post('/store/update-order-note', [\App\Http\Controllers\API\RiderController::class, 'updateOrderNote']); // ⭐ Add order instructions
+    Route::post('/store/add-customer-note', [\App\Http\Controllers\API\RiderController::class, 'addCustomerNote']); // ⭐ Pin note to customer profile
     Route::post('/store/update-payment-method', [\App\Http\Controllers\API\RiderController::class, 'updatePaymentMethod']); // ⭐ Change payment type
     Route::post('/store/update-delivery-priorities', [\App\Http\Controllers\API\RiderController::class, 'updateDeliveryPriorities']); // ⭐ Set delivery sequence
     
@@ -180,6 +182,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
+    Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
@@ -199,6 +202,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/store-attendance/daily', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceDaily']);
         Route::get('/store-attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceMonthly']);
         Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
+        Route::post('/store-attendance/update-meter-values', [\App\Http\Controllers\API\RiderController::class, 'updateMeterValues']);
         
         // ⭐ LOCATION TRACKING: Heartbeat from mobile app (every 5 minutes when checked in)
         Route::post('/location-heartbeat', [\App\Http\Controllers\API\RiderController::class, 'locationHeartbeat']);

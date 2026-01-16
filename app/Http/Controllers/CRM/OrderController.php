@@ -2207,6 +2207,34 @@ class OrderController extends Controller
             }
             
             Log::debug('Open Quantities Excluded Statuses:', ['excluded' => $excludedStatuses]);
+            
+            // DEBUG: Show orders that SHOULD be included
+            $includedOrdersCount = \DB::table('t_crm_prod_order as o')
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->where('o.order_date', '>=', Carbon::now()->subDays(20))
+                ->count();
+            
+            $statusBreakdown = \DB::table('t_crm_prod_order as o')
+                ->select('o.order_status', \DB::raw('COUNT(*) as count'))
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->where('o.order_date', '>=', Carbon::now()->subDays(20))
+                ->groupBy('o.order_status')
+                ->get();
+                
+            Log::debug('Open Quantities Orders Analysis:', [
+                'total_included_orders' => $includedOrdersCount,
+                'status_breakdown' => $statusBreakdown->toArray(),
+                'date_filter' => 'Last 20 days from ' . Carbon::now()->subDays(20)->toDateString()
+            ]);
+            
             Log::debug('Open Quantities Join Strategy:', [
                 'note' => 'SKU-primary matching with fallbacks for manual orders',
                 'paths' => [
@@ -2280,7 +2308,12 @@ class OrderController extends Controller
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
                 })
-                ->whereNotIn('o.order_status', $excludedStatuses);
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                // ⭐ Exclude prepared items - only show items that still need preparation
+                ->where(function($q) {
+                    $q->whereNull('li.preparation_status')
+                      ->orWhere('li.preparation_status', '!=', 'preparing');
+                });
 
             // Apply date filter: Default to last 20 days for performance
             // Can be overridden by passing a different date_range parameter
@@ -2366,7 +2399,7 @@ class OrderController extends Controller
                         \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                         \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                         \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
-                        \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
+                        // ⭐ No longer calculating preparing_quantity - prepared items are now excluded from query
                         \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
                     ])
                     ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
@@ -2381,7 +2414,7 @@ class OrderController extends Controller
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
-                    \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
+                    // ⭐ No longer calculating preparing_quantity - prepared items are now excluded from query
                     \DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
                 ])
@@ -2394,7 +2427,7 @@ class OrderController extends Controller
                     \DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
-                    \DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as preparing_quantity'),
+                    // ⭐ No longer calculating preparing_quantity - prepared items are now excluded from query
                     \DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     \DB::raw('COUNT(DISTINCT CASE WHEN li.product_id IS NOT NULL THEN li.product_id END) as product_count'),
                     \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
@@ -3093,12 +3126,65 @@ class OrderController extends Controller
                 ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
                 ->exists();
 
+            // ⭐ Fetch ALL active statuses from database dynamically
+            $allStatuses = \App\Models\CRM\OrderStatusMaster::active()
+                ->ordered()
+                ->get()
+                ->map(function($status) {
+                    // Map color_class to simple color name for frontend
+                    $colorMap = [
+                        'bg-amber-100' => 'amber',
+                        'bg-yellow-100' => 'yellow',
+                        'bg-orange-100' => 'orange',
+                        'bg-blue-100' => 'blue',
+                        'bg-violet-100' => 'violet',
+                        'bg-green-100' => 'green',
+                        'bg-red-100' => 'red',
+                        'bg-purple-100' => 'purple',
+                        'bg-gray-100' => 'gray',
+                    ];
+                    
+                    $color = 'gray'; // default
+                    if ($status->color_class) {
+                        foreach ($colorMap as $cssClass => $colorName) {
+                            if (strpos($status->color_class, $colorName) !== false) {
+                                $color = $colorName;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    return [
+                        'code' => $status->status_code,
+                        'name' => $status->status_name,
+                        'color' => $color,
+                        'is_final' => $status->is_final ?? false,
+                    ];
+                })
+                ->toArray();
+
+            // If no statuses in database, use sensible defaults
+            if (empty($allStatuses)) {
+                $allStatuses = [
+                    ['code' => 'new', 'name' => 'New', 'color' => 'amber', 'is_final' => false],
+                    ['code' => 'pending', 'name' => 'Pending', 'color' => 'yellow', 'is_final' => false],
+                    ['code' => 'on_hold', 'name' => 'On Hold', 'color' => 'orange', 'is_final' => false],
+                    ['code' => 'processing', 'name' => 'Processing', 'color' => 'blue', 'is_final' => false],
+                    ['code' => 'out_for_delivery', 'name' => 'Out for Delivery', 'color' => 'violet', 'is_final' => false],
+                    ['code' => 'delivered', 'name' => 'Delivered', 'color' => 'green', 'is_final' => true],
+                    ['code' => 'completed', 'name' => 'Completed', 'color' => 'green', 'is_final' => true],
+                    ['code' => 'cancelled', 'name' => 'Cancelled', 'color' => 'red', 'is_final' => true],
+                    ['code' => 'refunded', 'name' => 'Refunded', 'color' => 'purple', 'is_final' => true],
+                ];
+            }
+
             return response()->json([
                 'success' => true,
                 'settings' => [
                     'hierarchy_levels' => $hierarchySetting ? json_decode($hierarchySetting->setting_value, true) : ['product_type', 'product_name', 'orders'],
                     'excluded_statuses' => $statusSetting ? json_decode($statusSetting->setting_value, true) : ['delivered', 'completed', 'cancelled', 'refunded']
                 ],
+                'all_statuses' => $allStatuses, // ⭐ New: Dynamic statuses from database
                 'can_edit' => $canEditSettings,
                 'updated_at' => $hierarchySetting ? $hierarchySetting->updated_at : null,
                 'updated_by' => $hierarchySetting ? $hierarchySetting->updated_by_user_id : null

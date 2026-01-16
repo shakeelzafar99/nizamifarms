@@ -794,20 +794,10 @@ window.canEditSettings = false;
 // Default hierarchy
 window.defaultHierarchy = ['product_type', 'product_name', 'orders'];
 
-// All available order statuses
-window.allOrderStatuses = [
-    { code: 'new', name: 'New', color: 'amber' },
-    { code: 'pending', name: 'Pending', color: 'yellow' },
-    { code: 'on_hold', name: 'On Hold', color: 'orange' },
-    { code: 'processing', name: 'Processing', color: 'blue' },
-    { code: 'out_for_delivery', name: 'Out for Delivery', color: 'violet' },
-    { code: 'delivered', name: 'Delivered', color: 'green' },
-    { code: 'completed', name: 'Completed', color: 'green' },
-    { code: 'cancelled', name: 'Cancelled', color: 'red' },
-    { code: 'refunded', name: 'Refunded', color: 'purple' }
-];
+// All available order statuses - will be loaded dynamically from API
+window.allOrderStatuses = [];
 
-// Default excluded statuses (closed orders)
+// Default excluded statuses (closed orders) - will be updated from API if available
 window.defaultExcludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
 
 // Load global settings from API
@@ -828,10 +818,38 @@ async function loadGlobalSettings() {
             window.openQtyState.excludedStatuses = data.settings.excluded_statuses || window.defaultExcludedStatuses;
             window.canEditSettings = data.can_edit || false;
             
+            // ⭐ Load all statuses dynamically from API (instead of hardcoded)
+            if (data.all_statuses && data.all_statuses.length > 0) {
+                window.allOrderStatuses = data.all_statuses;
+                console.log('Loaded', data.all_statuses.length, 'statuses from database');
+                
+                // Update default excluded statuses to include final statuses
+                const finalStatuses = data.all_statuses
+                    .filter(s => s.is_final)
+                    .map(s => s.code);
+                if (finalStatuses.length > 0) {
+                    window.defaultExcludedStatuses = finalStatuses;
+                }
+            } else {
+                // Fallback to basic defaults if no statuses from API
+                window.allOrderStatuses = [
+                    { code: 'new', name: 'New', color: 'amber' },
+                    { code: 'pending', name: 'Pending', color: 'yellow' },
+                    { code: 'on_hold', name: 'On Hold', color: 'orange' },
+                    { code: 'processing', name: 'Processing', color: 'blue' },
+                    { code: 'out_for_delivery', name: 'Out for Delivery', color: 'violet' },
+                    { code: 'delivered', name: 'Delivered', color: 'green' },
+                    { code: 'completed', name: 'Completed', color: 'green' },
+                    { code: 'cancelled', name: 'Cancelled', color: 'red' },
+                    { code: 'refunded', name: 'Refunded', color: 'purple' }
+                ];
+            }
+            
             console.log('Global settings loaded:', {
                 hierarchy: window.openQtyState.hierarchy,
                 excludedStatuses: window.openQtyState.excludedStatuses,
-                canEdit: window.canEditSettings
+                canEdit: window.canEditSettings,
+                totalStatuses: window.allOrderStatuses.length
             });
             
             // Update UI based on permissions
@@ -1087,17 +1105,18 @@ function renderTable(data, summary) {
             <th>Order Number</th>
             <th>Customer Name</th>
             <th>Status</th>
-            <th class="text-right" style="min-width: 100px;">
-                <div>Quantity</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            <th class="text-right" style="min-width: 80px;">
+                <div>Total</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">Qty</div>
             </th>
-            <th class="text-right" style="min-width: 100px;">
+            <th class="text-right" style="min-width: 70px;">
+                <div style="color: #059669;">Lean</div>
+            </th>
+            <th class="text-right" style="min-width: 70px;">
+                <div style="color: #dc2626;">Non-Lean</div>
+            </th>
+            <th class="text-right" style="min-width: 80px;">
                 <div>Processing</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
-            </th>
-            <th class="text-right" style="min-width: 100px;">
-                <div>Prepared</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
             </th>
             <th class="text-right">Date</th>
             <th class="text-right">Action</th>
@@ -1112,17 +1131,18 @@ function renderTable(data, summary) {
         
         thead.innerHTML = `
             <th>Category</th>
-            <th class="text-right" style="min-width: 100px;">
-                <div>Quantity</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
+            <th class="text-right" style="min-width: 80px;">
+                <div>Total</div>
+                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">Qty</div>
             </th>
-            <th class="text-right" style="min-width: 100px;">
+            <th class="text-right" style="min-width: 70px;">
+                <div style="color: #059669;">Lean</div>
+            </th>
+            <th class="text-right" style="min-width: 70px;">
+                <div style="color: #dc2626;">Non-Lean</div>
+            </th>
+            <th class="text-right" style="min-width: 80px;">
                 <div>Processing</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
-            </th>
-            <th class="text-right" style="min-width: 100px;">
-                <div>Prepared</div>
-                <div style="font-size: 10px; font-weight: normal; color: #6b7280;">(L/NL)</div>
             </th>
             <th class="text-right">Orders</th>
             <th class="text-right">Action</th>
@@ -1140,27 +1160,12 @@ function renderTable(data, summary) {
             const leanQty = parseFloat(item.lean_quantity || 0);
             const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
             const processingQty = parseFloat(item.processing_quantity || 0);
-            const preparingQty = parseFloat(item.preparing_quantity || 0);
-            const lineItemCount = parseFloat(item.line_item_count || 0);
-            
-            // Check if all items in this order are already prepared
-            const isFullyPrepared = lineItemCount > 0 && preparingQty === totalQty;
-            
-            // Calculate lean/non-lean for processing and preparing
-            // Note: Backend would ideally calculate these, but we can estimate from ratios
-            const leanRatio = totalQty > 0 ? leanQty / totalQty : 0;
-            const procLean = Math.round(processingQty * leanRatio);
-            const procNonLean = processingQty - procLean;
-            const prepLean = Math.round(preparingQty * leanRatio);
-            const prepNonLean = preparingQty - prepLean;
+            // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
                 <tr>
                     <td style="text-align: center;">
-                        ${isFullyPrepared ? 
-                            '<span style="color: #10b981; font-size: 18px;" title="All items prepared">✓</span>' :
-                            `<input type="checkbox" class="orderCheckbox" data-order-id="${item.order_id}" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="updateSelectedOrdersCount()">`
-                        }
+                        <input type="checkbox" class="orderCheckbox" data-order-id="${item.order_id}" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="updateSelectedOrdersCount()">
                     </td>
                     <td>
                         <span class="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer" onclick="viewOrderDetails(${item.order_id})" title="Click to view order details">
@@ -1174,39 +1179,24 @@ function renderTable(data, summary) {
                         ${getStatusChip(item.order_status)}
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 16px; font-weight: 700; color: #111827; margin-bottom: 2px;">${totalQty.toLocaleString()}</div>
-                        <div style="font-size: 11px;">
-                            <span style="color: #059669; font-weight: 600;">${leanQty.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626; font-weight: 600;">${nonLeanQty.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 16px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 2px;">${processingQty.toLocaleString()}</div>
-                        <div style="font-size: 10px;">
-                            <span style="color: #059669;">${procLean.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626;">${procNonLean.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 16px; font-weight: 700; color: #059669;">${leanQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 14px; font-weight: 600; color: #065f46; margin-bottom: 2px;">${preparingQty.toLocaleString()}</div>
-                        <div style="font-size: 10px;">
-                            <span style="color: #059669;">${prepLean.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626;">${prepNonLean.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 16px; font-weight: 700; color: #dc2626;">${nonLeanQty.toLocaleString()}</div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 14px; font-weight: 600; color: #1e40af;">${processingQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
                         ${item.order_date ? new Date(item.order_date).toLocaleDateString() : '-'}
                     </td>
                     <td class="text-right">
-                        ${isFullyPrepared ? 
-                            '<span style="display: inline-flex; align-items: center; padding: 6px 12px; background: #d1fae5; color: #065f46; border-radius: 6px; font-size: 12px; font-weight: 600;"><span style="margin-right: 4px;">✓</span> All Prepared</span>' :
-                            `<button onclick="viewOrderDetails(${item.order_id})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
-                                View Order
-                            </button>`
-                        }
+                        <button onclick="viewOrderDetails(${item.order_id})" class="action-btn secondary" style="padding: 0.375rem 0.75rem; font-size: 13px;">
+                            View Order
+                        </button>
                     </td>
                 </tr>
             `;
@@ -1217,14 +1207,7 @@ function renderTable(data, summary) {
             const leanQty = parseFloat(item.lean_quantity || 0);
             const nonLeanQty = parseFloat(item.non_lean_quantity || 0);
             const processingQty = parseFloat(item.processing_quantity || 0);
-            const preparingQty = parseFloat(item.preparing_quantity || 0);
-            
-            // Calculate lean/non-lean ratios for processing and preparing
-            const leanRatio = totalQty > 0 ? leanQty / totalQty : 0;
-            const procLean = Math.round(processingQty * leanRatio);
-            const procNonLean = processingQty - procLean;
-            const prepLean = Math.round(preparingQty * leanRatio);
-            const prepNonLean = preparingQty - prepLean;
+            // ⭐ Prepared items are now excluded from query - no need to track preparing_quantity
             
             return `
                 <tr>
@@ -1238,28 +1221,16 @@ function renderTable(data, summary) {
                         }
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 18px; font-weight: 700; color: #111827; margin-bottom: 3px;">${totalQty.toLocaleString()}</div>
-                        <div style="font-size: 11px;">
-                            <span style="color: #059669; font-weight: 600;">${leanQty.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626; font-weight: 600;">${nonLeanQty.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 18px; font-weight: 700; color: #111827;">${totalQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 15px; font-weight: 600; color: #1e40af; margin-bottom: 2px;">${processingQty.toLocaleString()}</div>
-                        <div style="font-size: 10px;">
-                            <span style="color: #059669;">${procLean.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626;">${procNonLean.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 18px; font-weight: 700; color: #059669;">${leanQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
-                        <div style="font-size: 15px; font-weight: 600; color: #065f46; margin-bottom: 2px;">${preparingQty.toLocaleString()}</div>
-                        <div style="font-size: 10px;">
-                            <span style="color: #059669;">${prepLean.toLocaleString()}</span>
-                            <span style="color: #9ca3af;"> / </span>
-                            <span style="color: #dc2626;">${prepNonLean.toLocaleString()}</span>
-                        </div>
+                        <div style="font-size: 18px; font-weight: 700; color: #dc2626;">${nonLeanQty.toLocaleString()}</div>
+                    </td>
+                    <td class="text-right">
+                        <div style="font-size: 15px; font-weight: 600; color: #1e40af;">${processingQty.toLocaleString()}</div>
                     </td>
                     <td class="text-right">
                         ${item.order_count ? item.order_count.toLocaleString() : '-'}

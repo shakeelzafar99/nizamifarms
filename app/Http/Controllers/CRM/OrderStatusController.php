@@ -73,19 +73,52 @@ class OrderStatusController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
-        $request->validate([
-            'status_code' => 'required|string|max:50|regex:/^[a-z_]+$/',
-            'status_name' => 'required|string|max:100',
-            'description' => 'nullable|string',
-            'sequence_order' => 'nullable|integer|min:1',
-            'is_final' => 'boolean',
-            'color_class' => 'nullable|string|max:50',
-            'icon' => 'nullable|string|max:50'
-        ]);
+        try {
+            $validated = $request->validate([
+                'status_code' => 'required|string|max:50|regex:/^[a-z_]+$/',
+                'status_name' => 'required|string|max:100',
+                'description' => 'nullable|string',
+                'sequence_order' => 'nullable|integer|min:1',
+                'is_final' => 'nullable|boolean',
+                'color_class' => 'nullable|string|max:50',
+                'icon' => 'nullable|string|max:20',  // Emojis are typically 1-4 chars
+                'show_in_mobile' => 'nullable|boolean',
+                'visible_to_roles' => 'nullable|array',
+                'visible_to_roles.*' => 'integer'
+            ]);
+            
+            // Convert simple color name to CSS class if needed
+            if (isset($validated['color_class']) && !str_starts_with($validated['color_class'], 'bg-')) {
+                $validated['color_class'] = 'bg-' . $validated['color_class'] . '-100';
+            }
+            
+            // Ensure is_final is boolean
+            $validated['is_final'] = $validated['is_final'] ?? false;
+            
+            // Default show_in_mobile to true if not specified
+            $validated['show_in_mobile'] = $validated['show_in_mobile'] ?? true;
+            
+            // Convert empty array to null for visible_to_roles (null = all roles)
+            if (isset($validated['visible_to_roles']) && empty($validated['visible_to_roles'])) {
+                $validated['visible_to_roles'] = null;
+            }
 
-        $result = $this->statusService->createStatus($request->all());
+            $result = $this->statusService->createStatus($validated);
 
-        return response()->json($result, $result['success'] ? 201 : 400);
+            return response()->json($result, $result['success'] ? 201 : 400);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create status: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -93,20 +126,47 @@ class OrderStatusController extends Controller
      */
     public function update(Request $request, int $id): JsonResponse
     {
-        $request->validate([
-            'status_code' => 'sometimes|required|string|max:50|regex:/^[a-z_]+$/',
-            'status_name' => 'sometimes|required|string|max:100',
-            'description' => 'nullable|string',
-            'sequence_order' => 'nullable|integer|min:1',
-            'is_active' => 'boolean',
-            'is_final' => 'boolean',
-            'color_class' => 'nullable|string|max:50',
-            'icon' => 'nullable|string|max:50'
-        ]);
+        try {
+            $validated = $request->validate([
+                'status_code' => 'sometimes|required|string|max:50|regex:/^[a-z_]+$/',
+                'status_name' => 'sometimes|required|string|max:100',
+                'description' => 'nullable|string',
+                'sequence_order' => 'nullable|integer|min:1',
+                'is_active' => 'nullable|boolean',
+                'is_final' => 'nullable|boolean',
+                'color_class' => 'nullable|string|max:50',
+                'icon' => 'nullable|string|max:20',  // Emojis are typically 1-4 chars
+                'show_in_mobile' => 'nullable|boolean',
+                'visible_to_roles' => 'nullable|array',
+                'visible_to_roles.*' => 'integer'
+            ]);
+            
+            // Convert simple color name to CSS class if needed
+            if (isset($validated['color_class']) && !str_starts_with($validated['color_class'], 'bg-')) {
+                $validated['color_class'] = 'bg-' . $validated['color_class'] . '-100';
+            }
+            
+            // Convert empty array to null for visible_to_roles (null = all roles)
+            if (isset($validated['visible_to_roles']) && empty($validated['visible_to_roles'])) {
+                $validated['visible_to_roles'] = null;
+            }
 
-        $result = $this->statusService->updateStatus($id, $request->all());
+            $result = $this->statusService->updateStatus($id, $validated);
 
-        return response()->json($result, $result['success'] ? 200 : 400);
+            return response()->json($result, $result['success'] ? 200 : 400);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update status: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -419,6 +479,28 @@ class OrderStatusController extends Controller
         }
 
         return view('pages.order-status.order-history', compact('order'));
+    }
+
+    /**
+     * Get all available roles for status visibility settings
+     */
+    public function getAvailableRoles(): JsonResponse
+    {
+        try {
+            $roles = \App\Models\SysAdmin\RoleModel::where('is_active', 1)
+                ->orderBy('urole_name')
+                ->get(['id', 'urole_name']);
+            
+            return response()->json([
+                'success' => true,
+                'roles' => $roles
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch roles: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**

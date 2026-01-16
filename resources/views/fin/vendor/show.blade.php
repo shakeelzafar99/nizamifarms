@@ -341,7 +341,7 @@
                                             ＋ 📦
                                         </button>
                                     @endif
-                                    <button onclick="event.stopPropagation(); openPaymentModalWithDate('{{ $date }}')" 
+                                    <button onclick="event.stopPropagation(); openPaymentModalWithDate('{{ $date }}', {{ $summary['net'] > 0 ? $summary['net'] : 0 }})" 
                                             class="px-2 py-1 text-xs font-semibold rounded-md transition-all hover:scale-105"
                                             style="background: #bbf7d0; color: #15803d; border: 1px solid #86efac;"
                                             title="Add payment for {{ $dateObj ? $dateObj->format('M d, Y') : $date }}">
@@ -474,9 +474,9 @@
                     
                     <!-- Description -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
                         <textarea name="description" rows="2" placeholder="Add any notes about this purchase..."
-                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"></textarea>
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm">Entry by {{ auth()->user()->fullname ?? 'User' }}</textarea>
                     </div>
                     
                     <!-- Bill Image Upload -->
@@ -559,9 +559,9 @@
                     
                     <!-- Description -->
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description (Optional)</label>
+                        <label class="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
                         <textarea name="description" rows="2" placeholder="Add any notes about this purchase..."
-                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm"></textarea>
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm">Entry by {{ auth()->user()->fullname ?? 'User' }}</textarea>
                     </div>
                     
                     <!-- Bill Image Upload -->
@@ -578,46 +578,38 @@
             </form>
         </div>
         
-        <!-- Fixed Footer with Total and Actions -->
-        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 20px 24px; flex-shrink: 0;">
-            <!-- Adjustment Field -->
-            <div style="margin-bottom: 12px;">
-                <label class="block text-sm font-medium text-gray-700 mb-1.5">Adjustment/Discount (Rs.)</label>
-                <div style="display: flex; align-items: center; gap: 8px;">
+        <!-- Fixed Footer with Total and Actions - Compact Design -->
+        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 12px 24px; flex-shrink: 0;">
+            <!-- Compact Totals Row -->
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px; padding: 10px 12px; background: linear-gradient(135deg, #fed7aa 0%, #ffedd5 100%); border: 1px solid #fb923c; border-radius: 8px;">
+                <!-- Items Total -->
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 12px; color: #9a3412;">Items:</span>
+                    <span style="font-size: 14px; font-weight: 600; color: #9a3412;" id="itemsTotal">Rs. 0.00</span>
+                </div>
+                <!-- Adjustment Input (Inline) -->
+                <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
+                    <span style="font-size: 12px; color: #9a3412; white-space: nowrap;">Adj:</span>
                     <input type="number" id="adjustmentAmount" step="0.01" value="" placeholder="-500"
-                           class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                           style="width: 90px; padding: 4px 8px; border: 1px solid #fb923c; border-radius: 4px; font-size: 13px; text-align: right;"
                            oninput="syncAdjustmentAmount(); updateGrandTotal()"
                            onfocus="if(this.value === '' || this.value === '0') this.value = '-'">
-                    <span class="text-xs text-gray-500" style="white-space: nowrap;">- discount, + extra</span>
+                    <span style="font-size: 10px; color: #9a3412;">(- disc)</span>
                 </div>
-                <p class="text-xs text-gray-500 mt-1">💡 Most adjustments are discounts (negative). Enter -500 for Rs. 500 discount</p>
-            </div>
-            
-            <!-- Total Display -->
-            <div style="margin-bottom: 16px; padding: 16px; background: linear-gradient(135deg, #fed7aa 0%, #ffedd5 100%); border: 2px solid #fb923c; border-radius: 8px;">
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 14px; color: #9a3412;">Items Total:</span>
-                        <span style="font-size: 16px; font-weight: 600; color: #9a3412;" id="itemsTotal">Rs. 0.00</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center;" id="adjustmentRow" class="hidden">
-                        <span style="font-size: 14px; color: #9a3412;">Adjustment:</span>
-                        <span style="font-size: 16px; font-weight: 600; color: #9a3412;" id="adjustmentDisplay">Rs. 0.00</span>
-                    </div>
-                    <div style="border-top: 1px solid #fb923c; padding-top: 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 18px; font-weight: 600; color: #7c2d12;">Grand Total:</span>
-                        <span style="font-size: 28px; font-weight: bold; color: #7c2d12;" id="grandTotal">Rs. 0.00</span>
-                    </div>
+                <!-- Grand Total -->
+                <div style="display: flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid #fb923c;">
+                    <span style="font-size: 13px; font-weight: 600; color: #7c2d12;">Total:</span>
+                    <span style="font-size: 20px; font-weight: bold; color: #7c2d12;" id="grandTotal">Rs. 0.00</span>
                 </div>
             </div>
             
             <!-- Action Buttons -->
             <div style="display: flex; gap: 12px;">
-                <button type="button" onclick="closeWeightedPurchaseModal()" style="flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                <button type="button" onclick="closeWeightedPurchaseModal()" style="flex: 1; padding: 10px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
                     Cancel
                 </button>
                 <button type="submit" form="weightedPurchaseForm" id="submitWeightedPurchase"
-                        style="flex: 1; padding: 12px 16px; background: #ea580c; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
+                        style="flex: 1; padding: 10px 16px; background: #ea580c; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
                     ✓ Record Purchase
                 </button>
             </div>
@@ -676,23 +668,25 @@
                         <label class="block text-sm font-medium text-gray-800 mb-2">💳 Pay From:</label>
                         <select name="payment_source_account_id" id="payment_source_account_id"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent">
-                            <option value="">NF Cash (Auto-Approved)</option>
                             @php
-                                // Only show Online Bank, NF Cash (Main Till), and Expense Fund
-                                $paymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
-                                    ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
-                                    ->orderBy('account_name')
-                                    ->get();
+                                // Get Online Bank account for vendor payments
+                                // NF Cash is the default (empty value) - backend handles it automatically
+                                $onlineAccount = \App\Models\FIN\AccountModel::where('is_active', 1)
+                                    ->where('account_code', 'ONLINE')
+                                    ->first();
                                 $vendorDefaultPaymentSourceId = $vendor->default_payment_source_id;
+                                // Check if vendor's default is Online
+                                $isOnlineDefault = $onlineAccount && $vendorDefaultPaymentSourceId == $onlineAccount->id;
                             @endphp
-                            @foreach($paymentSources as $source)
-                                <option value="{{ $source->id }}" {{ $vendorDefaultPaymentSourceId == $source->id ? 'selected' : '' }}>
-                                    {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
+                            <option value="" {{ !$isOnlineDefault ? 'selected' : '' }}>NF Cash (Auto-Approved)</option>
+                            @if($onlineAccount)
+                                <option value="{{ $onlineAccount->id }}" {{ $isOnlineDefault ? 'selected' : '' }}>
+                                    Online Bank (Rs. {{ number_format($onlineAccount->current_balance, 2) }})
                                 </option>
-                            @endforeach
+                            @endif
                         </select>
                         <p style="font-size: 11px; color: #047857; font-weight: 600; margin: 6px 0 0 0;">
-                            ⚠️ Online and Manager cash require approval
+                            ⚠️ Online payments require approval
                         </p>
                     </div>
                     
@@ -1054,11 +1048,11 @@ function updateGrandTotal() {
 }
 
 function openPaymentModal() {
-    openPaymentModalWithDate(null);
+    openPaymentModalWithDate(null, 0);
 }
 
-// Open payment modal with a specific date pre-filled
-function openPaymentModalWithDate(transactionDate) {
+// Open payment modal with a specific date pre-filled and optional payable amount
+function openPaymentModalWithDate(transactionDate, payableAmount = 0) {
     const modal = document.getElementById('paymentModal');
     if (modal.parentElement !== document.body) {
         document.body.appendChild(modal);
@@ -1088,6 +1082,16 @@ function openPaymentModalWithDate(transactionDate) {
         const postedDateInput = modal.querySelector('input[name="posted_date"]');
         if (transactionDateInput) transactionDateInput.value = today;
         if (postedDateInput) postedDateInput.value = today;
+    }
+    
+    // Pre-fill amount if payable amount is positive
+    const amountInput = modal.querySelector('input[name="amount"]');
+    if (amountInput) {
+        if (payableAmount > 0) {
+            amountInput.value = payableAmount.toFixed(2);
+        } else {
+            amountInput.value = '0.00'; // Reset to 0 when no payable amount
+        }
     }
 }
 
@@ -1865,46 +1869,38 @@ function toggleExpandAll() {
             </form>
         </div>
         
-        <!-- Fixed Footer with Total and Actions -->
-        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 20px 24px; flex-shrink: 0;">
-            <!-- Adjustment Field -->
-            <div style="margin-bottom: 12px;">
-                <label class="block text-sm font-medium text-gray-700 mb-1.5">Adjustment/Discount (Rs.)</label>
-                <div style="display: flex; align-items: center; gap: 8px;">
+        <!-- Fixed Footer with Total and Actions - Compact Design -->
+        <div style="border-top: 1px solid #e5e7eb; background: #f9fafb; padding: 12px 24px; flex-shrink: 0;">
+            <!-- Compact Totals Row -->
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px; padding: 10px 12px; background: linear-gradient(135deg, #fed7aa 0%, #ffedd5 100%); border: 1px solid #fb923c; border-radius: 8px;">
+                <!-- Items Total -->
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 12px; color: #9a3412;">Items:</span>
+                    <span style="font-size: 14px; font-weight: 600; color: #9a3412;" id="editItemsTotal">Rs. 0.00</span>
+                </div>
+                <!-- Adjustment Input (Inline) -->
+                <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
+                    <span style="font-size: 12px; color: #9a3412; white-space: nowrap;">Adj:</span>
                     <input type="number" id="editAdjustmentAmount" step="0.01" value="" placeholder="-500"
-                           class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                           style="width: 90px; padding: 4px 8px; border: 1px solid #fb923c; border-radius: 4px; font-size: 13px; text-align: right;"
                            oninput="syncEditAdjustmentAmount(); updateEditGrandTotal()"
                            onfocus="if(this.value === '' || this.value === '0') this.value = '-'">
-                    <span class="text-xs text-gray-500" style="white-space: nowrap;">- discount, + extra</span>
+                    <span style="font-size: 10px; color: #9a3412;">(- disc)</span>
                 </div>
-                <p class="text-xs text-gray-500 mt-1">💡 Most adjustments are discounts (negative). Enter -500 for Rs. 500 discount</p>
-            </div>
-            
-            <!-- Total Display -->
-            <div style="margin-bottom: 16px; padding: 16px; background: linear-gradient(135deg, #fed7aa 0%, #ffedd5 100%); border: 2px solid #fb923c; border-radius: 8px;">
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 14px; color: #9a3412;">Items Total:</span>
-                        <span style="font-size: 16px; font-weight: 600; color: #9a3412;" id="editItemsTotal">Rs. 0.00</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center;" id="editAdjustmentRow" class="hidden">
-                        <span style="font-size: 14px; color: #9a3412;">Adjustment:</span>
-                        <span style="font-size: 16px; font-weight: 600; color: #9a3412;" id="editAdjustmentDisplay">Rs. 0.00</span>
-                    </div>
-                    <div style="border-top: 1px solid #fb923c; padding-top: 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-size: 18px; font-weight: 600; color: #7c2d12;">Grand Total:</span>
-                        <span style="font-size: 28px; font-weight: bold; color: #7c2d12;" id="editGrandTotal">Rs. 0.00</span>
-                    </div>
+                <!-- Grand Total -->
+                <div style="display: flex; align-items: center; gap: 8px; padding-left: 12px; border-left: 1px solid #fb923c;">
+                    <span style="font-size: 13px; font-weight: 600; color: #7c2d12;">Total:</span>
+                    <span style="font-size: 20px; font-weight: bold; color: #7c2d12;" id="editGrandTotal">Rs. 0.00</span>
                 </div>
             </div>
             
             <!-- Action Buttons -->
             <div style="display: flex; gap: 12px;">
-                <button type="button" onclick="closeEditWeightedPurchaseModal()" style="flex: 1; padding: 12px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                <button type="button" onclick="closeEditWeightedPurchaseModal()" style="flex: 1; padding: 10px 16px; border: 1px solid #d1d5db; background: white; color: #374151; font-weight: 500; border-radius: 8px; cursor: pointer; font-size: 14px;">
                     Cancel
                 </button>
                 <button type="button" onclick="submitEditWeightedPurchase()"
-                        style="flex: 1; padding: 12px 16px; background: #ea580c; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
+                        style="flex: 1; padding: 10px 16px; background: #ea580c; color: white; font-weight: 500; border-radius: 8px; cursor: pointer; border: none; font-size: 14px;">
                     ✓ Update Purchase
                 </button>
             </div>
@@ -2163,25 +2159,25 @@ function displayVendorReport(report) {
                 productGroups.forEach((group, groupIndex) => {
                     // Render individual items in this group
                     group.items.forEach((item, itemIndex) => {
-                        html += `<tr class="${bgColor} print:bg-white">`;
-                        
-                        // Date column (only on first row of the day)
-                        if (isFirstRowOfDay) {
+                    html += `<tr class="${bgColor} print:bg-white">`;
+                    
+                    // Date column (only on first row of the day)
+                    if (isFirstRowOfDay) {
                             html += `<td class="border border-gray-300 px-2 py-2 align-top font-medium text-gray-900" rowspan="${dayRowSpan}">${day.date}</td>`;
-                            isFirstRowOfDay = false;
-                        }
-                        
+                        isFirstRowOfDay = false;
+                    }
+                    
                         // Type column (only on first item of transaction)
                         if (isFirstItemOfTxn) {
-                            html += `
+                        html += `
                                 <td class="border border-gray-300 px-2 py-2 align-top" rowspan="${totalRowsForThisTxn}">
                                     <div class="font-medium ${amountColor}">📦 Purchase</div>
-                                    <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
-                                </td>
-                            `;
+                                <div class="text-xs text-gray-500 mt-0.5">${txn.transaction_id}</div>
+                            </td>
+                        `;
                             isFirstItemOfTxn = false;
-                        }
-                        
+                    }
+                    
                         // Product column
                         html += `<td class="border border-gray-300 px-2 py-2 text-gray-800">${item.product_name}</td>`;
                         
@@ -2190,18 +2186,18 @@ function displayVendorReport(report) {
                         
                         // Rate column
                         html += `<td class="border border-gray-300 px-2 py-2 text-right text-gray-700">Rs. ${Number(item.rate_per_unit).toLocaleString('en-PK', {minimumFractionDigits: 2})}</td>`;
-                        
+                    
                         // Amount column (only on first item of transaction)
                         if (groupIndex === 0 && itemIndex === 0) {
-                            html += `
+                        html += `
                                 <td class="border border-gray-300 px-2 py-2 text-right align-top font-bold ${amountColor}" rowspan="${totalRowsForThisTxn}">
-                                    Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                                </td>
-                            `;
-                        }
-                        
-                        html += `</tr>`;
-                    });
+                                Rs. ${Number(txn.amount).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            </td>
+                        `;
+                    }
+                    
+                    html += `</tr>`;
+                });
                     
                     // Subtotal row for this product group (spans Product, Qty, Rate columns)
                     html += `<tr class="print:bg-white" style="background: linear-gradient(90deg, #dbeafe 0%, #eff6ff 100%);">`;

@@ -3846,25 +3846,62 @@ class RiderController extends Controller
 
     /**
      * STORE MODE: Get available order statuses
+     * Filters based on mobile visibility settings and user role
      */
     public function getOrderStatuses(Request $request)
     {
         try {
+            $user = Auth::user();
+            $userRoleIds = $user ? $user->roles()->pluck('t_sys_role.id')->toArray() : [];
+            
             $statuses = DB::table('t_crm_order_status_master')
                 ->where('is_active', 1)
-                // ⭐ Exclude legacy status codes (keep only underscore versions)
+                ->where('show_in_mobile', 1)  // ⭐ Only show statuses enabled for mobile
+                // Exclude legacy status codes (keep only underscore versions)
                 ->whereNotIn('status_code', ['on-hold', 'on hold'])
                 ->orderBy('sequence_order')
-                ->get(['status_code', 'status_name', 'icon', 'color_class']);
+                ->get(['id', 'status_code', 'status_name', 'icon', 'color_class', 'visible_to_roles', 'sequence_order']);
+            
+            // Filter by role visibility
+            $filteredStatuses = $statuses->filter(function($status) use ($userRoleIds) {
+                // If no role restriction (null or empty), visible to all
+                $visibleRoles = $status->visible_to_roles;
+                if (empty($visibleRoles)) {
+                    return true;
+                }
+                
+                // Decode JSON if it's a string
+                if (is_string($visibleRoles)) {
+                    $visibleRoles = json_decode($visibleRoles, true);
+                }
+                
+                // If still empty after decode, visible to all
+                if (empty($visibleRoles)) {
+                    return true;
+                }
+                
+                // Check if user has any of the required roles
+                return !empty(array_intersect($userRoleIds, $visibleRoles));
+            })->map(function($status) {
+                // Include sequence_order for mobile app sorting
+                return [
+                    'status_code' => $status->status_code,
+                    'status_name' => $status->status_name,
+                    'icon' => $status->icon,
+                    'color_class' => $status->color_class,
+                    'sequence_order' => $status->sequence_order  // ⭐ NEW: For sorting in mobile
+                ];
+            })->values();
             
             return response()->json([
                 'success' => true,
-                'statuses' => $statuses
+                'statuses' => $filteredStatuses
             ]);
             
         } catch (\Exception $e) {
             \Log::error('Failed to fetch order statuses', [
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
             
             return response()->json([
@@ -4206,6 +4243,7 @@ class RiderController extends Controller
                         'geocoded_longitude' => $order->customer->geocoded_longitude,
                     ] : null,
                     'external_source' => $order->external_source,
+                    'updated_at' => $order->updated_at ? $order->updated_at->toIso8601String() : null, // ⭐ For processing time calculation
                     // ⭐ Invoice fields - needed for invoice view
                     'subtotal_price' => $order->subtotal_price ?? 0,
                     'discount_total' => $order->discount_total ?? 0,
@@ -4220,14 +4258,16 @@ class RiderController extends Controller
                     'line_items' => $order->lineItems->map(function($item) {
                         return [
                             'id' => $item->id,
+                            'name' => $item->name ?? 'N/A',  // ⭐ Use 'name' consistently
                             'product_name' => $item->name ?? 'N/A',
                             'variant_name' => $item->sku ?? '',
-                            'quantity' => $item->quantity,
-                            'unit_price' => $item->unit_price,
-                            'line_total' => $item->line_total,
+                            'quantity' => (float) $item->quantity,
+                            'unit_price' => (float) $item->unit_price,
+                            'unit_price_formatted' => $item->unit_price ? 'Rs. ' . number_format($item->unit_price, 0) : null,
+                            'line_total' => (float) $item->line_total,
                             'preparation_status' => $item->preparation_status,
                         ];
-                    }),
+                    })->values()->toArray(),
                 ];
             });
             
@@ -4912,6 +4952,72 @@ class RiderController extends Controller
     }
 
     /**
+     * STORE MODE: Add note to customer (saves to customer record for future orders)
+     */
+    public function addCustomerNote(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - reuse enter_packet_info permission (general order editing)
+            if (!$user->hasMobilePermission('enter_packet_info')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to add customer notes'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'customer_id' => 'required|exists:t_crm_prod_customer,id',
+                'note' => 'required|string|max:1000'
+            ]);
+            
+            $customer = \App\Models\CRM\CustomerModel::findOrFail($validated['customer_id']);
+            
+            // Build the new note with attribution
+            $newNote = trim($validated['note']);
+            $existingNote = trim($customer->notes ?? '');
+            $timestamp = now()->format('Y-m-d H:i');
+            $attribution = "[{$timestamp} - {$user->fullname}]";
+            
+            if (!empty($existingNote)) {
+                // Append to existing notes
+                $finalNote = $existingNote . "\n\n" . $attribution . " " . $newNote;
+            } else {
+                // New note
+                $finalNote = $attribution . " " . $newNote;
+            }
+            
+            $customer->notes = $finalNote;
+            $customer->save();
+            
+            \Log::info('Customer note added (Store Mode)', [
+                'customer_id' => $customer->id,
+                'customer_name' => $customer->first_name . ' ' . $customer->last_name,
+                'added_by' => $user->id,
+                'user_name' => $user->fullname
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Note saved to customer profile',
+                'notes' => $customer->notes
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to add customer note', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save customer note: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * STORE MODE: Update payment method for an order
      */
     public function updatePaymentMethod(Request $request)
@@ -5081,7 +5187,12 @@ class RiderController extends Controller
                       ->orWhereNull('o.external_source');
                 })
                 ->whereNotIn('o.order_status', $excludedStatuses)
-                ->where('o.order_date', '>=', Carbon::now()->subDays(20));
+                ->where('o.order_date', '>=', Carbon::now()->subDays(20))
+                // ✅ EXCLUDE prepared items from quantities (same as web)
+                ->where(function($q) {
+                    $q->whereNull('li.preparation_status')
+                      ->orWhere('li.preparation_status', '!=', 'preparing');
+                });
 
             if ($statusFilter) {
                 $query->where('o.order_status', $statusFilter);
@@ -6261,8 +6372,10 @@ class RiderController extends Controller
             // For backwards compatibility, keep the combined list
             $pendingApprovalsForDisplay = $allPendingApprovals;
             
-            // Calculate top 5 expense categories
+            // Calculate expense categories with user breakdown (like web version)
             $expensesByCategory = [];
+            $expensesByCategoryUser = []; // Track user-wise breakdown
+            
             foreach ($allExpenses as $expense) {
                 $cat = $expense->expense_category;
                 if (empty($cat) && $expense->category && $expense->category->category_code === 'salary_advance') {
@@ -6270,21 +6383,83 @@ class RiderController extends Controller
                 } elseif (empty($cat)) {
                     $cat = 'Uncategorized';
                 }
+                
+                // Category total
                 if (!isset($expensesByCategory[$cat])) {
                     $expensesByCategory[$cat] = 0;
                 }
                 $expensesByCategory[$cat] += $expense->amount;
+                
+                // User breakdown within category
+                $userName = $expense->requester ? $expense->requester->fullname : 'Unknown';
+                if (!isset($expensesByCategoryUser[$cat])) {
+                    $expensesByCategoryUser[$cat] = [];
+                }
+                if (!isset($expensesByCategoryUser[$cat][$userName])) {
+                    $expensesByCategoryUser[$cat][$userName] = 0;
+                }
+                $expensesByCategoryUser[$cat][$userName] += $expense->amount;
             }
             
+            // Add salary slips to category totals with user breakdown
             if ($totalSalaryExpenses > 0) {
                 if (!isset($expensesByCategory['Salary'])) {
                     $expensesByCategory['Salary'] = 0;
                 }
                 $expensesByCategory['Salary'] += $totalSalaryExpenses;
+                
+                // Track salary by employee
+                if (!isset($expensesByCategoryUser['Salary'])) {
+                    $expensesByCategoryUser['Salary'] = [];
+                }
+                foreach ($salarySlips as $slip) {
+                    $empName = $slip->employee ? $slip->employee->fullname : 'Unknown';
+                    if (!isset($expensesByCategoryUser['Salary'][$empName])) {
+                        $expensesByCategoryUser['Salary'][$empName] = 0;
+                    }
+                    $expensesByCategoryUser['Salary'][$empName] += $slip->net_salary;
+                }
             }
             
+            // Sort categories by amount descending
             arsort($expensesByCategory);
-            $topCategories = array_slice($expensesByCategory, 0, 5, true);
+            
+            // Build top categories with user breakdown (return all like web, up to 15)
+            $topCategories = [];
+            $othersTotal = 0;
+            $othersUsers = [];
+            $count = 0;
+            
+            foreach ($expensesByCategory as $cat => $amount) {
+                if ($count < 15 && $cat !== 'Uncategorized') {
+                    // Sort users within category by amount descending
+                    $usersInCategory = $expensesByCategoryUser[$cat] ?? [];
+                    arsort($usersInCategory);
+                    
+                    $topCategories[$cat] = [
+                        'total' => $amount,
+                        'users' => $usersInCategory
+                    ];
+                    $count++;
+                } else {
+                    $othersTotal += $amount;
+                    // Merge users from other categories
+                    foreach (($expensesByCategoryUser[$cat] ?? []) as $userName => $userAmount) {
+                        if (!isset($othersUsers[$userName])) {
+                            $othersUsers[$userName] = 0;
+                        }
+                        $othersUsers[$userName] += $userAmount;
+                    }
+                }
+            }
+            
+            if ($othersTotal > 0) {
+                arsort($othersUsers);
+                $topCategories['Other Expenses'] = [
+                    'total' => $othersTotal,
+                    'users' => $othersUsers
+                ];
+            }
             
             // Get all unique categories for filter
             $categoriesFromExpenses = \App\Models\Request\RequestModel::whereHas('category', function($q) {
@@ -6349,6 +6524,94 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load expenses: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get fund transfers into the expense fund account
+     * Shows transfers from NF Cash or Online into EXP_FUND
+     */
+    public function getFundTransfers(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view fund transfers'
+                ], 403);
+            }
+            
+            // Get month parameter (YYYY-MM format)
+            $month = $request->input('month', now()->format('Y-m'));
+            
+            // Get expense fund account
+            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
+                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            
+            if (!$expenseFund) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Expense fund account not found'
+                ], 404);
+            }
+            
+            // Calculate date range for the month
+            $startDate = $month . '-01';
+            $endDate = \Carbon\Carbon::parse($startDate)->endOfMonth()->toDateString();
+            
+            // Get transfers INTO the expense fund
+            $transfers = \App\Models\FIN\LedgerModel::with(['fromAccount', 'toAccount', 'createdBy'])
+                ->where('to_account_id', $expenseFund->id)
+                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_TRANSFER)
+                ->whereBetween('transaction_date', [$startDate, $endDate])
+                ->orderByDesc('transaction_date')
+                ->orderByDesc('id')
+                ->get();
+            
+            // Format transfers for response
+            $formattedTransfers = $transfers->map(function($transfer) {
+                return [
+                    'id' => $transfer->id,
+                    'transaction_date' => $transfer->transaction_date->format('Y-m-d'),
+                    'amount' => (float) $transfer->amount,
+                    'from_account' => $transfer->fromAccount ? $transfer->fromAccount->account_name : 'Unknown',
+                    'from_account_code' => $transfer->fromAccount ? $transfer->fromAccount->account_code : null,
+                    'description' => $transfer->description,
+                    'mode' => $transfer->mode,
+                    'created_by' => $transfer->createdBy ? $transfer->createdBy->fullname : 'System',
+                    'created_at' => $transfer->created_at->format('Y-m-d H:i'),
+                ];
+            });
+            
+            // Calculate totals
+            $totalAmount = $transfers->sum('amount');
+            
+            return response()->json([
+                'success' => true,
+                'transfers' => $formattedTransfers,
+                'summary' => [
+                    'total_transfers' => $transfers->count(),
+                    'total_amount' => (float) $totalAmount,
+                    'fund_balance' => (float) $expenseFund->current_balance,
+                ],
+                'month' => $month,
+                'month_display' => \Carbon\Carbon::parse($startDate)->format('F Y'),
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get fund transfers', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load fund transfers: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -6896,6 +7159,10 @@ class RiderController extends Controller
                     'a.login_time',
                     'a.logout_time',
                     'a.notes',
+                    'a.picture_start',
+                    'a.picture_end',
+                    'a.meter_start',
+                    'a.meter_end',
                     'a.checkin_latitude',
                     'a.checkin_longitude',
                     'a.checkin_distance_from_base',
@@ -6972,6 +7239,12 @@ class RiderController extends Controller
                     'leave_status' => $row->leave_status,
                     'leave_type' => $row->leave_type_from_req,
                     'notes' => $row->notes,
+                    // Meter pictures
+                    'picture_start' => $row->picture_start ? $this->getMeterPictureUrl($row->picture_start) : null,
+                    'picture_end' => $row->picture_end ? $this->getMeterPictureUrl($row->picture_end) : null,
+                    // Meter values
+                    'meter_start' => $row->meter_start,
+                    'meter_end' => $row->meter_end,
                     // Location data
                     'checkin_latitude' => $row->checkin_latitude ?? null,
                     'checkin_longitude' => $row->checkin_longitude ?? null,
@@ -7108,11 +7381,14 @@ class RiderController extends Controller
                 ->where('a.user_id', '=', $userId)
                 ->whereBetween('a.attendance_date', [$startDate, $endDate])
                 ->select(
+                    'a.id as attendance_id',
                     'a.attendance_date',
                     'a.login_time',
                     'a.logout_time',
                     'a.picture_start',
                     'a.picture_end',
+                    'a.meter_start',
+                    'a.meter_end',
                     'a.checkin_latitude',
                     'a.checkin_longitude',
                     'a.checkin_distance_from_base',
@@ -7226,6 +7502,10 @@ class RiderController extends Controller
                 } else {
                     $record->last_delivery_time = '-';
                 }
+                
+                // Convert picture paths to URLs
+                $record->picture_start = $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null;
+                $record->picture_end = $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null;
             }
             
             return response()->json([
@@ -7259,6 +7539,67 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load employee details: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * STORE ATTENDANCE - Update meter values for an attendance record
+     */
+    public function updateMeterValues(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to update attendance'
+                ], 403);
+            }
+            
+            $request->validate([
+                'attendance_id' => 'required|integer',
+                'meter_start' => 'nullable|integer',
+                'meter_end' => 'nullable|integer',
+            ]);
+            
+            $attendanceId = $request->input('attendance_id');
+            $meterStart = $request->input('meter_start');
+            $meterEnd = $request->input('meter_end');
+            
+            // Verify attendance record exists
+            $attendance = DB::table('t_ops_attendance')->where('id', $attendanceId)->first();
+            
+            if (!$attendance) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attendance record not found'
+                ], 404);
+            }
+            
+            // Update meter values
+            DB::table('t_ops_attendance')
+                ->where('id', $attendanceId)
+                ->update([
+                    'meter_start' => $meterStart,
+                    'meter_end' => $meterEnd,
+                    'updated_at' => now(),
+                ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Meter values updated successfully',
+                'meter_start' => $meterStart,
+                'meter_end' => $meterEnd,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Mobile API - Failed to update meter values: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update meter values: ' . $e->getMessage()
             ], 500);
         }
     }

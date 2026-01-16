@@ -1433,18 +1433,27 @@ input:focus, select:focus, button:focus {
                 </div>
             </button>
             
+            <!-- Capacity Full -->
+            <button onclick="sendWhatsAppCapacityFull()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#ffedd5'" onmouseout="this.style.background='#fff7ed'">
+                <span style="font-size: 24px;">⚠️</span>
+                <div style="text-align: left;">
+                    <div style="font-weight: 600; color: #111827;">Capacity Full</div>
+                    <div style="font-size: 12px; color: #6b7280;">Busy today, offer tomorrow delivery</div>
+                </div>
+            </button>
+            
             <!-- Next Day Delivery -->
-            <button onclick="sendWhatsAppNextDay()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
+            <button onclick="sendWhatsAppNextDay()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fefce8; border: 1px solid #fef08a; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#fef9c3'" onmouseout="this.style.background='#fefce8'">
                 <span style="font-size: 24px;">📅</span>
                 <div style="text-align: left;">
                     <div style="font-weight: 600; color: #111827;">Next Day Delivery</div>
-                    <div style="font-size: 12px; color: #6b7280;">Inform about tomorrow delivery</div>
+                    <div style="font-size: 12px; color: #6b7280;">Personalized next day request</div>
                 </div>
             </button>
             
             <!-- Meatless Days -->
-            <button onclick="sendWhatsAppMeatlessDays()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
-                <span style="font-size: 24px;">🥬</span>
+            <button onclick="sendWhatsAppMeatlessDays()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fef2f2'">
+                <span style="font-size: 24px;">🚫</span>
                 <div style="text-align: left;">
                     <div style="font-weight: 600; color: #111827;">Meatless Days</div>
                     <div style="font-size: 12px; color: #6b7280;">Tuesday/Wednesday closed, Thursday delivery</div>
@@ -9104,17 +9113,26 @@ function sendWhatsAppDefault() {
     openWhatsAppWeb(whatsappData.phone);
 }
 
+function sendWhatsAppCapacityFull() {
+    const message = `Dear ${whatsappData.customerName},
+
+An order was received on our website today (order number ${whatsappData.orderNumber})
+
+This order can be delivered to you fresh tomorrow, as we're fully occupied today. Would you like to have this order delivered tomorrow? Please confirm.
+
+Thank you for ordering from Nizami Farms`;
+    
+    openWhatsAppWeb(whatsappData.phone, message);
+}
+
 function sendWhatsAppNextDay() {
     const message = `Dear ${whatsappData.customerName},
 
-Thank you for placing your order ${whatsappData.orderNumber} with Nizami Farms!
+An order was received on our website today - Order No: ${whatsappData.orderNumber}
 
-This order can be delivered to you fresh tomorrow, as we are fully occupied today. Would you like to have this order delivered tomorrow?
+This order can be delivered to you fresh tomorrow. Would you like to have this order delivered tomorrow? Please confirm.
 
-Please confirm by replying to this message.
-
-Best regards,
-Nizami Farms Team`;
+Thank you for ordering from Nizami Farms`;
     
     openWhatsAppWeb(whatsappData.phone, message);
 }

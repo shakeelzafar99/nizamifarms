@@ -394,8 +394,29 @@
                 
                 <div class="form-group">
                     <label class="form-label" for="icon">Icon</label>
-                    <input type="text" id="icon" name="icon" class="form-input" 
-                           placeholder="⏳, ⚡, ✓, etc." maxlength="10">
+                    <select id="icon" name="icon" class="form-input form-select">
+                        <option value="">Select an icon...</option>
+                        <option value="⏳">⏳ Pending/Waiting</option>
+                        <option value="🆕">🆕 New</option>
+                        <option value="⏸️">⏸️ On Hold/Paused</option>
+                        <option value="⚡">⚡ Processing</option>
+                        <option value="🔄">🔄 In Progress</option>
+                        <option value="📦">📦 Packing</option>
+                        <option value="🚚">🚚 Out for Delivery</option>
+                        <option value="?">? Delivery Question</option>
+                        <option value="✅">✅ Delivered</option>
+                        <option value="✓">✓ Completed</option>
+                        <option value="❌">❌ Cancelled</option>
+                        <option value="↩️">↩️ Refunded</option>
+                        <option value="⚠️">⚠️ Warning/Issue</option>
+                        <option value="📋">📋 Review</option>
+                        <option value="💳">💳 Payment</option>
+                        <option value="🔔">🔔 Notification</option>
+                        <option value="📞">📞 Contact</option>
+                        <option value="🏪">🏪 Store</option>
+                        <option value="🎯">🎯 Priority</option>
+                    </select>
+                    <div class="text-xs text-gray-500 mt-1">Or type custom: <input type="text" id="iconCustom" class="form-input inline-block w-20 ml-1" placeholder="emoji" maxlength="5" onchange="if(this.value) document.getElementById('icon').value = this.value;"></div>
                 </div>
             </div>
             
@@ -404,6 +425,28 @@
                     <input type="checkbox" id="isFinal" name="is_final" class="rounded">
                     <span class="form-label mb-0">This is a final status (order complete)</span>
                 </label>
+            </div>
+            
+            <!-- Mobile Visibility Settings -->
+            <div class="border-t border-gray-200 pt-4 mt-4">
+                <h4 class="text-sm font-semibold text-gray-700 mb-3">📱 Mobile App Settings</h4>
+                
+                <div class="form-group">
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" id="showInMobile" name="show_in_mobile" class="rounded" checked>
+                        <span class="form-label mb-0">Show in Mobile App</span>
+                    </label>
+                    <p class="text-xs text-gray-500 mt-1">When unchecked, this status won't appear in the mobile app's status dropdown</p>
+                </div>
+                
+                <div class="form-group mt-3" id="roleVisibilitySection">
+                    <label class="form-label">Visible to Roles</label>
+                    <div id="roleCheckboxes" class="max-h-32 overflow-y-auto border border-gray-200 rounded-lg p-2">
+                        <!-- Populated by JavaScript -->
+                        <p class="text-xs text-gray-400">Loading roles...</p>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Leave all unchecked to make visible to all roles</p>
+                </div>
             </div>
         </form>
         
@@ -484,6 +527,49 @@ function initializePage() {
     console.log('Initializing Order Status Management');
     loadStatistics();
     loadStatuses();
+    loadRoles();  // Load available roles for visibility settings
+}
+
+// Global roles array
+let availableRoles = [];
+
+// Load available roles for visibility settings
+async function loadRoles() {
+    try {
+        const response = await fetch('/order-status/api/roles', {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            availableRoles = data.roles;
+            populateRoleCheckboxes();
+        }
+    } catch (error) {
+        console.error('Error loading roles:', error);
+    }
+}
+
+// Populate role checkboxes in the modal
+function populateRoleCheckboxes(selectedRoles = []) {
+    const container = document.getElementById('roleCheckboxes');
+    if (!container) return;
+    
+    if (availableRoles.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-400">No roles available</p>';
+        return;
+    }
+    
+    container.innerHTML = availableRoles.map(role => `
+        <label class="flex items-center gap-2 py-1 hover:bg-gray-50 rounded px-1 cursor-pointer">
+            <input type="checkbox" 
+                   class="role-checkbox rounded" 
+                   value="${role.id}" 
+                   data-role-name="${role.urole_name}"
+                   ${selectedRoles.includes(role.id) ? 'checked' : ''}>
+            <span class="text-sm text-gray-700">${role.urole_name}</span>
+        </label>
+    `).join('');
 }
 
 // Load statistics
@@ -589,6 +675,8 @@ function renderStatuses() {
                             <code class="text-xs bg-gray-200 px-2 py-1 rounded">${status.status_code}</code>
                             ${status.is_final ? '<span class="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Final</span>' : ''}
                             ${!status.is_active ? '<span class="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">Inactive</span>' : ''}
+                            ${status.show_in_mobile === false ? '<span class="text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded">📵 Hidden from Mobile</span>' : ''}
+                            ${status.visible_to_roles && status.visible_to_roles.length > 0 ? '<span class="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded">🔒 Role-restricted</span>' : ''}
                         </div>
                         ${status.description ? `<div class="text-sm text-gray-600">${status.description}</div>` : ''}
                     </div>
@@ -666,6 +754,9 @@ function openCreateStatusModal() {
     document.getElementById('saveStatusText').textContent = 'Create Status';
     document.getElementById('statusForm').reset();
     document.getElementById('statusId').value = '';
+    document.getElementById('iconCustom').value = '';  // Reset custom icon field
+    document.getElementById('showInMobile').checked = true;  // Default to shown in mobile
+    populateRoleCheckboxes([]);  // Clear role selections
     document.getElementById('statusModal').style.display = 'flex';
 }
 
@@ -679,9 +770,47 @@ function editStatus(statusId) {
     document.getElementById('statusCode').value = status.status_code;
     document.getElementById('statusName').value = status.status_name;
     document.getElementById('description').value = status.description || '';
-    document.getElementById('colorClass').value = status.color_class;
-    document.getElementById('icon').value = status.icon;
+    document.getElementById('colorClass').value = status.color_class || 'gray';
     document.getElementById('isFinal').checked = status.is_final;
+    
+    // Mobile visibility settings
+    document.getElementById('showInMobile').checked = status.show_in_mobile !== false;  // Default true if not set
+    
+    // Role visibility - parse if string, otherwise use as-is
+    let selectedRoles = status.visible_to_roles || [];
+    if (typeof selectedRoles === 'string') {
+        try {
+            selectedRoles = JSON.parse(selectedRoles);
+        } catch (e) {
+            selectedRoles = [];
+        }
+    }
+    populateRoleCheckboxes(selectedRoles);
+    
+    // Handle icon - check if it's in the dropdown options
+    const iconSelect = document.getElementById('icon');
+    const iconCustom = document.getElementById('iconCustom');
+    const statusIcon = status.icon || '';
+    
+    // Try to find in dropdown
+    let foundInDropdown = false;
+    for (let option of iconSelect.options) {
+        if (option.value === statusIcon) {
+            iconSelect.value = statusIcon;
+            iconCustom.value = '';
+            foundInDropdown = true;
+            break;
+        }
+    }
+    
+    // If not found in dropdown, put in custom field
+    if (!foundInDropdown && statusIcon) {
+        iconSelect.value = '';
+        iconCustom.value = statusIcon;
+    } else if (!statusIcon) {
+        iconSelect.value = '';
+        iconCustom.value = '';
+    }
     
     document.getElementById('statusModal').style.display = 'flex';
 }
@@ -692,9 +821,36 @@ function closeStatusModal() {
 
 // Save status
 async function saveStatus() {
-    const form = document.getElementById('statusForm');
-    const formData = new FormData(form);
     const statusId = document.getElementById('statusId').value;
+    
+    // Collect form data as JSON (better for emoji handling)
+    const statusCode = document.getElementById('statusCode').value.trim();
+    const statusName = document.getElementById('statusName').value.trim();
+    const description = document.getElementById('description').value.trim();
+    const colorClass = document.getElementById('colorClass').value;
+    const iconCustom = document.getElementById('iconCustom').value.trim();
+    const iconSelect = document.getElementById('icon').value;
+    const icon = iconCustom || iconSelect; // Custom icon takes priority
+    const isFinal = document.getElementById('isFinal').checked;
+    
+    // Mobile visibility settings
+    const showInMobile = document.getElementById('showInMobile').checked;
+    const selectedRoles = Array.from(document.querySelectorAll('.role-checkbox:checked'))
+        .map(cb => parseInt(cb.value));
+    
+    // Validate
+    if (!statusCode) {
+        showAlert('Status code is required', 'error');
+        return;
+    }
+    if (!/^[a-z_]+$/.test(statusCode)) {
+        showAlert('Status code must be lowercase letters and underscores only', 'error');
+        return;
+    }
+    if (!statusName) {
+        showAlert('Display name is required', 'error');
+        return;
+    }
     
     // Show loading
     document.getElementById('saveStatusText').style.display = 'none';
@@ -705,12 +861,25 @@ async function saveStatus() {
         const url = statusId ? `/order-status/api/statuses/${statusId}` : '/order-status/api/statuses';
         const method = statusId ? 'PUT' : 'POST';
         
+        const payload = {
+            status_code: statusCode,
+            status_name: statusName,
+            description: description || null,
+            color_class: colorClass,
+            icon: icon || null,
+            is_final: isFinal,
+            show_in_mobile: showInMobile,
+            visible_to_roles: selectedRoles.length > 0 ? selectedRoles : null  // null = visible to all
+        };
+        
         const response = await fetch(url, {
             method: method,
             headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
             },
-            body: formData
+            body: JSON.stringify(payload)
         });
         
         const data = await response.json();
@@ -721,11 +890,16 @@ async function saveStatus() {
             loadStatuses();
             loadStatistics();
         } else {
-            showAlert(data.message || 'Failed to save status', 'error');
+            // Show detailed error message
+            let errorMsg = data.message || 'Failed to save status';
+            if (data.errors) {
+                errorMsg = Object.values(data.errors).flat().join(', ');
+            }
+            showAlert(errorMsg, 'error');
         }
     } catch (error) {
         console.error('Error saving status:', error);
-        showAlert('Error saving status', 'error');
+        showAlert('Error saving status: ' + error.message, 'error');
     } finally {
         // Hide loading
         document.getElementById('saveStatusText').style.display = 'block';
