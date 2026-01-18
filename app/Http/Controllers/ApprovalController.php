@@ -986,4 +986,275 @@ class ApprovalController extends Controller
             return null;
         }
     }
+
+    /**
+     * ⭐ Online Approvals - Dedicated page for Online payment approvals only
+     * Similar to mobile OnlineApprovalsScreen but for web
+     */
+    public function onlineApprovals(Request $request)
+    {
+        $user = auth()->user();
+        
+        // Check if user has L1 or L2 approval rights
+        $hasLevel1Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
+        $hasLevel2Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+        
+        if (!$hasLevel1Rights && !$hasLevel2Rights) {
+            return redirect()->route('approvals.index')
+                ->with('info', 'You do not have approval rights.');
+        }
+
+        // Get key account for online
+        $onlineAccount = AccountModel::getByCode('ONLINE');
+        
+        // Get pending L1 online items
+        $l1Items = [];
+        if ($hasLevel1Rights) {
+            $l1Items = $this->getOnlineL1Items($onlineAccount);
+        }
+        
+        // Get pending L2 online items
+        $l2Items = [];
+        if ($hasLevel2Rights) {
+            $l2Items = $this->getOnlineL2Items($onlineAccount);
+        }
+        
+        // Get approved online items (last 30 days)
+        $approvedItems = $this->getOnlineApprovedItems($request->input('approved_from'), $request->input('approved_to'));
+        
+        // Calculate summaries
+        $summaries = [
+            'l1' => [
+                'count' => count($l1Items),
+                'amount' => $this->sumAmounts($l1Items),
+            ],
+            'l2' => [
+                'count' => count($l2Items),
+                'amount' => $this->sumAmounts($l2Items),
+            ],
+            'approved' => [
+                'count' => count($approvedItems),
+                'amount' => $this->sumAmounts($approvedItems),
+            ],
+        ];
+        
+        // If AJAX request, return filtered data
+        if ($request->ajax()) {
+            return $this->getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems);
+        }
+        
+        return view('approvals.online', compact(
+            'summaries',
+            'hasLevel1Rights',
+            'hasLevel2Rights'
+        ));
+    }
+
+    /**
+     * Get L1 pending online items (ledger only - invoices with mode=online)
+     */
+    private function getOnlineL1Items($onlineAccount)
+    {
+        $items = [];
+        
+        $pendingLedger = LedgerModel::whereIn('approval_status', [
+                LedgerModel::STATUS_PENDING,
+                LedgerModel::STATUS_PENDING_L1,
+            ])
+            ->whereNull('request_id')
+            ->where('mode', 'online') // ⭐ Only online mode
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer'])
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+        
+        foreach ($pendingLedger as $ledger) {
+            $items[] = $this->formatOnlineLedgerItem($ledger, 1);
+        }
+        
+        return $items;
+    }
+
+    /**
+     * Get L2 pending online items
+     */
+    private function getOnlineL2Items($onlineAccount)
+    {
+        $items = [];
+        
+        $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)
+            ->whereNull('request_id')
+            ->where('mode', 'online') // ⭐ Only online mode
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer'])
+            ->orderBy('transaction_date', 'desc')
+            ->get();
+        
+        foreach ($pendingLedger as $ledger) {
+            $items[] = $this->formatOnlineLedgerItem($ledger, 2);
+        }
+        
+        return $items;
+    }
+
+    /**
+     * Get approved online items
+     */
+    private function getOnlineApprovedItems($dateFrom = null, $dateTo = null)
+    {
+        $items = [];
+        
+        if (!$dateFrom) {
+            $dateFrom = Carbon::now()->subDays(30)->startOfDay();
+        } else {
+            $dateFrom = Carbon::parse($dateFrom)->startOfDay();
+        }
+        if (!$dateTo) {
+            $dateTo = Carbon::now()->endOfDay();
+        } else {
+            $dateTo = Carbon::parse($dateTo)->endOfDay();
+        }
+        
+        $approvedLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->whereBetween('approval_date', [$dateFrom, $dateTo])
+            ->whereNull('request_id')
+            ->where('mode', 'online') // ⭐ Only online mode
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'approvedBy'])
+            ->orderBy('approval_date', 'desc')
+            ->get();
+        
+        foreach ($approvedLedger as $ledger) {
+            $items[] = $this->formatOnlineLedgerItem($ledger, null, 'approved');
+        }
+        
+        return $items;
+    }
+
+    /**
+     * Format online ledger item for display
+     */
+    private function formatOnlineLedgerItem($ledger, $level = null, $overrideStatus = null)
+    {
+        // Determine customer name
+        $requester = 'Unknown';
+        if ($ledger->order && $ledger->order->customer) {
+            $fullName = trim($ledger->order->customer->full_name ?? '');
+            $requester = $fullName ?: 
+                        $ledger->order->customer->company ?: 
+                        $ledger->order->customer->phone ?: 
+                        'Unknown';
+        }
+        
+        // Display number and date
+        $displayNumber = "TXN-{$ledger->id}";
+        $displayDate = $ledger->transaction_date;
+        $orderNumber = null;
+        
+        if ($ledger->order) {
+            $orderNumber = $ledger->order->order_number;
+            $displayNumber = $orderNumber;
+            if ($ledger->order->order_date) {
+                $displayDate = $ledger->order->order_date->format('Y-m-d');
+            }
+        }
+        
+        // Determine level from status if not provided
+        if ($level === null && $overrideStatus !== 'approved') {
+            if (in_array($ledger->approval_status, [LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1])) {
+                $level = 1;
+            } elseif ($ledger->approval_status === LedgerModel::STATUS_PENDING_L2) {
+                $level = 2;
+            }
+        }
+        
+        return [
+            'type' => 'ledger',
+            'id' => $ledger->id,
+            'number' => $displayNumber,
+            'order_number' => $orderNumber,
+            'requester' => $requester,
+            'title' => $ledger->order ? "Invoice #{$ledger->order->order_number}" : $ledger->description,
+            'description' => $ledger->description,
+            'amount' => $ledger->amount ?? 0,
+            'date' => $displayDate,
+            'approved_at' => $ledger->approval_date,
+            'approved_by' => $ledger->approvedBy ? $ledger->approvedBy->fullname : null,
+            'level' => $level,
+            'status' => $overrideStatus ?? $ledger->approval_status,
+            'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'online-approvals']),
+        ];
+    }
+
+    /**
+     * Get filtered data for AJAX requests (Online Approvals)
+     */
+    private function getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems)
+    {
+        $tab = $request->input('tab', 'l1'); // 'l1', 'l2', 'approved'
+        $search = $request->input('search');
+        $sort = $request->input('sort', 'date'); // 'date', 'name', 'approved_date'
+        
+        // Select items based on tab
+        $items = [];
+        switch ($tab) {
+            case 'l1':
+                $items = $l1Items;
+                break;
+            case 'l2':
+                $items = $l2Items;
+                break;
+            case 'approved':
+                $items = $approvedItems;
+                break;
+            case 'all': // All pending (L1 + L2)
+                $items = array_merge($l1Items, $l2Items);
+                break;
+        }
+        
+        // Filter by search
+        if ($search) {
+            $searchLower = strtolower($search);
+            $items = array_filter($items, function($item) use ($searchLower) {
+                return strpos(strtolower($item['number'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['requester'] ?? ''), $searchLower) !== false ||
+                       strpos(strtolower($item['title'] ?? ''), $searchLower) !== false;
+            });
+        }
+        
+        // Sort items
+        usort($items, function($a, $b) use ($sort) {
+            if ($sort === 'name') {
+                return strcasecmp($a['requester'] ?? '', $b['requester'] ?? '');
+            } elseif ($sort === 'approved_date') {
+                $dateA = strtotime($a['approved_at'] ?? '1970-01-01');
+                $dateB = strtotime($b['approved_at'] ?? '1970-01-01');
+                return $dateB - $dateA;
+            } else {
+                $dateA = strtotime($a['date'] ?? '1970-01-01');
+                $dateB = strtotime($b['date'] ?? '1970-01-01');
+                return $dateB - $dateA;
+            }
+        });
+        
+        // Group by customer for display
+        $grouped = [];
+        foreach ($items as $item) {
+            $customer = $item['requester'] ?? 'Unknown';
+            if (!isset($grouped[$customer])) {
+                $grouped[$customer] = [
+                    'customer' => $customer,
+                    'items' => [],
+                    'total_amount' => 0,
+                ];
+            }
+            $grouped[$customer]['items'][] = $item;
+            $grouped[$customer]['total_amount'] += $item['amount'] ?? 0;
+        }
+        
+        return response()->json([
+            'success' => true,
+            'items' => array_values($items),
+            'grouped' => array_values($grouped),
+            'count' => count($items),
+            'total_amount' => $this->sumAmounts($items),
+        ]);
+    }
 }

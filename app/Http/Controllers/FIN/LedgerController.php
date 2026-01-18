@@ -1149,13 +1149,16 @@ class LedgerController extends Controller
                     ->toArray();
             }
 
-            // Generate full image URL if bill_image exists
+            // ⭐ Generate full image URL if bill_image exists (using public-storage proxy like attendance)
             $billImageUrl = null;
             if ($transaction->bill_image) {
-                $billImageUrl = $transaction->bill_image;
-                // If it's not already a full URL, prepend storage path
-                if (!str_starts_with($transaction->bill_image, 'http')) {
-                    $billImageUrl = url('storage/' . $transaction->bill_image);
+                // If already a full URL, use as-is
+                if (str_starts_with($transaction->bill_image, 'http')) {
+                    $billImageUrl = $transaction->bill_image;
+                } else {
+                    // Use public-storage proxy endpoint (works for both web and mobile)
+                    $base = request()->getSchemeAndHttpHost();
+                    $billImageUrl = rtrim($base, '/') . '/public-storage/' . ltrim($transaction->bill_image, '/');
                 }
             }
 
@@ -1170,7 +1173,7 @@ class LedgerController extends Controller
                     'description' => $transaction->description,
                     'amount' => (float) $transaction->amount, // Ensure numeric
                     'adjustment_amount' => (float) ($transaction->adjustment_amount ?? 0), // For weighted purchases
-                    'bill_image' => $transaction->bill_image, // Relative path - frontend constructs URL
+                    'bill_image' => $billImageUrl, // ⭐ Full URL using public-storage proxy
                     'line_items' => $lineItems,
                     'from_account' => $transaction->fromAccount ? $transaction->fromAccount->account_name : '-',
                     'from_account_id' => $transaction->from_account_id,

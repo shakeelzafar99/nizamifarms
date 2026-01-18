@@ -122,7 +122,7 @@
     }
 }
 
-/* Status Cards Styles */
+/* Status Cards Styles - Compact Design */
 .status-card.active .border-gray-200 {
     border-color: #3b82f6 !important;
     border-width: 2px !important;
@@ -130,6 +130,41 @@
 
 .status-card:hover .border-gray-200 {
     border-color: #d1d5db !important;
+}
+
+/* Compact status cards */
+.status-card > div {
+    padding: 8px 12px !important;
+    min-width: auto !important;
+}
+
+.status-card .text-2xl.font-bold {
+    font-size: 18px !important;
+    line-height: 1.2 !important;
+}
+
+.status-card .text-sm.font-medium {
+    font-size: 11px !important;
+    white-space: nowrap;
+}
+
+.status-card .text-2xl:last-child {
+    font-size: 16px !important;
+}
+
+/* Verified location badges in compact mode */
+.status-card .mt-2 {
+    margin-top: 4px !important;
+}
+
+.status-card .text-xs.text-gray-600.font-medium {
+    font-size: 9px !important;
+    margin-bottom: 2px !important;
+}
+
+.status-card .flex.gap-2.text-xs span {
+    padding: 1px 4px !important;
+    font-size: 9px !important;
 }
 
 /* Show status cards only for open orders tab */
@@ -142,14 +177,50 @@
     display: {{ $source === 'other' && ($tab ?? 'all') === 'riders' ? 'block' : 'none' }};
 }
 
+/* Status cards container - horizontal scroll on smaller screens */
+#statusCardsContainer {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f1f5f9;
+    padding-bottom: 4px;
+}
+
+#statusCardsContainer::-webkit-scrollbar {
+    height: 4px;
+}
+
+#statusCardsContainer::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 2px;
+}
+
+#statusCardsContainer::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 2px;
+}
+
+/* Sticky Search Bar */
+.sticky-search-bar {
+    position: sticky;
+    top: 0;
+    z-index: 25;
+    background: #f9fafb;
+    padding: 8px 0;
+    margin: 0 -4px;
+    padding-left: 4px;
+    padding-right: 4px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
 /* Responsive status cards */
 @media (max-width: 768px) {
     #statusCardsContainer {
-        flex-direction: column;
+        flex-direction: row;
     }
     
     .status-card {
-        width: 100%;
+        flex-shrink: 0;
     }
     
     .status-card > div {
@@ -893,88 +964,92 @@ input:focus, select:focus, button:focus {
                     </div>
                 </div>
 
-                <!-- Open Orders Status Cards (only show for open orders tab) -->
+                <!-- Open Orders Status Cards (only show for open orders tab) - Compact Design -->
                 <!-- Status Cards Section - Always present but hidden by default -->
-                <div class="mt-4 mb-6" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
-                    <div class="flex flex-wrap gap-3" id="statusCardsContainer">
+                <div class="mt-2 mb-3" id="openOrdersStatusCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'open') ? 'block' : 'none' }};">
+                    <div class="flex gap-2" id="statusCardsContainer">
                         <!-- Status cards will be loaded here via JavaScript -->
-                        <div class="flex items-center justify-center py-8 text-gray-500">
-                            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <div class="flex items-center justify-center py-4 text-gray-500">
+                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            Loading status cards...
+                            <span class="text-sm">Loading...</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- Riders Cards (only show for riders tab) -->
-                <div class="mt-4 mb-6" id="ridersCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'riders') ? 'block' : 'none' }};">
-                    <div class="flex flex-wrap gap-3" id="ridersCardsContainer">
+                <!-- Riders Cards (only show for riders tab) - Compact Design -->
+                <div class="mt-2 mb-3" id="ridersCards" style="display: {{ ($source === 'other' && ($tab ?? 'all') === 'riders') ? 'block' : 'none' }};">
+                    <div class="flex gap-2 flex-wrap" id="ridersCardsContainer">
                         <!-- Rider cards will be loaded here via JavaScript -->
-                        <div class="flex items-center justify-center py-8 text-gray-500">
-                            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <div class="flex items-center justify-center py-4 text-gray-500">
+                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            Loading rider cards...
+                            <span class="text-sm">Loading...</span>
                         </div>
-                    </div>
-                </div>
-                <!-- Modern Search and Filters -->
-                <div class="mt-3 space-y-2">
-                    <!-- Main Search Bar -->
-                    <div class="relative">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-                            </svg>
-                        </div>
-                        <input type="text" 
-                               id="orderSearch" 
-                               placeholder="Search orders, customers, or order numbers..." 
-                               class="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-[15px] shadow-sm transition-shadow">
-                    </div>
-                    
-                    <!-- Filter Row with Better Spacing -->
-                    <div class="flex flex-wrap items-center gap-2 pb-2">
-                        <span class="text-[15px] font-medium text-gray-600">Filters:</span>
-                        
-                        <select id="statusFilter" class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
-                                <option value="">All status</option>
-                    </select>
-                            
-                            <div class="flex items-center gap-2">
-                                <label for="dateFilter" class="text-sm text-gray-500">Order date</label>
-                                <input type="date" 
-                                       id="dateFilter" 
-                                   class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <label for="deliveryDateFilter" class="text-sm text-gray-500">Delivery date</label>
-                                <input type="date" 
-                                       id="deliveryDateFilter" 
-                                   class="px-3 py-2 text-[15px] border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-shadow">
-                            </div>
-                            
-                            <button onclick="clearFilters()" 
-                                class="inline-flex items-center px-3 py-2 text-[15px] font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg border border-gray-300 shadow-sm transition-all" 
-                                    title="Clear filters">
-                            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                                </svg>
-                            Clear
-                            </button>
                     </div>
                 </div>
             </div>
         </div>
+    </div>
+    
+    <!-- Sticky Search and Filters Bar - Stays visible when scrolling -->
+    <div class="sticky top-0 z-20 bg-gray-50 border-b border-gray-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 lg:px-6 py-2">
+            <!-- Search and Filters in one compact row -->
+            <div class="flex flex-wrap items-center gap-3">
+                <!-- Search Input -->
+                <div class="relative flex-1 min-w-[200px] max-w-md">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                    </div>
+                    <input type="text" 
+                           id="orderSearch" 
+                           placeholder="Search orders, customers..." 
+                           class="block w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm shadow-sm">
+                </div>
+                
+                <!-- Filters -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <select id="statusFilter" class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                        <option value="">All status</option>
+                    </select>
+                    
+                    <div class="flex items-center gap-1">
+                        <label for="dateFilter" class="text-xs text-gray-500 whitespace-nowrap">Order</label>
+                        <input type="date" 
+                               id="dateFilter" 
+                               class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                    </div>
+                    
+                    <div class="flex items-center gap-1">
+                        <label for="deliveryDateFilter" class="text-xs text-gray-500 whitespace-nowrap">Delivery</label>
+                        <input type="date" 
+                               id="deliveryDateFilter" 
+                               class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                    </div>
+                    
+                    <button onclick="clearFilters()" 
+                            class="inline-flex items-center px-2 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg border border-gray-300 shadow-sm transition-all" 
+                            title="Clear filters">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                        <span class="ml-1">Clear</span>
+                    </button>
+                </div>
             </div>
+        </div>
 
     <!-- Modern Orders Table Container -->
-    <div class="max-w-7xl mx-auto px-4 lg:px-6 pt-4 pb-6">
+    <div class="max-w-7xl mx-auto px-4 lg:px-6 pt-2 pb-6">
         <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
-            <div class="orders-table-container relative" style="height: calc(100vh - 180px); overflow: auto;">
+            <div class="orders-table-container relative" style="height: calc(100vh - 220px); overflow: auto;">
                 <table class="min-w-full divide-y divide-gray-200" style="width: max-content; min-width: 100%;">
                     <colgroup id="table-colgroup"></colgroup>
                     <thead class="bg-gray-50 sticky top-0 z-20">
@@ -9520,7 +9595,7 @@ async function loadOpenOrdersStatusCards() {
         console.error('Error loading status cards:', error);
     }
 }
-// Render status cards with modern design
+// Render status cards with compact design
 function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0, verifiedCounts = null) {
     console.log('Rendering status cards:', statusCounts, 'Total:', totalOpenCount, 'Verified counts:', verifiedCounts); // Debug log
     const container = document.getElementById('statusCardsContainer');
@@ -9529,71 +9604,71 @@ function renderStatusCards(statusCounts, totalOpenCount, deliveredTodayCount = 0
         return;
     }
 
-    // Create "All Open" card first with verified/unverified breakdown
+    // Create "All Open" card first with verified/unverified breakdown - COMPACT
     let cardsHtml = `
-        <div class="status-card active" data-status="all" onclick="filterByStatus('all')">
-            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px]">
-                <div class="flex-1">
+        <div class="status-card active flex-shrink-0" data-status="all" onclick="filterByStatus('all')">
+            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border-2 border-blue-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer">
+                <div>
                     <div class="text-2xl font-bold text-blue-600">${totalOpenCount}</div>
                     <div class="text-sm font-medium text-gray-700">All Open</div>
                     ${verifiedCounts ? `
-                        <div class="mt-2">
-                            <div class="text-xs text-gray-600 font-medium mb-1">Verified Location:</div>
-                            <div class="flex gap-2 text-xs">
-                                <span class="px-2 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'verified');" title="Click to filter verified addresses">
+                        <div class="mt-1">
+                            <div class="text-xs text-gray-600 font-medium">Verified Location:</div>
+                            <div class="flex gap-1 text-xs mt-0.5">
+                                <span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'verified');" title="Verified">
                                     ✓ ${verifiedCounts.all_open_verified}
                                 </span>
-                                <span class="px-2 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'unverified');" title="Click to filter unverified addresses">
+                                <span class="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('all', 'unverified');" title="Unverified">
                                     ✗ ${verifiedCounts.all_open_unverified}
                                 </span>
                             </div>
                         </div>
                     ` : ''}
                 </div>
-                <div class="text-2xl">📋</div>
+                <div class="text-xl">📋</div>
             </div>
         </div>
     `;
 
-    // Delivered Today card (informational)
+    // Delivered Today card (informational) - COMPACT
     cardsHtml += `
-        <div class="status-card" data-status="delivered_today">
-            <div class="flex items-center justify-between p-4 bg-white rounded-lg border-2 border-green-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default min-w-[140px]">
+        <div class="status-card flex-shrink-0" data-status="delivered_today">
+            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border-2 border-green-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-default">
                 <div>
                     <div class="text-2xl font-bold text-green-600">${deliveredTodayCount}</div>
                     <div class="text-sm font-medium text-gray-700">Delivered Today</div>
                 </div>
-                <div class="text-2xl">✅</div>
+                <div class="text-xl">✅</div>
             </div>
         </div>
     `;
 
-    // Add individual status cards
+    // Add individual status cards - COMPACT
     statusCounts.forEach(status => {
         const colorClass = getStatusColorClass(status.color_class);
         const isOutForDelivery = status.status_code === 'out_for_delivery';
         
         cardsHtml += `
-            <div class="status-card" data-status="${status.status_code}" onclick="filterByStatus('${status.status_code}')">
-                <div class="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer min-w-[140px] hover:border-${colorClass}-300">
-                    <div class="flex-1">
+            <div class="status-card flex-shrink-0" data-status="${status.status_code}" onclick="filterByStatus('${status.status_code}')">
+                <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer hover:border-${colorClass}-300">
+                    <div>
                         <div class="text-2xl font-bold text-${colorClass}-600">${status.count}</div>
                         <div class="text-sm font-medium text-gray-700">${status.status_name}</div>
                         ${isOutForDelivery && verifiedCounts ? `
-                            <div class="mt-2">
-                                <div class="text-xs text-gray-600 font-medium mb-1">Verified Location:</div>
-                                <div class="flex gap-2 text-xs">
-                                    <span class="px-2 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'verified');" title="Click to filter verified addresses">
+                            <div class="mt-1">
+                                <div class="text-xs text-gray-600 font-medium">Verified Location:</div>
+                                <div class="flex gap-1 text-xs mt-0.5">
+                                    <span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded cursor-pointer hover:bg-green-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'verified');" title="Verified">
                                         ✓ ${verifiedCounts.out_for_delivery_verified}
                                     </span>
-                                    <span class="px-2 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'unverified');" title="Click to filter unverified addresses">
+                                    <span class="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded cursor-pointer hover:bg-orange-200" onclick="event.stopPropagation(); filterByVerifiedLocation('out_for_delivery', 'unverified');" title="Unverified">
                                         ✗ ${verifiedCounts.out_for_delivery_unverified}
                                     </span>
                                 </div>
                             </div>
                         ` : ''}
                     </div>
-                    <div class="text-2xl">${status.icon}</div>
+                    <div class="text-xl">${status.icon}</div>
                 </div>
             </div>
         `;

@@ -113,12 +113,18 @@ class ApprovalsAPIController extends Controller
      */
     public function onlineOnly(Request $request)
     {
+        $startTime = microtime(true);
+        $timings = [];
+        
         try {
             $user = auth()->user();
+            $timings['auth'] = round((microtime(true) - $startTime) * 1000, 2);
             
             // Check if user has L1 or L2 approval rights
+            $checkStart = microtime(true);
             $hasLevel1Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
             $hasLevel2Rights = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
+            $timings['permission_check'] = round((microtime(true) - $checkStart) * 1000, 2);
             
             if (!$hasLevel1Rights && !$hasLevel2Rights) {
                 return response()->json([
@@ -130,12 +136,9 @@ class ApprovalsAPIController extends Controller
             // ⭐ Direct query for online area only - much faster than full approvals
             $items = [];
             
-            // Get the ONLINE account ID
-            $onlineAccount = \App\Models\FIN\AccountModel::getByCode('ONLINE');
-            $onlineAccountId = $onlineAccount ? $onlineAccount->id : null;
-            
             // Get pending ledger entries for online area
             // ⭐ OPTIMIZED: Use select() to limit columns and constrained eager loading
+            $queryStart = microtime(true);
             $pendingLedger = \App\Models\FIN\LedgerModel::select([
                     'id', 'order_id', 'created_by', 'approval_status', 
                     'amount', 'description', 'transaction_date', 'mode'
@@ -145,12 +148,14 @@ class ApprovalsAPIController extends Controller
                 ->where('mode', 'online') // ⭐ Simplified: Only online mode (most common case)
                 ->with([
                     'order:id,order_number,order_date,customer_id', // Only needed columns
-                    'order.customer:id,first_name,last_name,company,phone', // Only needed columns
+                    'order.customer:id,first_name,last_name,company,phone,phone_original', // ⭐ Added phone_original for WhatsApp
                     'createdBy:id,fullname'
                 ])
                 ->orderBy('transaction_date', 'desc')
                 ->get();
+            $timings['db_query'] = round((microtime(true) - $queryStart) * 1000, 2);
             
+            $processStart = microtime(true);
             foreach ($pendingLedger as $ledger) {
                 // Determine level: pending_l2 = level 2, otherwise level 1
                 $level = $ledger->approval_status === 'pending_l2' ? 2 : 1;
@@ -165,10 +170,13 @@ class ApprovalsAPIController extends Controller
                 
                 // ⭐ For invoices, requester = CUSTOMER NAME (for grouping by customer)
                 $requester = 'Unknown';
+                $customerPhone = null;
                 if ($ledger->order && $ledger->order->customer) {
                     $customer = $ledger->order->customer;
                     $fullName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
                     $requester = $fullName ?: $customer->company ?: $customer->phone ?: 'Unknown';
+                    // ⭐ Get customer phone for WhatsApp
+                    $customerPhone = $customer->phone_original ?? $customer->phone ?? null;
                 } elseif ($ledger->createdBy) {
                     $requester = $ledger->createdBy->fullname ?? 'System';
                 }
@@ -184,19 +192,29 @@ class ApprovalsAPIController extends Controller
                     'level' => $level,
                     'area' => 'online',
                     'requester' => $requester,
+                    'customer_phone' => $customerPhone, // ⭐ For WhatsApp messaging
                     'category' => 'Invoice',
                     'category_color' => '#DBEAFE',
                 ];
             }
+            $timings['process_loop'] = round((microtime(true) - $processStart) * 1000, 2);
 
             // Sort by date descending
+            $sortStart = microtime(true);
             usort($items, function($a, $b) {
                 return strtotime($b['date'] ?? '1970-01-01') - strtotime($a['date'] ?? '1970-01-01');
             });
+            $timings['sort'] = round((microtime(true) - $sortStart) * 1000, 2);
 
             // Calculate summary
             $l1Items = array_filter($items, fn($i) => $i['level'] === 1);
             $l2Items = array_filter($items, fn($i) => $i['level'] === 2);
+            
+            $timings['total_ms'] = round((microtime(true) - $startTime) * 1000, 2);
+            $timings['item_count'] = count($items);
+            
+            // Log timings for debugging
+            Log::info('Online approvals timing', $timings);
             
             return response()->json([
                 'success' => true,
@@ -217,7 +235,8 @@ class ApprovalsAPIController extends Controller
                     ],
                     'has_level_1_rights' => $hasLevel1Rights,
                     'has_level_2_rights' => $hasLevel2Rights,
-                    'last_synced' => now()->toIso8601String()
+                    'last_synced' => now()->toIso8601String(),
+                    '_debug_timings' => $timings // ⭐ Include timings for debugging
                 ]
             ]);
 

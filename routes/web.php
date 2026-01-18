@@ -379,6 +379,9 @@ Route::middleware(['auth'])->group(function () {
     // Unified Approvals Dashboard
     Route::get('/approvals', [\App\Http\Controllers\ApprovalController::class, 'index'])->name('approvals.index');
     
+    // ⭐ Online Approvals - Dedicated page for online payment approvals
+    Route::get('/approvals/online', [\App\Http\Controllers\ApprovalController::class, 'onlineApprovals'])->name('approvals.online');
+    
     // Debug route for testing virtual assignment
     Route::get('/test-virtual-assignment', function() {
         $requests = \App\Models\Request\RequestModel::where('status', 'pending')

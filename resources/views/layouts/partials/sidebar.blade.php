@@ -331,23 +331,48 @@
                      
                      $totalPendingApprovals = $pendingLedgerCount + $pendingRequestsCount;
                  @endphp
-                 <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                     <a href="/approvals" title="Approve requests, invoices, payments & transfers">
-                         <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                             <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                 <i class="ki-filled ki-check-circle text-lg"></i>
-                             </span>
-                             <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
-                                 Approvals Dashboard
-                             </span>
-                             @if($totalPendingApprovals > 0)
-                             <span class="kt-badge kt-badge-sm kt-badge-danger font-bold">
-                                 {{ $totalPendingApprovals }}
-                             </span>
-                             @endif
-                         </div>
-                     </a>
-                </div>
+                <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/approvals" title="Approve requests, invoices, payments & transfers">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-check-circle text-lg"></i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
+                                Approvals Dashboard
+                            </span>
+                            @if($totalPendingApprovals > 0)
+                            <span class="kt-badge kt-badge-sm kt-badge-danger font-bold">
+                                {{ $totalPendingApprovals }}
+                            </span>
+                            @endif
+                        </div>
+                    </a>
+               </div>
+               
+               {{-- ⭐ Online Approvals - Dedicated page for online payments --}}
+               @php
+                   $pendingOnlineCount = \App\Models\FIN\LedgerModel::whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
+                       ->whereNull('request_id')
+                       ->where('mode', 'online')
+                       ->count();
+               @endphp
+               <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                   <a href="/approvals/online" title="Approve online payment invoices">
+                       <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                           <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                               💳
+                           </span>
+                           <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
+                               Online Approvals
+                           </span>
+                           @if($pendingOnlineCount > 0)
+                           <span class="kt-badge kt-badge-sm kt-badge-primary font-bold">
+                               {{ $pendingOnlineCount }}
+                           </span>
+                           @endif
+                       </div>
+                   </a>
+              </div>
                 @endif
                 
                 <!-- HR & Salary Section -->
