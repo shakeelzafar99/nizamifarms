@@ -35,6 +35,8 @@ class OrderController extends Controller
         $status = $request->get('status', ''); // Status filter
         $date = $request->get('date', ''); // Order date filter
         $deliveryDate = $request->get('delivery_date', ''); // Delivery date filter (from status history)
+        $orderMonth = $request->get('order_month', ''); // Order month filter (YYYY-MM)
+        $deliveryMonth = $request->get('delivery_month', ''); // Delivery month filter (YYYY-MM)
 
         // Check permissions for Shopify orders
         $canViewShopify = $user->hasPermission('view_shopify_orders');
@@ -103,6 +105,22 @@ class OrderController extends Controller
             });
         }
         
+        // Apply order month filter if provided (YYYY-MM format)
+        if (!empty($orderMonth)) {
+            $query->whereRaw("DATE_FORMAT(order_date, '%Y-%m') = ?", [$orderMonth]);
+        }
+        
+        // Apply delivery month filter (non-Shopify orders only) using status history
+        if ($source !== 'shopify' && !empty($deliveryMonth)) {
+            $query->whereExists(function($q) use ($deliveryMonth) {
+                $q->select(\DB::raw(1))
+                  ->from('t_crm_order_status_history as h')
+                  ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                  ->where('h.status_code', 'delivered')
+                  ->whereRaw("DATE_FORMAT(h.changed_at, '%Y-%m') = ?", [$deliveryMonth]);
+            });
+        }
+        
         // Handle per_page parameter
         $perPage = $request->get('per_page', 25);
         $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 25; // Validate per_page values
@@ -114,6 +132,8 @@ class OrderController extends Controller
         if (!empty($status)) $appendParams['status'] = $status;
         if (!empty($date)) $appendParams['date'] = $date;
         if (!empty($deliveryDate)) $appendParams['delivery_date'] = $deliveryDate;
+        if (!empty($orderMonth)) $appendParams['order_month'] = $orderMonth;
+        if (!empty($deliveryMonth)) $appendParams['delivery_month'] = $deliveryMonth;
         $orders->appends($appendParams);
         
         // Counts for badges
@@ -555,6 +575,8 @@ class OrderController extends Controller
                 $validationRules['order_status'] = 'required|string|exists:t_crm_order_status_master,status_code';
                 $validationRules['payment_method'] = 'nullable|string';
                 $validationRules['expected_packets'] = 'nullable|integer|min:0';
+                // Customer name (stored directly on order for display)
+                $validationRules['name'] = 'nullable|string|max:255';
                 // Address fields
                 $validationRules['address_first_name'] = 'nullable|string';
                 $validationRules['address_last_name'] = 'nullable|string';
@@ -566,6 +588,8 @@ class OrderController extends Controller
                 $validationRules['address_province'] = 'nullable|string';
                 $validationRules['address_postal_code'] = 'nullable|string';
                 $validationRules['address_country'] = 'nullable|string';
+                // ⭐ Option to sync address changes back to customer profile
+                $validationRules['sync_to_customer'] = 'nullable|boolean';
             }
             
             $validated = $request->validate($validationRules);
@@ -926,11 +950,72 @@ class OrderController extends Controller
                 }
             }
             
+            // ⭐ SYNC TO CUSTOMER: Update customer profile if checkbox was checked
+            $customerSyncMessage = null;
+            if (!$isPartialUpdate && !empty($validated['sync_to_customer']) && $order->customer_id) {
+                try {
+                    $customer = \App\Models\CRM\CustomerModel::find($order->customer_id);
+                    if ($customer) {
+                        // Sync name fields
+                        if (!empty($validated['address_first_name'])) {
+                            $customer->first_name = $validated['address_first_name'];
+                        }
+                        if (!empty($validated['address_last_name'])) {
+                            $customer->last_name = $validated['address_last_name'];
+                        }
+                        
+                        // Sync address fields
+                        if (!empty($validated['address_line1'])) {
+                            $customer->address1 = $validated['address_line1'];
+                        }
+                        if (!empty($validated['address_line2'])) {
+                            $customer->address2 = $validated['address_line2'];
+                        }
+                        if (!empty($validated['address_city'])) {
+                            $customer->city = $validated['address_city'];
+                        }
+                        if (!empty($validated['address_province'])) {
+                            $customer->province = $validated['address_province'];
+                        }
+                        if (!empty($validated['address_postal_code'])) {
+                            $customer->postal_code = $validated['address_postal_code'];
+                        }
+                        if (!empty($validated['address_country'])) {
+                            $customer->country = $validated['address_country'];
+                        }
+                        
+                        // Sync phone if present on order but not on customer
+                        if (!empty($validated['address_phone'])) {
+                            $customer->phone_original = $validated['address_phone'];
+                        }
+                        
+                        $customer->updated_by = auth()->id();
+                        $customer->save();
+                        
+                        $customerSyncMessage = 'Customer profile also updated.';
+                        \Log::info('Synced order address changes to customer profile', [
+                            'order_id' => $order->id,
+                            'customer_id' => $customer->id
+                        ]);
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to sync address to customer profile', [
+                        'order_id' => $order->id,
+                        'customer_id' => $order->customer_id,
+                        'error' => $e->getMessage()
+                    ]);
+                    // Don't fail the order update, just log the warning
+                }
+            }
+            
             // Prepare response based on whether a ledger adjustment was created or payment method changed
             if ($ledgerAdjustmentCreated) {
                 $message = 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.';
                 if ($paymentMethodChanged) {
                     $message .= ' ' . $paymentMethodChangeMessage;
+                }
+                if ($customerSyncMessage) {
+                    $message .= ' ' . $customerSyncMessage;
                 }
                 return response()->json([
                     'success' => true,
@@ -938,6 +1023,7 @@ class OrderController extends Controller
                     'requires_approval' => true,
                     'adjustment_id' => $adjustmentId,
                     'payment_method_changed' => $paymentMethodChanged,
+                    'customer_synced' => !empty($customerSyncMessage),
                     'order' => $order->load(['customer', 'lineItems', 'discounts'])
                 ]);
             } else {
@@ -945,10 +1031,14 @@ class OrderController extends Controller
                 if ($paymentMethodChanged) {
                     $message = $paymentMethodChangeMessage;
                 }
+                if ($customerSyncMessage) {
+                    $message .= ' ' . $customerSyncMessage;
+                }
                 return response()->json([
                     'success' => true,
                     'message' => $message,
                     'payment_method_changed' => $paymentMethodChanged,
+                    'customer_synced' => !empty($customerSyncMessage),
                     'order' => $order->load(['customer', 'lineItems', 'discounts'])
                 ]);
             }
@@ -1690,6 +1780,8 @@ class OrderController extends Controller
             $status = $request->get('status', '');
             $date = $request->get('date', '');
             $deliveryDate = $request->get('delivery_date', '');
+            $orderMonth = $request->get('order_month', '');
+            $deliveryMonth = $request->get('delivery_month', '');
             
             // Check permissions
             $canViewShopify = $user->hasPermission('view_shopify_orders');
@@ -1770,6 +1862,22 @@ class OrderController extends Controller
                       ->whereColumn('h.order_id', 't_crm_prod_order.id')
                       ->where('h.status_code', 'delivered')
                       ->whereDate('h.changed_at', $deliveryDate);
+                });
+            }
+            
+            // Apply order month filter if provided (YYYY-MM format)
+            if (!empty($orderMonth)) {
+                $query->whereRaw("DATE_FORMAT(order_date, '%Y-%m') = ?", [$orderMonth]);
+            }
+            
+            // Apply delivery month filter (non-Shopify orders only) using status history
+            if ($source !== 'shopify' && !empty($deliveryMonth)) {
+                $query->whereExists(function($q) use ($deliveryMonth) {
+                    $q->select(\DB::raw(1))
+                      ->from('t_crm_order_status_history as h')
+                      ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                      ->where('h.status_code', 'delivered')
+                      ->whereRaw("DATE_FORMAT(h.changed_at, '%Y-%m') = ?", [$deliveryMonth]);
                 });
             }
             

@@ -1020,18 +1020,46 @@ input:focus, select:focus, button:focus {
                         <option value="">All status</option>
                     </select>
                     
-                    <div class="flex items-center gap-1">
-                        <label for="dateFilter" class="text-xs text-gray-500 whitespace-nowrap">Order</label>
-                        <input type="date" 
-                               id="dateFilter" 
-                               class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                    <!-- Date Filter Mode Toggle -->
+                    <div class="flex items-center bg-gray-100 rounded-lg p-0.5">
+                        <button id="dateModeDateBtn" onclick="setDateFilterMode('date')" class="date-mode-btn px-2 py-1 text-xs font-medium rounded-md bg-white shadow">Date</button>
+                        <button id="dateModeMonthBtn" onclick="setDateFilterMode('month')" class="date-mode-btn px-2 py-1 text-xs font-medium rounded-md text-gray-600">Month</button>
                     </div>
                     
-                    <div class="flex items-center gap-1">
-                        <label for="deliveryDateFilter" class="text-xs text-gray-500 whitespace-nowrap">Delivery</label>
-                        <input type="date" 
-                               id="deliveryDateFilter" 
-                               class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                    <!-- Date Filters (shown by default) -->
+                    <div id="dateFiltersContainer" class="flex items-center gap-2">
+                        <div class="flex items-center gap-1">
+                            <label for="dateFilter" class="text-xs text-gray-500 whitespace-nowrap">Order</label>
+                            <input type="date" 
+                                   id="dateFilter" 
+                                   class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                        </div>
+                        
+                        <div class="flex items-center gap-1">
+                            <label for="deliveryDateFilter" class="text-xs text-gray-500 whitespace-nowrap">Delivery</label>
+                            <input type="date" 
+                                   id="deliveryDateFilter" 
+                                   class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                        </div>
+                    </div>
+                    
+                    <!-- Month Filters (hidden by default) -->
+                    <div id="monthFiltersContainer" class="hidden flex items-center gap-2">
+                        <div class="flex items-center gap-1">
+                            <label for="orderMonthFilter" class="text-xs text-gray-500 whitespace-nowrap">Order</label>
+                            <select id="orderMonthFilter" 
+                                    class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                                <option value="">All months</option>
+                            </select>
+                        </div>
+                        
+                        <div class="flex items-center gap-1">
+                            <label for="deliveryMonthFilter" class="text-xs text-gray-500 whitespace-nowrap">Delivery</label>
+                            <select id="deliveryMonthFilter" 
+                                    class="px-2 py-2 text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm">
+                                <option value="">All months</option>
+                            </select>
+                        </div>
                     </div>
                     
                     <button onclick="clearFilters()" 
@@ -3064,6 +3092,8 @@ function loadEditForm(order) {
         <form id="editOrderForm" style="padding: 0;">
             <input type="hidden" name="order_id" value="${order.id}">
             <input type="hidden" name="customer_id" id="editCustomerId" value="${order.customer_id || ''}">
+            <!-- ⭐ Order's name field - stores customer display name directly on order -->
+            <input type="hidden" name="name" id="editOrderName" value="${order.name || ''}">
             
             ${window.isPopoutMode ? `
             <!-- Pop-out Mode: Compact Summary Bar -->
@@ -3252,6 +3282,21 @@ function loadEditForm(order) {
                                 </select>
                             </div>
                         </div>
+                        
+                        <!-- ⭐ Option to sync address changes to customer profile -->
+                        ${order.customer_id ? `
+                        <div style="margin-top: 12px; padding: 10px; background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px;">
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1e40af; cursor: pointer;">
+                                <input type="checkbox" name="sync_to_customer" id="editSyncToCustomer" value="1"
+                                       style="width: 16px; height: 16px; accent-color: #2563eb;">
+                                <span><strong>Also update customer profile</strong> with these address changes</span>
+                            </label>
+                            <p style="margin: 6px 0 0 24px; font-size: 11px; color: #6b7280;">
+                                Check this to save the address/name changes to the customer's profile as well.
+                                Leave unchecked for order-specific temporary changes.
+                            </p>
+                        </div>
+                        ` : ''}
                     </div>
                 </div>
             </div>
@@ -5280,7 +5325,9 @@ function saveOrderChanges(orderId) {
             address_line1: formData.get('address_line1'),
             address_line2: formData.get('address_line2'),
             address_city: formData.get('address_city'),
-            address_country: formData.get('address_country')
+            address_country: formData.get('address_country'),
+            // ⭐ Sync address to customer profile checkbox
+            sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false
         };
     }
     
@@ -5490,7 +5537,9 @@ function saveAndCloseOrder(orderId) {
             address_line1: formData.get('address_line1'),
             address_line2: formData.get('address_line2'),
             address_city: formData.get('address_city'),
-            address_country: formData.get('address_country')
+            address_country: formData.get('address_country'),
+            // ⭐ Sync address to customer profile checkbox
+            sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false
         };
     }
     
@@ -5849,7 +5898,9 @@ function popoutOrder() {
                 address_city: formData.get('address_city'),
                 address_province: formData.get('address_province'),
                 address_postal_code: formData.get('address_postal_code'),
-                address_country: formData.get('address_country')
+                address_country: formData.get('address_country'),
+                // ⭐ Sync address to customer profile checkbox
+                sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false
             };
             
             fetch(currentOrigin + '/orders/' + orderId, {
@@ -8121,9 +8172,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize status filter with current data
     initStatusFilter();
     
+    // Initialize month filter dropdowns
+    initMonthFilters();
+    
     // Initialize status cards if on open orders tab
     const currentTab = new URLSearchParams(window.location.search).get('tab');
     const currentSource = new URLSearchParams(window.location.search).get('source');
+    
+    // Restore date filter mode from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('order_month') || urlParams.get('delivery_month')) {
+        setDateFilterMode('month', false);
+        if (urlParams.get('order_month')) {
+            document.getElementById('orderMonthFilter').value = urlParams.get('order_month');
+        }
+        if (urlParams.get('delivery_month')) {
+            document.getElementById('deliveryMonthFilter').value = urlParams.get('delivery_month');
+        }
+    }
     
     // Load status cards for open orders tab
     const statusCardsSection = document.getElementById('openOrdersStatusCards');
@@ -8158,6 +8224,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const statusFilter = document.getElementById('statusFilter');
     const dateFilter = document.getElementById('dateFilter');
     const deliveryDateFilter = document.getElementById('deliveryDateFilter');
+    const orderMonthFilter = document.getElementById('orderMonthFilter');
+    const deliveryMonthFilter = document.getElementById('deliveryMonthFilter');
     
     let searchTimeout;
     
@@ -8188,6 +8256,10 @@ document.addEventListener('DOMContentLoaded', function() {
     dateFilter.addEventListener('change', function() { applyFiltersToUrl(); });
     if (deliveryDateFilter) deliveryDateFilter.addEventListener('change', function() { applyFiltersToUrl(); });
     
+    // Month filter event listeners
+    if (orderMonthFilter) orderMonthFilter.addEventListener('change', function() { applyFiltersToUrl(); });
+    if (deliveryMonthFilter) deliveryMonthFilter.addEventListener('change', function() { applyFiltersToUrl(); });
+    
     // Per-page selector functionality
     const perPageSelector = document.getElementById('per-page-selector');
     if (perPageSelector) {
@@ -8212,24 +8284,96 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch (e) {
         console.warn('Failed to process open=import param', e);
     }
-// Apply filters to URL and reload page (for status and date filters)
+// Initialize month filter dropdowns with last 12 months
+function initMonthFilters() {
+    const orderMonthFilter = document.getElementById('orderMonthFilter');
+    const deliveryMonthFilter = document.getElementById('deliveryMonthFilter');
+    
+    if (!orderMonthFilter || !deliveryMonthFilter) return;
+    
+    const months = [];
+    const now = new Date();
+    
+    for (let i = 0; i < 12; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        months.push({ value, label });
+    }
+    
+    const optionsHtml = '<option value="">All months</option>' + 
+        months.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+    
+    orderMonthFilter.innerHTML = optionsHtml;
+    deliveryMonthFilter.innerHTML = optionsHtml;
+}
+
+// Set date filter mode (date or month)
+window.dateFilterMode = 'date';
+function setDateFilterMode(mode, applyFilter = false) {
+    window.dateFilterMode = mode;
+    
+    const dateFiltersContainer = document.getElementById('dateFiltersContainer');
+    const monthFiltersContainer = document.getElementById('monthFiltersContainer');
+    const dateBtn = document.getElementById('dateModeDateBtn');
+    const monthBtn = document.getElementById('dateModeMonthBtn');
+    
+    if (mode === 'month') {
+        dateFiltersContainer.classList.add('hidden');
+        monthFiltersContainer.classList.remove('hidden');
+        dateBtn.classList.remove('bg-white', 'shadow');
+        dateBtn.classList.add('text-gray-600');
+        monthBtn.classList.add('bg-white', 'shadow');
+        monthBtn.classList.remove('text-gray-600');
+        
+        // Clear date filters when switching to month mode (but don't reload)
+        document.getElementById('dateFilter').value = '';
+        document.getElementById('deliveryDateFilter').value = '';
+    } else {
+        dateFiltersContainer.classList.remove('hidden');
+        monthFiltersContainer.classList.add('hidden');
+        dateBtn.classList.add('bg-white', 'shadow');
+        dateBtn.classList.remove('text-gray-600');
+        monthBtn.classList.remove('bg-white', 'shadow');
+        monthBtn.classList.add('text-gray-600');
+        
+        // Clear month filters when switching to date mode (but don't reload)
+        document.getElementById('orderMonthFilter').value = '';
+        document.getElementById('deliveryMonthFilter').value = '';
+    }
+    
+    // Only apply filters to URL if explicitly requested (e.g., when clearing filters)
+    // Switching modes should NOT trigger a page reload - user needs to select a value first
+    if (applyFilter) {
+        applyFiltersToUrl();
+    }
+}
+
+// Apply filters to URL and reload page (for status, date, and month filters)
 // This preserves proper server-side pagination
 function applyFiltersToUrl() {
     const statusFilter = document.getElementById('statusFilter').value;
     const dateFilter = document.getElementById('dateFilter').value;
     const deliveryDateFilter = document.getElementById('deliveryDateFilter') ? document.getElementById('deliveryDateFilter').value : '';
+    const orderMonthFilter = document.getElementById('orderMonthFilter') ? document.getElementById('orderMonthFilter').value : '';
+    const deliveryMonthFilter = document.getElementById('deliveryMonthFilter') ? document.getElementById('deliveryMonthFilter').value : '';
     
     const currentUrl = new URL(window.location);
     
-    // Update filter parameters
+    // Update status filter
     if (statusFilter) {
         currentUrl.searchParams.set('status', statusFilter);
     } else {
         currentUrl.searchParams.delete('status');
     }
     
+    // Date filters
     if (dateFilter) currentUrl.searchParams.set('date', dateFilter); else currentUrl.searchParams.delete('date');
     if (deliveryDateFilter) currentUrl.searchParams.set('delivery_date', deliveryDateFilter); else currentUrl.searchParams.delete('delivery_date');
+    
+    // Month filters
+    if (orderMonthFilter) currentUrl.searchParams.set('order_month', orderMonthFilter); else currentUrl.searchParams.delete('order_month');
+    if (deliveryMonthFilter) currentUrl.searchParams.set('delivery_month', deliveryMonthFilter); else currentUrl.searchParams.delete('delivery_month');
     
     // Reset to page 1 when filters change
     currentUrl.searchParams.set('page', '1');
@@ -8397,12 +8541,21 @@ function clearFilters() {
     document.getElementById('orderSearch').value = '';
     document.getElementById('statusFilter').value = '';
     document.getElementById('dateFilter').value = '';
+    document.getElementById('deliveryDateFilter').value = '';
+    document.getElementById('orderMonthFilter').value = '';
+    document.getElementById('deliveryMonthFilter').value = '';
+    
+    // Reset to date filter mode
+    setDateFilterMode('date', false);
     
     // Remove filter parameters from URL and reset to page 1
     const currentUrl = new URL(window.location);
     currentUrl.searchParams.delete('search');
     currentUrl.searchParams.delete('status');
     currentUrl.searchParams.delete('date');
+    currentUrl.searchParams.delete('delivery_date');
+    currentUrl.searchParams.delete('order_month');
+    currentUrl.searchParams.delete('delivery_month');
     currentUrl.searchParams.set('page', '1');
     
     // Navigate to the clean URL to reload with default data
@@ -9104,6 +9257,14 @@ function selectEditCustomer(customerIndex) {
         // Update customer name field if it exists
         const customerNameField = document.querySelector('input[name="customer_name"]');
         if (customerNameField) customerNameField.value = customer.name || '';
+        
+        // ⭐ ALSO update the order's `name` field (which stores customer name on the order itself)
+        // This ensures the order table shows the correct customer name immediately
+        const orderNameField = document.getElementById('editOrderName');
+        if (orderNameField) {
+            orderNameField.value = customer.name || '';
+            console.log('Updated order name field to:', customer.name);
+        }
         
         // Hide the selector
         hideCustomerSelector();

@@ -85,6 +85,11 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/mom-growth', [DashboardController::class, 'getMonthOverMonthGrowth']);
     Route::get('/dashboard/customer-cohort', [DashboardController::class, 'getCustomerCohort']);
     Route::get('/dashboard/orders-for-date', [DashboardController::class, 'getOrdersForDate']);
+    Route::get('/dashboard/monthly-ledger-analytics', [DashboardController::class, 'getMonthlyLedgerAnalytics']);
+    Route::get('/dashboard/ledger-transactions', [DashboardController::class, 'getLedgerTransactions']);
+    Route::get('/dashboard/monthly-product-categories', [DashboardController::class, 'getMonthlyProductCategories']);
+    Route::get('/dashboard/daily-product-categories', [DashboardController::class, 'getDailyProductCategories']);
+    Route::get('/dashboard/active-customers-list', [DashboardController::class, 'getActiveCustomersList']);
     
     // Log viewer routes
     Route::get('/logs', [LogController::class, 'index']);

@@ -397,6 +397,164 @@ class DashboardAnalyticsService
     }
 
     /**
+     * Get monthly analytics based on DELIVERED ORDERS
+     * Primary source: Orders with delivered status from order_status_history
+     * Payment mode from ORDER's payment_method field (not ledger)
+     * Customer type: New (first_order in this month) vs Returning
+     */
+    public function getMonthlyLedgerAnalytics($months = 12)
+    {
+        $cacheKey = "monthly_delivered_orders_v5_{$months}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($months) {
+            $endDate = Carbon::now()->endOfMonth();
+            $startDate = $endDate->copy()->subMonths($months)->startOfMonth();
+            
+            // PRIMARY SOURCE: Delivered orders grouped by delivery date
+            // Payment method from order, customer type from customer table
+            $data = DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
+                ->select(
+                    DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m') as month_key"),
+                    DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y') as month_name"),
+                    // Delivered order totals
+                    DB::raw("SUM(o.total_price) as invoice_total"),
+                    DB::raw("COUNT(DISTINCT o.id) as invoice_count"),
+                    // Unique customers
+                    DB::raw("COUNT(DISTINCT o.customer_id) as unique_customers"),
+                    // Online/Cash split from ORDER's payment_method field
+                    DB::raw("SUM(CASE WHEN o.payment_method IN ('online', 'Online', 'ONLINE', 'card', 'Card') THEN o.total_price ELSE 0 END) as online_total"),
+                    DB::raw("SUM(CASE WHEN o.payment_method IN ('online', 'Online', 'ONLINE', 'card', 'Card') THEN 1 ELSE 0 END) as online_count"),
+                    DB::raw("SUM(CASE WHEN o.payment_method NOT IN ('online', 'Online', 'ONLINE', 'card', 'Card') OR o.payment_method IS NULL THEN o.total_price ELSE 0 END) as cash_total"),
+                    DB::raw("SUM(CASE WHEN o.payment_method NOT IN ('online', 'Online', 'ONLINE', 'card', 'Card') OR o.payment_method IS NULL THEN 1 ELSE 0 END) as cash_count"),
+                    // Shopify/Manual split (based on order_number)
+                    DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN o.total_price ELSE 0 END) as shopify_total"),
+                    DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN 1 ELSE 0 END) as shopify_count"),
+                    DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN o.total_price ELSE 0 END) as manual_total"),
+                    DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN 1 ELSE 0 END) as manual_count"),
+                    // New vs Returning customers (based on first_order_date in same month as delivery)
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as new_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as new_customer_orders"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as returning_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as returning_customer_orders")
+                )
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->groupBy(DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m')"), DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y')"))
+                ->orderBy('month_key')
+                ->get();
+            
+            // Get expenses and vendor payments (these use transaction_date)
+            $financialData = DB::table('t_fin_ledger')
+                ->select(
+                    DB::raw("DATE_FORMAT(transaction_date, '%Y-%m') as month_key"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'expense' AND approval_status = 'approved' THEN amount ELSE 0 END) as expense_total"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'expense' AND approval_status = 'approved' THEN 1 ELSE 0 END) as expense_count"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'vendor_payment' AND approval_status = 'approved' THEN amount ELSE 0 END) as vendor_payment_total"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'vendor_payment' AND approval_status = 'approved' THEN 1 ELSE 0 END) as vendor_payment_count")
+                )
+                ->whereIn('transaction_type', ['expense', 'vendor_payment'])
+                ->whereBetween('transaction_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+                ->groupBy(DB::raw("DATE_FORMAT(transaction_date, '%Y-%m')"))
+                ->get()
+                ->keyBy('month_key');
+            
+            return $data->map(function ($row) use ($financialData) {
+                $invoiceTotal = round($row->invoice_total ?? 0, 2);
+                $monthKey = $row->month_key;
+                
+                // Get expenses and vendor payments for this month
+                $expenseTotal = round($financialData[$monthKey]->expense_total ?? 0, 2);
+                $expenseCount = (int) ($financialData[$monthKey]->expense_count ?? 0);
+                $vendorPaymentTotal = round($financialData[$monthKey]->vendor_payment_total ?? 0, 2);
+                $vendorPaymentCount = (int) ($financialData[$monthKey]->vendor_payment_count ?? 0);
+                
+                return [
+                    'month' => $row->month_key,
+                    'month_name' => $row->month_name,
+                    'invoice_total' => $invoiceTotal,
+                    'invoice_count' => (int) ($row->invoice_count ?? 0),
+                    'unique_customers' => (int) ($row->unique_customers ?? 0),
+                    'online_total' => round($row->online_total ?? 0, 2),
+                    'online_count' => (int) ($row->online_count ?? 0),
+                    'cash_total' => round($row->cash_total ?? 0, 2),
+                    'cash_count' => (int) ($row->cash_count ?? 0),
+                    'shopify_total' => round($row->shopify_total ?? 0, 2),
+                    'shopify_count' => (int) ($row->shopify_count ?? 0),
+                    'manual_total' => round($row->manual_total ?? 0, 2),
+                    'manual_count' => (int) ($row->manual_count ?? 0),
+                    'new_customer_revenue' => round($row->new_customer_revenue ?? 0, 2),
+                    'new_customer_orders' => (int) ($row->new_customer_orders ?? 0),
+                    'returning_customer_revenue' => round($row->returning_customer_revenue ?? 0, 2),
+                    'returning_customer_orders' => (int) ($row->returning_customer_orders ?? 0),
+                    'expense_total' => $expenseTotal,
+                    'expense_count' => $expenseCount,
+                    'vendor_payment_total' => $vendorPaymentTotal,
+                    'vendor_payment_count' => $vendorPaymentCount,
+                    'profit' => round($invoiceTotal - $expenseTotal - $vendorPaymentTotal, 2),
+                ];
+            })->values()->toArray();
+        });
+    }
+
+    /**
+     * Get monthly product category summary (Level 1 - attribute_1)
+     * Groups delivered orders by product category
+     */
+    public function getMonthlyProductCategorySummary($months = 12)
+    {
+        $cacheKey = "monthly_product_category_v4_{$months}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($months) {
+            $endDate = Carbon::now()->endOfMonth();
+            $startDate = $endDate->copy()->subMonths($months)->startOfMonth();
+            
+            // Join via SKU which is reliable across all orders
+            $data = DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
+                ->leftJoin('t_crm_prod_product_variant as v', 'li.sku', '=', 'v.sku')
+                ->leftJoin('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
+                ->select(
+                    DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m') as month_key"),
+                    DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y') as month_name"),
+                    DB::raw("COALESCE(p.attribute_1, 'Uncategorized') as category"),
+                    DB::raw("SUM(li.quantity) as total_qty"),
+                    DB::raw("SUM(li.line_total) as total_revenue")
+                )
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->groupBy(DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m')"), DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y')"), DB::raw("COALESCE(p.attribute_1, 'Uncategorized')"))
+                ->orderBy('month_key')
+                ->orderByDesc('total_revenue')
+                ->get();
+            
+            // Group by month
+            return $data->groupBy('month_key')->map(function ($items, $monthKey) {
+                $firstItem = $items->first();
+                return [
+                    'month' => $monthKey,
+                    'month_name' => $firstItem->month_name ?? Carbon::parse($monthKey . '-01')->format('M Y'),
+                    'categories' => $items->map(function ($item) {
+                        return [
+                            'category' => $item->category,
+                            'qty' => round($item->total_qty ?? 0, 2),
+                            'revenue' => round($item->total_revenue ?? 0, 2),
+                        ];
+                    })->values()->toArray()
+                ];
+            })->values()->toArray();
+        });
+    }
+
+    /**
      * Get monthly analytics data for the last N months
      * Uses the v_monthly_order_summary view when available, falls back to direct query
      */
@@ -410,17 +568,20 @@ class DashboardAnalyticsService
             
             // Query production orders table directly for speed
             // This avoids the slow JOIN in v_monthly_order_summary
+            // NOTE: Only counts delivered/completed/processing orders (actual delivered orders)
             $data = DB::table('t_crm_prod_order')
                 ->select(
                     DB::raw("DATE_FORMAT(order_date, '%Y-%m') as month_key"),
                     DB::raw("DATE_FORMAT(order_date, '%b %Y') as month_name"),
                     DB::raw('SUM(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as total_revenue'),
-                    DB::raw('COUNT(*) as order_count'),
-                    DB::raw('COUNT(DISTINCT customer_id) as unique_customers'),
+                    // Order count - only delivered/completed/processing orders
+                    DB::raw('SUM(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as order_count'),
+                    // Unique customers from delivered orders only
+                    DB::raw('COUNT(DISTINCT CASE WHEN order_status IN ("delivered", "completed", "processing") THEN customer_id END) as unique_customers'),
                     DB::raw('AVG(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN total_price ELSE NULL END) as avg_order_value'),
-                    // Shopify classification based on order_number prefix
-                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" THEN 1 ELSE 0 END) as shopify_converted_orders'),
-                    DB::raw('SUM(CASE WHEN order_number NOT LIKE "SH%" OR order_number IS NULL THEN 1 ELSE 0 END) as manual_orders'),
+                    // Shopify classification based on order_number prefix - only delivered orders
+                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" AND order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as shopify_converted_orders'),
+                    DB::raw('SUM(CASE WHEN (order_number NOT LIKE "SH%" OR order_number IS NULL) AND order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as manual_orders'),
                     DB::raw('SUM(CASE WHEN order_number LIKE "SH%" AND order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as shopify_revenue'),
                     DB::raw('SUM(CASE WHEN (order_number NOT LIKE "SH%" OR order_number IS NULL) AND order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as manual_revenue')
                 )
@@ -454,34 +615,66 @@ class DashboardAnalyticsService
     /**
      * Get daily analytics data for a specific month
      * Queries production orders table directly for speed
+     * Payment method from ORDER's payment_method field
+     * Includes new vs returning customer split and qty per day
      */
     public function getDailyAnalytics($year, $month)
     {
-        $cacheKey = "daily_analytics_{$year}_{$month}";
+        $cacheKey = "daily_analytics_delivery_v2_{$year}_{$month}";
         
         return Cache::remember($cacheKey, 600, function () use ($year, $month) {
             $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
             $endDate = $startDate->copy()->endOfMonth();
             
-            // Query production orders table directly
-            $dbData = DB::table('t_crm_prod_order')
+            // Query delivered orders by DELIVERY DATE (from status history)
+            // Payment method from order, customer type from customer table
+            $dbData = DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
                 ->select(
-                    DB::raw('DATE(order_date) as date_key'),
-                    DB::raw('SUM(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as total_revenue'),
-                    DB::raw('COUNT(*) as order_count'),
-                    DB::raw('COUNT(DISTINCT customer_id) as unique_customers'),
-                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" THEN 1 ELSE 0 END) as shopify_converted_orders'),
-                    DB::raw('SUM(CASE WHEN order_number NOT LIKE "SH%" OR order_number IS NULL THEN 1 ELSE 0 END) as manual_orders'),
-                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" AND order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as shopify_revenue'),
-                    DB::raw('SUM(CASE WHEN (order_number NOT LIKE "SH%" OR order_number IS NULL) AND order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as manual_revenue')
+                    DB::raw('DATE(h.delivered_at) as date_key'),
+                    DB::raw('SUM(o.total_price) as total_revenue'),
+                    DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    DB::raw('COUNT(DISTINCT o.customer_id) as unique_customers'),
+                    // Shopify/Manual split (based on order_number)
+                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" OR o.order_number LIKE "sh%" THEN 1 ELSE 0 END) as shopify_converted_orders'),
+                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" AND o.order_number NOT LIKE "sh%" THEN 1 ELSE 0 END) as manual_orders'),
+                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" OR o.order_number LIKE "sh%" THEN o.total_price ELSE 0 END) as shopify_revenue'),
+                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" AND o.order_number NOT LIKE "sh%" THEN o.total_price ELSE 0 END) as manual_revenue'),
+                    // Online/Cash split from ORDER's payment_method field
+                    DB::raw('SUM(CASE WHEN o.payment_method IN ("online", "Online", "ONLINE", "card", "Card") THEN o.total_price ELSE 0 END) as online_total'),
+                    DB::raw('SUM(CASE WHEN o.payment_method IN ("online", "Online", "ONLINE", "card", "Card") THEN 1 ELSE 0 END) as online_count'),
+                    DB::raw('SUM(CASE WHEN o.payment_method NOT IN ("online", "Online", "ONLINE", "card", "Card") OR o.payment_method IS NULL THEN o.total_price ELSE 0 END) as cash_total'),
+                    DB::raw('SUM(CASE WHEN o.payment_method NOT IN ("online", "Online", "ONLINE", "card", "Card") OR o.payment_method IS NULL THEN 1 ELSE 0 END) as cash_count'),
+                    // New vs Returning customers (first_order_date in same month as delivery)
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN o.total_price ELSE 0 END) as new_customer_revenue'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN 1 ELSE 0 END) as new_customer_orders'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") THEN o.total_price ELSE 0 END) as returning_customer_revenue'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") THEN 1 ELSE 0 END) as returning_customer_orders')
                 )
-                ->where('order_date', '>=', $startDate->format('Y-m-d'))
-                ->where('order_date', '<=', $endDate->format('Y-m-d'))
                 ->where(function($q) {
-                    $q->where('external_source', '!=', 'shopify')
-                      ->orWhereNull('external_source');
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
                 })
-                ->groupBy(DB::raw('DATE(order_date)'))
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->groupBy(DB::raw('DATE(h.delivered_at)'))
+                ->get()
+                ->keyBy('date_key');
+            
+            // Get quantity per day from line items
+            $qtyData = DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
+                ->select(
+                    DB::raw('DATE(h.delivered_at) as date_key'),
+                    DB::raw('SUM(li.quantity) as total_qty')
+                )
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->groupBy(DB::raw('DATE(h.delivered_at)'))
                 ->get()
                 ->keyBy('date_key');
             
@@ -492,6 +685,7 @@ class DashboardAnalyticsService
             while ($currentDay <= $endDate) {
                 $dateKey = $currentDay->format('Y-m-d');
                 $row = $dbData->get($dateKey);
+                $qty = $qtyData->get($dateKey);
                 
                 $dailyData[] = [
                     'date' => $dateKey,
@@ -500,10 +694,19 @@ class DashboardAnalyticsService
                     'revenue' => round($row->total_revenue ?? 0, 2),
                     'orders' => (int) ($row->order_count ?? 0),
                     'customers' => (int) ($row->unique_customers ?? 0),
+                    'total_qty' => round($qty->total_qty ?? 0, 2),
                     'shopify_orders' => (int) ($row->shopify_converted_orders ?? 0),
                     'manual_orders' => (int) ($row->manual_orders ?? 0),
                     'shopify_revenue' => round($row->shopify_revenue ?? 0, 2),
                     'manual_revenue' => round($row->manual_revenue ?? 0, 2),
+                    'online_total' => round($row->online_total ?? 0, 2),
+                    'online_count' => (int) ($row->online_count ?? 0),
+                    'cash_total' => round($row->cash_total ?? 0, 2),
+                    'cash_count' => (int) ($row->cash_count ?? 0),
+                    'new_customer_revenue' => round($row->new_customer_revenue ?? 0, 2),
+                    'new_customer_orders' => (int) ($row->new_customer_orders ?? 0),
+                    'returning_customer_revenue' => round($row->returning_customer_revenue ?? 0, 2),
+                    'returning_customer_orders' => (int) ($row->returning_customer_orders ?? 0),
                     'avg_order_value' => ($row->order_count ?? 0) > 0 ? round(($row->total_revenue ?? 0) / $row->order_count, 2) : 0,
                 ];
                 
@@ -514,6 +717,60 @@ class DashboardAnalyticsService
                 'month_name' => $startDate->format('F Y'),
                 'data' => $dailyData
             ];
+        });
+    }
+
+    /**
+     * Get daily product category summary (Level 1 - attribute_1)
+     * Groups delivered orders by product category for each day
+     * Uses variant join (via variant_id or SKU) to get product category
+     */
+    public function getDailyProductCategorySummary($year, $month)
+    {
+        $cacheKey = "daily_product_category_v2_{$year}_{$month}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($year, $month) {
+            $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
+            $endDate = $startDate->copy()->endOfMonth();
+            
+            // Join via variant (using variant_id first, then fallback to SKU matching)
+            $data = DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
+                ->leftJoin('t_crm_prod_product_variant as v', function($join) {
+                    $join->on('li.variant_id', '=', 'v.id')
+                         ->orOn('li.sku', '=', 'v.sku');
+                })
+                ->leftJoin('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
+                ->select(
+                    DB::raw('DATE(h.delivered_at) as date_key'),
+                    DB::raw('COALESCE(p.attribute_1, "Uncategorized") as category'),
+                    DB::raw('SUM(li.quantity) as total_qty'),
+                    DB::raw('SUM(li.line_total) as total_revenue')
+                )
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->groupBy(DB::raw('DATE(h.delivered_at)'), DB::raw('COALESCE(p.attribute_1, "Uncategorized")'))
+                ->orderBy('date_key')
+                ->orderByDesc('total_revenue')
+                ->get();
+            
+            // Group by date
+            return $data->groupBy('date_key')->map(function ($items, $dateKey) {
+                return [
+                    'date' => $dateKey,
+                    'categories' => $items->map(function ($item) {
+                        return [
+                            'category' => $item->category,
+                            'qty' => round($item->total_qty ?? 0, 2),
+                            'revenue' => round($item->total_revenue ?? 0, 2),
+                        ];
+                    })->values()->toArray()
+                ];
+            })->values()->toArray();
         });
     }
 
@@ -643,8 +900,6 @@ class DashboardAnalyticsService
         
         // Clear new cache keys
         Cache::forget('general_stats');
-        Cache::forget('top_cards_stats');
-        Cache::forget('financial_summary');
         Cache::forget('order_source_summary');
         Cache::forget('customer_segments');
         Cache::forget('product_categories');
@@ -652,6 +907,9 @@ class DashboardAnalyticsService
         
         for ($i = 1; $i <= 24; $i++) {
             Cache::forget("monthly_analytics_{$i}");
+            Cache::forget("monthly_delivered_orders_v5_{$i}");
+            Cache::forget("monthly_product_category_v2_{$i}");
+            Cache::forget("monthly_product_category_v3_{$i}");
         }
         
         // Clear daily analytics (current year + last year)
@@ -659,7 +917,26 @@ class DashboardAnalyticsService
         for ($year = $currentYear - 1; $year <= $currentYear; $year++) {
             for ($month = 1; $month <= 12; $month++) {
                 Cache::forget("daily_analytics_{$year}_{$month}");
+                Cache::forget("daily_analytics_delivery_v2_{$year}_{$month}");
+                Cache::forget("daily_product_category_v2_{$year}_{$month}");
             }
+        }
+        
+        // Clear month-specific cache keys (top_cards and financial_summary)
+        $now = Carbon::now();
+        for ($i = 0; $i < 24; $i++) {
+            $monthKey = $now->copy()->subMonths($i)->format('Y-m');
+            Cache::forget("top_cards_stats_{$monthKey}");
+            Cache::forget("financial_summary_{$monthKey}");
+            Cache::forget("product_category_delivery_v2_{$monthKey}_1");
+            Cache::forget("product_category_delivery_v2_{$monthKey}_2");
+            Cache::forget("product_category_delivery_v3_{$monthKey}_1");
+            Cache::forget("product_category_delivery_v3_{$monthKey}_2");
+        }
+        
+        // Clear monthly product category cache
+        for ($i = 1; $i <= 24; $i++) {
+            Cache::forget("monthly_product_category_v4_{$i}");
         }
     }
 
@@ -692,109 +969,342 @@ class DashboardAnalyticsService
                 ->whereBetween('order_date', [$currentMonthStart, $currentMonthEnd])
                 ->count();
             
-            // Active customers (90 days)
-            $activeCustomers90Days = CustomerModel::where('last_order_date', '>=', $now->copy()->subDays(90))
+            // Active customers (90 days from today, regardless of selected month)
+            $ninetyDaysAgo = $now->copy()->subDays(90);
+            $activeCustomers90Days = CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)
                 ->where('is_active', true)
                 ->count();
             
-            // New customers this month
+            // New customers in the last 90 days (for the Active 90d card badge)
+            $newCustomers90Days = CustomerModel::where('first_order_date', '>=', $ninetyDaysAgo)
+                ->count();
+            
+            // New customers for the selected month (for monthly breakdown)
             $newCustomersThisMonth = CustomerModel::whereBetween('first_order_date', [$currentMonthStart, $currentMonthEnd])
+                ->count();
+            
+            // Returning customers in the last 90 days (first_order_date before 90 days ago)
+            $returningCustomers90Days = CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)
+                ->where('first_order_date', '<', $ninetyDaysAgo)
+                ->where('is_active', true)
                 ->count();
             
             return [
                 'month_key' => $monthKey,
                 'month_name' => $currentMonthStart->format('F Y'),
                 
-                // Financial cards
+                // Total Invoices (ALL delivered, excluding reversed)
                 'invoices' => $financialData['invoice_total'] ?? 0,
                 'invoice_count' => $financialData['invoice_count'] ?? 0,
+                
+                // Online Invoices Breakdown
+                'online_total' => $financialData['online_total'] ?? 0,
+                'online_count' => $financialData['online_count'] ?? 0,
+                'online_approved_total' => $financialData['online_approved_total'] ?? 0,
+                'online_approved_count' => $financialData['online_approved_count'] ?? 0,
+                'online_pending_l1_total' => $financialData['online_pending_l1_total'] ?? 0,
+                'online_pending_l1_count' => $financialData['online_pending_l1_count'] ?? 0,
+                'online_pending_l2_total' => $financialData['online_pending_l2_total'] ?? 0,
+                'online_pending_l2_count' => $financialData['online_pending_l2_count'] ?? 0,
+                
+                // Cash Invoices Breakdown
+                'cash_total' => $financialData['cash_total'] ?? 0,
+                'cash_count' => $financialData['cash_count'] ?? 0,
+                'cash_approved_total' => $financialData['cash_approved_total'] ?? 0,
+                'cash_approved_count' => $financialData['cash_approved_count'] ?? 0,
+                'cash_pending_total' => $financialData['cash_pending_total'] ?? 0,
+                'cash_pending_count' => $financialData['cash_pending_count'] ?? 0,
+                
+                // Expenses (approved only)
                 'expenses' => $financialData['expense_total'] ?? 0,
                 'expense_count' => $financialData['expense_count'] ?? 0,
+                
+                // Vendor Payments (approved only)
                 'vendor_payments' => $financialData['vendor_payment_total'] ?? 0,
                 'vendor_payment_count' => $financialData['vendor_payment_count'] ?? 0,
+                
+                // Profit = Total Invoices - Expenses - Vendor Payments
                 'profit' => $financialData['monthly_profit'] ?? 0,
                 
                 // Orders
                 'orders_this_month' => $ordersThisMonth,
                 
-                // Customers
+                // Customers - 90 day stats (independent of selected month)
                 'active_customers_90d' => $activeCustomers90Days,
+                'new_customers_90d' => $newCustomers90Days,
+                'returning_customers_90d' => $returningCustomers90Days,
+                // Also keep monthly stats for reference
                 'new_customers_this_month' => $newCustomersThisMonth,
             ];
         });
     }
 
     /**
-     * Get financial summary from ledger (uses v_financial_monthly_summary view)
+     * Get active customers list for popup (last 90 days)
+     * Returns both new and returning customers with their details
+     */
+    public function getActiveCustomersList($filter = 'all')
+    {
+        $ninetyDaysAgo = Carbon::now()->subDays(90);
+        
+        $query = CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)
+            ->where('is_active', true)
+            ->select('id', 'first_name', 'last_name', 'phone', 'city', 'first_order_date', 'last_order_date', 'total_orders', 'total_spent');
+        
+        if ($filter === 'new') {
+            $query->where('first_order_date', '>=', $ninetyDaysAgo);
+        } elseif ($filter === 'returning') {
+            $query->where('first_order_date', '<', $ninetyDaysAgo);
+        }
+        
+        $customers = $query->orderBy('last_order_date', 'desc')
+            ->limit(500)
+            ->get();
+        
+        return $customers->map(function ($c) use ($ninetyDaysAgo) {
+            $isNew = Carbon::parse($c->first_order_date) >= $ninetyDaysAgo;
+            return [
+                'id' => $c->id,
+                'name' => trim($c->first_name . ' ' . $c->last_name),
+                'phone' => $c->phone,
+                'city' => $c->city,
+                'first_order_date' => $c->first_order_date ? Carbon::parse($c->first_order_date)->format('M j, Y') : null,
+                'last_order_date' => $c->last_order_date ? Carbon::parse($c->last_order_date)->format('M j, Y') : null,
+                'total_orders' => $c->total_orders,
+                'total_spent' => $c->total_spent,
+                'type' => $isNew ? 'new' : 'returning',
+            ];
+        })->toArray();
+    }
+
+    /**
+     * Get financial summary
+     * Shows ALL delivered invoices with breakdown by payment mode
+     * USES DELIVERY DATE (from order status history) - queries orders directly, not ledger
+     * This matches the daily tab calculations exactly
      */
     public function getFinancialSummary($monthKey = null)
     {
         $monthKey = $monthKey ?? Carbon::now()->format('Y-m');
-        
-        // Try to use the database view first
-        try {
-            $viewData = DB::table('v_financial_monthly_summary')
-                ->where('month_key', $monthKey)
-                ->first();
-            
-            if ($viewData) {
-                return [
-                    'month_key' => $viewData->month_key,
-                    'month_name' => $viewData->month_name,
-                    'invoice_total' => round($viewData->invoice_total, 2),
-                    'invoice_count' => (int) $viewData->invoice_count,
-                    'expense_total' => round($viewData->expense_total, 2),
-                    'expense_count' => (int) $viewData->expense_count,
-                    'vendor_payment_total' => round($viewData->vendor_payment_total, 2),
-                    'vendor_payment_count' => (int) $viewData->vendor_payment_count,
-                    'vendor_purchase_total' => round($viewData->vendor_purchase_total, 2),
-                    'vendor_purchase_count' => (int) $viewData->vendor_purchase_count,
-                    'deposit_total' => round($viewData->deposit_total, 2),
-                    'deposit_count' => (int) $viewData->deposit_count,
-                    'monthly_profit' => round($viewData->monthly_profit, 2),
-                ];
-            }
-        } catch (\Exception $e) {
-            Log::debug('Financial summary view not available: ' . $e->getMessage());
-        }
-        
-        // Fallback: Calculate from ledger table directly
         $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
         $endDate = $startDate->copy()->endOfMonth();
         
-        $invoices = LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
-            ->where('transaction_type', LedgerModel::TYPE_INVOICE)
-            ->where('approval_status', 'approved')
-            ->selectRaw('SUM(amount) as total, COUNT(*) as count')
-            ->first();
+        // Get ALL delivered invoices DIRECTLY from orders (not ledger to avoid duplications)
+        // USES DELIVERY DATE from order status history
+        // Payment method comes from ORDER's payment_method field
+        $invoiceData = DB::table('t_crm_prod_order as o')
+            ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+            ->leftJoin('t_fin_ledger as l', function($join) {
+                $join->on('l.order_id', '=', 'o.id')
+                     ->where('l.transaction_type', '=', LedgerModel::TYPE_INVOICE)
+                     ->where('l.approval_status', '!=', LedgerModel::STATUS_REVERSED);
+            })
+            ->where(function($q) {
+                $q->where('o.external_source', '!=', 'shopify')
+                  ->orWhereNull('o.external_source');
+            })
+            ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+            ->selectRaw("
+                o.payment_method,
+                COALESCE(l.approval_status, 'pending') as approval_status,
+                SUM(o.total_price) as total,
+                COUNT(DISTINCT o.id) as count
+            ")
+            ->groupBy('o.payment_method', DB::raw("COALESCE(l.approval_status, 'pending')"))
+            ->get();
         
+        // Calculate totals and breakdowns
+        $invoiceTotal = 0;
+        $invoiceCount = 0;
+        
+        // Online breakdown
+        $onlineTotal = 0;
+        $onlineCount = 0;
+        $onlineApprovedTotal = 0;
+        $onlineApprovedCount = 0;
+        $onlinePendingL1Total = 0;
+        $onlinePendingL1Count = 0;
+        $onlinePendingL2Total = 0;
+        $onlinePendingL2Count = 0;
+        
+        // Cash breakdown
+        $cashTotal = 0;
+        $cashCount = 0;
+        $cashApprovedTotal = 0;
+        $cashApprovedCount = 0;
+        $cashPendingTotal = 0;
+        $cashPendingCount = 0;
+        
+        $onlinePaymentMethods = ['online', 'Online', 'ONLINE', 'card', 'Card'];
+        
+        foreach ($invoiceData as $row) {
+            $invoiceTotal += $row->total;
+            $invoiceCount += $row->count;
+            
+            $isOnline = in_array($row->payment_method, $onlinePaymentMethods);
+            
+            if ($isOnline) {
+                $onlineTotal += $row->total;
+                $onlineCount += $row->count;
+                
+                if ($row->approval_status === LedgerModel::STATUS_APPROVED) {
+                    $onlineApprovedTotal += $row->total;
+                    $onlineApprovedCount += $row->count;
+                } elseif ($row->approval_status === LedgerModel::STATUS_PENDING_L2) {
+                    $onlinePendingL2Total += $row->total;
+                    $onlinePendingL2Count += $row->count;
+                } else {
+                    // pending, pending_l1 - treat as L1
+                    $onlinePendingL1Total += $row->total;
+                    $onlinePendingL1Count += $row->count;
+                }
+            } else {
+                // Cash mode
+                $cashTotal += $row->total;
+                $cashCount += $row->count;
+                
+                if ($row->approval_status === LedgerModel::STATUS_APPROVED) {
+                    $cashApprovedTotal += $row->total;
+                    $cashApprovedCount += $row->count;
+                } else {
+                    $cashPendingTotal += $row->total;
+                    $cashPendingCount += $row->count;
+                }
+            }
+        }
+        
+        // Expenses - only approved
         $expenses = LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
             ->where('transaction_type', LedgerModel::TYPE_EXPENSE)
-            ->where('approval_status', 'approved')
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
         
+        // Vendor Payments - only approved
         $vendorPayments = LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
             ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
-            ->where('approval_status', 'approved')
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
         
         return [
             'month_key' => $monthKey,
             'month_name' => $startDate->format('F Y'),
-            'invoice_total' => round($invoices->total ?? 0, 2),
-            'invoice_count' => (int) ($invoices->count ?? 0),
+            
+            // Total invoices (ALL delivered, excluding reversed)
+            'invoice_total' => round($invoiceTotal, 2),
+            'invoice_count' => $invoiceCount,
+            
+            // Online invoices breakdown
+            'online_total' => round($onlineTotal, 2),
+            'online_count' => $onlineCount,
+            'online_approved_total' => round($onlineApprovedTotal, 2),
+            'online_approved_count' => $onlineApprovedCount,
+            'online_pending_l1_total' => round($onlinePendingL1Total, 2),
+            'online_pending_l1_count' => $onlinePendingL1Count,
+            'online_pending_l2_total' => round($onlinePendingL2Total, 2),
+            'online_pending_l2_count' => $onlinePendingL2Count,
+            
+            // Cash invoices breakdown
+            'cash_total' => round($cashTotal, 2),
+            'cash_count' => $cashCount,
+            'cash_approved_total' => round($cashApprovedTotal, 2),
+            'cash_approved_count' => $cashApprovedCount,
+            'cash_pending_total' => round($cashPendingTotal, 2),
+            'cash_pending_count' => $cashPendingCount,
+            
+            // Expenses
             'expense_total' => round($expenses->total ?? 0, 2),
             'expense_count' => (int) ($expenses->count ?? 0),
+            
+            // Vendor Payments
             'vendor_payment_total' => round($vendorPayments->total ?? 0, 2),
             'vendor_payment_count' => (int) ($vendorPayments->count ?? 0),
+            
+            // Legacy fields for backward compatibility
             'vendor_purchase_total' => 0,
             'vendor_purchase_count' => 0,
             'deposit_total' => 0,
             'deposit_count' => 0,
-            'monthly_profit' => round(($invoices->total ?? 0) - ($expenses->total ?? 0) - ($vendorPayments->total ?? 0), 2),
+            
+            // Profit: Total Invoices - Expenses - Vendor Payments
+            'monthly_profit' => round($invoiceTotal - ($expenses->total ?? 0) - ($vendorPayments->total ?? 0), 2),
         ];
+    }
+
+    /**
+     * Get ledger transactions for a specific month and type
+     * Used for drilldown popups (expenses, vendor payments, invoices)
+     */
+    public function getLedgerTransactionsForMonth($monthKey, $type = 'invoice')
+    {
+        $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
+        $endDate = $startDate->copy()->endOfMonth();
+        
+        if ($type === 'invoice') {
+            // Get delivered orders with delivery details
+            return DB::table('t_crm_prod_order as o')
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->leftJoin('t_fin_ledger as l', function($join) {
+                    $join->on('l.order_id', '=', 'o.id')
+                         ->where('l.transaction_type', '=', LedgerModel::TYPE_INVOICE)
+                         ->where('l.approval_status', '!=', LedgerModel::STATUS_REVERSED);
+                })
+                ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
+                ->select(
+                    'o.id',
+                    'o.order_number',
+                    'o.order_date',
+                    'h.delivered_at as delivery_date',
+                    'o.total_price as amount',
+                    'o.payment_method',
+                    DB::raw("COALESCE(l.approval_status, 'pending') as approval_status"),
+                    DB::raw("CONCAT(c.first_name, ' ', c.last_name) as customer_name"),
+                    'c.phone as customer_phone'
+                )
+                ->orderBy('h.delivered_at', 'desc')
+                ->limit(500)
+                ->get()
+                ->map(function ($row) {
+                    return [
+                        'id' => $row->id,
+                        'order_number' => $row->order_number,
+                        'order_date' => Carbon::parse($row->order_date)->format('M j, Y'),
+                        'delivery_date' => Carbon::parse($row->delivery_date)->format('M j, Y'),
+                        'amount' => round($row->amount, 2),
+                        'payment_method' => ucfirst($row->payment_method ?? 'cash'),
+                        'approval_status' => $row->approval_status,
+                        'customer_name' => $row->customer_name,
+                        'customer_phone' => $row->customer_phone,
+                    ];
+                })->toArray();
+        }
+        
+        // For expenses and vendor payments, use transaction_date from ledger
+        $transactionType = $type === 'expense' ? LedgerModel::TYPE_EXPENSE : LedgerModel::TYPE_VENDOR_PAYMENT;
+        
+        return LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
+            ->where('transaction_type', $transactionType)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->orderBy('transaction_date', 'desc')
+            ->select('id', 'description', 'amount', 'mode', 'transaction_date', 'vendor_id', 'created_at')
+            ->limit(500)
+            ->get()
+            ->map(function ($row) {
+                return [
+                    'id' => $row->id,
+                    'description' => $row->description,
+                    'amount' => round($row->amount, 2),
+                    'mode' => ucfirst($row->mode),
+                    'date' => Carbon::parse($row->transaction_date)->format('M j, Y'),
+                    'vendor_id' => $row->vendor_id,
+                ];
+            })->toArray();
     }
 
     /**
@@ -873,10 +1383,11 @@ class DashboardAnalyticsService
                 ->whereBetween('first_order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
                 ->count();
             
-            // Get returning customers (ordered this month but first order was before this month)
+            // Get returning customers (delivered orders this month, but first order was before this month)
             $returningCustomers = DB::table('t_crm_prod_order')
                 ->join('t_crm_prod_customer', 't_crm_prod_order.customer_id', '=', 't_crm_prod_customer.id')
                 ->whereBetween('t_crm_prod_order.order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
+                ->whereIn('t_crm_prod_order.order_status', ['delivered', 'completed', 'processing'])
                 ->where('t_crm_prod_customer.first_order_date', '<', $startDate->format('Y-m-d'))
                 ->where(function($q) {
                     $q->where('t_crm_prod_order.external_source', '!=', 'shopify')
@@ -955,7 +1466,7 @@ class DashboardAnalyticsService
     public function getProductCategorySummary($monthKey = null, $categoryLevel = 1)
     {
         $monthKey = $monthKey ?? Carbon::now()->format('Y-m');
-        $cacheKey = "product_category_{$monthKey}_{$categoryLevel}";
+        $cacheKey = "product_category_delivery_v3_{$monthKey}_{$categoryLevel}";
         
         return Cache::remember($cacheKey, 300, function () use ($monthKey, $categoryLevel) {
             // Map category level to product attribute column
@@ -964,12 +1475,14 @@ class DashboardAnalyticsService
             $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
             $endDate = $startDate->copy()->endOfMonth();
             
-            // Query order line items with product info
+            // Query order line items with product info - USES DELIVERY DATE
+            // Join via SKU which is reliable across all orders
             $data = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
-                ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
-                ->whereBetween('o.order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
-                ->whereIn('o.order_status', ['delivered', 'completed', 'processing'])
+                ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                ->leftJoin('t_crm_prod_product_variant as v', 'li.sku', '=', 'v.sku')
+                ->leftJoin('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
+                ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
@@ -979,14 +1492,14 @@ class DashboardAnalyticsService
                     DB::raw('COUNT(DISTINCT o.id) as order_count'),
                     DB::raw('COUNT(DISTINCT o.customer_id) as unique_customers'),
                     DB::raw('SUM(li.quantity) as total_quantity'),
-                    DB::raw('SUM(li.total_price) as total_revenue'),
-                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" THEN 1 ELSE 0 END) as shopify_orders'),
-                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" OR o.order_number IS NULL THEN 1 ELSE 0 END) as manual_orders'),
-                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" THEN li.total_price ELSE 0 END) as shopify_revenue'),
-                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" OR o.order_number IS NULL THEN li.total_price ELSE 0 END) as manual_revenue')
+                    DB::raw('SUM(li.line_total) as total_revenue'),
+                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" OR o.order_number LIKE "sh%" THEN 1 ELSE 0 END) as shopify_orders'),
+                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" AND o.order_number NOT LIKE "sh%" THEN 1 ELSE 0 END) as manual_orders'),
+                    DB::raw('SUM(CASE WHEN o.order_number LIKE "SH%" OR o.order_number LIKE "sh%" THEN li.line_total ELSE 0 END) as shopify_revenue'),
+                    DB::raw('SUM(CASE WHEN o.order_number NOT LIKE "SH%" AND o.order_number NOT LIKE "sh%" THEN li.line_total ELSE 0 END) as manual_revenue')
                 )
                 ->groupBy(DB::raw("COALESCE(p.{$categoryColumn}, 'Uncategorized')"))
-                ->orderByRaw('SUM(li.total_price) DESC')
+                ->orderByRaw('SUM(li.line_total) DESC')
                 ->limit(20)
                 ->get();
             
@@ -1009,6 +1522,7 @@ class DashboardAnalyticsService
     /**
      * Get weekly day performance (best performing days of week)
      * Queries production orders table directly for speed
+     * NOTE: Only counts delivered/completed/processing orders
      */
     public function getWeeklyDayPerformance()
     {
@@ -1019,13 +1533,14 @@ class DashboardAnalyticsService
                 ->select(
                     DB::raw('DAYOFWEEK(order_date) as day_of_week'),
                     DB::raw('DAYNAME(order_date) as day_name'),
-                    DB::raw('COUNT(*) as total_orders'),
-                    DB::raw('COUNT(DISTINCT customer_id) as total_customers'),
+                    // Only count delivered orders
+                    DB::raw('SUM(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as total_orders'),
+                    DB::raw('COUNT(DISTINCT CASE WHEN order_status IN ("delivered", "completed", "processing") THEN customer_id END) as total_customers'),
                     DB::raw('SUM(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN total_price ELSE 0 END) as total_revenue'),
                     DB::raw('AVG(CASE WHEN order_status IN ("delivered", "completed", "processing") THEN total_price ELSE NULL END) as avg_order_value'),
-                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" THEN 1 ELSE 0 END) as shopify_orders'),
-                    DB::raw('SUM(CASE WHEN order_number NOT LIKE "SH%" OR order_number IS NULL THEN 1 ELSE 0 END) as manual_orders'),
-                    DB::raw('COUNT(DISTINCT DATE(order_date)) as days_count')
+                    DB::raw('SUM(CASE WHEN order_number LIKE "SH%" AND order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as shopify_orders'),
+                    DB::raw('SUM(CASE WHEN (order_number NOT LIKE "SH%" OR order_number IS NULL) AND order_status IN ("delivered", "completed", "processing") THEN 1 ELSE 0 END) as manual_orders'),
+                    DB::raw('COUNT(DISTINCT CASE WHEN order_status IN ("delivered", "completed", "processing") THEN DATE(order_date) END) as days_count')
                 )
                 ->where(function($q) {
                     $q->where('external_source', '!=', 'shopify')
@@ -1197,6 +1712,49 @@ class DashboardAnalyticsService
                         ];
                     }),
                 ];
+            });
+    }
+
+    /**
+     * Get month over month growth using LEDGER data (not orders)
+     * This ensures consistency with the Invoice card
+     */
+    public function getMonthOverMonthLedgerGrowth($months = 6)
+    {
+        $cacheKey = "mom_ledger_growth_{$months}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($months) {
+            $ledgerData = $this->getMonthlyLedgerAnalytics($months + 1);
+            $result = [];
+            
+            // Sort by month (descending) for comparison
+            $sorted = collect($ledgerData)->sortByDesc('month')->values();
+            
+            for ($i = 0; $i < $sorted->count() && $i < $months; $i++) {
+                $current = $sorted[$i] ?? null;
+                $previous = $sorted[$i + 1] ?? null;
+                
+                if ($current) {
+                    $revenueGrowth = ($previous && $previous['invoice_total'] > 0) 
+                        ? round((($current['invoice_total'] - $previous['invoice_total']) / $previous['invoice_total']) * 100, 1) 
+                        : 0;
+                    
+                    $result[] = [
+                        'month_key' => $current['month'],
+                        'month_name' => $current['month_name'],
+                        'current_revenue' => $current['invoice_total'],
+                        'current_invoices' => $current['invoice_count'],
+                        'previous_revenue' => $previous['invoice_total'] ?? 0,
+                        'previous_invoices' => $previous['invoice_count'] ?? 0,
+                        'revenue_growth_pct' => $revenueGrowth,
+                        'current_online' => $current['online_total'] ?? 0,
+                        'current_cash' => $current['cash_total'] ?? 0,
+                        'profit' => $current['profit'] ?? 0,
+                    ];
+                }
+            }
+            
+            return $result;
             });
     }
 }

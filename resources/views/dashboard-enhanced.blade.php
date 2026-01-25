@@ -50,17 +50,59 @@
         
         <!-- Top Cards Grid -->
         <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-            <!-- Invoices -->
-            <div class="kt-card cursor-pointer hover:shadow-lg transition-shadow" onclick="showDrilldown('invoices')">
+            <!-- Invoices - With Online/Cash Breakdown -->
+            <div class="kt-card cursor-pointer hover:shadow-lg transition-shadow lg:col-span-2" onclick="showDrilldown('invoices')">
                 <div class="p-4">
                     <div class="flex items-center justify-between mb-2">
                         <div class="p-2 bg-green-100 rounded-lg">
                             <i class="ki-filled ki-receipt text-green-600 text-lg"></i>
                         </div>
-                        <span id="topInvoiceCount" class="text-xs text-gray-500">0</span>
+                        <span id="topInvoiceCount" class="text-xs text-gray-500">0 invoices</span>
                     </div>
-                    <p class="text-xs font-medium text-gray-500 mb-1">Invoices</p>
-                    <p id="topInvoices" class="text-lg font-bold text-gray-900">PKR 0</p>
+                    <p class="text-xs font-medium text-gray-500 mb-1">Invoices (All Delivered)</p>
+                    <p id="topInvoices" class="text-lg font-bold text-gray-900 mb-2">PKR 0</p>
+                    
+                    <!-- Invoice Breakdown -->
+                    <div class="grid grid-cols-2 gap-2 pt-2 border-t border-gray-100">
+                        <!-- Online -->
+                        <div class="text-xs">
+                            <div class="flex items-center gap-1 text-blue-700 font-medium mb-1">
+                                <i class="ki-filled ki-wifi text-xs"></i> Online
+                            </div>
+                            <p id="topOnlineTotal" class="font-semibold text-gray-900">PKR 0</p>
+                            <div class="mt-1 space-y-0.5">
+                                <div class="flex justify-between text-gray-500">
+                                    <span>Approved:</span>
+                                    <span id="topOnlineApproved" class="text-green-600">0</span>
+                                </div>
+                                <div class="flex justify-between text-gray-500">
+                                    <span>Pending L1:</span>
+                                    <span id="topOnlinePendingL1" class="text-amber-600">0</span>
+                                </div>
+                                <div class="flex justify-between text-gray-500">
+                                    <span>Pending L2:</span>
+                                    <span id="topOnlinePendingL2" class="text-orange-600">0</span>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Cash -->
+                        <div class="text-xs">
+                            <div class="flex items-center gap-1 text-emerald-700 font-medium mb-1">
+                                <i class="ki-filled ki-dollar text-xs"></i> Cash
+                            </div>
+                            <p id="topCashTotal" class="font-semibold text-gray-900">PKR 0</p>
+                            <div class="mt-1 space-y-0.5">
+                                <div class="flex justify-between text-gray-500">
+                                    <span>Approved:</span>
+                                    <span id="topCashApproved" class="text-green-600">0</span>
+                                </div>
+                                <div class="flex justify-between text-gray-500">
+                                    <span>Pending:</span>
+                                    <span id="topCashPending" class="text-amber-600">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -105,8 +147,8 @@
                 </div>
             </div>
 
-            <!-- Active Customers -->
-            <div class="kt-card">
+            <!-- Active Customers - Clickable for popup -->
+            <div class="kt-card cursor-pointer hover:shadow-lg transition-shadow" onclick="showActiveCustomersPopup()">
                 <div class="p-4">
                     <div class="flex items-center justify-between mb-2">
                         <div class="p-2 bg-purple-100 rounded-lg">
@@ -116,6 +158,7 @@
                     </div>
                     <p class="text-xs font-medium text-gray-500 mb-1">Active (90d)</p>
                     <p id="topActiveCustomers" class="text-lg font-bold text-gray-900">0</p>
+                    <p class="text-xs text-gray-400 mt-1">Click for details</p>
                 </div>
             </div>
         </div>
@@ -150,15 +193,15 @@
          MONTHLY ANALYTICS TAB
          ========================================================================= -->
     <div id="monthlyContent" class="dashboard-content">
-        <!-- Month Selector & Order Source Toggle -->
+        <!-- Month Selector & View Toggle -->
         <div class="flex flex-wrap justify-between items-center gap-4 mb-6">
-            <h2 class="text-lg font-semibold text-gray-900">Monthly Trends</h2>
+            <h2 class="text-lg font-semibold text-gray-900">Monthly Trends (Invoices)</h2>
             <div class="flex items-center gap-3">
-                <!-- Order Source Filter -->
+                <!-- View Toggle: Total vs Online/Cash vs Shopify/Manual -->
                 <div class="flex items-center bg-gray-100 rounded-lg p-1">
-                    <button id="sourceAll" class="source-btn active px-3 py-1 text-xs font-medium rounded-md bg-white shadow">All</button>
-                    <button id="sourceShopify" class="source-btn px-3 py-1 text-xs font-medium rounded-md text-gray-600">Shopify</button>
-                    <button id="sourceManual" class="source-btn px-3 py-1 text-xs font-medium rounded-md text-gray-600">Manual</button>
+                    <button id="viewTotal" class="view-btn active px-3 py-1 text-xs font-medium rounded-md bg-white shadow">Total</button>
+                    <button id="viewOnlineCash" class="view-btn px-3 py-1 text-xs font-medium rounded-md text-gray-600">Online/Cash</button>
+                    <button id="viewShopifyManual" class="view-btn px-3 py-1 text-xs font-medium rounded-md text-gray-600">Shopify/Manual</button>
                 </div>
             <select id="monthsSelector" class="select select-sm">
                 <option value="3">Last 3 Months</option>
@@ -168,49 +211,27 @@
             </div>
         </div>
 
-        <!-- Monthly KPI Cards with Source Split -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Total Revenue</p>
-                            <p id="monthlyTotalRevenue" class="text-2xl font-bold text-gray-900">PKR 0</p>
-                    <div class="flex items-center gap-2 mt-2">
-                        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Shopify: <span id="monthlyShopifyRevenue">0</span></span>
-                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">Manual: <span id="monthlyManualRevenue">0</span></span>
-                    </div>
-                </div>
-            </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Total Orders</p>
-                            <p id="monthlyTotalOrders" class="text-2xl font-bold text-gray-900">0</p>
-                    <div class="flex items-center gap-2 mt-2">
-                        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Shopify: <span id="monthlyShopifyOrders">0</span></span>
-                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">Manual: <span id="monthlyManualOrders">0</span></span>
-                    </div>
-                </div>
-            </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Unique Customers</p>
-                            <p id="monthlyTotalCustomers" class="text-2xl font-bold text-gray-900">0</p>
-                    <p class="text-xs text-gray-500 mt-2">Across all months selected</p>
-                        </div>
-                        </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Avg Order Value</p>
-                    <p id="monthlyAvgOrder" class="text-2xl font-bold text-gray-900">PKR 0</p>
-                    <p class="text-xs text-gray-500 mt-2">Per order average</p>
-                </div>
-            </div>
+        <!-- Monthly KPI Cards - Hidden for JS compatibility -->
+        <div class="hidden">
+            <span id="monthlyTotalRevenue">0</span>
+            <span id="monthlyOnlineRevenue">0</span>
+            <span id="monthlyShopifyRevenue">0</span>
+            <span id="monthlyManualRevenue">0</span>
+            <span id="monthlyCashRevenue">0</span>
+            <span id="monthlyTotalOrders">0</span>
+            <span id="monthlyShopifyOrders">0</span>
+            <span id="monthlyManualOrders">0</span>
+            <span id="monthlyTotalCustomers">0</span>
+            <span id="monthlyAvgOrder">0</span>
         </div>
 
         <!-- Monthly Charts -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Revenue by Month</h3>
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Invoice Revenue by Month</h3>
+                    </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="monthlyRevenueChart"></canvas>
                     </div>
@@ -218,24 +239,31 @@
             </div>
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Orders by Month</h3>
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Invoice Count by Month</h3>
+                    </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="monthlyOrdersChart"></canvas>
-                    </div>
                 </div>
+            </div>
             </div>
         </div>
 
-        <!-- Order Source Split Chart -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Payment Mode Split by Month & MoM Growth -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Order Source Split</h3>
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Online vs Cash Revenue by Month</h3>
+                        <button onclick="openFullView('monthlySourceChart', 'Online vs Cash Revenue')" class="text-xs text-blue-600 hover:text-blue-800">
+                            <i class="ki-filled ki-maximize"></i> Full View
+                        </button>
+                    </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="monthlySourceChart"></canvas>
                     </div>
-                </div>
-            </div>
+                        </div>
+                        </div>
             <div class="kt-card">
                 <div class="p-5">
                     <h3 class="text-base font-semibold text-gray-900 mb-4">Month-over-Month Growth</h3>
@@ -245,101 +273,195 @@
                 </div>
             </div>
         </div>
+
+        <!-- New vs Returning Customers -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="kt-card">
+                <div class="p-5">
+                    <h3 class="text-base font-semibold text-gray-900 mb-4">New vs Returning Customers (Orders)</h3>
+                    <div class="relative" style="height: 280px;">
+                        <canvas id="monthlyCustomerTypeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="kt-card">
+                <div class="p-5">
+                    <h3 class="text-base font-semibold text-gray-900 mb-4">New vs Returning Customers (Revenue)</h3>
+                    <div class="relative" style="height: 280px;">
+                        <canvas id="monthlyCustomerRevenueChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Product Category Summary -->
+            <div class="kt-card">
+                <div class="p-5">
+                <h3 class="text-base font-semibold text-gray-900 mb-4">Product Category Summary by Month</h3>
+                <div id="monthlyCategoryTable" class="overflow-auto max-h-80">
+                        <!-- Will be populated by JS -->
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- =========================================================================
          DAILY ANALYTICS TAB
          ========================================================================= -->
     <div id="dailyContent" class="dashboard-content hidden">
-        <!-- Month/Year Selector -->
-        <div class="flex flex-wrap justify-between items-center gap-4 mb-6">
-            <h2 class="text-lg font-semibold text-gray-900">Daily Trends</h2>
-            <div class="flex gap-2">
-                <select id="yearSelector" class="select select-sm">
-                    <option value="2024">2024</option>
-                    <option value="2025" selected>2025</option>
-                </select>
-                <select id="monthSelector" class="select select-sm">
-                    <option value="1">January</option>
-                    <option value="2">February</option>
-                    <option value="3">March</option>
-                    <option value="4">April</option>
-                    <option value="5">May</option>
-                    <option value="6">June</option>
-                    <option value="7">July</option>
-                    <option value="8">August</option>
-                    <option value="9">September</option>
-                    <option value="10">October</option>
-                    <option value="11">November</option>
-                    <option value="12">December</option>
-                </select>
+        <!-- Header - Uses the global topCardsMonthSelector -->
+        <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Daily Trends (Delivered Orders)</h2>
+            <span class="text-sm text-gray-500">Viewing: <span id="dailyMonthLabel" class="font-medium text-gray-700">Jan 2026</span></span>
+        </div>
+
+        <!-- Month Summary Cards - Compact Row -->
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+            <div class="kt-card p-3">
+                <p class="text-xs text-gray-500 mb-1">Revenue</p>
+                <p id="dailyTotalRevenue" class="text-sm font-bold text-gray-900">PKR 0</p>
+                        </div>
+            <div class="kt-card p-3">
+                <p class="text-xs text-gray-500 mb-1">Orders</p>
+                <p id="dailyTotalOrders" class="text-sm font-bold text-gray-900">0</p>
+                        </div>
+            <div class="kt-card p-3">
+                <p class="text-xs text-gray-500 mb-1">Qty</p>
+                <p id="dailyTotalQty" class="text-sm font-bold text-gray-900">0</p>
+            </div>
+            <div class="kt-card p-3">
+                <p class="text-xs text-gray-500 mb-1">Customers</p>
+                <p id="dailyTotalCustomers" class="text-sm font-bold text-gray-900">0</p>
+                    </div>
+            <div class="kt-card p-3">
+                <p class="text-xs text-gray-500 mb-1">Avg Order</p>
+                <p id="dailyAvgOrder" class="text-sm font-bold text-gray-900">PKR 0</p>
+                </div>
+            <div class="kt-card p-3 bg-green-50">
+                <p class="text-xs text-green-700 mb-1">New Cust.</p>
+                <p id="dailyNewCustomerOrders" class="text-sm font-bold text-green-800">0</p>
+            </div>
+            <div class="kt-card p-3 bg-blue-50">
+                <p class="text-xs text-blue-700 mb-1">Returning</p>
+                <p id="dailyReturningCustomerOrders" class="text-sm font-bold text-blue-800">0</p>
             </div>
         </div>
 
-        <!-- Daily KPI Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Month Revenue</p>
-                            <p id="dailyTotalRevenue" class="text-2xl font-bold text-gray-900">PKR 0</p>
-                    <div class="flex items-center gap-2 mt-2">
-                        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Shopify: <span id="dailyShopifyRevenue">0</span></span>
-                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">Manual: <span id="dailyManualRevenue">0</span></span>
-                        </div>
-                        </div>
-            </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Month Orders</p>
-                    <p id="dailyTotalOrders" class="text-2xl font-bold text-gray-900">0</p>
-                    <div class="flex items-center gap-2 mt-2">
-                        <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Shopify: <span id="dailyShopifyOrders">0</span></span>
-                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-700 rounded">Manual: <span id="dailyManualOrders">0</span></span>
-                    </div>
-                </div>
-            </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Unique Customers</p>
-                    <p id="dailyTotalCustomers" class="text-2xl font-bold text-gray-900">0</p>
-                        </div>
-                        </div>
-            <div class="kt-card">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-gray-600 mb-1">Avg Order Value</p>
-                    <p id="dailyAvgOrder" class="text-2xl font-bold text-gray-900">PKR 0</p>
-                    </div>
-                </div>
-            </div>
-
-        <!-- Daily Charts -->
+        <!-- Daily Charts - Main focus -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Revenue by Day</h3>
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Revenue by Delivery Date</h3>
+                        <button onclick="openFullView('dailyRevenueChart', 'Daily Revenue')" class="text-xs text-blue-600 hover:text-blue-800">
+                            <i class="ki-filled ki-maximize"></i> Full View
+                        </button>
+                    </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="dailyRevenueChart"></canvas>
-                        </div>
-                        </div>
+                    </div>
+                </div>
             </div>
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Orders by Day</h3>
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Orders by Delivery Date</h3>
+                        <button onclick="openFullView('dailyOrdersChart', 'Daily Orders')" class="text-xs text-blue-600 hover:text-blue-800">
+                            <i class="ki-filled ki-maximize"></i> Full View
+                        </button>
+                    </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="dailyOrdersChart"></canvas>
                     </div>
                 </div>
             </div>
         </div>
+        
+        <!-- Qty per Day & New vs Returning Customers -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="kt-card">
+                <div class="p-5">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">Qty by Delivery Date</h3>
+                        <button onclick="openFullView('dailyQtyChart', 'Daily Quantity')" class="text-xs text-blue-600 hover:text-blue-800">
+                            <i class="ki-filled ki-maximize"></i> Full View
+                        </button>
+                    </div>
+                    <div class="relative" style="height: 280px;">
+                        <canvas id="dailyQtyChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="kt-card">
+                <div class="p-5">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-900">New vs Returning Customers</h3>
+                        <button onclick="openFullView('dailyCustomerTypeChart', 'Customer Type')" class="text-xs text-blue-600 hover:text-blue-800">
+                            <i class="ki-filled ki-maximize"></i> Full View
+                        </button>
+                    </div>
+                    <div class="relative" style="height: 280px;">
+                        <canvas id="dailyCustomerTypeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-        <!-- Weekly Performance -->
+        <!-- Weekly Performance & Order Splits -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <!-- Weekly Performance Chart -->
             <div class="kt-card">
             <div class="p-5">
                 <h3 class="text-base font-semibold text-gray-900 mb-4">Performance by Day of Week</h3>
-                <div class="relative" style="height: 250px;">
+                    <div class="relative" style="height: 220px;">
                     <canvas id="weeklyDayChart"></canvas>
                 </div>
             </div>
+            </div>
+            <!-- Order Split Badges -->
+            <div class="kt-card lg:col-span-2">
+                <div class="p-5">
+                    <h3 class="text-base font-semibold text-gray-900 mb-4">Order Breakdown</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div class="text-center p-3 bg-purple-50 rounded-lg">
+                            <p class="text-xs text-purple-600 mb-1">Shopify</p>
+                            <p id="dailyShopifyOrders" class="text-lg font-bold text-purple-800">0</p>
+                            <p class="text-xs text-purple-600">orders</p>
+                        </div>
+                        <div class="text-center p-3 bg-gray-50 rounded-lg">
+                            <p class="text-xs text-gray-600 mb-1">Manual</p>
+                            <p id="dailyManualOrders" class="text-lg font-bold text-gray-800">0</p>
+                            <p class="text-xs text-gray-600">orders</p>
+                        </div>
+                        <div class="text-center p-3 bg-blue-50 rounded-lg">
+                            <p class="text-xs text-blue-600 mb-1">Online</p>
+                            <p id="dailyOnlineOrders" class="text-lg font-bold text-blue-800">0</p>
+                            <p class="text-xs text-blue-600">orders</p>
+                        </div>
+                        <div class="text-center p-3 bg-emerald-50 rounded-lg">
+                            <p class="text-xs text-emerald-600 mb-1">Cash</p>
+                            <p id="dailyCashOrders" class="text-lg font-bold text-emerald-800">0</p>
+                            <p class="text-xs text-emerald-600">orders</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Product Category Summary -->
+        <div class="kt-card">
+            <div class="p-5">
+                <h3 class="text-base font-semibold text-gray-900 mb-4">Product Category Summary</h3>
+                <div id="dailyCategoryTable" class="overflow-auto max-h-64">
+                    <!-- Will be populated by JS -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- Hidden elements -->
+        <div class="hidden">
+            <span id="dailyShopifyRevenue">0</span>
+            <span id="dailyManualRevenue">0</span>
         </div>
     </div>
 
@@ -581,7 +703,7 @@
 <!-- =========================================================================
      ORDER DETAIL MODAL (Drilldown)
      ========================================================================= -->
-<div id="orderDetailModal" class="fixed inset-0 z-50 hidden overflow-y-auto">
+<div id="orderDetailModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
     <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
         <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeOrderModal()"></div>
         <div class="relative inline-block w-full max-w-4xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
@@ -598,16 +720,88 @@
     </div>
 </div>
 
+<!-- =========================================================================
+     FULL VIEW CHART MODAL
+     ========================================================================= -->
+<div id="fullViewModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
+    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeFullView()"></div>
+        <div class="relative inline-block w-full max-w-6xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="fullViewTitle" class="text-lg font-semibold text-gray-900">Chart Full View</h3>
+                <div class="flex items-center gap-3">
+                    <button onclick="showChartDetails()" class="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                        <i class="ki-filled ki-document"></i> View Details
+                    </button>
+                    <button onclick="closeFullView()" class="text-gray-400 hover:text-gray-600">
+                        <i class="ki-filled ki-cross text-xl"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="relative" style="height: 500px;">
+                <canvas id="fullViewChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- =========================================================================
+     CHART DETAILS MODAL (Raw Data Table)
+     ========================================================================= -->
+<div id="chartDetailsModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
+    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeChartDetails()"></div>
+        <div class="relative inline-block w-full max-w-5xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="chartDetailsTitle" class="text-lg font-semibold text-gray-900">Chart Data Details</h3>
+                <button onclick="closeChartDetails()" class="text-gray-400 hover:text-gray-600">
+                    <i class="ki-filled ki-cross text-xl"></i>
+                </button>
+            </div>
+            <div id="chartDetailsContent" class="max-h-[500px] overflow-auto">
+                <!-- Will be populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- =========================================================================
+     ACTIVE CUSTOMERS POPUP MODAL
+     ========================================================================= -->
+<div id="activeCustomersModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
+    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeActiveCustomersPopup()"></div>
+        <div class="relative inline-block w-full max-w-5xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold text-gray-900">Active Customers (Last 90 Days)</h3>
+                <button onclick="closeActiveCustomersPopup()" class="text-gray-400 hover:text-gray-600">
+                    <i class="ki-filled ki-cross text-xl"></i>
+                </button>
+            </div>
+            <!-- Filter Tabs -->
+            <div class="flex gap-2 mb-4">
+                <button id="customerFilterAll" onclick="filterActiveCustomers('all')" class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-100 text-blue-700">
+                    All <span id="customerCountAll" class="ml-1 text-xs">(0)</span>
+                </button>
+                <button id="customerFilterNew" onclick="filterActiveCustomers('new')" class="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-green-100 hover:text-green-700">
+                    New <span id="customerCountNew" class="ml-1 text-xs">(0)</span>
+                </button>
+                <button id="customerFilterReturning" onclick="filterActiveCustomers('returning')" class="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-700">
+                    Returning <span id="customerCountReturning" class="ml-1 text-xs">(0)</span>
+                </button>
+            </div>
+            <div id="activeCustomersContent" class="max-h-[450px] overflow-auto">
+                <!-- Will be populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Include Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
 // Enhanced Dashboard JavaScript
-document.addEventListener('DOMContentLoaded', function() {
-    const dashboard = new EnhancedDashboard();
-    dashboard.init();
-});
-
 class EnhancedDashboard {
     constructor() {
         this.charts = {};
@@ -615,7 +809,9 @@ class EnhancedDashboard {
         this.currentMonth = new Date().getMonth() + 1;
         this.currentYear = new Date().getFullYear();
         this.monthlyData = [];
+        this.monthlyLedgerData = [];
         this.dailyData = [];
+        this.viewMode = 'total'; // 'total', 'online_cash', or 'shopify_manual'
     }
 
     init() {
@@ -634,6 +830,7 @@ class EnhancedDashboard {
     }
 
     populateMonthSelectors() {
+        // Only use topCardsMonthSelector as the global selector now
         const selectors = ['topCardsMonthSelector', 'customerMonthSelector', 'productMonthSelector'];
         const months = [];
         let date = new Date();
@@ -654,6 +851,12 @@ class EnhancedDashboard {
                 ).join('');
             }
         });
+        
+        // Set initial daily month label
+        const dailyLabel = document.getElementById('dailyMonthLabel');
+        if (dailyLabel && months.length > 0) {
+            dailyLabel.textContent = months[0].label;
+        }
     }
 
     setupEventListeners() {
@@ -664,15 +867,28 @@ class EnhancedDashboard {
         document.getElementById('productsTab').addEventListener('click', () => this.switchTab('products'));
         document.getElementById('statsTab').addEventListener('click', () => this.switchTab('stats'));
 
-        // Top cards month selector
-        document.getElementById('topCardsMonthSelector').addEventListener('change', () => this.loadTopCards());
+        // Top cards month selector - Also controls Daily tab
+        document.getElementById('topCardsMonthSelector').addEventListener('change', () => {
+            this.loadTopCards();
+            // Update daily month label
+            const select = document.getElementById('topCardsMonthSelector');
+            const label = document.getElementById('dailyMonthLabel');
+            if (label && select.selectedOptions.length > 0) {
+                label.textContent = select.selectedOptions[0].text;
+            }
+            // If on daily tab, reload daily data
+            if (this.currentTab === 'daily') {
+                this.loadDailyData();
+            }
+        });
 
         // Monthly controls
         document.getElementById('monthsSelector').addEventListener('change', () => this.loadMonthlyData());
-
-        // Daily controls
-        document.getElementById('yearSelector').addEventListener('change', () => this.loadDailyData());
-        document.getElementById('monthSelector').addEventListener('change', () => this.loadDailyData());
+        
+        // View toggle (Total vs Online/Cash vs Shopify/Manual)
+        document.getElementById('viewTotal').addEventListener('click', () => this.setViewMode('total'));
+        document.getElementById('viewOnlineCash').addEventListener('click', () => this.setViewMode('online_cash'));
+        document.getElementById('viewShopifyManual').addEventListener('click', () => this.setViewMode('shopify_manual'));
 
         // Customer controls
         document.getElementById('customerMonthSelector').addEventListener('change', () => this.loadCustomerAnalysis());
@@ -685,10 +901,34 @@ class EnhancedDashboard {
         document.getElementById('refreshBtn').addEventListener('click', () => this.refreshCurrentTab());
         document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
     }
+    
+    setViewMode(mode) {
+        this.viewMode = mode;
+        
+        // Update button styles
+        document.querySelectorAll('.view-btn').forEach(btn => {
+            btn.classList.remove('active', 'bg-white', 'shadow');
+            btn.classList.add('text-gray-600');
+        });
+        
+        // Select the right button based on mode
+        let activeBtn;
+        if (mode === 'total') activeBtn = document.getElementById('viewTotal');
+        else if (mode === 'online_cash') activeBtn = document.getElementById('viewOnlineCash');
+        else activeBtn = document.getElementById('viewShopifyManual');
+        
+        activeBtn.classList.add('active', 'bg-white', 'shadow');
+        activeBtn.classList.remove('text-gray-600');
+        
+        // Recreate charts with the selected view mode
+        if (this.monthlyLedgerData) {
+            this.createMonthlyCharts(this.monthlyLedgerData);
+        }
+    }
 
     setCurrentMonthYear() {
-        document.getElementById('yearSelector').value = this.currentYear;
-        document.getElementById('monthSelector').value = this.currentMonth;
+        // The month selectors are now populated dynamically with current month as default
+        // No need to set them manually as they're auto-selected in populateMonthSelectors
     }
 
     switchTab(tab) {
@@ -738,15 +978,39 @@ class EnhancedDashboard {
             
             if (data.success) {
                 const d = data.data;
+                
+                // Total Invoices (ALL delivered, excluding reversed)
                 document.getElementById('topInvoices').textContent = `PKR ${this.formatNumber(d.invoices)}`;
                 document.getElementById('topInvoiceCount').textContent = `${d.invoice_count} invoices`;
+                
+                // Online breakdown
+                document.getElementById('topOnlineTotal').textContent = `PKR ${this.formatNumber(d.online_total || 0)}`;
+                document.getElementById('topOnlineApproved').textContent = `${d.online_approved_count || 0} (${this.formatNumber(d.online_approved_total || 0)})`;
+                document.getElementById('topOnlinePendingL1').textContent = `${d.online_pending_l1_count || 0} (${this.formatNumber(d.online_pending_l1_total || 0)})`;
+                document.getElementById('topOnlinePendingL2').textContent = `${d.online_pending_l2_count || 0} (${this.formatNumber(d.online_pending_l2_total || 0)})`;
+                
+                // Cash breakdown
+                document.getElementById('topCashTotal').textContent = `PKR ${this.formatNumber(d.cash_total || 0)}`;
+                document.getElementById('topCashApproved').textContent = `${d.cash_approved_count || 0} (${this.formatNumber(d.cash_approved_total || 0)})`;
+                document.getElementById('topCashPending').textContent = `${d.cash_pending_count || 0} (${this.formatNumber(d.cash_pending_total || 0)})`;
+                
+                // Expenses
                 document.getElementById('topExpenses').textContent = `PKR ${this.formatNumber(d.expenses)}`;
                 document.getElementById('topExpenseCount').textContent = `${d.expense_count} expenses`;
+                
+                // Vendor Payments
                 document.getElementById('topVendorPayments').textContent = `PKR ${this.formatNumber(d.vendor_payments)}`;
                 document.getElementById('topVendorCount').textContent = `${d.vendor_payment_count} payments`;
+                
+                // Profit
                 document.getElementById('topProfit').textContent = `PKR ${this.formatNumber(d.profit)}`;
+                
+                // Active Customers - 90 day stats (always from today, not selected month)
                 document.getElementById('topActiveCustomers').textContent = this.formatNumber(d.active_customers_90d);
-                document.getElementById('topNewCustomers').textContent = `+${d.new_customers_this_month} new`;
+                document.getElementById('topNewCustomers').textContent = `+${d.new_customers_90d || 0} new`;
+                
+                // Store for popup
+                this.topCardsData = d;
             }
         } catch (error) {
             console.error('Error loading top cards:', error);
@@ -758,29 +1022,39 @@ class EnhancedDashboard {
         try {
             const months = document.getElementById('monthsSelector').value;
             
-            // Load analytics and growth separately to avoid timeout if one fails
+            // Load LEDGER analytics (invoices, expenses, vendor payments) - matches top cards
             try {
-                const analyticsRes = await this.fetchWithTimeout(`/dashboard/monthly-analytics?months=${months}`, 30000);
+                const [analyticsRes, categoryRes] = await Promise.all([
+                    this.fetchWithTimeout(`/dashboard/monthly-ledger-analytics?months=${months}`, 30000),
+                    this.fetchWithTimeout(`/dashboard/monthly-product-categories?months=${months}`, 30000)
+                ]);
                 const analytics = await analyticsRes.json();
-                console.log('Monthly analytics response:', analytics);
+                const categories = await categoryRes.json();
+                
+                console.log('Monthly ledger analytics response:', analytics);
                 if (analytics.success && analytics.data) {
-                    this.monthlyData = analytics.data;
+                    this.monthlyLedgerData = analytics.data;
                     this.updateMonthlyKPIs(analytics.data);
                     this.createMonthlyCharts(analytics.data);
                 } else if (analytics.error) {
                     console.error('Server error:', analytics.error);
                     this.showError('monthlyTotalRevenue', 'Error: ' + analytics.error.substring(0, 50));
                 }
+                
+                if (categories.success && categories.data) {
+                    this.updateMonthlyCategoryTable(categories.data);
+                }
             } catch (e) {
-                console.warn('Monthly analytics loading failed:', e.message);
+                console.warn('Monthly ledger analytics loading failed:', e.message);
                 this.showError('monthlyTotalRevenue', 'Failed to load: ' + e.message);
             }
             
+            // Load MoM growth from ledger data
             try {
-                const growthRes = await this.fetchWithTimeout(`/dashboard/mom-growth?months=6`, 30000);
+                const growthRes = await this.fetchWithTimeout(`/dashboard/monthly-ledger-analytics?months=7`, 30000);
                 const growth = await growthRes.json();
                 if (growth.success && growth.data) {
-                    this.updateMoMGrowthTable(growth.data);
+                    this.updateMoMGrowthTableFromLedger(growth.data);
                 }
             } catch (e) {
                 console.warn('MoM growth loading failed:', e.message);
@@ -815,15 +1089,26 @@ class EnhancedDashboard {
     async loadDailyData() {
         this.showLoading(true);
         try {
-            const year = document.getElementById('yearSelector').value;
-            const month = document.getElementById('monthSelector').value;
-            const [dailyRes, weeklyRes] = await Promise.all([
+            // Use topCardsMonthSelector as the global selector (format: YYYY-MM)
+            const monthValue = document.getElementById('topCardsMonthSelector').value;
+            const [year, month] = monthValue.split('-');
+            
+            // Update the daily month label
+            const select = document.getElementById('topCardsMonthSelector');
+            const label = document.getElementById('dailyMonthLabel');
+            if (label && select.selectedOptions.length > 0) {
+                label.textContent = select.selectedOptions[0].text;
+            }
+            
+            const [dailyRes, weeklyRes, categoryRes] = await Promise.all([
                 fetch(`/dashboard/daily-analytics?year=${year}&month=${month}`),
-                fetch('/dashboard/weekly-performance')
+                fetch('/dashboard/weekly-performance'),
+                fetch(`/dashboard/daily-product-categories?year=${year}&month=${month}`)
             ]);
             
             const daily = await dailyRes.json();
             const weekly = await weeklyRes.json();
+            const categories = await categoryRes.json();
             
             if (daily.success) {
                 this.dailyData = daily.data;
@@ -833,6 +1118,10 @@ class EnhancedDashboard {
             
             if (weekly.success) {
                 this.createWeeklyChart(weekly.data);
+            }
+            
+            if (categories.success) {
+                this.updateDailyCategoryTable(categories.data, monthValue);
             }
         } catch (error) {
             console.error('Error loading daily data:', error);
@@ -914,22 +1203,16 @@ class EnhancedDashboard {
     // =========================================================================
 
     updateMonthlyKPIs(data) {
-        const totalRevenue = data.reduce((sum, item) => sum + item.revenue, 0);
-        const totalOrders = data.reduce((sum, item) => sum + item.orders, 0);
-        const totalCustomers = data.reduce((sum, item) => sum + item.customers, 0);
-        const shopifyRevenue = data.reduce((sum, item) => sum + (item.shopify_revenue || 0), 0);
-        const manualRevenue = data.reduce((sum, item) => sum + (item.manual_revenue || 0), 0);
-        const shopifyOrders = data.reduce((sum, item) => sum + (item.shopify_orders || 0), 0);
-        const manualOrders = data.reduce((sum, item) => sum + (item.manual_orders || 0), 0);
+        // Ledger data uses invoice_total, online_total, cash_total, etc.
+        const totalInvoices = data.reduce((sum, item) => sum + (item.invoice_total || 0), 0);
+        const totalInvoiceCount = data.reduce((sum, item) => sum + (item.invoice_count || 0), 0);
+        const onlineTotal = data.reduce((sum, item) => sum + (item.online_total || 0), 0);
+        const cashTotal = data.reduce((sum, item) => sum + (item.cash_total || 0), 0);
 
-        document.getElementById('monthlyTotalRevenue').textContent = `PKR ${this.formatNumber(totalRevenue)}`;
-        document.getElementById('monthlyTotalOrders').textContent = this.formatNumber(totalOrders);
-        document.getElementById('monthlyTotalCustomers').textContent = this.formatNumber(totalCustomers);
-        document.getElementById('monthlyAvgOrder').textContent = totalOrders > 0 ? `PKR ${this.formatNumber(totalRevenue / totalOrders)}` : 'PKR 0';
-        document.getElementById('monthlyShopifyRevenue').textContent = this.formatNumber(shopifyRevenue);
-        document.getElementById('monthlyManualRevenue').textContent = this.formatNumber(manualRevenue);
-        document.getElementById('monthlyShopifyOrders').textContent = this.formatNumber(shopifyOrders);
-        document.getElementById('monthlyManualOrders').textContent = this.formatNumber(manualOrders);
+        document.getElementById('monthlyTotalRevenue').textContent = `PKR ${this.formatNumber(totalInvoices)}`;
+        document.getElementById('monthlyTotalOrders').textContent = this.formatNumber(totalInvoiceCount);
+        document.getElementById('monthlyOnlineRevenue').textContent = this.formatNumber(onlineTotal);
+        document.getElementById('monthlyCashRevenue').textContent = this.formatNumber(cashTotal);
     }
 
     updateDailyKPIs(data) {
@@ -937,19 +1220,29 @@ class EnhancedDashboard {
         const totalRevenue = dailyData.reduce((sum, item) => sum + item.revenue, 0);
         const totalOrders = dailyData.reduce((sum, item) => sum + item.orders, 0);
         const totalCustomers = dailyData.reduce((sum, item) => sum + item.customers, 0);
+        const totalQty = dailyData.reduce((sum, item) => sum + (item.total_qty || 0), 0);
         const shopifyRevenue = dailyData.reduce((sum, item) => sum + (item.shopify_revenue || 0), 0);
         const manualRevenue = dailyData.reduce((sum, item) => sum + (item.manual_revenue || 0), 0);
         const shopifyOrders = dailyData.reduce((sum, item) => sum + (item.shopify_orders || 0), 0);
         const manualOrders = dailyData.reduce((sum, item) => sum + (item.manual_orders || 0), 0);
+        const onlineOrders = dailyData.reduce((sum, item) => sum + (item.online_count || 0), 0);
+        const cashOrders = dailyData.reduce((sum, item) => sum + (item.cash_count || 0), 0);
+        const newCustomerOrders = dailyData.reduce((sum, item) => sum + (item.new_customer_orders || 0), 0);
+        const returningCustomerOrders = dailyData.reduce((sum, item) => sum + (item.returning_customer_orders || 0), 0);
 
         document.getElementById('dailyTotalRevenue').textContent = `PKR ${this.formatNumber(totalRevenue)}`;
         document.getElementById('dailyTotalOrders').textContent = this.formatNumber(totalOrders);
         document.getElementById('dailyTotalCustomers').textContent = this.formatNumber(totalCustomers);
-        document.getElementById('dailyAvgOrder').textContent = totalOrders > 0 ? `PKR ${this.formatNumber(totalRevenue / totalOrders)}` : 'PKR 0';
+        document.getElementById('dailyTotalQty').textContent = this.formatNumber(totalQty);
+        document.getElementById('dailyAvgOrder').textContent = totalOrders > 0 ? `PKR ${this.formatNumber(Math.round(totalRevenue / totalOrders))}` : 'PKR 0';
         document.getElementById('dailyShopifyRevenue').textContent = this.formatNumber(shopifyRevenue);
         document.getElementById('dailyManualRevenue').textContent = this.formatNumber(manualRevenue);
         document.getElementById('dailyShopifyOrders').textContent = this.formatNumber(shopifyOrders);
         document.getElementById('dailyManualOrders').textContent = this.formatNumber(manualOrders);
+        document.getElementById('dailyOnlineOrders').textContent = this.formatNumber(onlineOrders);
+        document.getElementById('dailyCashOrders').textContent = this.formatNumber(cashOrders);
+        document.getElementById('dailyNewCustomerOrders').textContent = this.formatNumber(newCustomerOrders);
+        document.getElementById('dailyReturningCustomerOrders').textContent = this.formatNumber(returningCustomerOrders);
     }
 
     updateCustomerClassification(data) {
@@ -1030,6 +1323,55 @@ class EnhancedDashboard {
         `;
     }
 
+    // MoM Growth table from ledger data - matches Invoice card totals
+    updateMoMGrowthTableFromLedger(data) {
+        const container = document.getElementById('momGrowthTable');
+        
+        // Sort by month (descending) and calculate growth
+        const sorted = [...data].sort((a, b) => b.month.localeCompare(a.month));
+        const rows = [];
+        
+        for (let i = 0; i < sorted.length && i < 6; i++) {
+            const current = sorted[i];
+            const previous = sorted[i + 1];
+            
+            const growthPct = previous && previous.invoice_total > 0 
+                ? (((current.invoice_total - previous.invoice_total) / previous.invoice_total) * 100).toFixed(1)
+                : 0;
+            
+            rows.push({
+                month_name: current.month_name,
+                invoice_total: current.invoice_total,
+                growth_pct: parseFloat(growthPct)
+            });
+        }
+        
+        container.innerHTML = `
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600">Month</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Invoice Total</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Growth</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(row => `
+                        <tr class="border-t border-gray-100">
+                            <td class="py-2 px-3 text-gray-900">${row.month_name}</td>
+                            <td class="py-2 px-3 text-right text-gray-900">PKR ${this.formatNumber(row.invoice_total)}</td>
+                            <td class="py-2 px-3 text-right">
+                                <span class="${row.growth_pct >= 0 ? 'text-green-600' : 'text-red-600'}">
+                                    ${row.growth_pct >= 0 ? '+' : ''}${row.growth_pct}%
+                                </span>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
     updateCohortTable(data) {
         const container = document.getElementById('cohortTable');
         container.innerHTML = `
@@ -1053,6 +1395,144 @@ class EnhancedDashboard {
                                 </span>
                             </td>
                             <td class="py-2 px-3 text-right text-gray-900">PKR ${this.formatNumber(row.avg_lifetime_value)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    updateMonthlyCategoryTable(data) {
+        const container = document.getElementById('monthlyCategoryTable');
+        if (!container) return;
+        
+        // Handle empty or invalid data
+        if (!data || !Array.isArray(data) || data.length === 0) {
+            container.innerHTML = '<div class="text-center py-8 text-gray-500">No product category data available</div>';
+            return;
+        }
+        
+        // Get all unique categories and months (with null checks)
+        const allCategories = new Set();
+        const months = data
+            .filter(m => m && m.month_name)
+            .map(m => m.month_name)
+            .reverse(); // oldest first
+        
+        if (months.length === 0) {
+            container.innerHTML = '<div class="text-center py-8 text-gray-500">No monthly data available</div>';
+            return;
+        }
+        
+        data.forEach(monthData => {
+            if (monthData && monthData.categories) {
+                monthData.categories.forEach(cat => {
+                    if (cat && cat.category) allCategories.add(cat.category);
+                });
+            }
+        });
+        
+        if (allCategories.size === 0) {
+            container.innerHTML = '<div class="text-center py-8 text-gray-500">No categories found</div>';
+            return;
+        }
+        
+        // Build category-month matrix
+        const categoryByMonth = {};
+        allCategories.forEach(cat => {
+            categoryByMonth[cat] = { total_qty: 0, total_revenue: 0, months: {} };
+        });
+        
+        data.forEach(monthData => {
+            if (monthData && monthData.categories && monthData.month_name) {
+                monthData.categories.forEach(cat => {
+                    if (cat && cat.category && categoryByMonth[cat.category]) {
+                        categoryByMonth[cat.category].months[monthData.month_name] = {
+                            qty: cat.qty || 0,
+                            revenue: cat.revenue || 0
+                        };
+                        categoryByMonth[cat.category].total_qty += cat.qty || 0;
+                        categoryByMonth[cat.category].total_revenue += cat.revenue || 0;
+                    }
+                });
+            }
+        });
+        
+        // Sort categories by total revenue
+        const sortedCategories = Object.entries(categoryByMonth)
+            .sort((a, b) => b[1].total_revenue - a[1].total_revenue)
+            .slice(0, 15);
+        
+        // Build table with monthly columns
+        container.innerHTML = `
+            <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600 sticky left-0 bg-gray-50 z-10 min-w-[120px]">Category</th>
+                        ${months.map(m => `
+                            <th class="text-right py-2 px-2 font-medium text-gray-600 min-w-[80px]" colspan="1">${m && m.includes(' ') ? m.split(' ')[0] : m}</th>
+                        `).join('')}
+                        <th class="text-right py-2 px-3 font-medium text-gray-900 bg-gray-100 min-w-[80px]">Total Qty</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-900 bg-gray-100 min-w-[100px]">Total Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${sortedCategories.map(([category, catData]) => `
+                        <tr class="border-t border-gray-100 hover:bg-gray-50">
+                            <td class="py-2 px-3 text-gray-900 font-medium sticky left-0 bg-white z-10">${category}</td>
+                            ${months.map(m => {
+                                const monthData = catData.months[m];
+                                const qty = monthData ? monthData.qty : 0;
+                                return `<td class="py-2 px-2 text-right text-gray-600 text-xs">${qty > 0 ? this.formatNumber(qty) : '-'}</td>`;
+                            }).join('')}
+                            <td class="py-2 px-3 text-right text-gray-900 bg-gray-50">${this.formatNumber(catData.total_qty)}</td>
+                            <td class="py-2 px-3 text-right text-gray-900 font-medium bg-gray-50">PKR ${this.formatNumber(catData.total_revenue)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            </div>
+        `;
+    }
+
+    updateDailyCategoryTable(data, monthKey) {
+        const container = document.getElementById('dailyCategoryTable');
+        if (!container) return;
+        
+        // Aggregate all categories for the month
+        const categoryTotals = {};
+        data.forEach(dayData => {
+            if (dayData.categories) {
+                dayData.categories.forEach(cat => {
+                    if (!categoryTotals[cat.category]) {
+                        categoryTotals[cat.category] = { qty: 0, revenue: 0 };
+                    }
+                    categoryTotals[cat.category].qty += cat.qty || 0;
+                    categoryTotals[cat.category].revenue += cat.revenue || 0;
+                });
+            }
+        });
+        
+        const sortedCategories = Object.entries(categoryTotals)
+            .sort((a, b) => b[1].revenue - a[1].revenue)
+            .slice(0, 15);
+        
+        container.innerHTML = `
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600">Category</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Qty</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${sortedCategories.map(([category, totals]) => `
+                        <tr class="border-t border-gray-100 hover:bg-gray-50">
+                            <td class="py-2 px-3 text-gray-900">${category}</td>
+                            <td class="py-2 px-3 text-right text-gray-900">${this.formatNumber(totals.qty)}</td>
+                            <td class="py-2 px-3 text-right text-gray-900 font-medium">PKR ${this.formatNumber(totals.revenue)}</td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -1087,21 +1567,25 @@ class EnhancedDashboard {
         this.destroyChart('monthlyOrders');
         this.destroyChart('monthlySource');
 
-        // Revenue Chart with Shopify/Manual split
+        const viewMode = this.viewMode; // 'total', 'online_cash', or 'shopify_manual'
+
+        // Revenue Chart - from ledger (invoices)
+        if (viewMode === 'online_cash') {
+            // Online vs Cash stacked
         this.charts.monthlyRevenue = new Chart(document.getElementById('monthlyRevenueChart'), {
             type: 'bar',
             data: {
                 labels: data.map(item => item.month_name),
                 datasets: [
                     {
-                        label: 'Manual Revenue',
-                        data: data.map(item => item.manual_revenue || item.revenue),
-                        backgroundColor: 'rgba(107, 114, 128, 0.8)',
+                            label: 'Cash',
+                            data: data.map(item => item.cash_total || 0),
+                            backgroundColor: 'rgba(16, 185, 129, 0.8)',
                         borderRadius: 4,
                     },
                     {
-                        label: 'Shopify Revenue',
-                        data: data.map(item => item.shopify_revenue || 0),
+                            label: 'Online',
+                            data: data.map(item => item.online_total || 0),
                         backgroundColor: 'rgba(59, 130, 246, 0.8)',
                         borderRadius: 4,
                     }
@@ -1109,22 +1593,63 @@ class EnhancedDashboard {
             },
             options: { ...this.getStackedChartOptions('PKR'), plugins: { legend: { display: true, position: 'top' } } }
         });
+        } else if (viewMode === 'shopify_manual') {
+            // Shopify vs Manual stacked
+            this.charts.monthlyRevenue = new Chart(document.getElementById('monthlyRevenueChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.map(item => item.month_name),
+                    datasets: [
+                        {
+                            label: 'Manual',
+                            data: data.map(item => item.manual_total || 0),
+                            backgroundColor: 'rgba(107, 114, 128, 0.8)',
+                            borderRadius: 4,
+                        },
+                        {
+                            label: 'Shopify',
+                            data: data.map(item => item.shopify_total || 0),
+                            backgroundColor: 'rgba(139, 92, 246, 0.8)',
+                            borderRadius: 4,
+                        }
+                    ]
+                },
+                options: { ...this.getStackedChartOptions('PKR'), plugins: { legend: { display: true, position: 'top' } } }
+            });
+        } else {
+            // Total view: Single bar with total invoice revenue
+            this.charts.monthlyRevenue = new Chart(document.getElementById('monthlyRevenueChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.map(item => item.month_name),
+                    datasets: [{
+                        label: 'Invoice Revenue',
+                        data: data.map(item => item.invoice_total || 0),
+                        backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                        borderRadius: 4,
+                    }]
+                },
+                options: this.getChartOptions('PKR')
+            });
+        }
 
-        // Orders Chart with Shopify/Manual split
+        // Invoice Count Chart
+        if (viewMode === 'online_cash') {
+            // Online vs Cash counts
         this.charts.monthlyOrders = new Chart(document.getElementById('monthlyOrdersChart'), {
             type: 'bar',
             data: {
                 labels: data.map(item => item.month_name),
                 datasets: [
                     {
-                        label: 'Manual Orders',
-                        data: data.map(item => item.manual_orders || item.orders),
-                        backgroundColor: 'rgba(107, 114, 128, 0.8)',
+                            label: 'Cash Invoices',
+                            data: data.map(item => item.cash_count || 0),
+                            backgroundColor: 'rgba(16, 185, 129, 0.8)',
                         borderRadius: 4,
                     },
                     {
-                        label: 'Shopify Orders',
-                        data: data.map(item => item.shopify_orders || 0),
+                            label: 'Online Invoices',
+                            data: data.map(item => item.online_count || 0),
                     backgroundColor: 'rgba(59, 130, 246, 0.8)',
                         borderRadius: 4,
                     }
@@ -1132,34 +1657,135 @@ class EnhancedDashboard {
             },
             options: { ...this.getStackedChartOptions(), plugins: { legend: { display: true, position: 'top' } } }
         });
+        } else if (viewMode === 'shopify_manual') {
+            // Shopify vs Manual counts
+            this.charts.monthlyOrders = new Chart(document.getElementById('monthlyOrdersChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.map(item => item.month_name),
+                    datasets: [
+                        {
+                            label: 'Manual Invoices',
+                            data: data.map(item => item.manual_count || 0),
+                            backgroundColor: 'rgba(107, 114, 128, 0.8)',
+                            borderRadius: 4,
+                        },
+                        {
+                            label: 'Shopify Invoices',
+                            data: data.map(item => item.shopify_count || 0),
+                            backgroundColor: 'rgba(139, 92, 246, 0.8)',
+                            borderRadius: 4,
+                        }
+                    ]
+                },
+                options: { ...this.getStackedChartOptions(), plugins: { legend: { display: true, position: 'top' } } }
+            });
+        } else {
+            // Total view: Single bar with total invoice count
+            this.charts.monthlyOrders = new Chart(document.getElementById('monthlyOrdersChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.map(item => item.month_name),
+                    datasets: [{
+                        label: 'Total Invoices',
+                        data: data.map(item => item.invoice_count || 0),
+                        backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                        borderRadius: 4,
+                    }]
+                },
+                options: this.getChartOptions()
+            });
+        }
 
-        // Source Split Pie Chart
-        const totalShopify = data.reduce((sum, item) => sum + (item.shopify_orders || 0), 0);
-        const totalManual = data.reduce((sum, item) => sum + (item.manual_orders || item.orders), 0);
-        
+        // Online vs Cash Revenue by Month - Stacked Bar Chart (not pie)
         this.charts.monthlySource = new Chart(document.getElementById('monthlySourceChart'), {
-            type: 'doughnut',
+            type: 'bar',
             data: {
-                labels: ['Shopify Converted', 'Manual'],
-                datasets: [{
-                    data: [totalShopify, totalManual],
-                    backgroundColor: ['rgba(59, 130, 246, 0.8)', 'rgba(107, 114, 128, 0.8)'],
-                    borderWidth: 0
-                }]
+                labels: data.map(item => item.month_name),
+                datasets: [
+                    {
+                        label: 'Cash',
+                        data: data.map(item => item.cash_total || 0),
+                        backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                        borderRadius: 4,
+                    },
+                    {
+                        label: 'Online',
+                        data: data.map(item => item.online_total || 0),
+                        backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                        borderRadius: 4,
+                    }
+                ]
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'bottom' }
+            options: { 
+                ...this.getStackedChartOptions('PKR'), 
+                plugins: { legend: { display: true, position: 'top' } },
+                onClick: (event, elements) => {
+                    if (elements.length > 0) {
+                        const index = elements[0].index;
+                        const monthData = data[index];
+                        this.showMonthDetails(monthData, 'payment_mode');
+                    }
                 }
             }
+        });
+
+        // New vs Returning Customer Charts
+        this.destroyChart('monthlyCustomerType');
+        this.destroyChart('monthlyCustomerRevenue');
+
+        // Customer Type Orders Chart (stacked bar)
+        this.charts.monthlyCustomerType = new Chart(document.getElementById('monthlyCustomerTypeChart'), {
+            type: 'bar',
+            data: {
+                labels: data.map(item => item.month_name),
+                datasets: [
+                    {
+                        label: 'Returning',
+                        data: data.map(item => item.returning_customer_orders || 0),
+                        backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                        borderRadius: 4,
+                    },
+                    {
+                        label: 'New',
+                        data: data.map(item => item.new_customer_orders || 0),
+                        backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                        borderRadius: 4,
+                    }
+                ]
+            },
+            options: { ...this.getStackedChartOptions(), plugins: { legend: { display: true, position: 'top' } } }
+        });
+
+        // Customer Type Revenue Chart (stacked bar)
+        this.charts.monthlyCustomerRevenue = new Chart(document.getElementById('monthlyCustomerRevenueChart'), {
+            type: 'bar',
+            data: {
+                labels: data.map(item => item.month_name),
+                datasets: [
+                    {
+                        label: 'Returning',
+                        data: data.map(item => item.returning_customer_revenue || 0),
+                        backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                        borderRadius: 4,
+                    },
+                    {
+                        label: 'New',
+                        data: data.map(item => item.new_customer_revenue || 0),
+                        backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                        borderRadius: 4,
+                    }
+                ]
+            },
+            options: { ...this.getStackedChartOptions('PKR'), plugins: { legend: { display: true, position: 'top' } } }
         });
     }
 
     createDailyCharts(data) {
         this.destroyChart('dailyRevenue');
         this.destroyChart('dailyOrders');
+        this.destroyChart('dailyQty');
+        this.destroyChart('dailyCustomerType');
 
         const dailyData = data.data;
 
@@ -1193,6 +1819,44 @@ class EnhancedDashboard {
                 }]
             },
             options: this.getChartOptions()
+        });
+
+        // Qty Chart
+        this.charts.dailyQty = new Chart(document.getElementById('dailyQtyChart'), {
+            type: 'bar',
+            data: {
+                labels: dailyData.map(item => item.day_name),
+                datasets: [{
+                    label: 'Quantity',
+                    data: dailyData.map(item => item.total_qty || 0),
+                    backgroundColor: 'rgba(249, 115, 22, 0.8)',
+                    borderRadius: 4
+                }]
+            },
+            options: this.getChartOptions()
+        });
+
+        // New vs Returning Customer Type Chart
+        this.charts.dailyCustomerType = new Chart(document.getElementById('dailyCustomerTypeChart'), {
+            type: 'bar',
+            data: {
+                labels: dailyData.map(item => item.day_name),
+                datasets: [
+                    {
+                        label: 'Returning',
+                        data: dailyData.map(item => item.returning_customer_orders || 0),
+                        backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                        borderRadius: 4
+                    },
+                    {
+                        label: 'New',
+                        data: dailyData.map(item => item.new_customer_orders || 0),
+                        backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                        borderRadius: 4
+                    }
+                ]
+            },
+            options: { ...this.getStackedChartOptions(), plugins: { legend: { display: true, position: 'top' } } }
         });
     }
 
@@ -1364,6 +2028,368 @@ class EnhancedDashboard {
     formatNumber(number) {
         return new Intl.NumberFormat().format(Math.round(number || 0));
     }
+
+    // =========================================================================
+    // FULL VIEW & DRILL-DOWN METHODS
+    // =========================================================================
+
+    openFullView(chartId, title) {
+        console.log('EnhancedDashboard.openFullView called with:', chartId, title);
+        const modal = document.getElementById('fullViewModal');
+        console.log('Modal element found:', modal);
+        const titleEl = document.getElementById('fullViewTitle');
+        titleEl.textContent = title;
+        
+        // Store current chart context for details view
+        this.currentFullViewChart = chartId;
+        this.currentFullViewTitle = title;
+        
+        console.log('Removing hidden class from modal');
+        modal.classList.remove('hidden');
+        console.log('Modal hidden class removed, classList:', modal.classList);
+        
+        // Create full view chart based on the source chart
+        this.destroyChart('fullView');
+        const chartKey = chartId.replace('Chart', '');
+        const sourceChart = this.charts[chartKey];
+        
+        console.log('Opening full view for:', chartKey, 'Source chart:', sourceChart ? 'found' : 'not found', 'Available:', Object.keys(this.charts));
+        
+        if (sourceChart) {
+            try {
+                // Get the chart type and data directly from the chart instance
+                const chartType = sourceChart.config.type;
+                const chartData = sourceChart.data;
+                const chartOptions = sourceChart.options;
+                
+                // Create a clean config object
+                const config = {
+                    type: chartType,
+                    data: {
+                        labels: [...chartData.labels],
+                        datasets: chartData.datasets.map(ds => ({
+                            ...ds,
+                            data: [...ds.data]
+                        }))
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true, position: 'top' }
+                        },
+                        scales: chartOptions.scales ? JSON.parse(JSON.stringify(chartOptions.scales)) : undefined
+                    }
+                };
+                
+                // Enhance for full view - show day of week on daily charts
+                if (chartId.includes('daily') && this.dailyData && this.dailyData.data) {
+                    config.data.labels = this.dailyData.data.map(item => 
+                        `${item.day_name} (${item.day_of_week ? item.day_of_week.substring(0, 3) : ''})`
+                    );
+                }
+                
+                const fullViewCanvas = document.getElementById('fullViewChart');
+                if (fullViewCanvas) {
+                    this.charts.fullView = new Chart(fullViewCanvas, config);
+                }
+            } catch (e) {
+                console.error('Error creating full view chart:', e);
+                console.error('Chart config:', sourceChart.config);
+            }
+        } else {
+            console.warn('No source chart found for:', chartKey, 'Available charts:', Object.keys(this.charts));
+        }
+    }
+
+    closeFullView() {
+        document.getElementById('fullViewModal').classList.add('hidden');
+        this.destroyChart('fullView');
+    }
+
+    showChartDetails() {
+        const modal = document.getElementById('chartDetailsModal');
+        const titleEl = document.getElementById('chartDetailsTitle');
+        const content = document.getElementById('chartDetailsContent');
+        
+        titleEl.textContent = `${this.currentFullViewTitle} - Raw Data`;
+        
+        // Determine which data to show based on current chart
+        let tableHtml = '';
+        
+        if (this.currentFullViewChart && this.currentFullViewChart.includes('daily') && this.dailyData) {
+            // Daily data
+            tableHtml = this.buildDailyDataTable(this.dailyData.data);
+        } else if (this.monthlyLedgerData) {
+            // Monthly data
+            tableHtml = this.buildMonthlyDataTable(this.monthlyLedgerData);
+        }
+        
+        content.innerHTML = tableHtml;
+        modal.classList.remove('hidden');
+    }
+
+    closeChartDetails() {
+        document.getElementById('chartDetailsModal').classList.add('hidden');
+    }
+
+    buildDailyDataTable(data) {
+        return `
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600">Date</th>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600">Day</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Revenue</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Orders</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Qty</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Online</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Cash</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">New</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Returning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.filter(d => d.orders > 0).map(row => `
+                        <tr class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" onclick="showOrdersForDate('${row.date}')">
+                            <td class="py-2 px-3 text-gray-900">${row.day_name}</td>
+                            <td class="py-2 px-3 text-gray-600">${row.day_of_week}</td>
+                            <td class="py-2 px-3 text-right text-gray-900 font-medium">PKR ${this.formatNumber(row.revenue)}</td>
+                            <td class="py-2 px-3 text-right text-gray-900">${row.orders}</td>
+                            <td class="py-2 px-3 text-right text-gray-900">${this.formatNumber(row.total_qty || 0)}</td>
+                            <td class="py-2 px-3 text-right text-blue-600">${row.online_count || 0}</td>
+                            <td class="py-2 px-3 text-right text-green-600">${row.cash_count || 0}</td>
+                            <td class="py-2 px-3 text-right text-emerald-600">${row.new_customer_orders || 0}</td>
+                            <td class="py-2 px-3 text-right text-blue-600">${row.returning_customer_orders || 0}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+                <tfoot class="bg-gray-100 font-medium">
+                    <tr>
+                        <td class="py-2 px-3" colspan="2">Total</td>
+                        <td class="py-2 px-3 text-right">PKR ${this.formatNumber(data.reduce((s,r) => s + r.revenue, 0))}</td>
+                        <td class="py-2 px-3 text-right">${data.reduce((s,r) => s + r.orders, 0)}</td>
+                        <td class="py-2 px-3 text-right">${this.formatNumber(data.reduce((s,r) => s + (r.total_qty || 0), 0))}</td>
+                        <td class="py-2 px-3 text-right text-blue-600">${data.reduce((s,r) => s + (r.online_count || 0), 0)}</td>
+                        <td class="py-2 px-3 text-right text-green-600">${data.reduce((s,r) => s + (r.cash_count || 0), 0)}</td>
+                        <td class="py-2 px-3 text-right text-emerald-600">${data.reduce((s,r) => s + (r.new_customer_orders || 0), 0)}</td>
+                        <td class="py-2 px-3 text-right text-blue-600">${data.reduce((s,r) => s + (r.returning_customer_orders || 0), 0)}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        `;
+    }
+
+    buildMonthlyDataTable(data) {
+        return `
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="text-left py-2 px-3 font-medium text-gray-600">Month</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Revenue</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Invoices</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Online</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Cash</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Shopify</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Manual</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">New</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Returning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.map(row => `
+                        <tr class="border-t border-gray-100 hover:bg-gray-50">
+                            <td class="py-2 px-3 text-gray-900 font-medium">${row.month_name}</td>
+                            <td class="py-2 px-3 text-right text-gray-900 font-medium">PKR ${this.formatNumber(row.invoice_total)}</td>
+                            <td class="py-2 px-3 text-right text-gray-900">${row.invoice_count}</td>
+                            <td class="py-2 px-3 text-right text-blue-600">PKR ${this.formatNumber(row.online_total)} (${row.online_count})</td>
+                            <td class="py-2 px-3 text-right text-green-600">PKR ${this.formatNumber(row.cash_total)} (${row.cash_count})</td>
+                            <td class="py-2 px-3 text-right text-purple-600">PKR ${this.formatNumber(row.shopify_total)} (${row.shopify_count})</td>
+                            <td class="py-2 px-3 text-right text-gray-600">PKR ${this.formatNumber(row.manual_total)} (${row.manual_count})</td>
+                            <td class="py-2 px-3 text-right text-emerald-600">${row.new_customer_orders || 0}</td>
+                            <td class="py-2 px-3 text-right text-blue-600">${row.returning_customer_orders || 0}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    }
+
+    showMonthDetails(monthData, type) {
+        const modal = document.getElementById('chartDetailsModal');
+        const titleEl = document.getElementById('chartDetailsTitle');
+        const content = document.getElementById('chartDetailsContent');
+        
+        titleEl.textContent = `${monthData.month_name} - ${type === 'payment_mode' ? 'Payment Mode' : 'Details'}`;
+        
+        content.innerHTML = `
+            <div class="grid grid-cols-2 gap-4 mb-4">
+                <div class="bg-blue-50 p-4 rounded-lg">
+                    <p class="text-sm text-blue-700 mb-1">Online Revenue</p>
+                    <p class="text-2xl font-bold text-blue-900">PKR ${this.formatNumber(monthData.online_total)}</p>
+                    <p class="text-sm text-blue-600">${monthData.online_count} invoices</p>
+                </div>
+                <div class="bg-emerald-50 p-4 rounded-lg">
+                    <p class="text-sm text-emerald-700 mb-1">Cash Revenue</p>
+                    <p class="text-2xl font-bold text-emerald-900">PKR ${this.formatNumber(monthData.cash_total)}</p>
+                    <p class="text-sm text-emerald-600">${monthData.cash_count} invoices</p>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 rounded-lg">
+                <p class="text-sm text-gray-700 mb-1">Total Revenue</p>
+                <p class="text-2xl font-bold text-gray-900">PKR ${this.formatNumber(monthData.invoice_total)}</p>
+                <p class="text-sm text-gray-600">${monthData.invoice_count} total invoices</p>
+            </div>
+        `;
+        
+        modal.classList.remove('hidden');
+    }
+
+    // =========================================================================
+    // ACTIVE CUSTOMERS POPUP
+    // =========================================================================
+
+    async showActiveCustomersPopup() {
+        console.log('EnhancedDashboard.showActiveCustomersPopup called');
+        const modal = document.getElementById('activeCustomersModal');
+        const content = document.getElementById('activeCustomersContent');
+        console.log('Active customers modal element:', modal);
+        
+        // Update counts from stored data
+        if (this.topCardsData) {
+            document.getElementById('customerCountAll').textContent = `(${this.topCardsData.active_customers_90d || 0})`;
+            document.getElementById('customerCountNew').textContent = `(${this.topCardsData.new_customers_90d || 0})`;
+            document.getElementById('customerCountReturning').textContent = `(${this.topCardsData.returning_customers_90d || 0})`;
+        }
+        
+        console.log('Showing active customers modal');
+        modal.classList.remove('hidden');
+        content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-500">Loading customers...</p></div>';
+        
+        this.filterActiveCustomers('all');
+    }
+
+    async filterActiveCustomers(filter) {
+        const content = document.getElementById('activeCustomersContent');
+        
+        // Update filter button styles
+        ['All', 'New', 'Returning'].forEach(f => {
+            const btn = document.getElementById(`customerFilter${f}`);
+            if (f.toLowerCase() === filter) {
+                btn.className = 'px-4 py-2 text-sm font-medium rounded-lg ' + 
+                    (f === 'New' ? 'bg-green-100 text-green-700' : f === 'Returning' ? 'bg-blue-100 text-blue-700' : 'bg-blue-100 text-blue-700');
+            } else {
+                btn.className = 'px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200';
+            }
+        });
+        
+        try {
+            const response = await fetch(`/dashboard/active-customers-list?filter=${filter}`);
+            const data = await response.json();
+            
+            if (data.success && data.data.length > 0) {
+                content.innerHTML = `
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Name</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Phone</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">City</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Type</th>
+                                <th class="text-right py-2 px-3 font-medium text-gray-600">Orders</th>
+                                <th class="text-right py-2 px-3 font-medium text-gray-600">Spent</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">First Order</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Last Order</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.data.map(c => `
+                                <tr class="border-t border-gray-100 hover:bg-gray-50">
+                                    <td class="py-2 px-3 text-gray-900 font-medium">${c.name || '-'}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.phone || '-'}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.city || '-'}</td>
+                                    <td class="py-2 px-3">
+                                        <span class="text-xs px-2 py-0.5 rounded ${c.type === 'new' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}">
+                                            ${c.type === 'new' ? 'New' : 'Returning'}
+                                        </span>
+                                    </td>
+                                    <td class="py-2 px-3 text-right text-gray-900">${c.total_orders}</td>
+                                    <td class="py-2 px-3 text-right text-gray-900 font-medium">PKR ${this.formatNumber(c.total_spent)}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.first_order_date || '-'}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.last_order_date || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                content.innerHTML = '<div class="text-center py-8 text-gray-500">No customers found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading customers:', error);
+            content.innerHTML = '<div class="text-center py-8 text-red-500">Error loading customers</div>';
+        }
+    }
+
+    closeActiveCustomersPopup() {
+        document.getElementById('activeCustomersModal').classList.add('hidden');
+    }
+}
+
+// Make dashboard globally accessible
+let dashboard;
+document.addEventListener('DOMContentLoaded', function() {
+    dashboard = new EnhancedDashboard();
+    dashboard.init();
+});
+
+// Global wrapper functions for onclick handlers
+function showActiveCustomersPopup() {
+    console.log('showActiveCustomersPopup called');
+    if (dashboard) {
+        dashboard.showActiveCustomersPopup();
+    } else {
+        console.error('Dashboard not initialized');
+    }
+}
+
+function closeActiveCustomersPopup() {
+    if (dashboard) {
+        dashboard.closeActiveCustomersPopup();
+    }
+}
+
+function filterActiveCustomers(filter) {
+    if (dashboard) {
+        dashboard.filterActiveCustomers(filter);
+    }
+}
+
+function openFullView(chartId, title) {
+    console.log('openFullView called with:', chartId, title);
+    if (dashboard) {
+        dashboard.openFullView(chartId, title);
+    } else {
+        console.error('Dashboard not initialized');
+    }
+}
+
+function closeFullView() {
+    if (dashboard) {
+        dashboard.closeFullView();
+    }
+}
+
+function showChartDetails() {
+    if (dashboard) {
+        dashboard.showChartDetails();
+    }
+}
+
+function closeChartDetails() {
+    if (dashboard) {
+        dashboard.closeChartDetails();
+    }
 }
 
 // =========================================================================
@@ -1423,10 +2449,183 @@ function closeOrderModal() {
     document.getElementById('orderDetailModal').classList.add('hidden');
 }
 
-function showDrilldown(type) {
-    // Placeholder for drill-down functionality
-    console.log('Drill-down clicked:', type);
+async function showDrilldown(type) {
+    console.log('showDrilldown called with type:', type);
+    const modal = document.getElementById('orderDetailModal');
+    const content = document.getElementById('modalContent');
+    const title = document.getElementById('modalTitle');
+    const month = document.getElementById('topCardsMonthSelector').value;
+    console.log('Modal element:', modal, 'Month:', month);
+    
+    // Set title based on type
+    const titles = {
+        'invoices': 'Delivered Orders',
+        'expenses': 'Expense Transactions',
+        'vendor': 'Vendor Payment Transactions'
+    };
+    title.textContent = titles[type] || 'Transactions';
+    
+    // Map type to API parameter
+    const typeMap = {
+        'invoices': 'invoice',
+        'expenses': 'expense',
+        'vendor': 'vendor_payment'
+    };
+    const apiType = typeMap[type] || type;
+    
+    content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-600">Loading transactions...</p></div>';
+    modal.classList.remove('hidden');
+    
+    try {
+        const response = await fetch(`/dashboard/ledger-transactions?month=${month}&type=${apiType}`);
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            const totalAmount = data.data.reduce((sum, txn) => sum + txn.amount, 0);
+            
+            // Different table structure for invoices vs expenses/vendor payments
+            if (type === 'invoices') {
+                content.innerHTML = `
+                    <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
+                        <span class="text-sm text-gray-600">${data.data.length} orders</span>
+                        <span class="text-lg font-bold text-gray-900">Total: PKR ${totalAmount.toLocaleString()}</span>
+                    </div>
+                    <div class="max-h-96 overflow-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Order #</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Customer</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Order Date</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Delivery Date</th>
+                                    <th class="text-center py-2 px-3 font-medium text-gray-600">Payment</th>
+                                    <th class="text-center py-2 px-3 font-medium text-gray-600">Status</th>
+                                    <th class="text-right py-2 px-3 font-medium text-gray-600">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.data.map(txn => `
+                                    <tr class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" onclick="window.open('/orders/${txn.id}', '_blank')">
+                                        <td class="py-2 px-3 text-blue-600 font-medium">${txn.order_number || '-'}</td>
+                                        <td class="py-2 px-3 text-gray-900">
+                                            <div>${txn.customer_name || '-'}</div>
+                                            <div class="text-xs text-gray-500">${txn.customer_phone || ''}</div>
+                                        </td>
+                                        <td class="py-2 px-3 text-gray-600 whitespace-nowrap">${txn.order_date || '-'}</td>
+                                        <td class="py-2 px-3 text-gray-600 whitespace-nowrap">${txn.delivery_date || '-'}</td>
+                                        <td class="py-2 px-3 text-center">
+                                            <span class="px-2 py-0.5 text-xs rounded ${txn.payment_method?.toLowerCase().includes('online') || txn.payment_method?.toLowerCase().includes('card') ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}">${txn.payment_method || 'Cash'}</span>
+                                        </td>
+                                        <td class="py-2 px-3 text-center">
+                                            <span class="px-2 py-0.5 text-xs rounded ${getStatusColor(txn.approval_status)}">${formatStatus(txn.approval_status)}</span>
+                                        </td>
+                                        <td class="py-2 px-3 text-right font-medium text-gray-900">PKR ${txn.amount.toLocaleString()}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } else {
+                // Expenses and Vendor Payments table
+                content.innerHTML = `
+                    <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
+                        <span class="text-sm text-gray-600">${data.data.length} transactions</span>
+                        <span class="text-lg font-bold text-gray-900">Total: PKR ${totalAmount.toLocaleString()}</span>
+                    </div>
+                    <div class="max-h-96 overflow-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Date</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Description</th>
+                                    <th class="text-center py-2 px-3 font-medium text-gray-600">Mode</th>
+                                    <th class="text-right py-2 px-3 font-medium text-gray-600">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.data.map(txn => `
+                                    <tr class="border-t border-gray-100 hover:bg-gray-50">
+                                        <td class="py-2 px-3 text-gray-600 whitespace-nowrap">${txn.date}</td>
+                                        <td class="py-2 px-3 text-gray-900">${txn.description || '-'}</td>
+                                        <td class="py-2 px-3 text-center">
+                                            <span class="px-2 py-0.5 text-xs rounded ${txn.mode?.toLowerCase() === 'online' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}">${txn.mode || 'Cash'}</span>
+                                        </td>
+                                        <td class="py-2 px-3 text-right font-medium text-gray-900">PKR ${txn.amount.toLocaleString()}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+        } else {
+            content.innerHTML = '<div class="text-center py-8 text-gray-500">No transactions found for this period.</div>';
+        }
+    } catch (error) {
+        console.error('Error loading transactions:', error);
+        content.innerHTML = '<div class="text-center py-8 text-red-500">Error loading transactions.</div>';
+    }
 }
+
+function getStatusColor(status) {
+    const colors = {
+        'approved': 'bg-green-100 text-green-700',
+        'pending': 'bg-amber-100 text-amber-700',
+        'pending_l1': 'bg-amber-100 text-amber-700',
+        'pending_l2': 'bg-orange-100 text-orange-700',
+        'rejected': 'bg-red-100 text-red-700',
+        'reversed': 'bg-gray-100 text-gray-700'
+    };
+    return colors[status] || 'bg-gray-100 text-gray-700';
+}
+
+function formatStatus(status) {
+    const labels = {
+        'approved': 'Approved',
+        'pending': 'Pending',
+        'pending_l1': 'Pending L1',
+        'pending_l2': 'Pending L2',
+        'rejected': 'Rejected',
+        'reversed': 'Reversed'
+    };
+    return labels[status] || status || '-';
+}
+
+// Ensure all functions are globally accessible
+window.showDrilldown = showDrilldown;
+window.showOrdersForDate = showOrdersForDate;
+window.closeOrderModal = closeOrderModal;
+window.getStatusColor = getStatusColor;
+window.formatStatus = formatStatus;
+window.showActiveCustomersPopup = showActiveCustomersPopup;
+window.closeActiveCustomersPopup = closeActiveCustomersPopup;
+window.filterActiveCustomers = filterActiveCustomers;
+window.openFullView = openFullView;
+window.closeFullView = closeFullView;
+window.showChartDetails = showChartDetails;
+window.closeChartDetails = closeChartDetails;
+
+// Test function to directly show modals
+window.testModal = function(modalId) {
+    const modal = document.getElementById(modalId);
+    console.log('Testing modal:', modalId, 'Element:', modal);
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'block';
+        console.log('Modal should now be visible, classList:', modal.classList, 'display:', modal.style.display);
+    } else {
+        console.error('Modal not found:', modalId);
+    }
+};
+
+console.log('Dashboard functions loaded and attached to window');
+console.log('Available modals:', {
+    fullView: document.getElementById('fullViewModal'),
+    orderDetail: document.getElementById('orderDetailModal'),
+    activeCustomers: document.getElementById('activeCustomersModal'),
+    chartDetails: document.getElementById('chartDetailsModal')
+});
 </script>
 
 <style>
@@ -1434,7 +2633,7 @@ function showDrilldown(type) {
     border-bottom-color: rgb(59 130 246) !important;
     color: rgb(59 130 246) !important;
 }
-.source-btn.active {
+.source-btn.active, .view-btn.active {
     background: white;
     box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
 }

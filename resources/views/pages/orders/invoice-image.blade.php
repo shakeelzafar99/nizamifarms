@@ -382,19 +382,39 @@
             <div class="customer-section">
                 <h3>Customer Details</h3>
                 <div class="customer-details">
-                    <div class="customer-name">{{ $order->customer->first_name ?? '' }} {{ $order->customer->last_name ?? '' }}</div>
-                    @if($order->customer && $order->customer->address1)
-                        <div>{{ $order->customer->address1 }}</div>
-                        @if($order->customer->address2)
-                            <div>{{ $order->customer->address2 }}</div>
+                    @php
+                        // ⭐ PRIORITY: Use ORDER address fields (for order-specific overrides)
+                        // Fallback to customer table only if order fields are empty
+                        $custFirstName = $order->address_first_name ?: ($order->customer->first_name ?? '');
+                        $custLastName = $order->address_last_name ?: ($order->customer->last_name ?? '');
+                        $custName = trim("$custFirstName $custLastName");
+                        
+                        // If still empty, try order.name field
+                        if (empty($custName) && $order->name) {
+                            $custName = $order->name;
+                        }
+                        
+                        // Address fields - order first, then customer fallback
+                        $address1 = $order->address_line1 ?: ($order->customer->address1 ?? '');
+                        $address2 = $order->address_line2 ?: ($order->customer->address2 ?? '');
+                        $city = $order->address_city ?: ($order->customer->city ?? '');
+                        $province = $order->address_province ?: ($order->customer->province ?? '');
+                        $postalCode = $order->address_postal_code ?: ($order->customer->postal_code ?? '');
+                        $phone = $order->address_phone ?: ($order->customer->phone_original ?? '');
+                    @endphp
+                    <div class="customer-name">{{ $custName }}</div>
+                    @if($address1)
+                        <div>{{ $address1 }}</div>
+                        @if($address2)
+                            <div>{{ $address2 }}</div>
                         @endif
-                        <div>{{ $order->customer->city ?? '' }}@if($order->customer->province), {{ $order->customer->province }}@endif</div>
-                        @if($order->customer->postal_code)
-                            <div>{{ $order->customer->postal_code }}</div>
+                        <div>{{ $city }}@if($province), {{ $province }}@endif</div>
+                        @if($postalCode)
+                            <div>{{ $postalCode }}</div>
                         @endif
                     @endif
-                    @if($order->customer && $order->customer->phone_original)
-                        <div>{{ $order->customer->phone_original }}</div>
+                    @if($phone)
+                        <div>{{ $phone }}</div>
                     @endif
                 </div>
             </div>

@@ -317,4 +317,122 @@ class DashboardController extends Controller
             'data' => $data
         ]);
     }
+
+    /**
+     * Get monthly ledger analytics (invoices, expenses, vendor payments from ledger)
+     * This ensures graphs match the top cards exactly
+     */
+    public function getMonthlyLedgerAnalytics(Request $request)
+    {
+        try {
+            $months = $request->get('months', 12);
+            $data = $this->analyticsService->getMonthlyLedgerAnalytics($months);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Monthly ledger analytics error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+
+    /**
+     * Get ledger transactions for drilldown (expenses, vendor payments, invoices)
+     */
+    public function getLedgerTransactions(Request $request)
+    {
+        try {
+            $monthKey = $request->get('month', Carbon::now()->format('Y-m'));
+            $type = $request->get('type', 'invoice'); // invoice, expense, vendor_payment
+            $data = $this->analyticsService->getLedgerTransactionsForMonth($monthKey, $type);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Ledger transactions error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+
+    /**
+     * Get monthly product category summary (Level 1)
+     */
+    public function getMonthlyProductCategories(Request $request)
+    {
+        try {
+            $months = $request->get('months', 12);
+            $data = $this->analyticsService->getMonthlyProductCategorySummary($months);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Monthly product categories error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+
+    /**
+     * Get daily product category summary (Level 1)
+     */
+    public function getDailyProductCategories(Request $request)
+    {
+        try {
+            $year = $request->get('year', date('Y'));
+            $month = $request->get('month', date('n'));
+            $data = $this->analyticsService->getDailyProductCategorySummary($year, $month);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Daily product categories error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+
+    /**
+     * Get active customers list for popup (last 90 days)
+     */
+    public function getActiveCustomersList(Request $request)
+    {
+        try {
+            $filter = $request->get('filter', 'all'); // all, new, returning
+            $data = $this->analyticsService->getActiveCustomersList($filter);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Active customers list error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
 }

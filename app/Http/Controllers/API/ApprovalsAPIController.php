@@ -133,8 +133,12 @@ class ApprovalsAPIController extends Controller
                 ], 403);
             }
 
+            // ⭐ Check if we want approved items (for "Approved" tab)
+            $includeApproved = $request->boolean('include_approved', false);
+
             // ⭐ Direct query for online area only - much faster than full approvals
             $items = [];
+            $approvedItems = [];
             
             // Get pending ledger entries for online area
             // ⭐ OPTIMIZED: Use select() to limit columns and constrained eager loading
@@ -199,6 +203,91 @@ class ApprovalsAPIController extends Controller
             }
             $timings['process_loop'] = round((microtime(true) - $processStart) * 1000, 2);
 
+            // ⭐ NEW: Fetch approved items from last 30 days if requested
+            if ($includeApproved) {
+                $approvedStart = microtime(true);
+                $thirtyDaysAgo = now()->subDays(30)->startOfDay();
+                
+                $approvedLedger = \App\Models\FIN\LedgerModel::select([
+                        'id', 'order_id', 'created_by', 'approved_by', 'approval_status', 
+                        'amount', 'description', 'transaction_date', 'approval_date', 
+                        'mode', 'comments'
+                    ])
+                    ->where('approval_status', 'approved')
+                    ->whereNull('request_id')
+                    ->where('mode', 'online')
+                    ->where('approval_date', '>=', $thirtyDaysAgo)
+                    ->with([
+                        'order:id,order_number,order_date,customer_id',
+                        'order.customer:id,first_name,last_name,company,phone,phone_original',
+                        'createdBy:id,fullname',
+                        'approvedBy:id,fullname'
+                    ])
+                    ->orderBy('approval_date', 'desc')
+                    ->get();
+                
+                foreach ($approvedLedger as $ledger) {
+                    $displayNumber = $ledger->order ? $ledger->order->order_number : ('TXN-' . $ledger->id);
+                    $displayDate = $ledger->order && $ledger->order->order_date 
+                        ? $ledger->order->order_date->format('Y-m-d') 
+                        : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null);
+                    
+                    $requester = 'Unknown';
+                    $customerPhone = null;
+                    if ($ledger->order && $ledger->order->customer) {
+                        $customer = $ledger->order->customer;
+                        $fullName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
+                        $requester = $fullName ?: $customer->company ?: $customer->phone ?: 'Unknown';
+                        $customerPhone = $customer->phone_original ?? $customer->phone ?? null;
+                    } elseif ($ledger->createdBy) {
+                        $requester = $ledger->createdBy->fullname ?? 'System';
+                    }
+                    
+                    // ⭐ Parse L1 approval info from comments
+                    $l1ApprovedBy = null;
+                    $l1ApprovedAt = null;
+                    if ($ledger->comments) {
+                        // Look for pattern: "L1 approved by User ID X"
+                        if (preg_match('/L1 approved by User ID (\d+)/i', $ledger->comments, $matches)) {
+                            $l1UserId = $matches[1];
+                            $l1User = \App\Models\SysAdmin\UserModel::select('id', 'fullname')->find($l1UserId);
+                            $l1ApprovedBy = $l1User ? $l1User->fullname : "User #{$l1UserId}";
+                        }
+                        // Look for "Fully approved (L1+L2) by User ID X"
+                        if (preg_match('/Fully approved \(L1\+L2\) by User ID (\d+)/i', $ledger->comments, $matches)) {
+                            $l1UserId = $matches[1];
+                            $l1User = \App\Models\SysAdmin\UserModel::select('id', 'fullname')->find($l1UserId);
+                            $l1ApprovedBy = $l1User ? $l1User->fullname : "User #{$l1UserId}";
+                            // For full approval, L1 and L2 are same person and time
+                        }
+                    }
+                    
+                    $approvedItems[] = [
+                        'id' => $ledger->id,
+                        'type' => 'ledger',
+                        'number' => $displayNumber,
+                        'title' => 'Online Invoice',
+                        'description' => $ledger->description,
+                        'amount' => (float) $ledger->amount,
+                        'date' => $displayDate,
+                        'approval_date' => $ledger->approval_date ? $ledger->approval_date->format('Y-m-d') : null,
+                        'level' => 0, // 0 = approved (no longer pending)
+                        'area' => 'online',
+                        'requester' => $requester,
+                        'customer_phone' => $customerPhone,
+                        'category' => 'Invoice',
+                        'category_color' => '#D1FAE5', // Green tint for approved
+                        // ⭐ Approval details
+                        'l1_approved_by' => $l1ApprovedBy,
+                        'l1_approved_at' => $l1ApprovedBy ? $ledger->approval_date?->format('Y-m-d') : null, // Use approval_date as proxy
+                        'l2_approved_by' => $ledger->approvedBy?->fullname ?? null,
+                        'l2_approved_at' => $ledger->approval_date?->format('Y-m-d'),
+                        'approved_by' => $ledger->approvedBy?->fullname ?? 'System',
+                    ];
+                }
+                $timings['approved_query'] = round((microtime(true) - $approvedStart) * 1000, 2);
+            }
+
             // Sort by date descending
             $sortStart = microtime(true);
             usort($items, function($a, $b) {
@@ -212,32 +301,42 @@ class ApprovalsAPIController extends Controller
             
             $timings['total_ms'] = round((microtime(true) - $startTime) * 1000, 2);
             $timings['item_count'] = count($items);
+            $timings['approved_count'] = count($approvedItems);
             
             // Log timings for debugging
             Log::info('Online approvals timing', $timings);
             
+            $responseData = [
+                'items' => $items,
+                'count' => count($items),
+                'summary' => [
+                    'total' => count($items),
+                    'total_amount' => array_sum(array_column($items, 'amount')),
+                    'l1' => [
+                        'count' => count($l1Items),
+                        'amount' => array_sum(array_column($l1Items, 'amount'))
+                    ],
+                    'l2' => [
+                        'count' => count($l2Items),
+                        'amount' => array_sum(array_column($l2Items, 'amount'))
+                    ]
+                ],
+                'has_level_1_rights' => $hasLevel1Rights,
+                'has_level_2_rights' => $hasLevel2Rights,
+                'last_synced' => now()->toIso8601String(),
+                '_debug_timings' => $timings
+            ];
+            
+            // ⭐ Include approved items if requested
+            if ($includeApproved) {
+                $responseData['approved_items'] = $approvedItems;
+                $responseData['approved_count'] = count($approvedItems);
+                $responseData['approved_amount'] = array_sum(array_column($approvedItems, 'amount'));
+            }
+            
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'items' => $items,
-                    'count' => count($items),
-                    'summary' => [
-                        'total' => count($items),
-                        'total_amount' => array_sum(array_column($items, 'amount')),
-                        'l1' => [
-                            'count' => count($l1Items),
-                            'amount' => array_sum(array_column($l1Items, 'amount'))
-                        ],
-                        'l2' => [
-                            'count' => count($l2Items),
-                            'amount' => array_sum(array_column($l2Items, 'amount'))
-                        ]
-                    ],
-                    'has_level_1_rights' => $hasLevel1Rights,
-                    'has_level_2_rights' => $hasLevel2Rights,
-                    'last_synced' => now()->toIso8601String(),
-                    '_debug_timings' => $timings // ⭐ Include timings for debugging
-                ]
+                'data' => $responseData
             ]);
 
         } catch (\Exception $e) {

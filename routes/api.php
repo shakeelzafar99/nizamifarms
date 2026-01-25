@@ -152,6 +152,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/open-orders-light', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrdersLight']); // Lightweight for list
     Route::get('/store/open-orders/{id}/details', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrderDetails']); // Full details when expanded
     Route::get('/store/delivered-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreDeliveredOrders']); // ⭐ Delivered orders grouped by date
+    Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
     Route::get('/store/riders', [\App\Http\Controllers\API\RiderController::class, 'getActiveRiders']);

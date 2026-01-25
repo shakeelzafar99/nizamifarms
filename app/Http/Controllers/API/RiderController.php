@@ -7418,6 +7418,46 @@ class RiderController extends Controller
             // Calculate working days
             $workingDays = $shiftService->calculateWorkingDays($userId, $startDate, $endDate);
             
+            // ⭐ Calculate meter/distance statistics
+            $totalDistance = 0;
+            $daysWithMeterReadings = 0;
+            $daysMissingMeterReadings = 0;
+            
+            foreach ($query as $record) {
+                // Check if has valid meter readings
+                if ($record->meter_start !== null && $record->meter_end !== null && 
+                    $record->meter_start > 0 && $record->meter_end > 0) {
+                    $distance = abs(intval($record->meter_end) - intval($record->meter_start));
+                    $totalDistance += $distance;
+                    $daysWithMeterReadings++;
+                } elseif ($record->login_time) {
+                    // Has attendance but no meter readings
+                    $daysMissingMeterReadings++;
+                }
+            }
+            
+            // ⭐ Get fuel/petrol expenses for this user in this month
+            $fuelExpense = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'expense')
+                ->where('r.requester_user_id', $userId)
+                ->whereIn('r.status', ['approved', 'pending']) // Include pending for visibility
+                ->where(function($q) {
+                    $q->where('r.expense_category', 'LIKE', '%petrol%')
+                      ->orWhere('r.expense_category', 'LIKE', '%fuel%')
+                      ->orWhere('r.expense_category', 'LIKE', '%Petrol%')
+                      ->orWhere('r.expense_category', 'LIKE', '%Fuel%');
+                })
+                ->where(function($q) use ($startDate, $endDate) {
+                    // Use expense_date if available, otherwise created_at
+                    $q->whereBetween('r.expense_date', [$startDate, $endDate])
+                      ->orWhere(function($q2) use ($startDate, $endDate) {
+                          $q2->whereNull('r.expense_date')
+                             ->whereBetween(DB::raw('DATE(r.created_at)'), [$startDate, $endDate]);
+                      });
+                })
+                ->sum('r.amount');
+            
             // Calculate statistics
             $totalDays = $query->count();
             $presentDays = $query->where('login_time', '!=', null)->count();
@@ -7525,6 +7565,12 @@ class RiderController extends Controller
                     'overtime_days' => $overtimeDays,
                     'total_hours' => round($totalHours, 1),
                     'total_orders_delivered' => $totalOrdersDelivered,
+                    // ⭐ NEW: Meter/Distance statistics
+                    'total_distance' => $totalDistance,
+                    'days_with_meter_readings' => $daysWithMeterReadings,
+                    'days_missing_meter_readings' => $daysMissingMeterReadings,
+                    // ⭐ NEW: Fuel expense for efficiency calculation
+                    'fuel_expense' => round($fuelExpense, 0),
                 ],
                 'daily_records' => $query,
                 'month' => $month,
@@ -9406,6 +9452,178 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch delivered orders: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get cancelled orders for Store Mode (grouped by cancellation date)
+     * 
+     * Similar to delivered orders but for cancelled status
+     * Shows who cancelled and when
+     */
+    public function getStoreCancelledOrders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission - same as view_open_orders (store mode access)
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view cancelled orders'
+                ], 403);
+            }
+            
+            // Get date range (default: last 60 days for performance)
+            $daysBack = $request->get('days', 60);
+            $startDate = now()->subDays($daysBack)->format('Y-m-d');
+            
+            // ⭐ Use subquery to get only the FIRST 'cancelled' status entry per order
+            $cancelledSubquery = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MIN(id) as first_cancelled_id'))
+                ->where('status_code', 'cancelled')
+                ->where('changed_at', '>=', $startDate)
+                ->groupBy('order_id');
+            
+            // Get all cancelled orders with cancellation date and who cancelled
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->joinSub($cancelledSubquery, 'first_osh', function($join) {
+                    $join->on('o.id', '=', 'first_osh.order_id');
+                })
+                ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'first_osh.first_cancelled_id')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->leftJoin('t_sys_user as cancelled_by_user', 'cancelled_by_user.id', '=', 'osh.changed_by')
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')
+                      ->orWhereNull('o.external_source');
+                })
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.total_price',
+                    'o.payment_method',
+                    'o.assigned_rider_user_id as rider_id',
+                    'o.customer_id',
+                    'o.address_line1',
+                    'o.address_line2',
+                    'o.address_city',
+                    'o.address_phone',
+                    'o.order_date',
+                    'o.expected_packets',
+                    'u.fullname as rider_name',
+                    'osh.changed_at as cancelled_at',
+                    'osh.notes as cancellation_reason',
+                    \DB::raw('DATE(osh.changed_at) as cancellation_date'),
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.phone_original as customer_phone_from_customer',
+                    // Who cancelled
+                    'cancelled_by_user.fullname as cancelled_by_name',
+                    'osh.changed_by as cancelled_by_id',
+                ])
+                ->orderBy('osh.changed_at', 'desc')
+                ->get();
+            
+            // Get order IDs for batch fetching line items
+            $orderIds = $orders->pluck('id')->toArray();
+            
+            // ⭐ Batch fetch line items for all orders (avoid N+1 queries)
+            $lineItems = \DB::table('t_crm_prod_order_line_item')
+                ->whereIn('order_id', $orderIds)
+                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total'])
+                ->get()
+                ->groupBy('order_id');
+            
+            // Group by cancellation date
+            $dateGroups = [];
+            foreach ($orders as $order) {
+                $dateKey = $order->cancellation_date;
+                
+                if (!isset($dateGroups[$dateKey])) {
+                    $dateGroups[$dateKey] = [
+                        'date' => $dateKey,
+                        'date_display' => \Carbon\Carbon::parse($dateKey)->format('D, M j, Y'),
+                        'is_today' => $dateKey === now()->format('Y-m-d'),
+                        'total_cancelled' => 0,
+                        'total_amount' => 0,
+                        'orders' => [],
+                    ];
+                }
+                
+                $amount = (float)$order->total_price;
+                
+                $dateGroups[$dateKey]['total_cancelled']++;
+                $dateGroups[$dateKey]['total_amount'] += $amount;
+                
+                // Build customer address
+                $customerAddress = trim(implode(', ', array_filter([
+                    $order->address_line1,
+                    $order->address_line2,
+                    $order->address_city,
+                ])));
+                
+                // ⭐ Get line items (products) for this order
+                $orderLineItems = $lineItems->get($order->id, collect())->map(function($item) {
+                    return [
+                        'name' => $item->name ?? 'Product',
+                        'sku' => $item->sku,
+                        'quantity' => (int)$item->quantity,
+                        'unit_price' => (float)$item->unit_price,
+                        'line_total' => (float)$item->line_total,
+                    ];
+                })->values()->toArray();
+                
+                // Determine payment type
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+                
+                $dateGroups[$dateKey]['orders'][] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'customer_address' => $customerAddress,
+                    'customer_phone' => $order->address_phone ?? $order->customer_phone_from_customer,
+                    'rider_id' => $order->rider_id,
+                    'rider_name' => $order->rider_name ?: 'Unassigned',
+                    'total_price' => $amount,
+                    'payment_method' => $order->payment_method,
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'order_date' => $order->order_date,
+                    'cancelled_at' => $order->cancelled_at,
+                    'cancelled_at_display' => \Carbon\Carbon::parse($order->cancelled_at)->format('h:i A'),
+                    'cancelled_by_name' => $order->cancelled_by_name ?: 'System',
+                    'cancellation_reason' => $order->cancellation_reason,
+                    'expected_packets' => $order->expected_packets,
+                    'line_items' => $orderLineItems,
+                    'items_count' => count($orderLineItems),
+                ];
+            }
+            
+            // Convert to array and sort by date descending (most recent first)
+            $dateGroupsArray = collect($dateGroups)->sortByDesc('date')->values()->toArray();
+            
+            // Calculate summary stats
+            $totalOrders = $orders->count();
+            $totalAmount = $orders->sum('total_price');
+            
+            return response()->json([
+                'success' => true,
+                'summary' => [
+                    'total_orders' => $totalOrders,
+                    'total_amount' => (float)$totalAmount,
+                    'days_included' => count($dateGroupsArray),
+                ],
+                'date_groups' => $dateGroupsArray,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error fetching cancelled orders for store: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch cancelled orders: ' . $e->getMessage()
             ], 500);
         }
     }
