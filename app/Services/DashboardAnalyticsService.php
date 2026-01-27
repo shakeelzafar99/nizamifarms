@@ -404,7 +404,7 @@ class DashboardAnalyticsService
      */
     public function getMonthlyLedgerAnalytics($months = 12)
     {
-        $cacheKey = "monthly_delivered_orders_v5_{$months}";
+        $cacheKey = "monthly_delivered_orders_v7_{$months}";
         
         return Cache::remember($cacheKey, 600, function () use ($months) {
             $endDate = Carbon::now()->endOfMonth();
@@ -433,11 +433,12 @@ class DashboardAnalyticsService
                     DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN 1 ELSE 0 END) as shopify_count"),
                     DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN o.total_price ELSE 0 END) as manual_total"),
                     DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN 1 ELSE 0 END) as manual_count"),
-                    // New vs Returning customers (based on first_order_date in same month as delivery)
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as new_customer_revenue"),
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as new_customer_orders"),
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as returning_customer_revenue"),
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_order_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as returning_customer_orders")
+                    // New vs Returning customers (based on first_delivery_date - pre-computed for performance)
+                    // New = customer's first delivery was in this month
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as new_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as new_customer_orders"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') OR c.first_delivery_date IS NULL THEN o.total_price ELSE 0 END) as returning_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') OR c.first_delivery_date IS NULL THEN 1 ELSE 0 END) as returning_customer_orders")
                 )
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')
@@ -448,16 +449,18 @@ class DashboardAnalyticsService
                 ->orderBy('month_key')
                 ->get();
             
-            // Get expenses and vendor payments (these use transaction_date)
+            // Get expenses, vendor purchases, and vendor payments (these use transaction_date)
             $financialData = DB::table('t_fin_ledger')
                 ->select(
                     DB::raw("DATE_FORMAT(transaction_date, '%Y-%m') as month_key"),
                     DB::raw("SUM(CASE WHEN transaction_type = 'expense' AND approval_status = 'approved' THEN amount ELSE 0 END) as expense_total"),
                     DB::raw("SUM(CASE WHEN transaction_type = 'expense' AND approval_status = 'approved' THEN 1 ELSE 0 END) as expense_count"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'vendor_purchase' AND approval_status = 'approved' THEN amount ELSE 0 END) as vendor_purchase_total"),
+                    DB::raw("SUM(CASE WHEN transaction_type = 'vendor_purchase' AND approval_status = 'approved' THEN 1 ELSE 0 END) as vendor_purchase_count"),
                     DB::raw("SUM(CASE WHEN transaction_type = 'vendor_payment' AND approval_status = 'approved' THEN amount ELSE 0 END) as vendor_payment_total"),
                     DB::raw("SUM(CASE WHEN transaction_type = 'vendor_payment' AND approval_status = 'approved' THEN 1 ELSE 0 END) as vendor_payment_count")
                 )
-                ->whereIn('transaction_type', ['expense', 'vendor_payment'])
+                ->whereIn('transaction_type', ['expense', 'vendor_purchase', 'vendor_payment'])
                 ->whereBetween('transaction_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
                 ->groupBy(DB::raw("DATE_FORMAT(transaction_date, '%Y-%m')"))
                 ->get()
@@ -467,9 +470,11 @@ class DashboardAnalyticsService
                 $invoiceTotal = round($row->invoice_total ?? 0, 2);
                 $monthKey = $row->month_key;
                 
-                // Get expenses and vendor payments for this month
+                // Get expenses, vendor purchases, and vendor payments for this month
                 $expenseTotal = round($financialData[$monthKey]->expense_total ?? 0, 2);
                 $expenseCount = (int) ($financialData[$monthKey]->expense_count ?? 0);
+                $vendorPurchaseTotal = round($financialData[$monthKey]->vendor_purchase_total ?? 0, 2);
+                $vendorPurchaseCount = (int) ($financialData[$monthKey]->vendor_purchase_count ?? 0);
                 $vendorPaymentTotal = round($financialData[$monthKey]->vendor_payment_total ?? 0, 2);
                 $vendorPaymentCount = (int) ($financialData[$monthKey]->vendor_payment_count ?? 0);
                 
@@ -493,9 +498,12 @@ class DashboardAnalyticsService
                     'returning_customer_orders' => (int) ($row->returning_customer_orders ?? 0),
                     'expense_total' => $expenseTotal,
                     'expense_count' => $expenseCount,
+                    'vendor_purchase_total' => $vendorPurchaseTotal,
+                    'vendor_purchase_count' => $vendorPurchaseCount,
                     'vendor_payment_total' => $vendorPaymentTotal,
                     'vendor_payment_count' => $vendorPaymentCount,
-                    'profit' => round($invoiceTotal - $expenseTotal - $vendorPaymentTotal, 2),
+                    // Profit = Invoices - Expenses - Vendor Purchases (NOT payments)
+                    'profit' => round($invoiceTotal - $expenseTotal - $vendorPurchaseTotal, 2),
                 ];
             })->values()->toArray();
         });
@@ -620,7 +628,7 @@ class DashboardAnalyticsService
      */
     public function getDailyAnalytics($year, $month)
     {
-        $cacheKey = "daily_analytics_delivery_v2_{$year}_{$month}";
+        $cacheKey = "daily_analytics_delivery_v5_{$year}_{$month}";
         
         return Cache::remember($cacheKey, 600, function () use ($year, $month) {
             $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
@@ -646,11 +654,11 @@ class DashboardAnalyticsService
                     DB::raw('SUM(CASE WHEN o.payment_method IN ("online", "Online", "ONLINE", "card", "Card") THEN 1 ELSE 0 END) as online_count'),
                     DB::raw('SUM(CASE WHEN o.payment_method NOT IN ("online", "Online", "ONLINE", "card", "Card") OR o.payment_method IS NULL THEN o.total_price ELSE 0 END) as cash_total'),
                     DB::raw('SUM(CASE WHEN o.payment_method NOT IN ("online", "Online", "ONLINE", "card", "Card") OR o.payment_method IS NULL THEN 1 ELSE 0 END) as cash_count'),
-                    // New vs Returning customers (first_order_date in same month as delivery)
-                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN o.total_price ELSE 0 END) as new_customer_revenue'),
-                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN 1 ELSE 0 END) as new_customer_orders'),
-                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") THEN o.total_price ELSE 0 END) as returning_customer_revenue'),
-                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_order_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") THEN 1 ELSE 0 END) as returning_customer_orders')
+                    // New vs Returning customers (based on first_delivery_date - pre-computed for performance)
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN o.total_price ELSE 0 END) as new_customer_revenue'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, "%Y-%m") = DATE_FORMAT(h.delivered_at, "%Y-%m") THEN 1 ELSE 0 END) as new_customer_orders'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") OR c.first_delivery_date IS NULL THEN o.total_price ELSE 0 END) as returning_customer_revenue'),
+                    DB::raw('SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, "%Y-%m") != DATE_FORMAT(h.delivered_at, "%Y-%m") OR c.first_delivery_date IS NULL THEN 1 ELSE 0 END) as returning_customer_orders')
                 )
                 ->where(function($q) {
                     $q->where('o.external_source', '!=', 'shopify')
@@ -713,8 +721,32 @@ class DashboardAnalyticsService
                 $currentDay->addDay();
             }
             
+            // Get unique monthly customer counts (single count for the whole month)
+            $monthlyUniqueCustomers = DB::selectOne("
+                SELECT 
+                    COUNT(DISTINCT o.customer_id) as total_unique_customers,
+                    COUNT(DISTINCT CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = ? THEN o.customer_id END) as unique_new_customers,
+                    COUNT(DISTINCT CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != ? OR c.first_delivery_date IS NULL THEN o.customer_id END) as unique_returning_customers
+                FROM t_crm_prod_order o
+                INNER JOIN (SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = 'delivered' GROUP BY order_id) h 
+                    ON o.id = h.order_id
+                LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE h.delivered_at BETWEEN ? AND ?
+                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+            ", [
+                $startDate->format('Y-m'),
+                $startDate->format('Y-m'),
+                $startDate->format('Y-m-d 00:00:00'),
+                $endDate->format('Y-m-d 23:59:59')
+            ]);
+            
             return [
                 'month_name' => $startDate->format('F Y'),
+                'month_key' => $startDate->format('Y-m'),
+                'unique_customers' => (int) ($monthlyUniqueCustomers->total_unique_customers ?? 0),
+                'unique_new_customers' => (int) ($monthlyUniqueCustomers->unique_new_customers ?? 0),
+                'unique_returning_customers' => (int) ($monthlyUniqueCustomers->unique_returning_customers ?? 0),
                 'data' => $dailyData
             ];
         });
@@ -1019,11 +1051,15 @@ class DashboardAnalyticsService
                 'expenses' => $financialData['expense_total'] ?? 0,
                 'expense_count' => $financialData['expense_count'] ?? 0,
                 
+                // Vendor Purchases (for profit calculation)
+                'vendor_purchases' => $financialData['vendor_purchase_total'] ?? 0,
+                'vendor_purchase_count' => $financialData['vendor_purchase_count'] ?? 0,
+                
                 // Vendor Payments (approved only)
                 'vendor_payments' => $financialData['vendor_payment_total'] ?? 0,
                 'vendor_payment_count' => $financialData['vendor_payment_count'] ?? 0,
                 
-                // Profit = Total Invoices - Expenses - Vendor Payments
+                // Profit = Total Invoices - Expenses - Vendor Purchases (NOT payments)
                 'profit' => $financialData['monthly_profit'] ?? 0,
                 
                 // Orders
@@ -1063,7 +1099,7 @@ class DashboardAnalyticsService
         
         return $customers->map(function ($c) use ($ninetyDaysAgo) {
             $isNew = Carbon::parse($c->first_order_date) >= $ninetyDaysAgo;
-            return [
+                return [
                 'id' => $c->id,
                 'name' => trim($c->first_name . ' ' . $c->last_name),
                 'phone' => $c->phone,
@@ -1173,16 +1209,26 @@ class DashboardAnalyticsService
             }
         }
         
-        // Expenses - only approved
-        $expenses = LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
+        // Expenses - only approved (use whereDate for DATE column comparison)
+        $expenses = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
+            ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
             ->where('transaction_type', LedgerModel::TYPE_EXPENSE)
             ->where('approval_status', LedgerModel::STATUS_APPROVED)
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
         
-        // Vendor Payments - only approved
-        $vendorPayments = LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
+        // Vendor Payments - only approved (use whereDate for DATE column comparison)
+        $vendorPayments = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
+            ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
             ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->selectRaw('SUM(amount) as total, COUNT(*) as count')
+            ->first();
+        
+        // Vendor Purchases - only approved (use whereDate for DATE column comparison)
+        $vendorPurchases = LedgerModel::whereDate('transaction_date', '>=', $startDate->format('Y-m-d'))
+            ->whereDate('transaction_date', '<=', $endDate->format('Y-m-d'))
+            ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
             ->where('approval_status', LedgerModel::STATUS_APPROVED)
             ->selectRaw('SUM(amount) as total, COUNT(*) as count')
             ->first();
@@ -1217,18 +1263,16 @@ class DashboardAnalyticsService
             'expense_total' => round($expenses->total ?? 0, 2),
             'expense_count' => (int) ($expenses->count ?? 0),
             
-            // Vendor Payments
+            // Vendor Purchases (for profit calculation)
+            'vendor_purchase_total' => round($vendorPurchases->total ?? 0, 2),
+            'vendor_purchase_count' => (int) ($vendorPurchases->count ?? 0),
+            
+            // Vendor Payments (separate from purchases)
             'vendor_payment_total' => round($vendorPayments->total ?? 0, 2),
             'vendor_payment_count' => (int) ($vendorPayments->count ?? 0),
             
-            // Legacy fields for backward compatibility
-            'vendor_purchase_total' => 0,
-            'vendor_purchase_count' => 0,
-            'deposit_total' => 0,
-            'deposit_count' => 0,
-            
-            // Profit: Total Invoices - Expenses - Vendor Payments
-            'monthly_profit' => round($invoiceTotal - ($expenses->total ?? 0) - ($vendorPayments->total ?? 0), 2),
+            // Profit: Total Invoices - Expenses - Vendor Purchases (NOT payments)
+            'monthly_profit' => round($invoiceTotal - ($expenses->total ?? 0) - ($vendorPurchases->total ?? 0), 2),
         ];
     }
 
@@ -1236,14 +1280,14 @@ class DashboardAnalyticsService
      * Get ledger transactions for a specific month and type
      * Used for drilldown popups (expenses, vendor payments, invoices)
      */
-    public function getLedgerTransactionsForMonth($monthKey, $type = 'invoice')
+    public function getLedgerTransactionsForMonth($monthKey, $type = 'invoice', $limit = null)
     {
         $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
         $endDate = $startDate->copy()->endOfMonth();
         
         if ($type === 'invoice') {
             // Get delivered orders with delivery details
-            return DB::table('t_crm_prod_order as o')
+            $query = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
                 ->leftJoin('t_fin_ledger as l', function($join) {
                     $join->on('l.order_id', '=', 'o.id')
@@ -1267,9 +1311,13 @@ class DashboardAnalyticsService
                     DB::raw("CONCAT(c.first_name, ' ', c.last_name) as customer_name"),
                     'c.phone as customer_phone'
                 )
-                ->orderBy('h.delivered_at', 'desc')
-                ->limit(500)
-                ->get()
+                ->orderBy('h.delivered_at', 'desc');
+            
+            if ($limit) {
+                $query->limit($limit);
+            }
+            
+            return $query->get()
                 ->map(function ($row) {
                     return [
                         'id' => $row->id,
@@ -1285,24 +1333,39 @@ class DashboardAnalyticsService
                 })->toArray();
         }
         
-        // For expenses and vendor payments, use transaction_date from ledger
-        $transactionType = $type === 'expense' ? LedgerModel::TYPE_EXPENSE : LedgerModel::TYPE_VENDOR_PAYMENT;
+        // For expenses, vendor purchases, and vendor payments, use transaction_date from ledger
+        if ($type === 'expense') {
+            $transactionType = LedgerModel::TYPE_EXPENSE;
+        } elseif ($type === 'vendor_purchase') {
+            $transactionType = LedgerModel::TYPE_VENDOR_PURCHASE;
+        } else {
+            $transactionType = LedgerModel::TYPE_VENDOR_PAYMENT;
+        }
         
-        return LedgerModel::whereBetween('transaction_date', [$startDate, $endDate])
-            ->where('transaction_type', $transactionType)
-            ->where('approval_status', LedgerModel::STATUS_APPROVED)
-            ->orderBy('transaction_date', 'desc')
-            ->select('id', 'description', 'amount', 'mode', 'transaction_date', 'vendor_id', 'created_at')
-            ->limit(500)
-            ->get()
+        // Use date strings for comparison (transaction_date is a DATE column)
+        // Join with users table to get created_by user name
+        $query = DB::table('t_fin_ledger as l')
+            ->leftJoin('t_sys_user as u', 'l.created_by', '=', 'u.id')
+            ->whereDate('l.transaction_date', '>=', $startDate->format('Y-m-d'))
+            ->whereDate('l.transaction_date', '<=', $endDate->format('Y-m-d'))
+            ->where('l.transaction_type', $transactionType)
+            ->where('l.approval_status', LedgerModel::STATUS_APPROVED)
+            ->orderBy('l.transaction_date', 'desc')
+            ->select('l.id', 'l.description', 'l.amount', 'l.mode', 'l.transaction_date', 'l.created_at', 'u.fullname as created_by_name');
+        
+        if ($limit) {
+            $query->limit($limit);
+        }
+        
+        return $query->get()
             ->map(function ($row) {
                 return [
                     'id' => $row->id,
                     'description' => $row->description,
                     'amount' => round($row->amount, 2),
-                    'mode' => ucfirst($row->mode),
+                    'mode' => ucfirst($row->mode ?? 'cash'),
                     'date' => Carbon::parse($row->transaction_date)->format('M j, Y'),
-                    'vendor_id' => $row->vendor_id,
+                    'created_by' => $row->created_by_name ?? 'Unknown',
                 ];
             })->toArray();
     }
@@ -1361,79 +1424,90 @@ class DashboardAnalyticsService
 
     /**
      * Get customer analysis data
-     * Uses v_customer_monthly_classification and v_customer_activity_segments views
+     * Uses delivery dates for month-specific stats to be consistent with other dashboard metrics
      */
     public function getCustomerAnalysis($monthKey = null)
     {
         $monthKey = $monthKey ?? Carbon::now()->format('Y-m');
-        $cacheKey = "customer_analysis_{$monthKey}";
+        $cacheKey = "customer_analysis_v2_{$monthKey}";
         
         return Cache::remember($cacheKey, 300, function () use ($monthKey) {
             $now = Carbon::now();
             $startDate = Carbon::parse($monthKey . '-01')->startOfMonth();
             $endDate = $startDate->copy()->endOfMonth();
             
-            // Get total active customers
+            // Get total customers (non-merged)
             $totalCustomers = DB::table('t_crm_prod_customer')
-                ->where('is_active', true)
+                ->whereNull('merged_into_customer_id')
                 ->count();
             
-            // Get new customers this month
-            $newCustomers = DB::table('t_crm_prod_customer')
-                ->whereBetween('first_order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
-                ->count();
+            // New customers: those whose first_delivery_date (pre-computed, includes history) is in this month
+            // Uses pre-computed column for consistency with charts
+            $monthFormat = $startDate->format('Y-m');
+            $newCustomersResult = DB::selectOne("
+                SELECT COUNT(DISTINCT o.customer_id) as count
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+                AND c.merged_into_customer_id IS NULL
+                AND DATE_FORMAT(c.first_delivery_date, '%Y-%m') = ?
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+            $newCustomers = $newCustomersResult->count ?? 0;
             
-            // Get returning customers (delivered orders this month, but first order was before this month)
-            $returningCustomers = DB::table('t_crm_prod_order')
-                ->join('t_crm_prod_customer', 't_crm_prod_order.customer_id', '=', 't_crm_prod_customer.id')
-                ->whereBetween('t_crm_prod_order.order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
-                ->whereIn('t_crm_prod_order.order_status', ['delivered', 'completed', 'processing'])
-                ->where('t_crm_prod_customer.first_order_date', '<', $startDate->format('Y-m-d'))
-                ->where(function($q) {
-                    $q->where('t_crm_prod_order.external_source', '!=', 'shopify')
-                      ->orWhereNull('t_crm_prod_order.external_source');
-                })
-                ->distinct('t_crm_prod_order.customer_id')
-                ->count('t_crm_prod_order.customer_id');
+            // Returning customers: had delivered orders this month, but their first_delivery_date is before this month
+            $returningCustomersResult = DB::selectOne("
+                SELECT COUNT(DISTINCT o.customer_id) as count
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+                AND c.merged_into_customer_id IS NULL
+                AND (DATE_FORMAT(c.first_delivery_date, '%Y-%m') != ? OR c.first_delivery_date IS NULL)
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+            $returningCustomers = $returningCustomersResult->count ?? 0;
             
-            // Get order stats for this month
-            $orderStats = DB::table('t_crm_prod_order')
-                ->whereBetween('order_date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d 23:59:59')])
-                ->whereIn('order_status', ['delivered', 'completed', 'processing'])
-                ->where(function($q) {
-                    $q->where('external_source', '!=', 'shopify')
-                      ->orWhereNull('external_source');
-                })
-                ->selectRaw('COUNT(*) as total_orders, SUM(total_price) as total_spend')
-                ->first();
+            // Get order stats for this month (based on delivery date)
+            $orderStats = DB::selectOne("
+                SELECT COUNT(*) as total_orders, COALESCE(SUM(o.total_price), 0) as total_spend
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status != 'reversed'
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
             
-            // Activity segments - using simple queries
+            // Activity segments - using simple queries (always from today)
             $active7d = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->where('last_order_date', '>=', $now->copy()->subDays(7)->format('Y-m-d'))
                 ->count();
             
             $active30d = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->where('last_order_date', '>=', $now->copy()->subDays(30)->format('Y-m-d'))
                 ->count();
             
             $active90d = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->where('last_order_date', '>=', $now->copy()->subDays(90)->format('Y-m-d'))
                 ->count();
             
             // Frequency segments
             $highFrequency = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->where('total_orders', '>=', 10)
-                ->where('is_active', true)
                 ->count();
             
             $mediumFrequency = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->whereBetween('total_orders', [3, 9])
-                ->where('is_active', true)
                 ->count();
             
             $lowFrequency = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
                 ->whereBetween('total_orders', [1, 2])
-                ->where('is_active', true)
                 ->count();
             
             return [
@@ -1626,24 +1700,27 @@ class DashboardAnalyticsService
      */
     public function getCustomerCohort($months = 12)
     {
-        $cacheKey = "customer_cohort_{$months}";
+        $cacheKey = "customer_cohort_delivery_v2_{$months}";
         
         return Cache::remember($cacheKey, 600, function () use ($months) {
             $startDate = Carbon::now()->subMonths($months)->startOfMonth();
             
+            // Use first_delivery_date for cohort (consistent with other dashboard metrics)
+            // Use last_delivery_date for active status (consistent with dormancy bands)
             $data = DB::table('t_crm_prod_customer')
                 ->select(
-                    DB::raw("DATE_FORMAT(first_order_date, '%Y-%m') as cohort_month"),
+                    DB::raw("DATE_FORMAT(first_delivery_date, '%Y-%m') as cohort_month"),
                     DB::raw('COUNT(*) as cohort_size'),
-                    DB::raw('SUM(CASE WHEN last_order_date >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as active_30d'),
-                    DB::raw('SUM(CASE WHEN last_order_date >= DATE_SUB(NOW(), INTERVAL 60 DAY) THEN 1 ELSE 0 END) as active_60d'),
-                    DB::raw('SUM(CASE WHEN last_order_date >= DATE_SUB(NOW(), INTERVAL 90 DAY) THEN 1 ELSE 0 END) as active_90d'),
+                    DB::raw('SUM(CASE WHEN last_delivery_date >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as active_30d'),
+                    DB::raw('SUM(CASE WHEN last_delivery_date >= DATE_SUB(NOW(), INTERVAL 60 DAY) THEN 1 ELSE 0 END) as active_60d'),
+                    DB::raw('SUM(CASE WHEN last_delivery_date >= DATE_SUB(NOW(), INTERVAL 90 DAY) THEN 1 ELSE 0 END) as active_90d'),
                     DB::raw('AVG(total_orders) as avg_orders'),
                     DB::raw('AVG(total_spent) as avg_lifetime_value')
                 )
-                ->where('first_order_date', '>=', $startDate->format('Y-m-d'))
-                ->whereNotNull('first_order_date')
-                ->groupBy(DB::raw("DATE_FORMAT(first_order_date, '%Y-%m')"))
+                ->where('first_delivery_date', '>=', $startDate->format('Y-m-d'))
+                ->whereNotNull('first_delivery_date')
+                ->whereNull('merged_into_customer_id')
+                ->groupBy(DB::raw("DATE_FORMAT(first_delivery_date, '%Y-%m')"))
                 ->orderByDesc('cohort_month')
                 ->limit($months)
                 ->get();
@@ -1756,5 +1833,304 @@ class DashboardAnalyticsService
             
             return $result;
             });
+    }
+    
+    /**
+     * Get customer dormancy bands (days since last order)
+     * Includes ALL customers - both with orders and never ordered
+     * Bands: 0-30, 31-60, 61-90, 91-120, 121-180, >180, Never Ordered
+     */
+    public function getCustomerDormancyBands()
+    {
+        $cacheKey = 'dashboard:customer_dormancy_bands_v5';
+        
+        return Cache::remember($cacheKey, 300, function () {
+            // Use last_delivery_date for dormancy (consistent with cohort and other metrics)
+            // This shows when customers last received a delivered order
+            $results = DB::select("
+                SELECT 
+                    CASE 
+                        WHEN last_delivery_date IS NULL THEN 'never'
+                        WHEN DATEDIFF(CURDATE(), DATE(last_delivery_date)) BETWEEN 0 AND 30 THEN '0-30'
+                        WHEN DATEDIFF(CURDATE(), DATE(last_delivery_date)) BETWEEN 31 AND 60 THEN '31-60'
+                        WHEN DATEDIFF(CURDATE(), DATE(last_delivery_date)) BETWEEN 61 AND 90 THEN '61-90'
+                        WHEN DATEDIFF(CURDATE(), DATE(last_delivery_date)) BETWEEN 91 AND 120 THEN '91-120'
+                        WHEN DATEDIFF(CURDATE(), DATE(last_delivery_date)) BETWEEN 121 AND 180 THEN '121-180'
+                        ELSE '>180'
+                    END as band,
+                    COUNT(*) as customer_count
+                FROM t_crm_prod_customer
+                WHERE merged_into_customer_id IS NULL
+                GROUP BY band
+            ");
+            
+            // Map to expected format with correct order
+            $bandConfig = [
+                '0-30' => '0-30 days',
+                '31-60' => '31-60 days',
+                '61-90' => '61-90 days',
+                '91-120' => '91-120 days',
+                '121-180' => '121-180 days',
+                '>180' => '180+ days',
+                'never' => 'Never Ordered'
+            ];
+            
+            // Initialize all bands with 0
+            $bandCounts = [];
+            foreach ($bandConfig as $key => $label) {
+                $bandCounts[$key] = ['band' => $key, 'label' => $label, 'count' => 0];
+            }
+            
+            // Fill in counts from query results
+            foreach ($results as $row) {
+                if (isset($bandCounts[$row->band])) {
+                    $bandCounts[$row->band]['count'] = (int)$row->customer_count;
+                }
+            }
+            
+            return array_values($bandCounts);
+        });
+    }
+    
+    /**
+     * Get customer list for specific dormancy band
+     */
+    public function getCustomerDormancyList($band)
+    {
+        $today = Carbon::today();
+        
+        // Handle "never ordered" customers
+        if ($band === 'never') {
+            return CustomerModel::whereNull('last_order_date')
+                ->whereNull('merged_into_customer_id')
+                ->select('id', 'first_name', 'last_name', 'phone', 'total_orders', 'total_spent', 'last_order_date', 'created_at')
+                ->orderBy('created_at', 'desc')
+                ->limit(500)
+                ->get()
+                ->map(function ($customer) {
+                    return [
+                        'id' => $customer->id,
+                        'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                        'phone' => $customer->phone,
+                        'total_orders' => 0,
+                        'total_spent' => 0,
+                        'last_order_date' => 'Never',
+                    ];
+                })
+                ->toArray();
+        }
+        
+        // Define band ranges
+        $bandRanges = [
+            '0-30' => ['min' => 0, 'max' => 30],
+            '31-60' => ['min' => 31, 'max' => 60],
+            '61-90' => ['min' => 61, 'max' => 90],
+            '91-120' => ['min' => 91, 'max' => 120],
+            '121-180' => ['min' => 121, 'max' => 180],
+            '>180' => ['min' => 181, 'max' => 999999],
+        ];
+        
+        $range = $bandRanges[$band] ?? ['min' => 0, 'max' => 30];
+        
+        // Calculate date range
+        $minDate = $today->copy()->subDays($range['max'])->format('Y-m-d');
+        $maxDate = $today->copy()->subDays($range['min'])->format('Y-m-d');
+        
+        // For '>180' band, use a very old date as min
+        if ($band === '>180') {
+            $minDate = '2000-01-01';
+            $maxDate = $today->copy()->subDays(181)->format('Y-m-d');
+        }
+        
+        return CustomerModel::whereNotNull('last_order_date')
+            ->whereNull('merged_into_customer_id')
+            ->whereDate('last_order_date', '>=', $minDate)
+            ->whereDate('last_order_date', '<=', $maxDate)
+            ->select('id', 'first_name', 'last_name', 'phone', 'total_orders', 'total_spent', 'last_order_date')
+            ->orderBy('last_order_date', 'desc')
+            ->limit(500)
+            ->get()
+            ->map(function ($customer) {
+                return [
+                    'id' => $customer->id,
+                    'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                    'phone' => $customer->phone,
+                    'total_orders' => $customer->total_orders ?? 0,
+                    'total_spent' => round($customer->total_spent ?? 0, 2),
+                    'last_order_date' => $customer->last_order_date ? Carbon::parse($customer->last_order_date)->format('M j, Y') : null,
+                ];
+            })
+            ->toArray();
+    }
+    
+    /**
+     * Get customer list by type (total, new, returning) for a specific month
+     * Uses delivery dates (from status history) to match the card counts
+     */
+    public function getCustomerListByType($type, $monthKey = null)
+    {
+        $startDate = $monthKey ? Carbon::parse($monthKey . '-01') : Carbon::now()->startOfMonth();
+        $endDate = $startDate->copy()->endOfMonth();
+        
+        if ($type === 'total') {
+            // All customers who had delivered orders in the selected month
+            $customerIds = DB::select("
+                SELECT DISTINCT o.customer_id
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+                AND c.merged_into_customer_id IS NULL
+                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
+            
+            $ids = array_map(fn($row) => $row->customer_id, $customerIds);
+            
+            if (empty($ids)) {
+                return [];
+            }
+            
+            return CustomerModel::whereIn('id', $ids)
+                ->select('id', 'first_name', 'last_name', 'phone', 'total_orders', 'total_spent', 'first_order_date', 'last_order_date')
+                ->orderBy('last_order_date', 'desc')
+                ->get()
+                ->map(function ($customer) {
+                    return [
+                        'id' => $customer->id,
+                        'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                        'phone' => $customer->phone,
+                        'total_orders' => $customer->total_orders ?? 0,
+                        'total_spent' => round($customer->total_spent ?? 0, 2),
+                        'first_order_date' => $customer->first_order_date ? Carbon::parse($customer->first_order_date)->format('M j, Y') : null,
+                        'last_order_date' => $customer->last_order_date ? Carbon::parse($customer->last_order_date)->format('M j, Y') : null,
+                    ];
+                })
+                ->toArray();
+        }
+        
+        if ($type === 'new') {
+            // New customers: first_delivery_date (pre-computed, includes history) is in this month
+            $monthFormat = $startDate->format('Y-m');
+            $customerIds = DB::select("
+                SELECT DISTINCT o.customer_id
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+                AND c.merged_into_customer_id IS NULL
+                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                AND DATE_FORMAT(c.first_delivery_date, '%Y-%m') = ?
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+            
+            $ids = array_map(fn($row) => $row->customer_id, $customerIds);
+            
+            if (empty($ids)) {
+                return [];
+            }
+            
+            return CustomerModel::whereIn('id', $ids)
+                ->select('id', 'first_name', 'last_name', 'phone', 'total_orders', 'total_spent', 'first_order_date', 'last_order_date')
+                ->orderBy('last_order_date', 'desc')
+                ->get()
+                ->map(function ($customer) {
+                    return [
+                        'id' => $customer->id,
+                        'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                        'phone' => $customer->phone,
+                        'total_orders' => $customer->total_orders ?? 0,
+                        'total_spent' => round($customer->total_spent ?? 0, 2),
+                        'first_order_date' => $customer->first_order_date ? Carbon::parse($customer->first_order_date)->format('M j, Y') : null,
+                        'last_order_date' => $customer->last_order_date ? Carbon::parse($customer->last_order_date)->format('M j, Y') : null,
+                    ];
+                })
+                ->toArray();
+        }
+        
+        if ($type === 'returning') {
+            // Returning customers: had DELIVERED order in this month but first_delivery_date is before this month
+            $monthFormat = $startDate->format('Y-m');
+            $customerIds = DB::select("
+                SELECT DISTINCT o.customer_id
+                FROM t_crm_prod_order o
+                INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+                INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+                AND o.order_status NOT IN ('reversed', 'cancelled')
+                AND c.merged_into_customer_id IS NULL
+                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                AND (DATE_FORMAT(c.first_delivery_date, '%Y-%m') != ? OR c.first_delivery_date IS NULL)
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+            
+            $ids = array_map(fn($row) => $row->customer_id, $customerIds);
+            
+            if (empty($ids)) {
+                return [];
+            }
+            
+            return CustomerModel::whereIn('id', $ids)
+                ->select('id', 'first_name', 'last_name', 'phone', 'total_orders', 'total_spent', 'first_order_date', 'last_order_date')
+                ->orderBy('last_order_date', 'desc')
+                ->get()
+                ->map(function ($customer) {
+                    return [
+                        'id' => $customer->id,
+                        'name' => trim($customer->first_name . ' ' . $customer->last_name),
+                        'phone' => $customer->phone,
+                        'total_orders' => $customer->total_orders ?? 0,
+                        'total_spent' => round($customer->total_spent ?? 0, 2),
+                        'first_order_date' => $customer->first_order_date ? Carbon::parse($customer->first_order_date)->format('M j, Y') : null,
+                        'last_order_date' => $customer->last_order_date ? Carbon::parse($customer->last_order_date)->format('M j, Y') : null,
+                    ];
+                })
+                ->toArray();
+        }
+        
+        return [];
+    }
+    
+    /**
+     * Get month-specific customer stats for the top card
+     * Uses pre-computed first_delivery_date for consistency with charts
+     * Includes historical orders context
+     */
+    public function getMonthCustomerStats($monthKey = null)
+    {
+        $startDate = $monthKey ? Carbon::parse($monthKey . '-01') : Carbon::now()->startOfMonth();
+        $endDate = $startDate->copy()->endOfMonth();
+        $monthFormat = $startDate->format('Y-m');
+        
+        // Customers who had delivered orders in this month (unique customers)
+        // Using raw SQL for clarity and reliability
+        $monthCustomersResult = DB::selectOne("
+            SELECT COUNT(DISTINCT o.customer_id) as count
+            FROM t_crm_prod_order o
+            INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+            WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+            AND o.order_status NOT IN ('reversed', 'cancelled')
+        ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
+        
+        $monthCustomers = $monthCustomersResult->count ?? 0;
+        
+        // New customers: those whose first_delivery_date (pre-computed, includes history) is in this month
+        // This is consistent with the bar chart which also uses first_delivery_date
+        $newCustomersResult = DB::selectOne("
+            SELECT COUNT(DISTINCT o.customer_id) as count
+            FROM t_crm_prod_order o
+            INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
+            INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
+            WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
+            AND o.order_status NOT IN ('reversed', 'cancelled')
+            AND c.merged_into_customer_id IS NULL
+            AND DATE_FORMAT(c.first_delivery_date, '%Y-%m') = ?
+        ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+        
+        $newCustomers = $newCustomersResult->count ?? 0;
+        
+        return [
+            'month_customers' => $monthCustomers,
+            'new_customers' => $newCustomers
+        ];
     }
 }

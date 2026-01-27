@@ -309,4 +309,16 @@ Route::middleware('auth:sanctum')->group(function () {
     // ============================
     Route::post('/orders', [\App\Http\Controllers\CRM\OrderController::class, 'store']);
     Route::get('/orders/{id}', [\App\Http\Controllers\CRM\OrderController::class, 'show']);
+    
+    // ============================
+    // Reports (Mobile Store Mode)
+    // ============================
+    Route::prefix('reports')->group(function () {
+        Route::get('/monthly-summary', [\App\Http\Controllers\API\ReportsController::class, 'getMonthlySummary']);
+        Route::get('/month-details', [\App\Http\Controllers\API\ReportsController::class, 'getMonthDetails']);
+        Route::get('/vendor-daily', [\App\Http\Controllers\API\ReportsController::class, 'getVendorDailyReport']);
+        Route::get('/expense-daily', [\App\Http\Controllers\API\ReportsController::class, 'getExpenseDailyReport']);
+        Route::get('/daily-summary', [\App\Http\Controllers\API\ReportsController::class, 'getDailySummary']);
+        Route::get('/daily-details', [\App\Http\Controllers\API\ReportsController::class, 'getDailyDetails']);
+    });
 }); // Close auth:sanctum middleware group

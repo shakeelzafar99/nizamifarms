@@ -120,21 +120,35 @@
                 </div>
             </div>
 
-            <!-- Vendor Payments -->
-            <div class="kt-card cursor-pointer hover:shadow-lg transition-shadow" onclick="showDrilldown('vendor')">
+            <!-- Vendor (Purchases + Payments) -->
+            <div class="kt-card">
                 <div class="p-4">
                     <div class="flex items-center justify-between mb-2">
-                        <div class="p-2 bg-orange-100 rounded-lg">
-                            <i class="ki-filled ki-truck text-orange-600 text-lg"></i>
+                        <div class="p-2 bg-amber-100 rounded-lg">
+                            <i class="ki-filled ki-shop text-amber-600 text-lg"></i>
                         </div>
-                        <span id="topVendorCount" class="text-xs text-gray-500">0</span>
                     </div>
-                    <p class="text-xs font-medium text-gray-500 mb-1">Vendor Payments</p>
-                    <p id="topVendorPayments" class="text-lg font-bold text-gray-900">PKR 0</p>
+                    <p class="text-xs font-medium text-gray-500 mb-1">Vendor</p>
+                    <div class="flex gap-3">
+                        <!-- Purchases Half -->
+                        <div class="flex-1 cursor-pointer hover:bg-amber-50 rounded p-1 transition-colors" onclick="showDrilldown('purchases')">
+                            <p class="text-[10px] text-amber-600">Purchases</p>
+                            <p id="topVendorPurchases" class="text-sm font-bold text-gray-900">PKR 0</p>
+                            <span id="topPurchaseCount" class="text-[10px] text-gray-400">0</span>
+                        </div>
+                        <!-- Divider -->
+                        <div class="w-px bg-gray-200"></div>
+                        <!-- Payments Half -->
+                        <div class="flex-1 cursor-pointer hover:bg-orange-50 rounded p-1 transition-colors" onclick="showDrilldown('vendor')">
+                            <p class="text-[10px] text-orange-600">Payments</p>
+                            <p id="topVendorPayments" class="text-sm font-bold text-gray-900">PKR 0</p>
+                            <span id="topVendorCount" class="text-[10px] text-gray-400">0</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- Profit -->
+            <!-- Profit (Invoices - Expenses - Purchases) -->
             <div class="kt-card">
                 <div class="p-4">
                     <div class="flex items-center justify-between mb-2">
@@ -158,7 +172,18 @@
                     </div>
                     <p class="text-xs font-medium text-gray-500 mb-1">Active (90d)</p>
                     <p id="topActiveCustomers" class="text-lg font-bold text-gray-900">0</p>
-                    <p class="text-xs text-gray-400 mt-1">Click for details</p>
+                    <!-- Month-specific stats -->
+                    <div class="mt-2 pt-2 border-t border-gray-100">
+                        <div class="flex justify-between text-xs">
+                            <span id="topMonthLabel" class="text-gray-500">Jan 2026:</span>
+                            <span id="topMonthCustomers" class="font-medium text-gray-700">0</span>
+                </div>
+                        <div class="flex justify-between text-xs mt-1">
+                            <span class="text-gray-500">New:</span>
+                            <span id="topMonthNewCustomers" class="font-medium text-green-600">0</span>
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2">Click for details</p>
                 </div>
             </div>
         </div>
@@ -315,35 +340,35 @@
             <span class="text-sm text-gray-500">Viewing: <span id="dailyMonthLabel" class="font-medium text-gray-700">Jan 2026</span></span>
         </div>
 
-        <!-- Month Summary Cards - Compact Row -->
-        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
-            <div class="kt-card p-3">
-                <p class="text-xs text-gray-500 mb-1">Revenue</p>
-                <p id="dailyTotalRevenue" class="text-sm font-bold text-gray-900">PKR 0</p>
+        <!-- Month Summary Cards - Compact Horizontal Row -->
+        <div class="flex flex-wrap gap-2 mb-4">
+            <div class="kt-card px-3 py-2 flex-1 min-w-[90px]">
+                <p class="text-[10px] text-gray-500 mb-0.5">Revenue</p>
+                <p id="dailyTotalRevenue" class="text-xs font-bold text-gray-900">PKR 0</p>
                         </div>
-            <div class="kt-card p-3">
-                <p class="text-xs text-gray-500 mb-1">Orders</p>
-                <p id="dailyTotalOrders" class="text-sm font-bold text-gray-900">0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[70px]">
+                <p class="text-[10px] text-gray-500 mb-0.5">Orders</p>
+                <p id="dailyTotalOrders" class="text-xs font-bold text-gray-900">0</p>
                         </div>
-            <div class="kt-card p-3">
-                <p class="text-xs text-gray-500 mb-1">Qty</p>
-                <p id="dailyTotalQty" class="text-sm font-bold text-gray-900">0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[60px]">
+                <p class="text-[10px] text-gray-500 mb-0.5">Qty</p>
+                <p id="dailyTotalQty" class="text-xs font-bold text-gray-900">0</p>
             </div>
-            <div class="kt-card p-3">
-                <p class="text-xs text-gray-500 mb-1">Customers</p>
-                <p id="dailyTotalCustomers" class="text-sm font-bold text-gray-900">0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[80px] cursor-pointer hover:bg-gray-50 transition-colors" onclick="showDailyCustomerList('total')">
+                <p class="text-[10px] text-gray-500 mb-0.5">Customers</p>
+                <p id="dailyTotalCustomers" class="text-xs font-bold text-gray-900">0</p>
                     </div>
-            <div class="kt-card p-3">
-                <p class="text-xs text-gray-500 mb-1">Avg Order</p>
-                <p id="dailyAvgOrder" class="text-sm font-bold text-gray-900">PKR 0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[80px]">
+                <p class="text-[10px] text-gray-500 mb-0.5">Avg Order</p>
+                <p id="dailyAvgOrder" class="text-xs font-bold text-gray-900">PKR 0</p>
                 </div>
-            <div class="kt-card p-3 bg-green-50">
-                <p class="text-xs text-green-700 mb-1">New Cust.</p>
-                <p id="dailyNewCustomerOrders" class="text-sm font-bold text-green-800">0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[75px] bg-green-50 cursor-pointer hover:bg-green-100 transition-colors" onclick="showDailyCustomerList('new')">
+                <p class="text-[10px] text-green-700 mb-0.5">New Cust.</p>
+                <p id="dailyNewCustomerOrders" class="text-xs font-bold text-green-800">0</p>
             </div>
-            <div class="kt-card p-3 bg-blue-50">
-                <p class="text-xs text-blue-700 mb-1">Returning</p>
-                <p id="dailyReturningCustomerOrders" class="text-sm font-bold text-blue-800">0</p>
+            <div class="kt-card px-3 py-2 flex-1 min-w-[75px] bg-blue-50 cursor-pointer hover:bg-blue-100 transition-colors" onclick="showDailyCustomerList('returning')">
+                <p class="text-[10px] text-blue-700 mb-0.5">Returning</p>
+                <p id="dailyReturningCustomerOrders" class="text-xs font-bold text-blue-800">0</p>
             </div>
         </div>
 
@@ -360,8 +385,8 @@
                     <div class="relative" style="height: 280px;">
                         <canvas id="dailyRevenueChart"></canvas>
                     </div>
-                </div>
-            </div>
+                        </div>
+                        </div>
             <div class="kt-card">
                 <div class="p-5">
                     <div class="flex justify-between items-center mb-4">
@@ -373,10 +398,10 @@
                     <div class="relative" style="height: 280px;">
                         <canvas id="dailyOrdersChart"></canvas>
                     </div>
+                    </div>
                 </div>
             </div>
-        </div>
-        
+
         <!-- Qty per Day & New vs Returning Customers -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div class="kt-card">
@@ -389,8 +414,8 @@
                     </div>
                     <div class="relative" style="height: 280px;">
                         <canvas id="dailyQtyChart"></canvas>
-                    </div>
-                </div>
+                        </div>
+                        </div>
             </div>
             <div class="kt-card">
                 <div class="p-5">
@@ -469,43 +494,45 @@
          CUSTOMERS ANALYTICS TAB
          ========================================================================= -->
     <div id="customersContent" class="dashboard-content hidden">
-        <div class="flex justify-between items-center mb-6">
+        <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-semibold text-gray-900">Customer Analytics</h2>
-            <select id="customerMonthSelector" class="select select-sm w-36">
-                <!-- Will be populated by JS -->
-            </select>
+            <span id="custMonthLabel" class="text-sm text-gray-500">Viewing: <span class="font-medium" id="custMonthDisplay">-</span></span>
         </div>
 
-        <!-- Customer Classification Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-            <div class="kt-card bg-gradient-to-br from-blue-50 to-blue-100">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-blue-700 mb-1">Total Customers</p>
-                    <p id="custTotal" class="text-3xl font-bold text-blue-900">0</p>
+        <!-- Customer Classification Cards - Horizontal Row (Clickable) -->
+        <div class="flex flex-wrap gap-3 mb-6">
+            <div class="flex-1 min-w-[140px] bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 cursor-pointer hover:shadow-lg transition-shadow" onclick="showCustomerListPopup('total')">
+                <p class="text-xs font-medium text-blue-700 mb-1">Total Customers</p>
+                <p id="custTotal" class="text-xl font-bold text-blue-900">0</p>
+                <p class="text-xs text-blue-400 mt-1">Click for details</p>
                 </div>
+            <div class="flex-1 min-w-[140px] bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 cursor-pointer hover:shadow-lg transition-shadow" onclick="showCustomerListPopup('new')">
+                <p class="text-xs font-medium text-green-700 mb-1">New This Month</p>
+                <p id="custNew" class="text-xl font-bold text-green-900">0</p>
+                <p class="text-xs text-green-400 mt-1">Click for details</p>
             </div>
-            <div class="kt-card bg-gradient-to-br from-green-50 to-green-100">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-green-700 mb-1">New This Month</p>
-                    <p id="custNew" class="text-3xl font-bold text-green-900">0</p>
+            <div class="flex-1 min-w-[140px] bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 cursor-pointer hover:shadow-lg transition-shadow" onclick="showCustomerListPopup('returning')">
+                <p class="text-xs font-medium text-purple-700 mb-1">Returning</p>
+                <p id="custReturning" class="text-xl font-bold text-purple-900">0</p>
+                <p class="text-xs text-purple-400 mt-1">Click for details</p>
                 </div>
+            <div class="flex-1 min-w-[140px] bg-gradient-to-br from-orange-50 to-orange-100 rounded-lg p-4">
+                <p class="text-xs font-medium text-orange-700 mb-1">Repeat Rate</p>
+                <p id="custRepeatRate" class="text-xl font-bold text-orange-900">0%</p>
             </div>
-            <div class="kt-card bg-gradient-to-br from-purple-50 to-purple-100">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-purple-700 mb-1">Returning</p>
-                    <p id="custReturning" class="text-3xl font-bold text-purple-900">0</p>
                 </div>
-            </div>
-            <div class="kt-card bg-gradient-to-br from-orange-50 to-orange-100">
-                <div class="p-5">
-                    <p class="text-sm font-medium text-orange-700 mb-1">Repeat Rate</p>
-                    <p id="custRepeatRate" class="text-3xl font-bold text-orange-900">0%</p>
-                </div>
-            </div>
-        </div>
 
-        <!-- Activity Segments -->
+        <!-- Dormancy Bands + Activity Segments -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="kt-card">
+                <div class="p-5">
+                    <h3 class="text-base font-semibold text-gray-900 mb-4">Customer Base Dormancy</h3>
+                    <p class="text-xs text-gray-500 -mt-3 mb-3">All customers by days since last order</p>
+                    <div class="relative" style="height: 280px;">
+                        <canvas id="dormancyBandsChart"></canvas>
+                </div>
+            </div>
+        </div>
             <div class="kt-card">
                 <div class="p-5">
                     <h3 class="text-base font-semibold text-gray-900 mb-4">Activity Segments</h3>
@@ -514,9 +541,13 @@
                     </div>
                 </div>
             </div>
+        </div>
+        
+        <!-- Customer Retention -->
+        <div class="grid grid-cols-1 gap-6 mb-6">
             <div class="kt-card">
                 <div class="p-5">
-                    <h3 class="text-base font-semibold text-gray-900 mb-4">Customer Cohort Retention</h3>
+                    <h3 class="text-base font-semibold text-gray-900 mb-4">Customer Retention</h3>
                     <div id="cohortTable" class="overflow-auto max-h-72">
                         <!-- Will be populated by JS -->
                     </div>
@@ -539,19 +570,22 @@
          PRODUCTS ANALYTICS TAB
          ========================================================================= -->
     <div id="productsContent" class="dashboard-content hidden">
-        <div class="flex justify-between items-center mb-6">
+        <!-- Unified header like other tabs -->
+        <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-semibold text-gray-900">Product Analytics</h2>
-            <div class="flex items-center gap-3">
-                <select id="productMonthSelector" class="select select-sm w-36">
-                    <!-- Will be populated by JS -->
-                </select>
-                <select id="categoryLevelSelector" class="select select-sm w-32">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">Viewing:</span>
+                <span id="productMonthLabel" class="text-sm font-medium text-gray-700">Jan 2026</span>
+                <span class="text-gray-300 mx-1">|</span>
+                <select id="categoryLevelSelector" class="select select-xs w-24 text-xs">
                     <option value="1">Level 1</option>
                     <option value="2">Level 2</option>
                     <option value="3">Level 3</option>
                 </select>
             </div>
         </div>
+        <!-- Hidden month selector synced with topCardsMonthSelector -->
+        <input type="hidden" id="productMonthSelector" />
 
         <!-- Product Category Charts -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -700,103 +734,6 @@
     </div>
 </div>
 
-<!-- =========================================================================
-     ORDER DETAIL MODAL (Drilldown)
-     ========================================================================= -->
-<div id="orderDetailModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
-    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
-        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeOrderModal()"></div>
-        <div class="relative inline-block w-full max-w-4xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
-            <div class="flex justify-between items-center mb-4">
-                <h3 id="modalTitle" class="text-lg font-semibold text-gray-900">Orders for Date</h3>
-                <button onclick="closeOrderModal()" class="text-gray-400 hover:text-gray-600">
-                    <i class="ki-filled ki-cross text-xl"></i>
-                </button>
-            </div>
-            <div id="modalContent" class="max-h-96 overflow-auto">
-                <!-- Will be populated by JS -->
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- =========================================================================
-     FULL VIEW CHART MODAL
-     ========================================================================= -->
-<div id="fullViewModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
-    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
-        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeFullView()"></div>
-        <div class="relative inline-block w-full max-w-6xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
-            <div class="flex justify-between items-center mb-4">
-                <h3 id="fullViewTitle" class="text-lg font-semibold text-gray-900">Chart Full View</h3>
-                <div class="flex items-center gap-3">
-                    <button onclick="showChartDetails()" class="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
-                        <i class="ki-filled ki-document"></i> View Details
-                    </button>
-                    <button onclick="closeFullView()" class="text-gray-400 hover:text-gray-600">
-                        <i class="ki-filled ki-cross text-xl"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="relative" style="height: 500px;">
-                <canvas id="fullViewChart"></canvas>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- =========================================================================
-     CHART DETAILS MODAL (Raw Data Table)
-     ========================================================================= -->
-<div id="chartDetailsModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
-    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
-        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeChartDetails()"></div>
-        <div class="relative inline-block w-full max-w-5xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
-            <div class="flex justify-between items-center mb-4">
-                <h3 id="chartDetailsTitle" class="text-lg font-semibold text-gray-900">Chart Data Details</h3>
-                <button onclick="closeChartDetails()" class="text-gray-400 hover:text-gray-600">
-                    <i class="ki-filled ki-cross text-xl"></i>
-                </button>
-            </div>
-            <div id="chartDetailsContent" class="max-h-[500px] overflow-auto">
-                <!-- Will be populated by JS -->
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- =========================================================================
-     ACTIVE CUSTOMERS POPUP MODAL
-     ========================================================================= -->
-<div id="activeCustomersModal" class="fixed inset-0 hidden overflow-y-auto" style="z-index: 99999;">
-    <div class="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
-        <div class="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onclick="closeActiveCustomersPopup()"></div>
-        <div class="relative inline-block w-full max-w-5xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-semibold text-gray-900">Active Customers (Last 90 Days)</h3>
-                <button onclick="closeActiveCustomersPopup()" class="text-gray-400 hover:text-gray-600">
-                    <i class="ki-filled ki-cross text-xl"></i>
-                </button>
-            </div>
-            <!-- Filter Tabs -->
-            <div class="flex gap-2 mb-4">
-                <button id="customerFilterAll" onclick="filterActiveCustomers('all')" class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-100 text-blue-700">
-                    All <span id="customerCountAll" class="ml-1 text-xs">(0)</span>
-                </button>
-                <button id="customerFilterNew" onclick="filterActiveCustomers('new')" class="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-green-100 hover:text-green-700">
-                    New <span id="customerCountNew" class="ml-1 text-xs">(0)</span>
-                </button>
-                <button id="customerFilterReturning" onclick="filterActiveCustomers('returning')" class="px-4 py-2 text-sm font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-700">
-                    Returning <span id="customerCountReturning" class="ml-1 text-xs">(0)</span>
-                </button>
-            </div>
-            <div id="activeCustomersContent" class="max-h-[450px] overflow-auto">
-                <!-- Will be populated by JS -->
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- Include Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
@@ -830,8 +767,8 @@ class EnhancedDashboard {
     }
 
     populateMonthSelectors() {
-        // Only use topCardsMonthSelector as the global selector now
-        const selectors = ['topCardsMonthSelector', 'customerMonthSelector', 'productMonthSelector'];
+        // topCardsMonthSelector is the global selector now
+        const selectors = ['topCardsMonthSelector', 'customerMonthSelector'];
         const months = [];
         let date = new Date();
         
@@ -852,10 +789,18 @@ class EnhancedDashboard {
             }
         });
         
-        // Set initial daily month label
-        const dailyLabel = document.getElementById('dailyMonthLabel');
-        if (dailyLabel && months.length > 0) {
-            dailyLabel.textContent = months[0].label;
+        // Set initial labels for all tabs
+        if (months.length > 0) {
+            const currentMonth = months[0];
+            
+            const dailyLabel = document.getElementById('dailyMonthLabel');
+            if (dailyLabel) dailyLabel.textContent = currentMonth.label;
+            
+            const productMonthSelector = document.getElementById('productMonthSelector');
+            if (productMonthSelector) productMonthSelector.value = currentMonth.value;
+            
+            const productMonthLabel = document.getElementById('productMonthLabel');
+            if (productMonthLabel) productMonthLabel.textContent = currentMonth.label;
         }
     }
 
@@ -867,34 +812,46 @@ class EnhancedDashboard {
         document.getElementById('productsTab').addEventListener('click', () => this.switchTab('products'));
         document.getElementById('statsTab').addEventListener('click', () => this.switchTab('stats'));
 
-        // Top cards month selector - Also controls Daily tab
+        // Top cards month selector - Controls all tabs (Daily, Customers, Products)
         document.getElementById('topCardsMonthSelector').addEventListener('change', () => {
             this.loadTopCards();
-            // Update daily month label
+            
             const select = document.getElementById('topCardsMonthSelector');
-            const label = document.getElementById('dailyMonthLabel');
-            if (label && select.selectedOptions.length > 0) {
-                label.textContent = select.selectedOptions[0].text;
-            }
-            // If on daily tab, reload daily data
-            if (this.currentTab === 'daily') {
+            const monthText = select.selectedOptions.length > 0 ? select.selectedOptions[0].text : '';
+            const monthValue = select.value;
+            
+            // Update daily month label
+            const dailyLabel = document.getElementById('dailyMonthLabel');
+            if (dailyLabel) dailyLabel.textContent = monthText;
+            
+            // Update product month (hidden input + label)
+            const productMonthSelector = document.getElementById('productMonthSelector');
+            const productMonthLabel = document.getElementById('productMonthLabel');
+            if (productMonthSelector) productMonthSelector.value = monthValue;
+            if (productMonthLabel) productMonthLabel.textContent = monthText;
+            
+            // Reload current tab data
+            if (this.currentTab === 'customers') {
+                this.loadCustomerAnalysis();
+            } else if (this.currentTab === 'daily') {
                 this.loadDailyData();
+            } else if (this.currentTab === 'products') {
+                this.loadProductCategories();
             }
         });
 
         // Monthly controls
         document.getElementById('monthsSelector').addEventListener('change', () => this.loadMonthlyData());
-        
+
         // View toggle (Total vs Online/Cash vs Shopify/Manual)
         document.getElementById('viewTotal').addEventListener('click', () => this.setViewMode('total'));
         document.getElementById('viewOnlineCash').addEventListener('click', () => this.setViewMode('online_cash'));
         document.getElementById('viewShopifyManual').addEventListener('click', () => this.setViewMode('shopify_manual'));
 
         // Customer controls
-        document.getElementById('customerMonthSelector').addEventListener('change', () => this.loadCustomerAnalysis());
+        // Customer tab now uses topCardsMonthSelector, no separate listener needed
 
-        // Product controls
-        document.getElementById('productMonthSelector').addEventListener('change', () => this.loadProductCategories());
+        // Product controls - only level selector (month is synced from topCardsMonthSelector)
         document.getElementById('categoryLevelSelector').addEventListener('change', () => this.loadProductCategories());
 
         // Refresh & Clear Cache
@@ -998,11 +955,15 @@ class EnhancedDashboard {
                 document.getElementById('topExpenses').textContent = `PKR ${this.formatNumber(d.expenses)}`;
                 document.getElementById('topExpenseCount').textContent = `${d.expense_count} expenses`;
                 
+                // Vendor Purchases
+                document.getElementById('topVendorPurchases').textContent = `PKR ${this.formatNumber(d.vendor_purchases || 0)}`;
+                document.getElementById('topPurchaseCount').textContent = `${d.vendor_purchase_count || 0}`;
+                
                 // Vendor Payments
                 document.getElementById('topVendorPayments').textContent = `PKR ${this.formatNumber(d.vendor_payments)}`;
-                document.getElementById('topVendorCount').textContent = `${d.vendor_payment_count} payments`;
+                document.getElementById('topVendorCount').textContent = `${d.vendor_payment_count}`;
                 
-                // Profit
+                // Profit (Invoices - Expenses - Purchases)
                 document.getElementById('topProfit').textContent = `PKR ${this.formatNumber(d.profit)}`;
                 
                 // Active Customers - 90 day stats (always from today, not selected month)
@@ -1011,9 +972,35 @@ class EnhancedDashboard {
                 
                 // Store for popup
                 this.topCardsData = d;
+                
+                // Load month-specific customer stats
+                this.loadMonthCustomerStats(month);
             }
         } catch (error) {
             console.error('Error loading top cards:', error);
+        }
+    }
+    
+    async loadMonthCustomerStats(month) {
+        try {
+            // Update the month label in the 90d card
+            const select = document.getElementById('topCardsMonthSelector');
+            if (select && select.selectedOptions.length > 0) {
+                const monthLabel = document.getElementById('topMonthLabel');
+                if (monthLabel) {
+                    monthLabel.textContent = select.selectedOptions[0].text + ':';
+                }
+            }
+            
+            const response = await fetch(`/dashboard/month-customer-stats?month=${month}`);
+            const data = await response.json();
+            
+            if (data.success) {
+                document.getElementById('topMonthCustomers').textContent = this.formatNumber(data.data.month_customers || 0);
+                document.getElementById('topMonthNewCustomers').textContent = this.formatNumber(data.data.new_customers || 0);
+            }
+        } catch (error) {
+            console.error('Error loading month customer stats:', error);
         }
     }
 
@@ -1133,16 +1120,25 @@ class EnhancedDashboard {
     async loadCustomerAnalysis() {
         this.showLoading(true);
         try {
-            const month = document.getElementById('customerMonthSelector').value;
-            const [analysisRes, cohortRes, statsRes] = await Promise.all([
+            // Use global month selector (same as top cards)
+            const month = document.getElementById('topCardsMonthSelector').value;
+            
+            // Update month display label
+            const monthOptions = document.getElementById('topCardsMonthSelector').options;
+            const selectedOption = monthOptions[document.getElementById('topCardsMonthSelector').selectedIndex];
+            document.getElementById('custMonthDisplay').textContent = selectedOption.text;
+            
+            const [analysisRes, cohortRes, statsRes, dormancyRes] = await Promise.all([
                 fetch(`/dashboard/customer-analysis?month=${month}`),
                 fetch('/dashboard/customer-cohort?months=12'),
-                fetch('/dashboard/general-stats')
+                fetch('/dashboard/general-stats'),
+                fetch('/dashboard/customer-dormancy')
             ]);
             
             const analysis = await analysisRes.json();
             const cohort = await cohortRes.json();
             const stats = await statsRes.json();
+            const dormancy = await dormancyRes.json();
             
             if (analysis.success) {
                 this.updateCustomerClassification(analysis.data);
@@ -1155,6 +1151,10 @@ class EnhancedDashboard {
             
             if (stats.success) {
                 this.updateGeographicList(stats.data.geographic);
+            }
+            
+            if (dormancy.success) {
+                this.createDormancyBandsChart(dormancy.data);
             }
         } catch (error) {
             console.error('Error loading customer analysis:', error);
@@ -1219,7 +1219,6 @@ class EnhancedDashboard {
         const dailyData = data.data;
         const totalRevenue = dailyData.reduce((sum, item) => sum + item.revenue, 0);
         const totalOrders = dailyData.reduce((sum, item) => sum + item.orders, 0);
-        const totalCustomers = dailyData.reduce((sum, item) => sum + item.customers, 0);
         const totalQty = dailyData.reduce((sum, item) => sum + (item.total_qty || 0), 0);
         const shopifyRevenue = dailyData.reduce((sum, item) => sum + (item.shopify_revenue || 0), 0);
         const manualRevenue = dailyData.reduce((sum, item) => sum + (item.manual_revenue || 0), 0);
@@ -1227,12 +1226,18 @@ class EnhancedDashboard {
         const manualOrders = dailyData.reduce((sum, item) => sum + (item.manual_orders || 0), 0);
         const onlineOrders = dailyData.reduce((sum, item) => sum + (item.online_count || 0), 0);
         const cashOrders = dailyData.reduce((sum, item) => sum + (item.cash_count || 0), 0);
-        const newCustomerOrders = dailyData.reduce((sum, item) => sum + (item.new_customer_orders || 0), 0);
-        const returningCustomerOrders = dailyData.reduce((sum, item) => sum + (item.returning_customer_orders || 0), 0);
+        
+        // Use unique customer counts from API (not summed daily counts which double-count)
+        const uniqueCustomers = data.unique_customers || 0;
+        const uniqueNewCustomers = data.unique_new_customers || 0;
+        const uniqueReturningCustomers = data.unique_returning_customers || 0;
+        
+        // Store current month for click handlers
+        window.currentDailyMonth = data.month_key;
 
         document.getElementById('dailyTotalRevenue').textContent = `PKR ${this.formatNumber(totalRevenue)}`;
         document.getElementById('dailyTotalOrders').textContent = this.formatNumber(totalOrders);
-        document.getElementById('dailyTotalCustomers').textContent = this.formatNumber(totalCustomers);
+        document.getElementById('dailyTotalCustomers').textContent = this.formatNumber(uniqueCustomers);
         document.getElementById('dailyTotalQty').textContent = this.formatNumber(totalQty);
         document.getElementById('dailyAvgOrder').textContent = totalOrders > 0 ? `PKR ${this.formatNumber(Math.round(totalRevenue / totalOrders))}` : 'PKR 0';
         document.getElementById('dailyShopifyRevenue').textContent = this.formatNumber(shopifyRevenue);
@@ -1241,8 +1246,8 @@ class EnhancedDashboard {
         document.getElementById('dailyManualOrders').textContent = this.formatNumber(manualOrders);
         document.getElementById('dailyOnlineOrders').textContent = this.formatNumber(onlineOrders);
         document.getElementById('dailyCashOrders').textContent = this.formatNumber(cashOrders);
-        document.getElementById('dailyNewCustomerOrders').textContent = this.formatNumber(newCustomerOrders);
-        document.getElementById('dailyReturningCustomerOrders').textContent = this.formatNumber(returningCustomerOrders);
+        document.getElementById('dailyNewCustomerOrders').textContent = this.formatNumber(uniqueNewCustomers);
+        document.getElementById('dailyReturningCustomerOrders').textContent = this.formatNumber(uniqueReturningCustomers);
     }
 
     updateCustomerClassification(data) {
@@ -1375,12 +1380,18 @@ class EnhancedDashboard {
     updateCohortTable(data) {
         const container = document.getElementById('cohortTable');
         container.innerHTML = `
+            <div class="mb-2 text-xs text-gray-500">
+                <strong>Cohort</strong> = Month of customer's first order | 
+                <strong>New Customers</strong> = Acquired that month | 
+                <strong>Retention</strong> = % still ordering within 90 days
+            </div>
             <table class="w-full text-sm">
                 <thead class="bg-gray-50">
                     <tr>
                         <th class="text-left py-2 px-3 font-medium text-gray-600">Cohort</th>
-                        <th class="text-right py-2 px-3 font-medium text-gray-600">Size</th>
-                        <th class="text-right py-2 px-3 font-medium text-gray-600">90d Retention</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">New Customers</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Active (90d)</th>
+                        <th class="text-right py-2 px-3 font-medium text-gray-600">Retention</th>
                         <th class="text-right py-2 px-3 font-medium text-gray-600">Avg LTV</th>
                     </tr>
                 </thead>
@@ -1389,6 +1400,7 @@ class EnhancedDashboard {
                         <tr class="border-t border-gray-100">
                             <td class="py-2 px-3 text-gray-900">${row.cohort_month}</td>
                             <td class="py-2 px-3 text-right text-gray-900">${row.cohort_size}</td>
+                            <td class="py-2 px-3 text-right text-gray-600">${row.active_90d}</td>
                             <td class="py-2 px-3 text-right">
                                 <span class="${row.retention_rate_90d >= 50 ? 'text-green-600' : 'text-orange-600'}">
                                     ${row.retention_rate_90d}%
@@ -1661,7 +1673,7 @@ class EnhancedDashboard {
             // Shopify vs Manual counts
             this.charts.monthlyOrders = new Chart(document.getElementById('monthlyOrdersChart'), {
                 type: 'bar',
-                data: {
+            data: {
                     labels: data.map(item => item.month_name),
                     datasets: [
                         {
@@ -1686,7 +1698,7 @@ class EnhancedDashboard {
                 type: 'bar',
                 data: {
                     labels: data.map(item => item.month_name),
-                    datasets: [{
+                datasets: [{
                         label: 'Total Invoices',
                         data: data.map(item => item.invoice_count || 0),
                         backgroundColor: 'rgba(59, 130, 246, 0.8)',
@@ -1717,7 +1729,7 @@ class EnhancedDashboard {
                     }
                 ]
             },
-            options: { 
+            options: {
                 ...this.getStackedChartOptions('PKR'), 
                 plugins: { legend: { display: true, position: 'top' } },
                 onClick: (event, elements) => {
@@ -1908,17 +1920,175 @@ class EnhancedDashboard {
             }
         });
     }
+    
+    createDormancyBandsChart(data) {
+        this.destroyChart('dormancyBands');
+        
+        // Store dormancy data for popup
+        this.dormancyData = data;
+        
+        const labels = data.map(d => d.label);
+        const values = data.map(d => d.count);
+        
+        // Color gradient from green (active) to red (dormant), plus gray for never ordered
+        const colors = [
+            'rgba(34, 197, 94, 0.8)',   // 0-30: Green (active)
+            'rgba(132, 204, 22, 0.8)',  // 31-60: Lime
+            'rgba(250, 204, 21, 0.8)',  // 61-90: Yellow
+            'rgba(249, 115, 22, 0.8)',  // 91-120: Orange
+            'rgba(239, 68, 68, 0.8)',   // 121-180: Red
+            'rgba(127, 29, 29, 0.8)',   // >180: Dark red (churned)
+            'rgba(156, 163, 175, 0.8)'  // Never Ordered: Gray
+        ];
+        
+        this.charts.dormancyBands = new Chart(document.getElementById('dormancyBandsChart'), {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Customers',
+                    data: values,
+                    backgroundColor: colors.slice(0, data.length),
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: (event, elements) => {
+                    if (elements.length > 0) {
+                        const index = elements[0].index;
+                        const band = this.dormancyData[index];
+                        this.showDormancyCustomers(band);
+                    }
+                },
+                plugins: { 
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => `${ctx.raw.toLocaleString()} customers`
+                        }
+                    }
+                },
+                scales: {
+                    y: { 
+                        beginAtZero: true,
+                        ticks: { callback: (val) => val.toLocaleString() }
+                    }
+                }
+            }
+        });
+    }
+    
+    async showDormancyCustomers(band) {
+        const modal = document.getElementById('orderDetailModal');
+        const content = document.getElementById('modalContent');
+        const title = document.getElementById('modalTitle');
+        
+        title.textContent = `Customers - ${band.label}`;
+        content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-600">Loading customers...</p></div>';
+        modal.style.display = 'block';
+        
+        try {
+            const response = await fetch(`/dashboard/customer-dormancy-list?band=${encodeURIComponent(band.band)}`);
+            const data = await response.json();
+            
+            if (data.success && data.data.length > 0) {
+                content.innerHTML = `
+                    <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
+                        <span class="text-sm text-gray-600">${data.data.length} customers</span>
+                        <span class="text-sm font-medium text-gray-700">Last Order: ${band.label}</span>
+                    </div>
+                    <div class="max-h-96 overflow-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Customer</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Phone</th>
+                                    <th class="text-center py-2 px-3 font-medium text-gray-600">Orders</th>
+                                    <th class="text-right py-2 px-3 font-medium text-gray-600">Total Spent</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Last Order</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.data.map(c => `
+                                    <tr class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" onclick="window.open('/customers/${c.id}', '_blank')">
+                                        <td class="py-2 px-3 text-blue-600 font-medium">${c.name}</td>
+                                        <td class="py-2 px-3 text-gray-600">${c.phone || '-'}</td>
+                                        <td class="py-2 px-3 text-center text-gray-900">${c.total_orders}</td>
+                                        <td class="py-2 px-3 text-right font-medium text-gray-900">PKR ${c.total_spent?.toLocaleString() || 0}</td>
+                                        <td class="py-2 px-3 text-gray-600 whitespace-nowrap">${c.last_order_date || '-'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } else {
+                content.innerHTML = '<div class="text-center py-8 text-gray-500">No customers found in this band.</div>';
+            }
+        } catch (error) {
+            console.error('Error loading dormancy customers:', error);
+            content.innerHTML = '<div class="text-center py-8 text-red-500">Error loading customers.</div>';
+        }
+    }
 
     createCategoryCharts(data) {
         this.destroyChart('categoryRevenue');
         this.destroyChart('categoryQuantity');
 
         const topData = data.slice(0, 10);
+        
+        // Truncate long category names for display
+        const truncateLabel = (label, maxLen = 15) => {
+            if (!label) return 'N/A';
+            return label.length > maxLen ? label.substring(0, maxLen) + '...' : label;
+        };
+        
+        // Chart options for horizontal bar with visible labels
+        const horizontalBarOptions = (prefix = '') => ({
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { 
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: (context) => topData[context[0].dataIndex]?.category || '',
+                        label: (context) => prefix ? `${prefix} ${context.raw.toLocaleString()}` : context.raw.toLocaleString()
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { display: false },
+                    ticks: {
+                        font: { size: 11 },
+                        color: '#374151',
+                        callback: function(value, index) {
+                            const label = this.getLabelForValue(value);
+                            return truncateLabel(label);
+                        }
+                    }
+                },
+                x: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    ticks: {
+                        callback: (value) => prefix ? `${prefix} ${value.toLocaleString()}` : value.toLocaleString()
+                    }
+                }
+            },
+            layout: {
+                padding: { left: 10 }
+            }
+        });
 
         this.charts.categoryRevenue = new Chart(document.getElementById('categoryRevenueChart'), {
             type: 'bar',
             data: {
-                labels: topData.map(item => item.category),
+                labels: topData.map(item => item.category || 'N/A'),
                 datasets: [{
                     label: 'Revenue',
                     data: topData.map(item => item.total_revenue),
@@ -1926,13 +2096,13 @@ class EnhancedDashboard {
                     borderRadius: 4
                 }]
             },
-            options: { ...this.getChartOptions('PKR'), indexAxis: 'y' }
+            options: horizontalBarOptions('PKR')
         });
 
         this.charts.categoryQuantity = new Chart(document.getElementById('categoryQuantityChart'), {
             type: 'bar',
             data: {
-                labels: topData.map(item => item.category),
+                labels: topData.map(item => item.category || 'N/A'),
                 datasets: [{
                     label: 'Quantity',
                     data: topData.map(item => item.total_quantity),
@@ -1940,7 +2110,7 @@ class EnhancedDashboard {
                     borderRadius: 4
                 }]
             },
-            options: { ...this.getChartOptions(), indexAxis: 'y' }
+            options: horizontalBarOptions('')
         });
     }
 
@@ -2044,9 +2214,9 @@ class EnhancedDashboard {
         this.currentFullViewChart = chartId;
         this.currentFullViewTitle = title;
         
-        console.log('Removing hidden class from modal');
-        modal.classList.remove('hidden');
-        console.log('Modal hidden class removed, classList:', modal.classList);
+        console.log('Showing modal');
+        modal.style.display = 'block';
+        console.log('Modal display set to block');
         
         // Create full view chart based on the source chart
         this.destroyChart('fullView');
@@ -2103,7 +2273,7 @@ class EnhancedDashboard {
     }
 
     closeFullView() {
-        document.getElementById('fullViewModal').classList.add('hidden');
+        document.getElementById('fullViewModal').style.display = 'none';
         this.destroyChart('fullView');
     }
 
@@ -2126,11 +2296,11 @@ class EnhancedDashboard {
         }
         
         content.innerHTML = tableHtml;
-        modal.classList.remove('hidden');
+        modal.style.display = 'block';
     }
 
     closeChartDetails() {
-        document.getElementById('chartDetailsModal').classList.add('hidden');
+        document.getElementById('chartDetailsModal').style.display = 'none';
     }
 
     buildDailyDataTable(data) {
@@ -2242,7 +2412,7 @@ class EnhancedDashboard {
             </div>
         `;
         
-        modal.classList.remove('hidden');
+        modal.style.display = 'block';
     }
 
     // =========================================================================
@@ -2263,7 +2433,7 @@ class EnhancedDashboard {
         }
         
         console.log('Showing active customers modal');
-        modal.classList.remove('hidden');
+        modal.style.display = 'block';
         content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-500">Loading customers...</p></div>';
         
         this.filterActiveCustomers('all');
@@ -2332,7 +2502,69 @@ class EnhancedDashboard {
     }
 
     closeActiveCustomersPopup() {
-        document.getElementById('activeCustomersModal').classList.add('hidden');
+        document.getElementById('activeCustomersModal').style.display = 'none';
+    }
+    
+    async showCustomerListPopup(type) {
+        const modal = document.getElementById('orderDetailModal');
+        const content = document.getElementById('modalContent');
+        const title = document.getElementById('modalTitle');
+        
+        const titles = {
+            'total': 'All Customers',
+            'new': 'New Customers This Month',
+            'returning': 'Returning Customers This Month'
+        };
+        
+        title.textContent = titles[type] || 'Customers';
+        content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-600">Loading customers...</p></div>';
+        modal.style.display = 'block';
+        
+        try {
+            const month = document.getElementById('topCardsMonthSelector')?.value || '';
+            const response = await fetch(`/dashboard/customer-list?type=${type}&month=${encodeURIComponent(month)}`);
+            const data = await response.json();
+            
+            if (data.success && data.data.length > 0) {
+                content.innerHTML = `
+                    <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
+                        <span class="text-sm text-gray-600">${data.data.length} customers</span>
+                        <span class="text-sm font-medium text-gray-700">${titles[type]}</span>
+                    </div>
+                    <div class="max-h-96 overflow-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Customer</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Phone</th>
+                                    <th class="text-center py-2 px-3 font-medium text-gray-600">Orders</th>
+                                    <th class="text-right py-2 px-3 font-medium text-gray-600">Total Spent</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">First Order</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Last Order</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.data.map(c => `
+                                    <tr class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" onclick="window.open('/customers/${c.id}', '_blank')">
+                                        <td class="py-2 px-3 text-blue-600 font-medium">${c.name}</td>
+                                        <td class="py-2 px-3 text-gray-600">${c.phone || '-'}</td>
+                                        <td class="py-2 px-3 text-center">${c.total_orders}</td>
+                                        <td class="py-2 px-3 text-right font-medium">PKR ${c.total_spent.toLocaleString()}</td>
+                                        <td class="py-2 px-3 text-gray-600">${c.first_order_date || '-'}</td>
+                                        <td class="py-2 px-3 text-gray-600">${c.last_order_date || '-'}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            } else {
+                content.innerHTML = '<div class="text-center py-8 text-gray-500">No customers found</div>';
+            }
+        } catch (error) {
+            console.error('Error loading customers:', error);
+            content.innerHTML = '<div class="text-center py-8 text-red-500">Error loading customers</div>';
+        }
     }
 }
 
@@ -2356,6 +2588,80 @@ function showActiveCustomersPopup() {
 function closeActiveCustomersPopup() {
     if (dashboard) {
         dashboard.closeActiveCustomersPopup();
+    }
+}
+
+function showCustomerListPopup(type) {
+    console.log('showCustomerListPopup called with type:', type);
+    if (dashboard) {
+        dashboard.showCustomerListPopup(type);
+    } else {
+        console.error('Dashboard not initialized');
+    }
+}
+
+// Show customer list for daily view (uses the current daily month)
+async function showDailyCustomerList(type) {
+    const modal = document.getElementById('orderDetailModal');
+    const content = document.getElementById('modalContent');
+    const title = document.getElementById('modalTitle');
+    const month = window.currentDailyMonth || document.getElementById('topCardsMonthSelector')?.value || '';
+    
+    const titles = {
+        'total': 'All Customers (Monthly)',
+        'new': 'New Customers',
+        'returning': 'Returning Customers'
+    };
+    
+    title.textContent = titles[type] || 'Customers';
+    content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-600">Loading customers...</p></div>';
+    modal.style.display = 'block';
+    
+    try {
+        const response = await fetch(`/dashboard/customer-list?type=${type}&month=${encodeURIComponent(month)}`);
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            content.innerHTML = `
+                <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
+                    <span class="text-sm text-gray-600">${data.data.length} customers</span>
+                    <button onclick="exportCustomerList('${type}', '${month}')" class="px-3 py-1 bg-green-100 text-gray-800 text-xs rounded border border-green-300 hover:bg-green-200 transition-colors font-medium">
+                        📥 Export Excel
+                    </button>
+                </div>
+                <div class="max-h-96 overflow-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Customer</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Phone</th>
+                                <th class="text-center py-2 px-3 font-medium text-gray-600">Orders</th>
+                                <th class="text-right py-2 px-3 font-medium text-gray-600">Total Spent</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">First Order</th>
+                                <th class="text-left py-2 px-3 font-medium text-gray-600">Last Order</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.data.map(c => `
+                                <tr class="border-t border-gray-100 hover:bg-gray-50 cursor-pointer" onclick="window.open('/customers/${c.id}', '_blank')">
+                                    <td class="py-2 px-3 text-blue-600 font-medium">${c.name}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.phone || '-'}</td>
+                                    <td class="py-2 px-3 text-center">${c.total_orders}</td>
+                                    <td class="py-2 px-3 text-right font-medium">PKR ${c.total_spent.toLocaleString()}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.first_order_date || '-'}</td>
+                                    <td class="py-2 px-3 text-gray-600">${c.last_order_date || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        } else {
+            content.innerHTML = '<div class="text-center py-8 text-gray-500">No customers found for this period.</div>';
+        }
+    } catch (error) {
+        console.error('Error loading customer list:', error);
+        content.innerHTML = '<div class="text-center py-8 text-red-500">Error loading customers.</div>';
     }
 }
 
@@ -2403,7 +2709,7 @@ async function showOrdersForDate(date, source = null) {
     
     title.textContent = `Orders for ${date}`;
     content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div></div>';
-    modal.classList.remove('hidden');
+    modal.style.display = 'block';
     
     try {
         const url = source ? `/dashboard/orders-for-date?date=${date}&source=${source}` : `/dashboard/orders-for-date?date=${date}`;
@@ -2446,7 +2752,74 @@ async function showOrdersForDate(date, source = null) {
 }
 
 function closeOrderModal() {
-    document.getElementById('orderDetailModal').classList.add('hidden');
+    document.getElementById('orderDetailModal').style.display = 'none';
+}
+
+// Export transactions to CSV/Excel
+async function exportTransactions(type, month) {
+    const apiTypeMap = { 'invoices': 'invoice', 'expenses': 'expense', 'vendor': 'vendor_payment' };
+    const apiType = apiTypeMap[type] || type;
+    
+    try {
+        const response = await fetch(`/dashboard/ledger-transactions?month=${month}&type=${apiType}`);
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            let csv, filename;
+            
+            if (type === 'invoices') {
+                csv = 'Order #,Customer,Phone,Order Date,Delivery Date,Payment Method,Status,Amount\n';
+                data.data.forEach(row => {
+                    csv += `"${row.order_number}","${row.customer_name || ''}","${row.customer_phone || ''}","${row.order_date}","${row.delivery_date}","${row.payment_method}","${row.approval_status}",${row.amount}\n`;
+                });
+                filename = `delivered_orders_${month}.csv`;
+            } else {
+                csv = 'Date,Description,Created By,Mode,Amount\n';
+                data.data.forEach(row => {
+                    csv += `"${row.date}","${(row.description || '').replace(/"/g, '""')}","${row.created_by || ''}","${row.mode}",${row.amount}\n`;
+                });
+                filename = `${type}_${month}.csv`;
+            }
+            
+            downloadCSV(csv, filename);
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        alert('Error exporting data');
+    }
+}
+
+// Export customer list to CSV/Excel
+async function exportCustomerList(type, month) {
+    try {
+        const response = await fetch(`/dashboard/customer-list?type=${type}&month=${encodeURIComponent(month)}`);
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            let csv = 'Name,Phone,Total Orders,Total Spent,First Order,Last Order\n';
+            data.data.forEach(c => {
+                csv += `"${c.name}","${c.phone || ''}",${c.total_orders},${c.total_spent},"${c.first_order_date || ''}","${c.last_order_date || ''}"\n`;
+            });
+            
+            const filename = `${type}_customers_${month || 'all'}.csv`;
+            downloadCSV(csv, filename);
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        alert('Error exporting data');
+    }
+}
+
+// Helper to download CSV
+function downloadCSV(csv, filename) {
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 async function showDrilldown(type) {
@@ -2461,6 +2834,7 @@ async function showDrilldown(type) {
     const titles = {
         'invoices': 'Delivered Orders',
         'expenses': 'Expense Transactions',
+        'purchases': 'Vendor Purchase Transactions',
         'vendor': 'Vendor Payment Transactions'
     };
     title.textContent = titles[type] || 'Transactions';
@@ -2469,12 +2843,13 @@ async function showDrilldown(type) {
     const typeMap = {
         'invoices': 'invoice',
         'expenses': 'expense',
+        'purchases': 'vendor_purchase',
         'vendor': 'vendor_payment'
     };
     const apiType = typeMap[type] || type;
     
     content.innerHTML = '<div class="text-center py-8"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div><p class="mt-2 text-gray-600">Loading transactions...</p></div>';
-    modal.classList.remove('hidden');
+    modal.style.display = 'block';
     
     try {
         const response = await fetch(`/dashboard/ledger-transactions?month=${month}&type=${apiType}`);
@@ -2487,8 +2862,13 @@ async function showDrilldown(type) {
             if (type === 'invoices') {
                 content.innerHTML = `
                     <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
-                        <span class="text-sm text-gray-600">${data.data.length} orders</span>
-                        <span class="text-lg font-bold text-gray-900">Total: PKR ${totalAmount.toLocaleString()}</span>
+                        <div>
+                            <span class="text-sm text-gray-600">${data.data.length} orders</span>
+                            <span class="text-lg font-bold text-gray-900 ml-4">Total: PKR ${totalAmount.toLocaleString()}</span>
+                        </div>
+                        <button onclick="exportTransactions('invoices', '${month}')" class="px-3 py-1.5 bg-green-100 text-gray-800 text-xs rounded border border-green-300 hover:bg-green-200 transition-colors font-medium">
+                            📥 Export Excel
+                        </button>
                     </div>
                     <div class="max-h-96 overflow-auto">
                         <table class="w-full text-sm">
@@ -2530,8 +2910,13 @@ async function showDrilldown(type) {
                 // Expenses and Vendor Payments table
                 content.innerHTML = `
                     <div class="mb-4 p-3 bg-gray-50 rounded-lg flex justify-between items-center">
-                        <span class="text-sm text-gray-600">${data.data.length} transactions</span>
-                        <span class="text-lg font-bold text-gray-900">Total: PKR ${totalAmount.toLocaleString()}</span>
+                        <div>
+                            <span class="text-sm text-gray-600">${data.data.length} transactions</span>
+                            <span class="text-lg font-bold text-gray-900 ml-4">Total: PKR ${totalAmount.toLocaleString()}</span>
+                        </div>
+                        <button onclick="exportTransactions('${type}', '${month}')" class="px-3 py-1.5 bg-green-100 text-gray-800 text-xs rounded border border-green-300 hover:bg-green-200 transition-colors font-medium">
+                            📥 Export Excel
+                        </button>
                     </div>
                     <div class="max-h-96 overflow-auto">
                         <table class="w-full text-sm">
@@ -2539,6 +2924,7 @@ async function showDrilldown(type) {
                                 <tr>
                                     <th class="text-left py-2 px-3 font-medium text-gray-600">Date</th>
                                     <th class="text-left py-2 px-3 font-medium text-gray-600">Description</th>
+                                    <th class="text-left py-2 px-3 font-medium text-gray-600">Created By</th>
                                     <th class="text-center py-2 px-3 font-medium text-gray-600">Mode</th>
                                     <th class="text-right py-2 px-3 font-medium text-gray-600">Amount</th>
                                 </tr>
@@ -2548,6 +2934,7 @@ async function showDrilldown(type) {
                                     <tr class="border-t border-gray-100 hover:bg-gray-50">
                                         <td class="py-2 px-3 text-gray-600 whitespace-nowrap">${txn.date}</td>
                                         <td class="py-2 px-3 text-gray-900">${txn.description || '-'}</td>
+                                        <td class="py-2 px-3 text-gray-700">${txn.created_by || '-'}</td>
                                         <td class="py-2 px-3 text-center">
                                             <span class="px-2 py-0.5 text-xs rounded ${txn.mode?.toLowerCase() === 'online' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}">${txn.mode || 'Cash'}</span>
                                         </td>
@@ -2611,9 +2998,8 @@ window.testModal = function(modalId) {
     const modal = document.getElementById(modalId);
     console.log('Testing modal:', modalId, 'Element:', modal);
     if (modal) {
-        modal.classList.remove('hidden');
         modal.style.display = 'block';
-        console.log('Modal should now be visible, classList:', modal.classList, 'display:', modal.style.display);
+        console.log('Modal should now be visible, display:', modal.style.display);
     } else {
         console.error('Modal not found:', modalId);
     }
@@ -2639,3 +3025,92 @@ console.log('Available modals:', {
 }
 </style>
 @endsection
+
+@push('modals')
+<!-- =========================================================================
+     ORDER DETAIL MODAL (Drilldown)
+     ========================================================================= -->
+<div id="orderDetailModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; overflow-y: auto;">
+    <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; text-align: center;">
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);" onclick="closeOrderModal()"></div>
+        <div style="position: relative; display: inline-block; width: 100%; max-width: 56rem; padding: 1.5rem; margin: 2rem 0; overflow: hidden; text-align: left; vertical-align: middle; background: white; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); border-radius: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 id="modalTitle" style="font-size: 1.125rem; font-weight: 600; color: #111827;">Orders for Date</h3>
+                <button onclick="closeOrderModal()" style="color: #9ca3af; cursor: pointer; background: none; border: none; font-size: 1.25rem;">✕</button>
+            </div>
+            <div id="modalContent" style="max-height: 24rem; overflow: auto;">
+                <!-- Will be populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- =========================================================================
+     FULL VIEW CHART MODAL
+     ========================================================================= -->
+<div id="fullViewModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; overflow-y: auto;">
+    <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; text-align: center;">
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);" onclick="closeFullView()"></div>
+        <div style="position: relative; display: inline-block; width: 100%; max-width: 72rem; padding: 1.5rem; margin: 2rem 0; overflow: hidden; text-align: left; vertical-align: middle; background: white; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); border-radius: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 id="fullViewTitle" style="font-size: 1.125rem; font-weight: 600; color: #111827;">Chart Full View</h3>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <button onclick="showChartDetails()" style="font-size: 0.875rem; padding: 0.25rem 0.75rem; background: #dbeafe; color: #1d4ed8; border-radius: 0.25rem; cursor: pointer; border: none;">View Details</button>
+                    <button onclick="closeFullView()" style="color: #9ca3af; cursor: pointer; background: none; border: none; font-size: 1.25rem;">✕</button>
+                </div>
+            </div>
+            <div style="position: relative; height: 500px;">
+                <canvas id="fullViewChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- =========================================================================
+     CHART DETAILS MODAL (Raw Data Table)
+     ========================================================================= -->
+<div id="chartDetailsModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; overflow-y: auto;">
+    <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; text-align: center;">
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);" onclick="closeChartDetails()"></div>
+        <div style="position: relative; display: inline-block; width: 100%; max-width: 64rem; padding: 1.5rem; margin: 2rem 0; overflow: hidden; text-align: left; vertical-align: middle; background: white; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); border-radius: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 id="chartDetailsTitle" style="font-size: 1.125rem; font-weight: 600; color: #111827;">Chart Data Details</h3>
+                <button onclick="closeChartDetails()" style="color: #9ca3af; cursor: pointer; background: none; border: none; font-size: 1.25rem;">✕</button>
+            </div>
+            <div id="chartDetailsContent" style="max-height: 500px; overflow: auto;">
+                <!-- Will be populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- =========================================================================
+     ACTIVE CUSTOMERS POPUP MODAL
+     ========================================================================= -->
+<div id="activeCustomersModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; overflow-y: auto;">
+    <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; text-align: center;">
+        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);" onclick="closeActiveCustomersPopup()"></div>
+        <div style="position: relative; display: inline-block; width: 100%; max-width: 64rem; padding: 1.5rem; margin: 2rem 0; overflow: hidden; text-align: left; vertical-align: middle; background: white; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); border-radius: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 style="font-size: 1.125rem; font-weight: 600; color: #111827;">Active Customers (Last 90 Days)</h3>
+                <button onclick="closeActiveCustomersPopup()" style="color: #9ca3af; cursor: pointer; background: none; border: none; font-size: 1.25rem;">✕</button>
+            </div>
+            <!-- Filter Tabs -->
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                <button id="customerFilterAll" onclick="filterActiveCustomers('all')" style="padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; background: #dbeafe; color: #1d4ed8; border: none; cursor: pointer;">
+                    All <span id="customerCountAll" style="margin-left: 0.25rem; font-size: 0.75rem;">(0)</span>
+                </button>
+                <button id="customerFilterNew" onclick="filterActiveCustomers('new')" style="padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; background: #f3f4f6; color: #4b5563; border: none; cursor: pointer;">
+                    New <span id="customerCountNew" style="margin-left: 0.25rem; font-size: 0.75rem;">(0)</span>
+                </button>
+                <button id="customerFilterReturning" onclick="filterActiveCustomers('returning')" style="padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; background: #f3f4f6; color: #4b5563; border: none; cursor: pointer;">
+                    Returning <span id="customerCountReturning" style="margin-left: 0.25rem; font-size: 0.75rem;">(0)</span>
+                </button>
+            </div>
+            <div id="activeCustomersContent" style="max-height: 450px; overflow: auto;">
+                <!-- Will be populated by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+@endpush

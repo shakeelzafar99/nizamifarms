@@ -46,6 +46,7 @@
     <script src="{{ asset('assets/js/layouts/demo1.js') }}">
     </script>
     @stack('demo1_js')
+    @stack('modals')
 </body>
 
 </html>

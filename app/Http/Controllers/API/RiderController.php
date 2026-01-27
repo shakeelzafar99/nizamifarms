@@ -4114,7 +4114,8 @@ class RiderController extends Controller
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
                     // ⭐ Include 'notes' for customer notes display, 'phone_original' for contact
-                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes');
+                    // ⭐ Include verified_location_saved_by and saved_at for showing who saved location
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -4186,11 +4187,22 @@ class RiderController extends Controller
                             $googleMapsUrl = "https://www.google.com/maps?q={$lat},{$lng}";
                         }
                         
+                        // ⭐ Get saved_by user name if available
+                        $savedByName = null;
+                        if ($order->customer->verified_location_saved_by) {
+                            $savedByName = \DB::table('t_sys_user')
+                                ->where('id', $order->customer->verified_location_saved_by)
+                                ->value('fullname');
+                        }
+                        
                         $verifiedLocation = [
                             'latitude' => $lat,
                             'longitude' => $lng,
                             'url' => $order->customer->verified_location_url ?? null,
                             'google_maps_url' => $googleMapsUrl,
+                            // ⭐ Who saved and when - for display in UI
+                            'saved_by' => $savedByName,
+                            'saved_at' => $order->customer->verified_location_saved_at,
                         ];
                     }
                 }

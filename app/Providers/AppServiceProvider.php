@@ -6,6 +6,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\ServiceProvider;
+use App\Models\CRM\OrderStatusHistory;
+use App\Observers\OrderStatusHistoryObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -22,6 +24,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Register observers for model events
+        OrderStatusHistory::observe(OrderStatusHistoryObserver::class);
+        
         //
         Builder::macro('whereLike', function ($attributes, string $searchTerm) {
             if($searchTerm != ""){

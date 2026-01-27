@@ -90,6 +90,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/monthly-product-categories', [DashboardController::class, 'getMonthlyProductCategories']);
     Route::get('/dashboard/daily-product-categories', [DashboardController::class, 'getDailyProductCategories']);
     Route::get('/dashboard/active-customers-list', [DashboardController::class, 'getActiveCustomersList']);
+    Route::get('/dashboard/customer-dormancy', [DashboardController::class, 'getCustomerDormancy']);
+    Route::get('/dashboard/customer-dormancy-list', [DashboardController::class, 'getCustomerDormancyList']);
+    Route::get('/dashboard/customer-list', [DashboardController::class, 'getCustomerList']);
+    Route::get('/dashboard/month-customer-stats', [DashboardController::class, 'getMonthCustomerStats']);
     
     // Log viewer routes
     Route::get('/logs', [LogController::class, 'index']);

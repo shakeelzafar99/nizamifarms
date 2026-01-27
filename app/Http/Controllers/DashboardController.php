@@ -435,4 +435,96 @@ class DashboardController extends Controller
             ]);
         }
     }
+    
+    /**
+     * Get customer dormancy bands (days since last order)
+     */
+    public function getCustomerDormancy()
+    {
+        try {
+            $data = $this->analyticsService->getCustomerDormancyBands();
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Customer dormancy error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+    
+    /**
+     * Get customer list for specific dormancy band
+     */
+    public function getCustomerDormancyList(Request $request)
+    {
+        try {
+            $band = $request->get('band', '0-30');
+            $data = $this->analyticsService->getCustomerDormancyList($band);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Customer dormancy list error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+    
+    /**
+     * Get customer list by type (total, new, returning)
+     */
+    public function getCustomerList(Request $request)
+    {
+        try {
+            $type = $request->get('type', 'total');
+            $month = $request->get('month');
+            $data = $this->analyticsService->getCustomerListByType($type, $month);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Customer list error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
+    
+    /**
+     * Get month-specific customer stats
+     */
+    public function getMonthCustomerStats(Request $request)
+    {
+        try {
+            $month = $request->get('month');
+            $data = $this->analyticsService->getMonthCustomerStats($month);
+            
+            return response()->json([
+                'success' => true,
+                'data' => $data
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Month customer stats error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'data' => []
+            ]);
+        }
+    }
 }

@@ -40,7 +40,10 @@ class CustomerModel extends BaseModel
         'geocoded_at',
         'external_customer_ids',
         'first_order_date',
+        'first_delivery_date',
         'last_order_date',
+        'last_delivery_date',
+        'last_delivered_order_id',
         'total_orders',
         'total_spent',
         'notes',
@@ -61,6 +64,8 @@ class CustomerModel extends BaseModel
         'geocoded_latitude' => 'decimal:7',
         'geocoded_longitude' => 'decimal:7',
         'geocoded_at' => 'datetime',
+        'first_delivery_date' => 'datetime',
+        'last_delivery_date' => 'datetime',
         'is_active' => 'boolean',
         'total_orders' => 'integer'
     ];
