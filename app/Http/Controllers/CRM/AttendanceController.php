@@ -124,6 +124,9 @@ class AttendanceController extends Controller
                 'a.login_time',
                 'a.logout_time',
                 'a.notes',
+                // Meter readings
+                'a.meter_start',
+                'a.meter_end',
                 // Location tracking fields
                 'a.checkin_latitude',
                 'a.checkin_longitude',
@@ -171,12 +174,31 @@ class AttendanceController extends Controller
         $shiftService = new ShiftResolutionService();
         $locationService = new \App\Services\LocationService();
         
+        // Collect user IDs for batch GPS query
+        $userIdsWithAttendance = [];
+        
         foreach ($rows as $row) {
             $shiftData = $shiftService->getUserShift($row->user_id);
             $row->shift_start = $shiftData['shift_start'];
             $row->shift_end = $shiftData['shift_end'];
             $row->shift_name = $shiftData['shift_name'];
             $row->shift_source = $shiftData['source'];
+            
+            // ⭐ Calculate meter distance
+            $row->meter_distance = null;
+            if ($row->meter_start && $row->meter_end) {
+                $row->meter_distance = abs((int) $row->meter_end - (int) $row->meter_start);
+            }
+            
+            // ⭐ Initialize GPS distance fields
+            $row->gps_distance = null;
+            $row->gps_readings_count = 0;
+            $row->gps_coverage_percent = null;
+            
+            // Track users with attendance for GPS batch query
+            if ($row->login_time) {
+                $userIdsWithAttendance[] = $row->user_id;
+            }
             
             // Recalculate distance based on user's current assigned location
             if ($row->checkin_latitude && $row->checkin_longitude) {
@@ -190,6 +212,37 @@ class AttendanceController extends Controller
                 $row->checkin_distance_from_base = $distanceResult['distance_meters'];
                 $row->is_remote_checkin = $distanceResult['is_remote'] ? 1 : 0;
                 $row->assigned_office_location = $distanceResult['base_location']->location_name ?? null;
+            }
+        }
+        
+        // ⭐ Batch calculate GPS distance for users with attendance
+        if (!empty($userIdsWithAttendance)) {
+            $allGpsReadings = DB::table('t_ops_rider_location')
+                ->whereIn('user_id', $userIdsWithAttendance)
+                ->whereDate('captured_at', $selectedDate)
+                ->where('accuracy', '<=', 100) // Skip inaccurate readings
+                ->orderBy('user_id')
+                ->orderBy('captured_at')
+                ->select('user_id', 'latitude', 'longitude', 'accuracy', 'captured_at')
+                ->get()
+                ->groupBy('user_id');
+            
+            foreach ($rows as $row) {
+                if (isset($allGpsReadings[$row->user_id])) {
+                    $readings = $allGpsReadings[$row->user_id]->values()->all();
+                    $gpsResult = $this->calculateGpsDistanceFromReadings($readings);
+                    $row->gps_distance = $gpsResult['distance'];
+                    $row->gps_readings_count = $gpsResult['readings_count'];
+                    
+                    // ⭐ Calculate GPS coverage percentage
+                    if ($row->login_time && $row->logout_time) {
+                        $loginTime = strtotime($selectedDate . ' ' . $row->login_time);
+                        $logoutTime = strtotime($selectedDate . ' ' . $row->logout_time);
+                        $workingMinutes = ($logoutTime - $loginTime) / 60;
+                        $expectedReadings = max(1, floor($workingMinutes / 5)); // One reading every 5 min
+                        $row->gps_coverage_percent = min(100, round(($gpsResult['readings_count'] / $expectedReadings) * 100));
+                    }
+                }
             }
         }
         
@@ -902,6 +955,459 @@ class AttendanceController extends Controller
             ], 500);
         }
     }
+    
+    /**
+     * ⭐ GPS Readings Audit - Identify gaps in GPS tracking
+     * Helps audit riders who may have gaps in their tracking
+     */
+    public function gpsReadingsAudit(Request $request)
+    {
+        try {
+            $userId = $request->input('user_id');
+            $date = $request->input('date', now()->toDateString());
+            
+            if (!$userId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'user_id is required'
+                ], 400);
+            }
+            
+            // Get user info
+            $user = DB::table('t_sys_user')
+                ->select('id', 'fullname')
+                ->where('id', $userId)
+                ->first();
+            
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User not found'
+                ], 404);
+            }
+            
+            // Get attendance for the date
+            $attendance = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', $date)
+                ->first();
+            
+            if (!$attendance || !$attendance->login_time) {
+                return response()->json([
+                    'success' => true,
+                    'user' => $user,
+                    'date' => $date,
+                    'has_attendance' => false,
+                    'message' => 'No attendance record for this date'
+                ]);
+            }
+            
+            // Get all GPS readings for the date (ordered by time)
+            $readings = DB::table('t_ops_rider_location')
+                ->where('user_id', $userId)
+                ->whereDate('captured_at', $date)
+                ->orderBy('captured_at')
+                ->select('id', 'latitude', 'longitude', 'accuracy', 'captured_at')
+                ->get();
+            
+            // Calculate expected readings based on 5-min intervals
+            $loginTime = strtotime($date . ' ' . $attendance->login_time);
+            $logoutTime = $attendance->logout_time ? strtotime($date . ' ' . $attendance->logout_time) : time();
+            
+            // If logout is not yet, cap at current time
+            if ($logoutTime > time()) {
+                $logoutTime = time();
+            }
+            
+            $workingMinutes = ($logoutTime - $loginTime) / 60;
+            $expectedReadings = max(1, floor($workingMinutes / 5)); // One reading every 5 min
+            $actualReadings = $readings->count();
+            
+            // Analyze gaps - find periods > 10 minutes between readings
+            $gaps = [];
+            $totalGapMinutes = 0;
+            $minGapThreshold = 10; // Minutes - gaps larger than this are flagged
+            
+            // Helper function to check if two points are at same location (within 50m)
+            $isSameLocation = function($lat1, $lng1, $lat2, $lng2) {
+                $earthRadius = 6371000;
+                $lat1Rad = deg2rad($lat1);
+                $lat2Rad = deg2rad($lat2);
+                $deltaLat = deg2rad($lat2 - $lat1);
+                $deltaLng = deg2rad($lng2 - $lng1);
+                $a = sin($deltaLat / 2) * sin($deltaLat / 2) +
+                     cos($lat1Rad) * cos($lat2Rad) *
+                     sin($deltaLng / 2) * sin($deltaLng / 2);
+                $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+                return ($earthRadius * $c) < 50; // Within 50 meters = same location
+            };
+            
+            $stationaryGapMinutes = 0; // Gaps where rider didn't move (harmless)
+            
+            if ($actualReadings > 0) {
+                // Check gap from login to first reading
+                $firstReading = $readings->first();
+                $firstReadingTime = strtotime($firstReading->captured_at);
+                $gapFromLogin = ($firstReadingTime - $loginTime) / 60;
+                
+                if ($gapFromLogin > $minGapThreshold) {
+                    $gaps[] = [
+                        'from' => date('H:i:s', $loginTime),
+                        'to' => date('H:i:s', $firstReadingTime),
+                        'duration_minutes' => round($gapFromLogin),
+                        'type' => 'start_delay',
+                        'description' => 'Gap between login and first GPS reading',
+                        'is_stationary' => false // Unknown - no prior reading to compare
+                    ];
+                    $totalGapMinutes += $gapFromLogin;
+                }
+                
+                // Check gaps between consecutive readings
+                $readingsArray = $readings->values()->all();
+                for ($i = 1; $i < count($readingsArray); $i++) {
+                    $prev = $readingsArray[$i - 1];
+                    $curr = $readingsArray[$i];
+                    $prevTime = strtotime($prev->captured_at);
+                    $currTime = strtotime($curr->captured_at);
+                    $gapMinutes = ($currTime - $prevTime) / 60;
+                    
+                    if ($gapMinutes > $minGapThreshold) {
+                        // ⭐ Smart check: if rider didn't move during gap, it's harmless
+                        $isStationary = $isSameLocation(
+                            (float) $prev->latitude, (float) $prev->longitude,
+                            (float) $curr->latitude, (float) $curr->longitude
+                        );
+                        
+                        $gaps[] = [
+                            'from' => date('H:i:s', $prevTime),
+                            'to' => date('H:i:s', $currTime),
+                            'duration_minutes' => round($gapMinutes),
+                            'type' => $isStationary ? 'stationary_gap' : 'tracking_gap',
+                            'description' => $isStationary 
+                                ? 'GPS gap but rider stayed in same location (no loss)' 
+                                : 'GPS tracking gap',
+                            'is_stationary' => $isStationary
+                        ];
+                        
+                        $totalGapMinutes += $gapMinutes;
+                        if ($isStationary) {
+                            $stationaryGapMinutes += $gapMinutes;
+                        }
+                    }
+                }
+                
+                // Check gap from last reading to logout
+                if ($attendance->logout_time) {
+                    $lastReading = $readings->last();
+                    $lastReadingTime = strtotime($lastReading->captured_at);
+                    $gapToLogout = ($logoutTime - $lastReadingTime) / 60;
+                    
+                    if ($gapToLogout > $minGapThreshold) {
+                        $gaps[] = [
+                            'from' => date('H:i:s', $lastReadingTime),
+                            'to' => date('H:i:s', $logoutTime),
+                            'duration_minutes' => round($gapToLogout),
+                            'type' => 'end_gap',
+                            'description' => 'Gap between last GPS reading and logout',
+                            'is_stationary' => false // Unknown - no next reading to compare
+                        ];
+                        $totalGapMinutes += $gapToLogout;
+                    }
+                }
+            } else {
+                // No readings at all
+                $gaps[] = [
+                    'from' => $attendance->login_time,
+                    'to' => $attendance->logout_time ?? 'ongoing',
+                    'duration_minutes' => round($workingMinutes),
+                    'type' => 'no_tracking',
+                    'description' => 'No GPS readings captured',
+                    'is_stationary' => false
+                ];
+                $totalGapMinutes = $workingMinutes;
+            }
+            
+            // ⭐ Effective gap = only gaps where we might have lost distance data
+            $effectiveGapMinutes = $totalGapMinutes - $stationaryGapMinutes;
+            
+            // Calculate coverage percentage (based on readings, not gaps)
+            $coveragePercent = $workingMinutes > 0 
+                ? round((($workingMinutes - $totalGapMinutes) / $workingMinutes) * 100) 
+                : 0;
+            
+            // ⭐ Effective coverage = coverage when excluding harmless stationary gaps
+            $effectiveCoveragePercent = $workingMinutes > 0 
+                ? round((($workingMinutes - $effectiveGapMinutes) / $workingMinutes) * 100) 
+                : 0;
+            
+            // Calculate GPS straight-line distance
+            $gpsDistance = null;
+            if ($actualReadings >= 2) {
+                $gpsResult = $this->calculateGpsDistanceFromReadings($readings->toArray());
+                $gpsDistance = $gpsResult['distance'];
+            }
+            
+            // ⭐ Calculate ROAD distance using OpenRouteService API (same as mobile)
+            // BUT only if straight-line distance is meaningful (> 0.5 km)
+            // This prevents API calls for stationary GPS that just has drift
+            $roadDistance = null;
+            $roadDistanceSource = null;
+            if ($actualReadings >= 2 && $gpsDistance !== null && $gpsDistance >= 0.5) {
+                // Sample readings to max 25 points for API efficiency
+                $sampledReadings = $this->sampleGpsReadings($readings->toArray(), 25);
+                if (count($sampledReadings) >= 2) {
+                    $roadDistance = $this->callOpenRouteService($sampledReadings);
+                    $roadDistanceSource = $roadDistance !== null ? 'openrouteservice' : 'unavailable';
+                }
+            } elseif ($gpsDistance !== null && $gpsDistance < 0.5) {
+                $roadDistanceSource = 'skipped_stationary';
+            }
+            
+            // Meter distance from attendance (with raw values for transparency)
+            $meterDistance = null;
+            $meterStart = $attendance->meter_start;
+            $meterEnd = $attendance->meter_end;
+            if ($meterStart && $meterEnd) {
+                $meterDistance = abs((int) $meterEnd - (int) $meterStart);
+            }
+            
+            // Audit status
+            $auditStatus = 'good';
+            $auditNotes = [];
+            
+            if ($coveragePercent < 50) {
+                $auditStatus = 'critical';
+                $auditNotes[] = 'Less than 50% GPS coverage';
+            } elseif ($coveragePercent < 80) {
+                $auditStatus = 'warning';
+                $auditNotes[] = 'GPS coverage below 80%';
+            }
+            
+            if (count($gaps) > 3) {
+                if ($auditStatus === 'good') $auditStatus = 'warning';
+                $auditNotes[] = 'Multiple tracking gaps detected';
+            }
+            
+            // Compare meter vs road/GPS distance if available
+            $comparisonDistance = $roadDistance ?? $gpsDistance;
+            if ($meterDistance && $comparisonDistance && $comparisonDistance > 0) {
+                $discrepancyPercent = abs($meterDistance - $comparisonDistance) / $comparisonDistance * 100;
+                if ($discrepancyPercent > 50) {
+                    if ($auditStatus === 'good') $auditStatus = 'warning';
+                    $auditNotes[] = 'Significant difference between meter and GPS distance';
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'user' => [
+                    'id' => $user->id,
+                    'fullname' => $user->fullname
+                ],
+                'date' => $date,
+                'has_attendance' => true,
+                'attendance' => [
+                    'login_time' => $attendance->login_time,
+                    'logout_time' => $attendance->logout_time,
+                    'working_minutes' => round($workingMinutes)
+                ],
+                'gps_analysis' => [
+                    'expected_readings' => $expectedReadings,
+                    'actual_readings' => $actualReadings,
+                    'coverage_percent' => $coveragePercent,
+                    'effective_coverage_percent' => $effectiveCoveragePercent,
+                    'total_gap_minutes' => round($totalGapMinutes),
+                    'stationary_gap_minutes' => round($stationaryGapMinutes),
+                    'effective_gap_minutes' => round($effectiveGapMinutes),
+                    'gaps_count' => count($gaps),
+                    'stationary_gaps_count' => count(array_filter($gaps, fn($g) => $g['is_stationary'] ?? false)),
+                    'gaps' => $gaps
+                ],
+                'distance' => [
+                    'meter_km' => $meterDistance,
+                    'meter_start' => $meterStart,
+                    'meter_end' => $meterEnd,
+                    'gps_straight_km' => $gpsDistance,
+                    'gps_road_km' => $roadDistance !== null ? round($roadDistance, 1) : null,
+                    'road_source' => $roadDistanceSource
+                ],
+                'audit' => [
+                    'status' => $auditStatus,
+                    'notes' => $auditNotes
+                ],
+                // Include readings for timeline visualization (limit to avoid huge response)
+                'readings_preview' => $readings->take(100)->map(function($r) {
+                    return [
+                        'time' => date('H:i', strtotime($r->captured_at)),
+                        'accuracy' => $r->accuracy
+                    ];
+                })
+            ]);
+            
+        } catch (\Exception $e) {
+            Log::error('GPS Audit Error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error performing GPS audit: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Calculate GPS distance from array of readings using Haversine
+     * Filters out GPS drift (< 20m movements)
+     */
+    private function calculateGpsDistanceFromReadings(array $readings): array
+    {
+        $totalDistance = 0;
+        $validReadingsCount = count($readings);
+        
+        if ($validReadingsCount < 2) {
+            return ['distance' => null, 'readings_count' => $validReadingsCount];
+        }
+        
+        $minMovementMeters = 20; // Filter out GPS drift
+        
+        for ($i = 1; $i < $validReadingsCount; $i++) {
+            $prev = is_array($readings[$i - 1]) ? (object) $readings[$i - 1] : $readings[$i - 1];
+            $curr = is_array($readings[$i]) ? (object) $readings[$i] : $readings[$i];
+            
+            $distanceMeters = $this->haversineDistance(
+                (float) $prev->latitude,
+                (float) $prev->longitude,
+                (float) $curr->latitude,
+                (float) $curr->longitude
+            );
+            
+            if ($distanceMeters >= $minMovementMeters) {
+                $totalDistance += $distanceMeters;
+            }
+        }
+        
+        $distanceKm = round($totalDistance / 1000, 1);
+        
+        return [
+            'distance' => $distanceKm > 0 ? $distanceKm : null,
+            'readings_count' => $validReadingsCount,
+        ];
+    }
+    
+    /**
+     * ⭐ Haversine formula to calculate distance between two lat/lng points
+     * Returns distance in meters
+     */
+    private function haversineDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        $earthRadiusMeters = 6371000;
+        
+        $lat1Rad = deg2rad($lat1);
+        $lat2Rad = deg2rad($lat2);
+        $deltaLat = deg2rad($lat2 - $lat1);
+        $deltaLng = deg2rad($lng2 - $lng1);
+        
+        $a = sin($deltaLat / 2) * sin($deltaLat / 2) +
+             cos($lat1Rad) * cos($lat2Rad) *
+             sin($deltaLng / 2) * sin($deltaLng / 2);
+        
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+        
+        return $earthRadiusMeters * $c;
+    }
+    
+    /**
+     * ⭐ Sample GPS readings to reduce API calls while maintaining route accuracy
+     * Uses time-based sampling to ensure we capture the full journey
+     */
+    private function sampleGpsReadings(array $readings, int $maxPoints = 25): array
+    {
+        $count = count($readings);
+        
+        if ($count <= $maxPoints) {
+            return $readings;
+        }
+        
+        $sampled = [];
+        $step = ($count - 1) / ($maxPoints - 1);
+        
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $index = (int) round($i * $step);
+            if ($index < $count) {
+                $sampled[] = $readings[$index];
+            }
+        }
+        
+        // Always include first and last point
+        if (!in_array($readings[0], $sampled)) {
+            array_unshift($sampled, $readings[0]);
+        }
+        if (!in_array($readings[$count - 1], $sampled)) {
+            $sampled[] = $readings[$count - 1];
+        }
+        
+        return $sampled;
+    }
+    
+    /**
+     * ⭐ Call OpenRouteService Directions API for road distance
+     * Same API used in mobile app - Free tier: 2,000 requests/day
+     */
+    private function callOpenRouteService(array $readings): ?float
+    {
+        // OpenRouteService API key
+        $apiKey = env('OPENROUTESERVICE_API_KEY', '5b3ce3597851110001cf62487c37b3c0b8d74b9fb9f7d9f3c3d7f8e9');
+        
+        // Build coordinates array [lng, lat] format (GeoJSON standard)
+        $coordinates = array_map(function($reading) {
+            return [
+                (float) (is_object($reading) ? $reading->longitude : $reading['longitude']),
+                (float) (is_object($reading) ? $reading->latitude : $reading['latitude'])
+            ];
+        }, $readings);
+        
+        try {
+            $client = new \GuzzleHttp\Client([
+                'timeout' => 30,
+                'connect_timeout' => 10,
+            ]);
+            
+            $response = $client->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                'headers' => [
+                    'Authorization' => $apiKey,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'json' => [
+                    'coordinates' => $coordinates,
+                    'instructions' => false,
+                    'geometry' => false,
+                    'units' => 'km',
+                ]
+            ]);
+            
+            $data = json_decode($response->getBody()->getContents(), true);
+            
+            if (isset($data['routes'][0]['summary']['distance'])) {
+                return $data['routes'][0]['summary']['distance']; // Already in km
+            }
+            
+            Log::warning('OpenRouteService response missing distance', ['data' => $data]);
+            return null;
+            
+        } catch (\GuzzleHttp\Exception\ClientException $e) {
+            $responseBody = $e->hasResponse() ? $e->getResponse()->getBody()->getContents() : 'No response';
+            Log::warning('OpenRouteService API client error', [
+                'status' => $e->hasResponse() ? $e->getResponse()->getStatusCode() : null,
+                'body' => $responseBody,
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+            
+        } catch (\Exception $e) {
+            Log::warning('OpenRouteService API error', [
+                'error' => $e->getMessage(),
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+        }
+    }
 }
-
-

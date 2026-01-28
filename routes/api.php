@@ -205,6 +205,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/store-attendance/employee-details', [\App\Http\Controllers\API\RiderController::class, 'getStoreAttendanceEmployeeDetails']);
         Route::post('/store-attendance/update-meter-values', [\App\Http\Controllers\API\RiderController::class, 'updateMeterValues']);
         
+        // ⭐ Road Distance Calculation (on-demand) - uses OpenRouteService API
+        Route::get('/store-attendance/calculate-road-distance', [\App\Http\Controllers\API\RiderController::class, 'calculateRoadDistance']);
+        
+        // ⭐ ETA to destination (Google Maps with fallback to OpenRouteService)
+        Route::get('/eta-to-destination', [\App\Http\Controllers\API\RiderController::class, 'getEtaToDestination']);
+        Route::get('/api-usage-stats', [\App\Http\Controllers\API\RiderController::class, 'getApiUsageStats']);
+        
         // ⭐ LOCATION TRACKING: Heartbeat from mobile app (every 5 minutes when checked in)
         Route::post('/location-heartbeat', [\App\Http\Controllers\API\RiderController::class, 'locationHeartbeat']);
         

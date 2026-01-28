@@ -332,6 +332,7 @@
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Login</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Logout</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
+            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Distance</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Late By</th>
             <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
@@ -341,7 +342,7 @@
         </thead>
         <tbody id="attBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="8" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
+            <td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">Loading attendance records...</td>
           </tr>
         </tbody>
       </table>
@@ -645,6 +646,36 @@
   </div>
 </div>
 
+<!-- GPS Audit Modal -->
+<div id="gpsAuditModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99999; background: rgba(0, 0, 0, 0.6); align-items: center; justify-content: center; padding: 1rem;" onclick="if(event.target === this) closeGpsAudit();">
+  <div style="background: white; border-radius: 16px; width: 95%; max-width: 700px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);" onclick="event.stopPropagation();">
+    
+    <!-- Header -->
+    <div style="padding: 16px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+      <div>
+        <h3 style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;" id="gpsAuditTitle">GPS Tracking Audit</h3>
+        <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0 0;" id="gpsAuditSubtitle">Loading...</p>
+      </div>
+      <button onclick="closeGpsAudit()" style="background: none; border: none; color: #9ca3af; font-size: 28px; cursor: pointer; padding: 0 8px;">&times;</button>
+    </div>
+    
+    <!-- Content -->
+    <div id="gpsAuditContent" style="flex: 1; overflow-y: auto; padding: 20px 24px;">
+      <div style="text-align: center; padding: 40px; color: #6b7280;">
+        <div style="font-size: 24px; margin-bottom: 8px;">⏳</div>
+        Loading GPS data...
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <div style="padding: 16px 24px; border-top: 1px solid #e5e7eb; flex-shrink: 0; display: flex; justify-content: flex-end;">
+      <button onclick="closeGpsAudit()" style="padding: 10px 24px; background: #2563eb; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 500;">
+        Close
+      </button>
+    </div>
+  </div>
+</div>
+
 <style>
   #customizeUserListModal {
     position: fixed;
@@ -658,6 +689,59 @@
     align-items: center;
     justify-content: center;
     overflow-y: auto;
+  }
+  
+  /* GPS Audit Styles */
+  .gps-audit-stat {
+    text-align: center;
+    padding: 12px;
+    background: #f9fafb;
+    border-radius: 8px;
+  }
+  .gps-audit-stat .value {
+    font-size: 24px;
+    font-weight: 700;
+    color: #111827;
+  }
+  .gps-audit-stat .label {
+    font-size: 11px;
+    color: #6b7280;
+    text-transform: uppercase;
+  }
+  .gps-gap-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+  }
+  .gps-gap-critical {
+    background: #fef2f2;
+    border-left: 3px solid #ef4444;
+  }
+  .gps-gap-warning {
+    background: #fffbeb;
+    border-left: 3px solid #f59e0b;
+  }
+  .gps-gap-info {
+    background: #eff6ff;
+    border-left: 3px solid #3b82f6;
+  }
+  .gps-timeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 12px;
+  }
+  .gps-timeline-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #22c55e;
+  }
+  .gps-timeline-dot.gap {
+    background: #ef4444;
+    width: 16px;
   }
 </style>
 
@@ -922,7 +1006,7 @@ async function loadAttendanceForDate() {
     updateSummaryCards(filteredData);
   } catch(e) {
     console.error('Error loading attendance', e);
-    document.getElementById('attBody').innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
+    document.getElementById('attBody').innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-red-500 text-sm">Error loading data</td></tr>';
   }
 }
 
@@ -930,7 +1014,7 @@ function renderAttendanceTable(data) {
   const body = document.getElementById('attBody');
   
   if (!data || data.length === 0) {
-    body.innerHTML = '<tr><td colspan="12" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="px-4 py-8 text-center text-gray-500 text-sm">No attendance records found for this date</td></tr>';
     return;
   }
 
@@ -963,6 +1047,11 @@ function renderAttendanceTable(data) {
         <!-- Location Badge Column -->
         <td class="px-4 py-3 text-sm">
           ${locationBadge.html}
+        </td>
+        
+        <!-- Distance Column (Meter + GPS) -->
+        <td class="px-4 py-3 text-sm">
+          ${getDistanceBadge(r)}
         </td>
         
         <td class="px-4 py-3 text-sm text-gray-600">${hours}</td>
@@ -1092,6 +1181,121 @@ function getLocationBadge(record) {
       </span>
     `
   };
+}
+
+/**
+ * ⭐ Get distance badge HTML showing meter and GPS distance
+ */
+function getDistanceBadge(record) {
+  // No attendance = no distance
+  if (!record.login_time) {
+    return '<span class="text-gray-400 text-xs">-</span>';
+  }
+  
+  const hasMeter = record.meter_distance !== null && record.meter_distance !== undefined;
+  const hasGps = record.gps_distance !== null && record.gps_distance !== undefined;
+  const gpsReadings = record.gps_readings_count || 0;
+  
+  // Neither available
+  if (!hasMeter && !hasGps) {
+    if (record.logout_time) {
+      // Has logout but no distance data
+      return `
+        <button 
+          type="button"
+          onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+          class="text-gray-400 text-xs hover:text-blue-600 hover:underline cursor-pointer"
+          title="Click to audit GPS readings"
+        >
+          No data
+        </button>
+      `;
+    }
+    return '<span class="text-gray-400 text-xs">-</span>';
+  }
+  
+  let html = '<div class="flex flex-col gap-1">';
+  
+  // Meter distance
+  if (hasMeter) {
+    html += `
+      <div class="flex items-center gap-1">
+        <span class="text-xs font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded" title="Meter reading">
+          🛣️ ${record.meter_distance} km
+        </span>
+      </div>
+    `;
+  }
+  
+  // GPS distance with coverage % and audit button
+  const coverage = record.gps_coverage_percent;
+  
+  if (hasGps) {
+    // Compare with meter if both exist
+    let gpsClass = 'text-green-700 bg-green-50';
+    let gpsIcon = '📍';
+    
+    if (hasMeter && record.meter_distance > 0) {
+      const diff = Math.abs(record.gps_distance - record.meter_distance);
+      const diffPercent = (diff / record.meter_distance) * 100;
+      
+      if (diffPercent > 30) {
+        gpsClass = 'text-orange-700 bg-orange-50';
+        gpsIcon = '⚠️';
+      }
+    }
+    
+    // Coverage color coding
+    let coverageClass = 'text-green-600';
+    if (coverage !== null && coverage < 50) coverageClass = 'text-red-500';
+    else if (coverage !== null && coverage < 80) coverageClass = 'text-orange-500';
+    
+    html += `
+      <button 
+        type="button"
+        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
+        title="GPS: ${record.gps_distance} km, ${gpsReadings} readings, ${coverage || '?'}% coverage. Click to audit."
+      >
+        <span class="text-xs font-medium ${gpsClass} px-1.5 py-0.5 rounded">
+          ${gpsIcon} ${record.gps_distance} km
+        </span>
+        <span class="text-[10px] ${coverageClass} font-medium">${coverage !== null ? coverage + '%' : gpsReadings + ' pts'}</span>
+      </button>
+    `;
+  } else if (hasMeter && gpsReadings > 0) {
+    // Has meter and some GPS readings but couldn't calculate distance (rider stationary)
+    let coverageClass = 'text-green-600';
+    if (coverage !== null && coverage < 50) coverageClass = 'text-red-500';
+    else if (coverage !== null && coverage < 80) coverageClass = 'text-orange-500';
+    
+    html += `
+      <button 
+        type="button"
+        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
+        title="${gpsReadings} GPS readings, ${coverage || '?'}% coverage. Click to audit."
+      >
+        <span class="text-[10px] text-gray-500">📍 stationary</span>
+        <span class="text-[10px] ${coverageClass} font-medium">${coverage !== null ? coverage + '%' : gpsReadings + ' pts'}</span>
+      </button>
+    `;
+  } else if (hasMeter) {
+    // Only meter, no GPS at all
+    html += `
+      <button 
+        type="button"
+        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+        class="text-xs text-red-500 hover:text-red-700 cursor-pointer"
+        title="No GPS readings. Click to audit."
+      >
+        ⚠️ No GPS
+      </button>
+    `;
+  }
+  
+  html += '</div>';
+  return html;
 }
 
 function filterTableByStatus() {
@@ -2125,6 +2329,274 @@ window.closeCustomizeUserList = closeCustomizeUserList;
 window.toggleUserVisibility = toggleUserVisibility;
 window.toggleSelectAllUsersVis = toggleSelectAllUsersVis;
 window.saveUserVisibilityChanges = saveUserVisibilityChanges;
+
+// ==================== GPS Audit Functions ====================
+
+/**
+ * ⭐ Show GPS Audit Modal for a user on a specific date
+ */
+async function showGpsAudit(userId, userName, date) {
+  const modal = document.getElementById('gpsAuditModal');
+  const content = document.getElementById('gpsAuditContent');
+  const title = document.getElementById('gpsAuditTitle');
+  const subtitle = document.getElementById('gpsAuditSubtitle');
+  
+  // Show modal with loading state
+  modal.style.display = 'flex';
+  title.textContent = `GPS Audit: ${userName}`;
+  subtitle.textContent = `Loading data for ${date}...`;
+  content.innerHTML = `
+    <div style="text-align: center; padding: 40px; color: #6b7280;">
+      <div style="font-size: 24px; margin-bottom: 8px;">⏳</div>
+      Loading GPS data...
+    </div>
+  `;
+  
+  try {
+    const res = await fetch(`/attendance/gps-audit?user_id=${userId}&date=${date}`);
+    const json = await res.json();
+    
+    if (!json.success) {
+      content.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #dc2626;">
+          <div style="font-size: 24px; margin-bottom: 8px;">❌</div>
+          ${json.message || 'Failed to load GPS data'}
+        </div>
+      `;
+      return;
+    }
+    
+    // Update subtitle
+    subtitle.textContent = `${date}`;
+    
+    // Render audit results
+    if (!json.has_attendance) {
+      content.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #6b7280;">
+          <div style="font-size: 48px; margin-bottom: 12px;">📅</div>
+          <p style="font-size: 16px; margin: 0;">No attendance record for this date</p>
+        </div>
+      `;
+      return;
+    }
+    
+    const gps = json.gps_analysis;
+    const dist = json.distance;
+    const audit = json.audit;
+    const att = json.attendance;
+    
+    // Determine status color
+    let statusColor = '#22c55e'; // green
+    let statusBg = '#dcfce7';
+    let statusText = '✓ Good';
+    
+    if (audit.status === 'warning') {
+      statusColor = '#f59e0b';
+      statusBg = '#fef3c7';
+      statusText = '⚠️ Warning';
+    } else if (audit.status === 'critical') {
+      statusColor = '#ef4444';
+      statusBg = '#fee2e2';
+      statusText = '❌ Critical';
+    }
+    
+    content.innerHTML = `
+      <!-- Audit Status Banner -->
+      <div style="padding: 12px 16px; border-radius: 10px; background: ${statusBg}; color: ${statusColor}; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+        <span>${statusText}</span>
+        ${audit.notes.length > 0 ? `<span style="font-weight: 400; font-size: 13px;">${audit.notes.join(' • ')}</span>` : ''}
+      </div>
+      
+      <!-- Stats Grid -->
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
+        <div class="gps-audit-stat">
+          <div class="value" style="color: ${gps.coverage_percent >= 80 ? '#22c55e' : gps.coverage_percent >= 50 ? '#f59e0b' : '#ef4444'}">
+            ${gps.coverage_percent}%
+          </div>
+          <div class="label">GPS Coverage</div>
+        </div>
+        <div class="gps-audit-stat">
+          <div class="value">${gps.actual_readings}</div>
+          <div class="label">Readings</div>
+        </div>
+        <div class="gps-audit-stat">
+          <div class="value">${gps.expected_readings}</div>
+          <div class="label">Expected</div>
+        </div>
+        <div class="gps-audit-stat">
+          <div class="value">${gps.gaps_count}</div>
+          <div class="label">Gaps Found</div>
+        </div>
+      </div>
+      
+      <!-- Distance Comparison - 3 columns -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+        <div style="padding: 12px 16px; background: #eff6ff; border-radius: 8px;">
+          <div style="font-size: 11px; color: #1e40af; text-transform: uppercase; font-weight: 600;">🛣️ Meter Reading</div>
+          <div style="font-size: 24px; font-weight: 700; color: #1e40af; margin-top: 4px;">
+            ${dist.meter_km !== null ? dist.meter_km + ' km' : 'No data'}
+          </div>
+          ${dist.meter_start && dist.meter_end ? `
+            <div style="font-size: 10px; color: #1e40af; margin-top: 4px; background: #dbeafe; padding: 4px 8px; border-radius: 4px;">
+              ${dist.meter_start} → ${dist.meter_end}
+            </div>
+          ` : ''}
+        </div>
+        <div style="padding: 12px 16px; background: #fef3c7; border-radius: 8px;">
+          <div style="font-size: 11px; color: #92400e; text-transform: uppercase; font-weight: 600;">📍 GPS Straight-line</div>
+          <div style="font-size: 24px; font-weight: 700; color: #92400e; margin-top: 4px;">
+            ${dist.gps_straight_km !== null ? dist.gps_straight_km + ' km' : (gps.actual_readings < 2 ? 'Not enough data' : '0 km')}
+          </div>
+          <div style="font-size: 10px; color: #b45309; margin-top: 2px;">Point-to-point (filtered)</div>
+        </div>
+        <div style="padding: 12px 16px; background: ${dist.gps_road_km ? '#dcfce7' : '#f3f4f6'}; border-radius: 8px; ${dist.gps_road_km ? 'border: 2px solid #22c55e;' : ''}">
+          <div style="font-size: 11px; color: ${dist.gps_road_km ? '#166534' : '#6b7280'}; text-transform: uppercase; font-weight: 600;">🚗 GPS Road Distance</div>
+          <div style="font-size: 24px; font-weight: 700; color: ${dist.gps_road_km ? '#166534' : '#6b7280'}; margin-top: 4px;">
+            ${dist.gps_road_km !== null ? dist.gps_road_km + ' km' : 'N/A'}
+          </div>
+          <div style="font-size: 10px; color: ${dist.gps_road_km ? '#16a34a' : '#9ca3af'}; margin-top: 2px;">
+            ${dist.road_source === 'openrouteservice' ? '✓ Via actual roads' : 
+              dist.road_source === 'skipped_stationary' ? '⚡ Skipped (rider stationary)' :
+              dist.road_source === 'unavailable' ? '⚠️ API unavailable' : 
+              'Insufficient GPS movement'}
+          </div>
+        </div>
+      </div>
+      
+      <!-- Distance Analysis Note -->
+      ${(() => {
+        // Check for suspicious patterns
+        const hasMeter = dist.meter_km !== null && dist.meter_km > 0;
+        const hasGps = dist.gps_straight_km !== null && dist.gps_straight_km > 0;
+        const hasRoad = dist.gps_road_km !== null && dist.gps_road_km > 0;
+        
+        // Case 1: Meter shows distance but GPS shows no movement (suspicious)
+        if (hasMeter && !hasGps) {
+          return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef2f2; color: #991b1b;">⚠️ <strong>Suspicious:</strong> Meter shows ' + dist.meter_km + ' km but GPS shows no movement. Possible causes: GPS not working properly, meter reading error, or discrepancy needs review.</div>';
+        }
+        
+        // Case 2: Both meter and road distance available - compare them
+        if (hasMeter && hasRoad) {
+          const diff = Math.abs(dist.meter_km - dist.gps_road_km);
+          const diffPercent = diff / Math.max(dist.meter_km, dist.gps_road_km) * 100;
+          
+          if (diffPercent <= 20) {
+            return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #dcfce7; color: #166534;">✓ Meter and GPS road distance match within 20%</div>';
+          } else {
+            return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef2f2; color: #991b1b;">⚠️ Difference: ' + Math.round(diff) + ' km (' + Math.round(diffPercent) + '%) - Please verify</div>';
+          }
+        }
+        
+        // Case 3: GPS shows movement but no meter reading
+        if (hasGps && !hasMeter) {
+          return '<div style="padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; background: #fef3c7; color: #92400e;">ℹ️ No meter reading available. GPS shows approximately ' + (hasRoad ? dist.gps_road_km : dist.gps_straight_km) + ' km traveled.</div>';
+        }
+        
+        return '';
+      })()}
+      
+      <!-- Attendance Time -->
+      <div style="display: flex; gap: 8px; margin-bottom: 20px; font-size: 13px; color: #6b7280;">
+        <span>🕐 Login: <strong>${att.login_time}</strong></span>
+        <span>•</span>
+        <span>🕔 Logout: <strong>${att.logout_time || 'Ongoing'}</strong></span>
+        <span>•</span>
+        <span>⏱️ Working: <strong>${att.working_minutes} min</strong></span>
+      </div>
+      
+      <!-- Gaps List with Smart Analysis -->
+      <div style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h4 style="font-size: 14px; font-weight: 600; color: #111827; margin: 0;">
+            ${gps.gaps_count > 0 ? `⚠️ ${gps.gaps_count} Gap(s) Detected` : '✓ No Significant Gaps'}
+          </h4>
+          ${gps.stationary_gaps_count > 0 ? `
+            <span style="font-size: 11px; background: #dbeafe; color: #1e40af; padding: 4px 8px; border-radius: 6px;">
+              ✓ ${gps.stationary_gaps_count} harmless (rider stationary)
+            </span>
+          ` : ''}
+        </div>
+        
+        ${gps.effective_coverage_percent !== gps.coverage_percent ? `
+          <div style="padding: 8px 12px; background: #f0fdf4; border-radius: 6px; margin-bottom: 12px; font-size: 12px; color: #166534;">
+            📊 <strong>Effective Coverage: ${gps.effective_coverage_percent}%</strong> 
+            (${gps.coverage_percent}% raw + ${gps.stationary_gap_minutes} min of harmless stationary gaps)
+          </div>
+        ` : ''}
+        
+        ${gps.gaps.length > 0 ? gps.gaps.map(gap => {
+          // Stationary gaps are shown in green/blue (harmless)
+          let gapClass = gap.is_stationary ? 'gps-gap-stationary' : 'gps-gap-info';
+          if (!gap.is_stationary) {
+            if (gap.duration_minutes >= 30) gapClass = 'gps-gap-critical';
+            else if (gap.duration_minutes >= 15) gapClass = 'gps-gap-warning';
+          }
+          
+          const gapStyle = gap.is_stationary 
+            ? 'background: #dbeafe; border-left: 3px solid #3b82f6;'
+            : '';
+          
+          return `
+            <div class="gps-gap-item ${gapClass}" style="${gapStyle}">
+              <div style="flex: 1;">
+                <div style="font-weight: 600; font-size: 13px; color: #111827;">
+                  ${gap.from} → ${gap.to}
+                  ${gap.is_stationary ? '<span style="font-size: 10px; background: #22c55e; color: white; padding: 2px 6px; border-radius: 4px; margin-left: 8px;">✓ STATIONARY</span>' : ''}
+                </div>
+                <div style="font-size: 12px; color: ${gap.is_stationary ? '#3b82f6' : '#6b7280'};">
+                  ${gap.description}
+                </div>
+              </div>
+              <div style="font-weight: 700; font-size: 14px; color: ${gap.is_stationary ? '#3b82f6' : (gap.duration_minutes >= 30 ? '#ef4444' : gap.duration_minutes >= 15 ? '#f59e0b' : '#3b82f6')};">
+                ${gap.duration_minutes} min
+              </div>
+            </div>
+          `;
+        }).join('') : `
+          <div style="padding: 16px; background: #f0fdf4; border-radius: 8px; color: #166534; text-align: center;">
+            ✓ GPS tracking was consistent throughout the day
+          </div>
+        `}
+      </div>
+      
+      <!-- Reading Timeline Preview -->
+      ${json.readings_preview && json.readings_preview.length > 0 ? `
+        <div style="margin-top: 16px;">
+          <h4 style="font-size: 14px; font-weight: 600; color: #111827; margin: 0 0 8px 0;">
+            📊 Reading Times (first ${json.readings_preview.length})
+          </h4>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            ${json.readings_preview.map(r => `
+              <span style="font-size: 10px; background: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 4px;" title="Accuracy: ${r.accuracy}m, Battery: ${r.battery || 'N/A'}%">
+                ${r.time}
+              </span>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+    `;
+    
+  } catch(e) {
+    console.error('Error loading GPS audit:', e);
+    content.innerHTML = `
+      <div style="text-align: center; padding: 40px; color: #dc2626;">
+        <div style="font-size: 24px; margin-bottom: 8px;">❌</div>
+        Error loading GPS data: ${e.message}
+      </div>
+    `;
+  }
+}
+
+function closeGpsAudit() {
+  const modal = document.getElementById('gpsAuditModal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Make GPS audit functions globally accessible
+window.showGpsAudit = showGpsAudit;
+window.closeGpsAudit = closeGpsAudit;
 
 </script>
 @endsection

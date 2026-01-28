@@ -510,6 +510,284 @@ class RiderController extends Controller
     }
 
     /**
+     * ⭐ Get ETA and distance from rider to destination
+     * Uses Google Maps Directions API with fallback to OpenRouteService
+     * Includes smart usage tracking to stay within free tier limits
+     * 
+     * @param Request $request - origin_lat, origin_lng, dest_lat, dest_lng
+     * @return JSON with distance_km, duration_minutes, duration_text, source
+     */
+    public function getEtaToDestination(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'origin_lat' => 'required|numeric|between:-90,90',
+                'origin_lng' => 'required|numeric|between:-180,180',
+                'dest_lat' => 'required|numeric|between:-90,90',
+                'dest_lng' => 'required|numeric|between:-180,180',
+            ]);
+            
+            $originLat = $validated['origin_lat'];
+            $originLng = $validated['origin_lng'];
+            $destLat = $validated['dest_lat'];
+            $destLng = $validated['dest_lng'];
+            
+            // Check cache first (5-minute cache based on rounded coordinates)
+            $cacheKey = sprintf(
+                'eta_%s_%s_%s_%s',
+                round($originLat, 3), round($originLng, 3),
+                round($destLat, 3), round($destLng, 3)
+            );
+            
+            $cached = \Cache::get($cacheKey);
+            if ($cached) {
+                return response()->json([
+                    'success' => true,
+                    'cached' => true,
+                    ...$cached
+                ]);
+            }
+            
+            // Try Google Maps first (if within monthly limit)
+            $result = $this->getEtaFromGoogleMaps($originLat, $originLng, $destLat, $destLng);
+            
+            // If Google failed or limit reached, try OpenRouteService
+            if (!$result) {
+                $result = $this->getEtaFromOpenRouteService($originLat, $originLng, $destLat, $destLng);
+            }
+            
+            // If both failed, calculate straight-line estimate
+            if (!$result) {
+                $straightLineKm = $this->haversineDistance($originLat, $originLng, $destLat, $destLng) / 1000;
+                // Rough estimate: 30 km/h average speed in city
+                $estimatedMinutes = round(($straightLineKm / 30) * 60);
+                
+                $result = [
+                    'distance_km' => round($straightLineKm, 1),
+                    'distance_text' => round($straightLineKm, 1) . ' km',
+                    'duration_minutes' => $estimatedMinutes,
+                    'duration_text' => $estimatedMinutes . ' min',
+                    'source' => 'estimate',
+                    'traffic' => null,
+                ];
+            }
+            
+            // Cache result for 5 minutes
+            \Cache::put($cacheKey, $result, now()->addMinutes(5));
+            
+            return response()->json([
+                'success' => true,
+                'cached' => false,
+                ...$result
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid coordinates',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('ETA calculation failed', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to calculate ETA',
+            ], 500);
+        }
+    }
+    
+    /**
+     * Get current API usage stats for monitoring
+     */
+    public function getApiUsageStats()
+    {
+        $monthKey = date('Y-m');
+        
+        $stats = \DB::table('t_sys_api_usage')
+            ->where('month_key', $monthKey)
+            ->get()
+            ->keyBy('api_name');
+        
+        $googleUsage = $stats->get('google_directions');
+        $openRouteUsage = $stats->get('openroute_directions');
+        
+        return response()->json([
+            'success' => true,
+            'month' => $monthKey,
+            'google_directions' => [
+                'calls' => $googleUsage->call_count ?? 0,
+                'limit' => 4500, // Safe limit (5000 free)
+                'remaining' => 4500 - ($googleUsage->call_count ?? 0),
+                'at_limit' => ($googleUsage->call_count ?? 0) >= 4500,
+            ],
+            'openroute_directions' => [
+                'calls' => $openRouteUsage->call_count ?? 0,
+                'daily_limit' => 2000,
+            ],
+        ]);
+    }
+    
+    /**
+     * Get ETA from Google Maps Directions API
+     * Tracks usage and returns null if monthly limit reached
+     */
+    private function getEtaFromGoogleMaps($originLat, $originLng, $destLat, $destLng): ?array
+    {
+        // Check monthly usage limit (4500 to stay safely under 5000 free tier)
+        $monthKey = date('Y-m');
+        $usage = \DB::table('t_sys_api_usage')
+            ->where('api_name', 'google_directions')
+            ->where('month_key', $monthKey)
+            ->first();
+        
+        $currentCount = $usage->call_count ?? 0;
+        if ($currentCount >= 4500) {
+            \Log::warning('Google Maps API monthly limit reached', [
+                'month' => $monthKey,
+                'count' => $currentCount,
+            ]);
+            return null;
+        }
+        
+        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        if (empty($apiKey)) {
+            \Log::warning('Google Maps API key not configured');
+            return null;
+        }
+        
+        try {
+            $client = new \GuzzleHttp\Client(['timeout' => 10]);
+            
+            $response = $client->get('https://maps.googleapis.com/maps/api/directions/json', [
+                'query' => [
+                    'origin' => "{$originLat},{$originLng}",
+                    'destination' => "{$destLat},{$destLng}",
+                    'mode' => 'driving',
+                    'departure_time' => 'now', // For traffic data
+                    'key' => $apiKey,
+                ]
+            ]);
+            
+            $data = json_decode($response->getBody()->getContents(), true);
+            
+            // Increment usage counter
+            $this->incrementApiUsage('google_directions');
+            
+            if ($data['status'] !== 'OK' || empty($data['routes'])) {
+                \Log::warning('Google Maps API error', ['status' => $data['status']]);
+                return null;
+            }
+            
+            $route = $data['routes'][0]['legs'][0];
+            
+            // Use duration_in_traffic if available, else regular duration
+            $durationSeconds = $route['duration_in_traffic']['value'] ?? $route['duration']['value'];
+            $durationText = $route['duration_in_traffic']['text'] ?? $route['duration']['text'];
+            $distanceMeters = $route['distance']['value'];
+            
+            // Determine traffic status
+            $traffic = null;
+            if (isset($route['duration_in_traffic']) && isset($route['duration'])) {
+                $ratio = $route['duration_in_traffic']['value'] / $route['duration']['value'];
+                if ($ratio > 1.5) $traffic = 'heavy';
+                elseif ($ratio > 1.2) $traffic = 'moderate';
+                else $traffic = 'light';
+            }
+            
+            return [
+                'distance_km' => round($distanceMeters / 1000, 1),
+                'distance_text' => $route['distance']['text'],
+                'duration_minutes' => round($durationSeconds / 60),
+                'duration_text' => $durationText,
+                'source' => 'google',
+                'traffic' => $traffic,
+            ];
+            
+        } catch (\Exception $e) {
+            \Log::error('Google Maps API call failed', [
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+    
+    /**
+     * Get ETA from OpenRouteService (fallback)
+     */
+    private function getEtaFromOpenRouteService($originLat, $originLng, $destLat, $destLng): ?array
+    {
+        $apiKey = env('OPENROUTESERVICE_API_KEY', '5b3ce3597851110001cf62487c37b3c0b8d74b9fb9f7d9f3c3d7f8e9');
+        
+        try {
+            $client = new \GuzzleHttp\Client(['timeout' => 10]);
+            
+            $response = $client->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                'headers' => [
+                    'Authorization' => $apiKey,
+                    'Content-Type' => 'application/json',
+                ],
+                'json' => [
+                    'coordinates' => [
+                        [$originLng, $originLat], // GeoJSON: [lng, lat]
+                        [$destLng, $destLat],
+                    ],
+                    'instructions' => false,
+                    'geometry' => false,
+                ]
+            ]);
+            
+            $data = json_decode($response->getBody()->getContents(), true);
+            
+            // Increment usage counter
+            $this->incrementApiUsage('openroute_directions');
+            
+            if (empty($data['routes'])) {
+                return null;
+            }
+            
+            $summary = $data['routes'][0]['summary'];
+            $distanceKm = round($summary['distance'] / 1000, 1);
+            $durationMinutes = round($summary['duration'] / 60);
+            
+            return [
+                'distance_km' => $distanceKm,
+                'distance_text' => $distanceKm . ' km',
+                'duration_minutes' => $durationMinutes,
+                'duration_text' => $durationMinutes . ' min',
+                'source' => 'openroute',
+                'traffic' => null, // OpenRouteService doesn't provide traffic data
+            ];
+            
+        } catch (\Exception $e) {
+            \Log::error('OpenRouteService API call failed', [
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+    
+    /**
+     * Increment API usage counter
+     */
+    private function incrementApiUsage(string $apiName): void
+    {
+        $monthKey = date('Y-m');
+        
+        \DB::table('t_sys_api_usage')
+            ->updateOrInsert(
+                ['api_name' => $apiName, 'month_key' => $monthKey],
+                [
+                    'call_count' => \DB::raw('call_count + 1'),
+                    'last_called_at' => now(),
+                    'updated_at' => now(),
+                ]
+            );
+    }
+
+    /**
      * Quick verify location from address (for Store Mode)
      * Geocodes the address and saves it as verified location
      */
@@ -1619,6 +1897,283 @@ class RiderController extends Controller
     }
 
     /**
+     * ⭐ Calculate GPS distance from an array of location readings
+     * Uses Haversine formula with noise filtering
+     * 
+     * @param array $readings Array of objects with latitude, longitude, accuracy, captured_at
+     * @return array ['distance' => km, 'readings_count' => int]
+     */
+    private function calculateGpsDistanceFromReadings(array $readings): array
+    {
+        $totalDistance = 0;
+        $validReadingsCount = count($readings);
+        
+        if ($validReadingsCount < 2) {
+            return ['distance' => null, 'readings_count' => $validReadingsCount];
+        }
+        
+        $minMovementMeters = 20; // Filter out GPS drift (< 20m considered stationary)
+        $segmentsUsed = 0;
+        
+        for ($i = 1; $i < $validReadingsCount; $i++) {
+            $prev = $readings[$i - 1];
+            $curr = $readings[$i];
+            
+            // Calculate distance between consecutive points using Haversine
+            $distanceMeters = $this->haversineDistance(
+                (float) $prev->latitude,
+                (float) $prev->longitude,
+                (float) $curr->latitude,
+                (float) $curr->longitude
+            );
+            
+            // Filter out GPS noise - only count if movement > 20m
+            // This handles stationary GPS drift
+            if ($distanceMeters >= $minMovementMeters) {
+                $totalDistance += $distanceMeters;
+                $segmentsUsed++;
+            }
+        }
+        
+        // Convert to kilometers, round to 1 decimal
+        $distanceKm = round($totalDistance / 1000, 1);
+        
+        return [
+            'distance' => $distanceKm > 0 ? $distanceKm : null,
+            'readings_count' => $validReadingsCount,
+        ];
+    }
+
+    /**
+     * ⭐ Haversine formula to calculate distance between two lat/lng points
+     * 
+     * @param float $lat1 Latitude of point 1
+     * @param float $lng1 Longitude of point 1
+     * @param float $lat2 Latitude of point 2
+     * @param float $lng2 Longitude of point 2
+     * @return float Distance in meters
+     */
+    private function haversineDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
+    {
+        $earthRadiusMeters = 6371000; // Earth's radius in meters
+        
+        $lat1Rad = deg2rad($lat1);
+        $lat2Rad = deg2rad($lat2);
+        $deltaLat = deg2rad($lat2 - $lat1);
+        $deltaLng = deg2rad($lng2 - $lng1);
+        
+        $a = sin($deltaLat / 2) * sin($deltaLat / 2) +
+             cos($lat1Rad) * cos($lat2Rad) *
+             sin($deltaLng / 2) * sin($deltaLng / 2);
+        
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+        
+        return $earthRadiusMeters * $c;
+    }
+
+    /**
+     * ⭐ Calculate ROAD distance using OpenRouteService API
+     * This gives actual road distance instead of straight-line
+     * Free tier: 2,000 requests/day
+     * 
+     * @param int $userId
+     * @param string $date YYYY-MM-DD
+     * @return array ['road_distance' => km, 'straight_distance' => km, 'readings_count' => int, 'source' => 'api'|'calculated']
+     */
+    public function calculateRoadDistance(Request $request)
+    {
+        try {
+            $userId = $request->input('user_id');
+            $date = $request->input('date', now()->toDateString());
+            
+            if (!$userId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'user_id is required'
+                ], 400);
+            }
+            
+            // Get all GPS readings for the day
+            $readings = \DB::table('t_ops_rider_location')
+                ->where('user_id', $userId)
+                ->whereDate('captured_at', $date)
+                ->where('accuracy', '<=', 100)
+                ->orderBy('captured_at')
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at')
+                ->get();
+            
+            if ($readings->count() < 2) {
+                return response()->json([
+                    'success' => true,
+                    'road_distance' => null,
+                    'straight_distance' => null,
+                    'readings_count' => $readings->count(),
+                    'message' => 'Not enough GPS readings for distance calculation',
+                    'source' => 'insufficient_data'
+                ]);
+            }
+            
+            // Calculate straight-line distance first (for comparison)
+            $straightResult = $this->calculateGpsDistanceFromReadings($readings->toArray());
+            
+            // ⭐ Sample readings intelligently for API call
+            // OpenRouteService supports up to 50 waypoints, we'll use ~25 for safety
+            $sampledReadings = $this->sampleGpsReadings($readings->toArray(), 25);
+            
+            if (count($sampledReadings) < 2) {
+                return response()->json([
+                    'success' => true,
+                    'road_distance' => null,
+                    'straight_distance' => $straightResult['distance'],
+                    'readings_count' => $readings->count(),
+                    'message' => 'Could not sample enough readings',
+                    'source' => 'calculated'
+                ]);
+            }
+            
+            // ⭐ Call OpenRouteService Directions API
+            $roadDistance = $this->callOpenRouteService($sampledReadings);
+            
+            if ($roadDistance === null) {
+                // API failed, return straight-line as fallback
+                return response()->json([
+                    'success' => true,
+                    'road_distance' => null,
+                    'straight_distance' => $straightResult['distance'],
+                    'readings_count' => $readings->count(),
+                    'sampled_points' => count($sampledReadings),
+                    'message' => 'Road distance API unavailable, showing straight-line estimate',
+                    'source' => 'calculated'
+                ]);
+            }
+            
+            return response()->json([
+                'success' => true,
+                'road_distance' => round($roadDistance, 1),
+                'straight_distance' => $straightResult['distance'],
+                'readings_count' => $readings->count(),
+                'sampled_points' => count($sampledReadings),
+                'accuracy_ratio' => $straightResult['distance'] > 0 
+                    ? round($roadDistance / $straightResult['distance'] * 100) . '%' 
+                    : null,
+                'source' => 'openrouteservice'
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Road distance calculation failed', [
+                'error' => $e->getMessage(),
+                'user_id' => $request->input('user_id'),
+                'date' => $request->input('date')
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to calculate road distance: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ Sample GPS readings to reduce API calls while maintaining route accuracy
+     * Uses time-based sampling to ensure we capture the full journey
+     */
+    private function sampleGpsReadings(array $readings, int $maxPoints = 25): array
+    {
+        $count = count($readings);
+        
+        if ($count <= $maxPoints) {
+            return $readings;
+        }
+        
+        $sampled = [];
+        $step = ($count - 1) / ($maxPoints - 1);
+        
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $index = (int) round($i * $step);
+            if ($index < $count) {
+                $sampled[] = $readings[$index];
+            }
+        }
+        
+        // Always include first and last point
+        if (!in_array($readings[0], $sampled)) {
+            array_unshift($sampled, $readings[0]);
+        }
+        if (!in_array($readings[$count - 1], $sampled)) {
+            $sampled[] = $readings[$count - 1];
+        }
+        
+        return $sampled;
+    }
+
+    /**
+     * ⭐ Call OpenRouteService Directions API
+     * Free tier: 2,000 requests/day
+     * Docs: https://openrouteservice.org/dev/#/api-docs/v2/directions
+     */
+    private function callOpenRouteService(array $readings): ?float
+    {
+        // OpenRouteService API key (free tier)
+        // Get yours at: https://openrouteservice.org/dev/#/signup
+        $apiKey = env('OPENROUTESERVICE_API_KEY', '5b3ce3597851110001cf62487c37b3c0b8d74b9fb9f7d9f3c3d7f8e9');
+        
+        // Build coordinates array [lng, lat] format (GeoJSON standard)
+        $coordinates = array_map(function($reading) {
+            return [
+                (float) (is_object($reading) ? $reading->longitude : $reading['longitude']),
+                (float) (is_object($reading) ? $reading->latitude : $reading['latitude'])
+            ];
+        }, $readings);
+        
+        try {
+            $client = new \GuzzleHttp\Client([
+                'timeout' => 30,
+                'connect_timeout' => 10,
+            ]);
+            
+            $response = $client->post('https://api.openrouteservice.org/v2/directions/driving-car', [
+                'headers' => [
+                    'Authorization' => $apiKey,
+                    'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                ],
+                'json' => [
+                    'coordinates' => $coordinates,
+                    'instructions' => false,        // We don't need turn-by-turn
+                    'geometry' => false,            // We don't need the polyline
+                    'units' => 'km',
+                ]
+            ]);
+            
+            $data = json_decode($response->getBody()->getContents(), true);
+            
+            // Extract total distance from response
+            if (isset($data['routes'][0]['summary']['distance'])) {
+                return $data['routes'][0]['summary']['distance']; // Already in km
+            }
+            
+            \Log::warning('OpenRouteService response missing distance', ['data' => $data]);
+            return null;
+            
+        } catch (\GuzzleHttp\Exception\ClientException $e) {
+            $responseBody = $e->hasResponse() ? $e->getResponse()->getBody()->getContents() : 'No response';
+            \Log::warning('OpenRouteService API client error', [
+                'status' => $e->hasResponse() ? $e->getResponse()->getStatusCode() : null,
+                'body' => $responseBody,
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+            
+        } catch (\Exception $e) {
+            \Log::warning('OpenRouteService API error', [
+                'error' => $e->getMessage(),
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+        }
+    }
+
+    /**
      * Upload meter picture independently (after check-in/out)
      */
     public function uploadMeterPicture(Request $request)
@@ -1627,10 +2182,11 @@ class RiderController extends Controller
             $user = Auth::user();
             $today = now()->format('Y-m-d');
 
-            // Validate request
+            // Validate request - ⭐ meter_reading is optional (from OCR)
             $request->validate([
                 'meter_picture' => 'required|image|max:5120', // 5MB max
                 'type' => 'required|in:start,end',
+                'meter_reading' => 'nullable|numeric|min:0|max:9999999', // ⭐ OCR-extracted reading
             ]);
 
             // Check if attendance record exists for today
@@ -1647,6 +2203,7 @@ class RiderController extends Controller
             }
 
             $type = $request->input('type');
+            $meterReading = $request->input('meter_reading'); // ⭐ Get OCR reading
             
             // Validate based on type - only check login for start picture
             // End picture can be uploaded anytime after check-in (no need to check out first)
@@ -1666,18 +2223,33 @@ class RiderController extends Controller
             ];
             if ($type === 'start') {
                 $updateData['picture_start'] = $picturePath;
+                // ⭐ Save OCR-extracted meter reading to meter_start column
+                if ($meterReading !== null && $meterReading !== '') {
+                    $updateData['meter_start'] = (int) $meterReading;
+                }
             } else {
                 $updateData['picture_end'] = $picturePath;
+                // ⭐ Save OCR-extracted meter reading to meter_end column
+                if ($meterReading !== null && $meterReading !== '') {
+                    $updateData['meter_end'] = (int) $meterReading;
+                }
             }
 
             \DB::table('t_ops_attendance')
                 ->where('id', $existing->id)
                 ->update($updateData);
 
+            // ⭐ Build success message with reading info
+            $message = 'Meter picture uploaded successfully';
+            if ($meterReading !== null && $meterReading !== '') {
+                $message .= ' with reading: ' . number_format((int) $meterReading);
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Meter picture uploaded successfully',
+                'message' => $message,
                 'picture_url' => $this->getMeterPictureUrl($picturePath),
+                'meter_reading' => $meterReading !== null && $meterReading !== '' ? (int) $meterReading : null, // ⭐ Return saved reading
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to upload meter picture', [
@@ -7231,6 +7803,12 @@ class RiderController extends Controller
                     }
                 }
                 
+                // ⭐ Calculate meter distance (if both readings exist)
+                $meterDistance = null;
+                if ($row->meter_start && $row->meter_end) {
+                    $meterDistance = abs((int) $row->meter_end - (int) $row->meter_start);
+                }
+                
                 $formattedData[] = [
                     'user_id' => $row->user_id,
                     'fullname' => $row->fullname,
@@ -7257,6 +7835,7 @@ class RiderController extends Controller
                     // Meter values
                     'meter_start' => $row->meter_start,
                     'meter_end' => $row->meter_end,
+                    'meter_distance' => $meterDistance, // ⭐ Pre-calculated meter distance
                     // Location data
                     'checkin_latitude' => $row->checkin_latitude ?? null,
                     'checkin_longitude' => $row->checkin_longitude ?? null,
@@ -7264,7 +7843,40 @@ class RiderController extends Controller
                     'is_remote_checkin' => $row->is_remote_checkin ?? 0,
                     'checkout_latitude' => $row->checkout_latitude ?? null,
                     'checkout_longitude' => $row->checkout_longitude ?? null,
+                    // ⭐ GPS distance will be calculated in batch after the loop
+                    'gps_distance' => null,
+                    'gps_readings_count' => 0,
                 ];
+            }
+            
+            // ⭐ Batch calculate GPS distance for all users who have attendance
+            $userIdsWithAttendance = array_filter(
+                array_column($formattedData, 'user_id'),
+                fn($uid) => collect($formattedData)->firstWhere('user_id', $uid)['login_time'] ?? false
+            );
+            
+            if (!empty($userIdsWithAttendance)) {
+                // Get all GPS readings for the date in one query
+                $allGpsReadings = \DB::table('t_ops_rider_location')
+                    ->whereIn('user_id', $userIdsWithAttendance)
+                    ->whereDate('captured_at', $selectedDate)
+                    ->where('accuracy', '<=', 100) // Skip inaccurate readings
+                    ->orderBy('user_id')
+                    ->orderBy('captured_at')
+                    ->select('user_id', 'latitude', 'longitude', 'accuracy', 'captured_at')
+                    ->get()
+                    ->groupBy('user_id');
+                
+                // Calculate GPS distance for each user
+                foreach ($formattedData as &$employee) {
+                    if (isset($allGpsReadings[$employee['user_id']])) {
+                        $readings = $allGpsReadings[$employee['user_id']]->values()->all();
+                        $gpsResult = $this->calculateGpsDistanceFromReadings($readings);
+                        $employee['gps_distance'] = $gpsResult['distance'];
+                        $employee['gps_readings_count'] = $gpsResult['readings_count'];
+                    }
+                }
+                unset($employee); // Clear reference
             }
             
             // Calculate summary stats
@@ -7558,6 +8170,58 @@ class RiderController extends Controller
                 // Convert picture paths to URLs
                 $record->picture_start = $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null;
                 $record->picture_end = $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null;
+                
+                // ⭐ Calculate meter distance for this day
+                $record->meter_distance = null;
+                if ($record->meter_start && $record->meter_end) {
+                    $record->meter_distance = abs((int) $record->meter_end - (int) $record->meter_start);
+                }
+            }
+            
+            // ⭐ Batch calculate GPS distance for all days with attendance
+            $datesWithAttendance = $query
+                ->filter(fn($r) => $r->login_time !== null)
+                ->pluck('attendance_date')
+                ->toArray();
+            
+            $totalGpsDistance = 0;
+            $daysWithGpsReadings = 0;
+            
+            if (!empty($datesWithAttendance)) {
+                // Get all GPS readings for this user in the date range
+                $allGpsReadings = \DB::table('t_ops_rider_location')
+                    ->where('user_id', $userId)
+                    ->whereBetween(\DB::raw('DATE(captured_at)'), [$startDate, $endDate])
+                    ->where('accuracy', '<=', 100)
+                    ->orderBy('captured_at')
+                    ->select('latitude', 'longitude', 'accuracy', 'captured_at', \DB::raw('DATE(captured_at) as reading_date'))
+                    ->get()
+                    ->groupBy('reading_date');
+                
+                // Assign GPS distance to each record
+                foreach ($query as $record) {
+                    $recordDate = $record->attendance_date;
+                    if (isset($allGpsReadings[$recordDate])) {
+                        $readings = $allGpsReadings[$recordDate]->values()->all();
+                        $gpsResult = $this->calculateGpsDistanceFromReadings($readings);
+                        $record->gps_distance = $gpsResult['distance'];
+                        $record->gps_readings_count = $gpsResult['readings_count'];
+                        
+                        if ($gpsResult['distance'] !== null) {
+                            $totalGpsDistance += $gpsResult['distance'];
+                            $daysWithGpsReadings++;
+                        }
+                    } else {
+                        $record->gps_distance = null;
+                        $record->gps_readings_count = 0;
+                    }
+                }
+            } else {
+                // No attendance, set all GPS values to null
+                foreach ($query as $record) {
+                    $record->gps_distance = null;
+                    $record->gps_readings_count = 0;
+                }
             }
             
             return response()->json([
@@ -7581,6 +8245,9 @@ class RiderController extends Controller
                     'total_distance' => $totalDistance,
                     'days_with_meter_readings' => $daysWithMeterReadings,
                     'days_missing_meter_readings' => $daysMissingMeterReadings,
+                    // ⭐ NEW: GPS Distance statistics
+                    'total_gps_distance' => round($totalGpsDistance, 1),
+                    'days_with_gps_readings' => $daysWithGpsReadings,
                     // ⭐ NEW: Fuel expense for efficiency calculation
                     'fuel_expense' => round($fuelExpense, 0),
                 ],
@@ -9334,6 +10001,13 @@ class RiderController extends Controller
                     // ⭐ Delivery location (GPS captured when rider marked delivered)
                     'osh.delivery_latitude',
                     'osh.delivery_longitude',
+                    // ⭐ Customer verified location (manually set - high accuracy)
+                    'c.latitude as verified_lat',
+                    'c.longitude as verified_lng',
+                    'c.verified_location_url',
+                    // ⭐ Customer geocoded location (from address - approximate)
+                    'c.geocoded_latitude as geocoded_lat',
+                    'c.geocoded_longitude as geocoded_lng',
                 ])
                 ->orderBy('osh.changed_at', 'desc')
                 ->get();
@@ -9400,6 +10074,108 @@ class RiderController extends Controller
                     ];
                 }
                 
+                // ⭐ Build verified location object (customer's saved location)
+                $verifiedLocation = null;
+                $hasVerifiedLocation = false;
+                
+                // Check for verified location - either from lat/lng columns or parse from URL
+                $verifiedLat = $order->verified_lat ? (float)$order->verified_lat : null;
+                $verifiedLng = $order->verified_lng ? (float)$order->verified_lng : null;
+                
+                // If no stored coords but URL exists, try to resolve and parse coords from URL
+                if ((!$verifiedLat || !$verifiedLng) && $order->verified_location_url) {
+                    // Resolve shortened URLs (maps.app.goo.gl, etc.)
+                    $resolvedUrl = $this->resolveGoogleMapsUrl($order->verified_location_url);
+                    $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($resolvedUrl);
+                    if ($parsedCoords) {
+                        $verifiedLat = $parsedCoords['latitude'];
+                        $verifiedLng = $parsedCoords['longitude'];
+                    }
+                }
+                
+                if ($verifiedLat && $verifiedLng) {
+                    $hasVerifiedLocation = true;
+                    $verifiedLocation = [
+                        'latitude' => $verifiedLat,
+                        'longitude' => $verifiedLng,
+                        'google_maps_url' => $order->verified_location_url ?: "https://www.google.com/maps?q={$verifiedLat},{$verifiedLng}",
+                    ];
+                }
+                
+                // ⭐ Build geocoded location object (from address - approximate)
+                $geocodedLocation = null;
+                if ($order->geocoded_lat && $order->geocoded_lng) {
+                    $geocodedLocation = [
+                        'latitude' => (float)$order->geocoded_lat,
+                        'longitude' => (float)$order->geocoded_lng,
+                        'google_maps_url' => "https://www.google.com/maps?q={$order->geocoded_lat},{$order->geocoded_lng}",
+                    ];
+                }
+                
+                // ⭐ Calculate location verification
+                $locationVerification = null;
+                if ($deliveryLocation) {
+                    // Check against verified location first (higher priority)
+                    if ($verifiedLocation) {
+                        $distance = $this->haversineDistance(
+                            $deliveryLocation['latitude'], $deliveryLocation['longitude'],
+                            $verifiedLocation['latitude'], $verifiedLocation['longitude']
+                        );
+                        $distanceKm = round($distance / 1000, 2);
+                        $isClose = $distanceKm <= 1.0; // Within 1km
+                        
+                        $locationVerification = [
+                            'type' => 'verified',
+                            'is_match' => $isClose,
+                            'distance_km' => $distanceKm,
+                            'distance_display' => $distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km',
+                            'expected_location' => $verifiedLocation,
+                            'status' => $isClose ? 'verified_match' : 'verified_mismatch',
+                            'status_text' => $isClose ? '✓ Delivered at verified location' : '⚠ Delivered ' . ($distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km') . ' from verified',
+                        ];
+                    }
+                    // If no verified, check against geocoded
+                    elseif ($geocodedLocation) {
+                        $distance = $this->haversineDistance(
+                            $deliveryLocation['latitude'], $deliveryLocation['longitude'],
+                            $geocodedLocation['latitude'], $geocodedLocation['longitude']
+                        );
+                        $distanceKm = round($distance / 1000, 2);
+                        $isClose = $distanceKm <= 1.0;
+                        
+                        $locationVerification = [
+                            'type' => 'geocoded',
+                            'is_match' => $isClose,
+                            'distance_km' => $distanceKm,
+                            'distance_display' => $distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km',
+                            'expected_location' => $geocodedLocation,
+                            'status' => $isClose ? 'geocoded_match' : 'geocoded_mismatch',
+                            'status_text' => $isClose ? '📍 Matches address location' : '📍 ' . ($distanceKm < 1 ? round($distance) . 'm' : $distanceKm . 'km') . ' from address',
+                            'can_set_verified' => $isClose, // Allow setting as verified if delivery matches geocoded
+                        ];
+                    }
+                    // No expected location available
+                    else {
+                        $locationVerification = [
+                            'type' => 'none',
+                            'is_match' => false,
+                            'status' => 'no_expected',
+                            'status_text' => '📍 No saved location',
+                            'can_set_verified' => true, // Can set this delivery location as verified
+                        ];
+                    }
+                } else {
+                    // No delivery GPS captured
+                    $locationVerification = [
+                        'type' => 'no_delivery_gps',
+                        'is_match' => false,
+                        'status' => 'no_gps',
+                        'status_text' => '❌ No delivery GPS',
+                        'has_verified' => $hasVerifiedLocation,
+                        'has_geocoded' => $geocodedLocation !== null,
+                    ];
+                }
+                
                 // ⭐ Get line items (products) for this order
                 $orderLineItems = $lineItems->get($order->id, collect())->map(function($item) {
                     return [
@@ -9415,6 +10191,7 @@ class RiderController extends Controller
                     'id' => $order->id,
                     'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
                     'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'customer_id' => $order->customer_id,
                     'customer_address' => $customerAddress,
                     'customer_phone' => $order->address_phone ?? $order->customer_phone_from_customer,
                     'rider_id' => $order->rider_id,
@@ -9427,8 +10204,11 @@ class RiderController extends Controller
                     'delivered_at_display' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
                     'expected_packets' => $order->expected_packets,
                     'actual_packets' => $order->actual_packets,
-                    'delivery_location' => $deliveryLocation, // ⭐ GPS location when delivered
-                    'line_items' => $orderLineItems,          // ⭐ Products in this order
+                    'delivery_location' => $deliveryLocation,     // ⭐ GPS location when delivered
+                    'verified_location' => $verifiedLocation,     // ⭐ Customer's saved verified location
+                    'geocoded_location' => $geocodedLocation,     // ⭐ Location from address
+                    'location_verification' => $locationVerification, // ⭐ Verification status
+                    'line_items' => $orderLineItems,
                     'items_count' => count($orderLineItems),
                 ];
             }

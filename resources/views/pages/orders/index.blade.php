@@ -4759,32 +4759,18 @@ async function checkSyncStatus() {
         });
         const data = await response.json();
         
-        console.log('🔄 Sync status check:', data); // Debug log
-        
         if (data.success && data.orders) {
-            console.log(`📦 Found ${data.orders.length} orders to check`); // Debug
-            
             data.orders.forEach(order => {
-                console.log(`Checking order ${order.id}: ${order.sync_status}`); // Debug
-                
                 const row = document.querySelector(`tr[data-order-id="${order.id}"]`);
-                if (!row) {
-                    console.log(`❌ Row not found for order ${order.id}`);
-                    return;
-                }
+                if (!row) return;
                 
                 const riderCell = row.querySelector('.order-rider-cell');
-                if (!riderCell) {
-                    console.log(`❌ Rider cell not found for order ${order.id}`);
-                    return;
-                }
+                if (!riderCell) return;
                 
                 let indicator = riderCell.querySelector(`.sync-status-indicator[data-order-id="${order.id}"]`);
-                console.log(`Indicator for ${order.id}:`, indicator ? 'Found' : 'Not found');
                 
                 // If order needs sync but has no indicator, add one
                 if (!indicator && order.sync_status === 'pending') {
-                    console.log(`➕ Adding pending indicator for order ${order.id}`);
                     const riderButton = riderCell.querySelector('button');
                     if (riderButton) {
                         // Don't overwrite - append instead
@@ -4799,7 +4785,6 @@ async function checkSyncStatus() {
                 
                 // Update existing indicator if order is now synced
                 if (indicator && order.sync_status === 'synced') {
-                    console.log(`✅ Updating to SYNCED for order ${order.id}`);
                     indicator.style.background = '#d1fae5';
                     indicator.style.color = '#065f46';
                     indicator.innerHTML = `
@@ -4810,7 +4795,6 @@ async function checkSyncStatus() {
                     // Remove indicator after 10 seconds - just remove the badge, don't touch the button
                     setTimeout(() => {
                         if (indicator && indicator.parentElement) {
-                            console.log(`🔄 Removing synced badge for order ${order.id}`);
                             indicator.remove();
                         }
                     }, 10000);
@@ -4818,7 +4802,7 @@ async function checkSyncStatus() {
             });
         }
     } catch (error) {
-        console.error('❌ Sync status polling error:', error);
+        // Silent fail - this is just a UI enhancement
     }
 }
 
@@ -9405,6 +9389,9 @@ function searchCustomers(inputEl) {
         .catch(function() {});
     }, 250);
 }
+// Store customer data for selection (avoids issues with special characters in onclick)
+window._customerSearchResults = {};
+
 function showCustomerResults(customers) {
     const dd = document.getElementById('customerDropdown');
     if (!dd) return;
@@ -9413,18 +9400,28 @@ function showCustomerResults(customers) {
         showCustomerDropdown(); 
         return; 
     }
+    
+    // Store customer data in a global object for safe retrieval
+    window._customerSearchResults = {};
+    
+    // Local escape helper (escapeHtml may not be defined yet at this point in the file)
+    const safeEscape = (str) => {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    };
 
     let html = '';
     customers.forEach(c => {
-        // Build address display
         const addressParts = [];
         if (c.address && c.address.address1) addressParts.push(c.address.address1);
         if (c.address && c.address.city) addressParts.push(c.address.city);
         if (c.address && c.address.province) addressParts.push(c.address.province);
-        const addressDisplay = addressParts.length > 0 ? addressParts.join(', ') : 'No address';
+        const addressDisplay = addressParts.length > 0 ? safeEscape(addressParts.join(', ')) : 'No address';
         
-        // Prepare customer data for selection
-        const customerData = {
+        // Store customer data using ID as key
+        window._customerSearchResults[c.id] = {
             id: c.id,
             name: c.name || '',
             phone: c.phone || '',
@@ -9432,18 +9429,17 @@ function showCustomerResults(customers) {
             notes: c.notes || '',
             address: c.address || {}
         };
-        const payload = encodeURIComponent(JSON.stringify(customerData));
         
         html += `
-            <div style="padding:10px 12px; cursor:pointer; border-bottom:1px solid #f3f4f6; transition: background-color 0.15s ease;" 
-                 onclick="selectCustomer('${c.id}','${(c.name||'').replace(/'/g, "\\'")}', '${payload}')"
+            <div class="customer-dropdown-item" data-customer-id="${c.id}"
+                 style="padding:10px 12px; cursor:pointer; border-bottom:1px solid #f3f4f6; transition: background-color 0.15s ease;"
                  onmouseover="this.style.backgroundColor='#f8fafc'" 
                  onmouseout="this.style.backgroundColor='white'">
                 <div style="font-weight: 500; color: #374151; font-size: 14px; margin-bottom: 2px;">
-                    ${c.name || 'No name'}
+                    ${safeEscape(c.name) || 'No name'}
                 </div>
                 <div style="font-size: 12px; color: #6b7280; margin-bottom: 2px;">
-                    📞 ${c.phone || 'No phone'} ${c.email ? '• ✉️ ' + c.email : ''}
+                    📞 ${safeEscape(c.phone) || 'No phone'} ${c.email ? '• ✉️ ' + safeEscape(c.email) : ''}
                 </div>
                 <div style="font-size: 12px; color: #9ca3af;">
                     📍 ${addressDisplay}
@@ -9452,32 +9448,56 @@ function showCustomerResults(customers) {
         `;
     });
     dd.innerHTML = html;
+    
+    // Add click handlers using event delegation (safer than inline onclick)
+    dd.querySelectorAll('.customer-dropdown-item').forEach(item => {
+        item.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const customerId = this.getAttribute('data-customer-id');
+            const customerData = window._customerSearchResults[customerId];
+            if (customerData) {
+                selectCustomerFromData(customerData);
+            }
+        });
+    });
+    
     showCustomerDropdown();
 }
-function selectCustomer(customerId, customerName, encodedData) {
-    const customerData = encodedData ? JSON.parse(decodeURIComponent(encodedData)) : {};
+
+// New function that accepts customer data object directly
+function selectCustomerFromData(customerData) {
     const searchInput = document.getElementById('customerSearch');
     const hiddenId = document.getElementById('selectedCustomerId');
     
     // Update the search input with customer name
-    if (searchInput) searchInput.value = customerData.name || customerName || '';
-    if (hiddenId) hiddenId.value = customerId || '';
+    if (searchInput) searchInput.value = customerData.name || '';
+    if (hiddenId) hiddenId.value = customerData.id || '';
     hideCustomerDropdown();
 
     // Show detailed customer information after selection
     showSelectedCustomerDetails(customerData);
 
-    // Pre-fill new customer fields if visible (reusing existing functionality)
+    // Pre-fill address fields if visible
     if (customerData.address) {
-    const fields = [
-        ['input[name="customer_address1"]', 'address1'],
-        ['input[name="customer_address2"]', 'address2'],
-        ['input[name="customer_city"]', 'city']
-    ];
-    fields.forEach(([sel, key]) => {
-        const el = document.querySelector(sel);
+        const fields = [
+            ['input[name="customer_address1"]', 'address1'],
+            ['input[name="customer_address2"]', 'address2'],
+            ['input[name="customer_city"]', 'city']
+        ];
+        fields.forEach(([sel, key]) => {
+            const el = document.querySelector(sel);
             if (el && customerData.address[key]) el.value = customerData.address[key];
         });
+    }
+}
+// Legacy function for backwards compatibility (if called from elsewhere)
+function selectCustomer(customerId, customerName, encodedData) {
+    try {
+        const customerData = encodedData ? JSON.parse(decodeURIComponent(encodedData)) : { id: customerId, name: customerName };
+        selectCustomerFromData(customerData);
+    } catch (e) {
+        // Fallback if JSON parsing fails
+        selectCustomerFromData({ id: customerId, name: customerName });
     }
 }
 function showSelectedCustomerDetails(customerData) {
