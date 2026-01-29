@@ -1972,6 +1972,115 @@ class RiderController extends Controller
     }
 
     /**
+     * ⭐ Calculate gap information for GPS readings
+     * Identifies periods where GPS data is missing and whether rider was stationary
+     * 
+     * @param array $readings GPS readings array
+     * @param string $loginTime HH:MM:SS
+     * @param string|null $logoutTime HH:MM:SS or null if still working
+     * @return array Gap summary info
+     */
+    private function calculateGapInfo(array $readings, string $loginTime, ?string $logoutTime): array
+    {
+        $minGapThreshold = 10; // Minutes - gaps less than this are normal
+        $totalGapMinutes = 0;
+        $stationaryGapMinutes = 0;
+        $gapsCount = 0;
+        $movingGapsCount = 0;
+        
+        if (count($readings) < 2) {
+            return [
+                'total_gap_minutes' => 0,
+                'stationary_gap_minutes' => 0,
+                'effective_gap_minutes' => 0,
+                'gaps_count' => 0,
+                'moving_gaps_count' => 0,
+                'coverage_percent' => 0,
+                'effective_coverage_percent' => 0,
+            ];
+        }
+        
+        // Calculate expected working minutes
+        $loginTimestamp = strtotime($loginTime);
+        $logoutTimestamp = $logoutTime ? strtotime($logoutTime) : time();
+        $workingMinutes = ($logoutTimestamp - $loginTimestamp) / 60;
+        
+        // Check gap between login and first reading
+        $firstReading = $readings[0];
+        $firstReadingTime = strtotime(is_object($firstReading) ? $firstReading->captured_at : $firstReading['captured_at']);
+        $gapFromLogin = ($firstReadingTime - $loginTimestamp) / 60;
+        if ($gapFromLogin > $minGapThreshold) {
+            $totalGapMinutes += $gapFromLogin;
+            $gapsCount++;
+            $movingGapsCount++; // Unknown if stationary at start
+        }
+        
+        // Check gaps between consecutive readings
+        for ($i = 1; $i < count($readings); $i++) {
+            $prev = $readings[$i - 1];
+            $curr = $readings[$i];
+            
+            $prevTime = strtotime(is_object($prev) ? $prev->captured_at : $prev['captured_at']);
+            $currTime = strtotime(is_object($curr) ? $curr->captured_at : $curr['captured_at']);
+            $gapMinutes = ($currTime - $prevTime) / 60;
+            
+            if ($gapMinutes > $minGapThreshold) {
+                $gapsCount++;
+                $totalGapMinutes += $gapMinutes;
+                
+                // Check if stationary during gap (< 50m movement)
+                $distanceMeters = $this->haversineDistance(
+                    (float) (is_object($prev) ? $prev->latitude : $prev['latitude']),
+                    (float) (is_object($prev) ? $prev->longitude : $prev['longitude']),
+                    (float) (is_object($curr) ? $curr->latitude : $curr['latitude']),
+                    (float) (is_object($curr) ? $curr->longitude : $curr['longitude'])
+                );
+                
+                if ($distanceMeters < 50) {
+                    // Stationary gap - rider didn't move, so no distance lost
+                    $stationaryGapMinutes += $gapMinutes;
+                } else {
+                    // Moving gap - rider moved but we don't have data
+                    $movingGapsCount++;
+                }
+            }
+        }
+        
+        // Check gap between last reading and logout
+        if ($logoutTime) {
+            $lastReading = $readings[count($readings) - 1];
+            $lastReadingTime = strtotime(is_object($lastReading) ? $lastReading->captured_at : $lastReading['captured_at']);
+            $gapToLogout = ($logoutTimestamp - $lastReadingTime) / 60;
+            if ($gapToLogout > $minGapThreshold) {
+                $totalGapMinutes += $gapToLogout;
+                $gapsCount++;
+                $movingGapsCount++; // Unknown if stationary at end
+            }
+        }
+        
+        // Effective gap = only gaps where we might have lost distance data
+        $effectiveGapMinutes = $totalGapMinutes - $stationaryGapMinutes;
+        
+        // Coverage percentages
+        $coveragePercent = $workingMinutes > 0 
+            ? round((($workingMinutes - $totalGapMinutes) / $workingMinutes) * 100) 
+            : 0;
+        $effectiveCoveragePercent = $workingMinutes > 0 
+            ? round((($workingMinutes - $effectiveGapMinutes) / $workingMinutes) * 100) 
+            : 0;
+        
+        return [
+            'total_gap_minutes' => round($totalGapMinutes),
+            'stationary_gap_minutes' => round($stationaryGapMinutes),
+            'effective_gap_minutes' => round($effectiveGapMinutes),
+            'gaps_count' => $gapsCount,
+            'moving_gaps_count' => $movingGapsCount,
+            'coverage_percent' => min(100, max(0, $coveragePercent)),
+            'effective_coverage_percent' => min(100, max(0, $effectiveCoveragePercent)),
+        ];
+    }
+
+    /**
      * ⭐ Calculate ROAD distance using OpenRouteService API
      * This gives actual road distance instead of straight-line
      * Free tier: 2,000 requests/day
@@ -2015,6 +2124,21 @@ class RiderController extends Controller
             
             // Calculate straight-line distance first (for comparison)
             $straightResult = $this->calculateGpsDistanceFromReadings($readings->toArray());
+            
+            // ⭐ IMPORTANT: Skip road distance API if rider barely moved (< 100m)
+            // This prevents misleading results where OpenRouteService calculates a driving route
+            // between nearby points that are just GPS drift, not actual travel
+            // 100m threshold = reasonable to distinguish GPS drift from actual short trips
+            if ($straightResult['distance'] === null || $straightResult['distance'] < 0.1) {
+                return response()->json([
+                    'success' => true,
+                    'road_distance' => null,
+                    'straight_distance' => $straightResult['distance'],
+                    'readings_count' => $readings->count(),
+                    'message' => 'Insufficient GPS movement (< 100m) - rider likely stationary',
+                    'source' => 'skipped_stationary'
+                ]);
+            }
             
             // ⭐ Sample readings intelligently for API call
             // OpenRouteService supports up to 50 waypoints, we'll use ~25 for safety
@@ -2447,10 +2571,11 @@ class RiderController extends Controller
 
             // ⭐ SMART DAILY CLEANUP: Only run once per day
             // Uses cache to track last cleanup date - first heartbeat of the day triggers cleanup
+            // Keeps 20 days of location history
             $lastCleanup = \Cache::get('rider_location_last_cleanup');
             if ($lastCleanup !== $today) {
                 $deletedCount = \DB::table('t_ops_rider_location')
-                    ->where('captured_at', '<', now()->subDays(10))
+                    ->where('captured_at', '<', now()->subDays(20))
                     ->delete();
                 
                 \Cache::put('rider_location_last_cleanup', $today, now()->addDays(2));
@@ -7879,6 +8004,49 @@ class RiderController extends Controller
                 unset($employee); // Clear reference
             }
             
+            // ⭐ Batch fetch previous day's meter_end for all employees
+            // This helps identify gaps between yesterday's end and today's start
+            $allUserIds = array_column($formattedData, 'user_id');
+            $previousMeterEnds = [];
+            
+            if (!empty($allUserIds)) {
+                // Get the most recent meter_end for each user before the selected date
+                $prevReadings = \DB::select("
+                    SELECT a.user_id, a.meter_end, a.attendance_date
+                    FROM t_ops_attendance a
+                    INNER JOIN (
+                        SELECT user_id, MAX(attendance_date) as max_date
+                        FROM t_ops_attendance
+                        WHERE user_id IN (" . implode(',', array_fill(0, count($allUserIds), '?')) . ")
+                          AND attendance_date < ?
+                          AND meter_end IS NOT NULL
+                        GROUP BY user_id
+                    ) latest ON a.user_id = latest.user_id AND a.attendance_date = latest.max_date
+                ", array_merge($allUserIds, [$selectedDate]));
+                
+                foreach ($prevReadings as $prev) {
+                    $previousMeterEnds[$prev->user_id] = [
+                        'meter_end' => $prev->meter_end,
+                        'date' => $prev->attendance_date,
+                    ];
+                }
+            }
+            
+            // Add previous meter info to each employee
+            foreach ($formattedData as &$employee) {
+                $prev = $previousMeterEnds[$employee['user_id']] ?? null;
+                $employee['prev_meter_end'] = $prev ? $prev['meter_end'] : null;
+                $employee['prev_meter_date'] = $prev ? $prev['date'] : null;
+                
+                // Calculate meter gap if both values exist
+                $employee['meter_gap'] = null;
+                if ($prev && $employee['meter_start']) {
+                    $gap = (int)$employee['meter_start'] - (int)$prev['meter_end'];
+                    $employee['meter_gap'] = $gap; // Can be 0, positive, or negative
+                }
+            }
+            unset($employee);
+            
             // Calculate summary stats
             $summary = [
                 'total_employees' => count($formattedData),
@@ -8185,7 +8353,12 @@ class RiderController extends Controller
                 ->toArray();
             
             $totalGpsDistance = 0;
+            $totalRoadDistance = 0;
             $daysWithGpsReadings = 0;
+            $daysWithRoadDistance = 0;
+            
+            // Determine which day to auto-calculate road distance for (most recent with attendance)
+            $autoCalcRoadDate = !empty($datesWithAttendance) ? max($datesWithAttendance) : null;
             
             if (!empty($datesWithAttendance)) {
                 // Get all GPS readings for this user in the date range
@@ -8197,6 +8370,12 @@ class RiderController extends Controller
                     ->select('latitude', 'longitude', 'accuracy', 'captured_at', \DB::raw('DATE(captured_at) as reading_date'))
                     ->get()
                     ->groupBy('reading_date');
+                
+                // Get attendance records for gap analysis
+                $attendanceByDate = [];
+                foreach ($query as $record) {
+                    $attendanceByDate[$record->attendance_date] = $record;
+                }
                 
                 // Assign GPS distance to each record
                 foreach ($query as $record) {
@@ -8211,9 +8390,39 @@ class RiderController extends Controller
                             $totalGpsDistance += $gpsResult['distance'];
                             $daysWithGpsReadings++;
                         }
+                        
+                        // ⭐ Calculate road distance for most recent day OR if straight-line > 0.5km
+                        $record->road_distance = null;
+                        $record->road_source = null;
+                        $record->gap_info = null;
+                        
+                        if ($recordDate === $autoCalcRoadDate && $record->gps_distance !== null && $record->gps_distance >= 0.5) {
+                            // Auto-calculate road distance for most recent day
+                            $sampledReadings = $this->sampleGpsReadings($readings, 25);
+                            if (count($sampledReadings) >= 2) {
+                                $roadDist = $this->callOpenRouteService($sampledReadings);
+                                if ($roadDist !== null) {
+                                    $record->road_distance = round($roadDist, 1);
+                                    $record->road_source = 'openrouteservice';
+                                    $totalRoadDistance += $roadDist;
+                                    $daysWithRoadDistance++;
+                                }
+                            }
+                        } elseif ($record->gps_distance !== null && $record->gps_distance < 0.5) {
+                            $record->road_source = 'skipped_stationary';
+                        }
+                        
+                        // ⭐ Calculate gap info for this day
+                        if ($record->login_time && count($readings) >= 2) {
+                            $gapInfo = $this->calculateGapInfo($readings, $record->login_time, $record->logout_time);
+                            $record->gap_info = $gapInfo;
+                        }
                     } else {
                         $record->gps_distance = null;
                         $record->gps_readings_count = 0;
+                        $record->road_distance = null;
+                        $record->road_source = null;
+                        $record->gap_info = null;
                     }
                 }
             } else {
@@ -8221,6 +8430,9 @@ class RiderController extends Controller
                 foreach ($query as $record) {
                     $record->gps_distance = null;
                     $record->gps_readings_count = 0;
+                    $record->road_distance = null;
+                    $record->road_source = null;
+                    $record->gap_info = null;
                 }
             }
             
@@ -8248,6 +8460,9 @@ class RiderController extends Controller
                     // ⭐ NEW: GPS Distance statistics
                     'total_gps_distance' => round($totalGpsDistance, 1),
                     'days_with_gps_readings' => $daysWithGpsReadings,
+                    // ⭐ NEW: Road Distance statistics (most accurate)
+                    'total_road_distance' => round($totalRoadDistance, 1),
+                    'days_with_road_distance' => $daysWithRoadDistance,
                     // ⭐ NEW: Fuel expense for efficiency calculation
                     'fuel_expense' => round($fuelExpense, 0),
                 ],

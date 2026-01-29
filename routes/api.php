@@ -300,6 +300,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index']);
         Route::get('/filter', [\App\Http\Controllers\CRM\CustomerController::class, 'filter']);
         Route::get('/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search']);
+        // ⭐ NEW: Customer creation for mobile (must be before {id} routes)
+        Route::post('/', [\App\Http\Controllers\CRM\CustomerController::class, 'store']); // Create new customer
+        Route::post('/check-phone', [\App\Http\Controllers\CRM\CustomerController::class, 'checkPhone']); // Check phone duplicate
         // History order details route (must be before {id} to avoid conflict)
         Route::get('/history-order/{historyOrderId}', [\App\Http\Controllers\CRM\CustomerController::class, 'historyOrderDetails']);
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show']);

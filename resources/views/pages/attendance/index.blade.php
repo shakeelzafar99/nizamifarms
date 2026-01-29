@@ -561,12 +561,13 @@
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Orders</th>
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">1st Delivery</th>
             <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Last Delivery</th>
-            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Meter Pics</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #16a34a; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Meter</th>
+            <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; white-space: nowrap;">Pics</th>
           </tr>
         </thead>
         <tbody id="employeeDetailsBody" style="background: white;">
           <tr>
-            <td colspan="11" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
+            <td colspan="12" style="padding: 20px; text-align: center; color: #6b7280;">Loading...</td>
           </tr>
         </tbody>
       </table>
@@ -2008,7 +2009,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
     // Render table
     if (!records || records.length === 0) {
-      body.innerHTML = '<tr><td colspan="11" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
+      body.innerHTML = '<tr><td colspan="12" style="padding: 20px; text-align: center; color: #6b7280;">No records found for this period</td></tr>';
       return;
     }
     
@@ -2052,6 +2053,53 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       const firstDelivery = day.first_delivery_time || '-';
       const lastDelivery = day.last_delivery_time || '-';
       
+      // Meter values
+      const meterStart = day.meter_start || null;
+      const meterEnd = day.meter_end || null;
+      const meterDistance = (meterStart && meterEnd) ? Math.abs(parseInt(meterEnd) - parseInt(meterStart)) : null;
+      
+      // Find previous day's meter_end to calculate gap
+      // Records are sorted by date DESC, so "previous day" is the NEXT item in array
+      let prevMeterEnd = null;
+      let meterGap = null;
+      if (index < records.length - 1) {
+        const nextRecord = records[index + 1];
+        if (nextRecord && nextRecord.meter_end) {
+          prevMeterEnd = nextRecord.meter_end;
+          if (meterStart) {
+            meterGap = parseInt(meterStart) - parseInt(prevMeterEnd);
+          }
+        }
+      }
+      
+      // Build meter display with values and gap indicator
+      let meterValuesHtml = '-';
+      if (meterStart || meterEnd) {
+        meterValuesHtml = `<div style="font-size: 11px; text-align: center;">`;
+        if (meterStart && meterEnd) {
+          meterValuesHtml += `<div style="color: #374151;">${meterStart} → ${meterEnd}</div>`;
+          meterValuesHtml += `<div style="color: #16a34a; font-weight: 600;">${meterDistance} km</div>`;
+        } else if (meterStart) {
+          meterValuesHtml += `<div style="color: #374151;">${meterStart} →</div>`;
+          meterValuesHtml += `<div style="color: #9ca3af;">No end</div>`;
+        } else {
+          meterValuesHtml += `<div style="color: #9ca3af;">→ ${meterEnd}</div>`;
+        }
+        // Show gap indicator if previous day's meter_end exists
+        if (prevMeterEnd && meterStart) {
+          if (meterGap === 0) {
+            meterValuesHtml += `<div style="font-size: 9px; color: #16a34a; margin-top: 2px;">✓ matches prev</div>`;
+          } else if (Math.abs(meterGap) <= 25) {
+            // Normal gap up to 25km (personal use, minor discrepancies)
+            meterValuesHtml += `<div style="font-size: 9px; color: #6b7280; margin-top: 2px;">${meterGap > 0 ? '+' : ''}${meterGap} km</div>`;
+          } else {
+            // Warning for gaps > 25km
+            meterValuesHtml += `<div style="font-size: 9px; color: #dc2626; margin-top: 2px; font-weight: 600;">⚠️ ${meterGap > 0 ? '+' : ''}${meterGap} km gap</div>`;
+          }
+        }
+        meterValuesHtml += `</div>`;
+      }
+      
       // Meter pictures
       const hasPictureStart = day.picture_start && day.picture_start !== '-';
       const hasPictureEnd = day.picture_end && day.picture_end !== '-';
@@ -2063,10 +2111,10 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
       if (hasPictureStart || hasPictureEnd) {
         meterPicsHtml = '<div style="display: flex; gap: 4px; justify-content: center;">';
         if (hasPictureStart) {
-          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureStartPath}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureStartPath}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 10px;">📷</button>`;
         }
         if (hasPictureEnd) {
-          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureEndPath}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureEndPath}')" style="background: #fef3c7; color: #92400e; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 10px;">📷</button>`;
         }
         meterPicsHtml += '</div>';
       }
@@ -2092,7 +2140,8 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
           </td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${firstDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${firstDelivery}</td>
           <td style="padding: 12px 16px; font-size: 13px; color: ${lastDelivery !== '-' ? '#2563eb' : '#9ca3af'}; text-align: center; border-bottom: 1px solid #e5e7eb;">${lastDelivery}</td>
-          <td style="padding: 12px 16px; font-size: 13px; text-align: center; border-bottom: 1px solid #e5e7eb;">${meterPicsHtml}</td>
+          <td style="padding: 8px 12px; font-size: 13px; text-align: center; border-bottom: 1px solid #e5e7eb;">${meterValuesHtml}</td>
+          <td style="padding: 8px 12px; font-size: 13px; text-align: center; border-bottom: 1px solid #e5e7eb;">${meterPicsHtml}</td>
         </tr>
       `;
     }).join('');
@@ -2101,7 +2150,7 @@ async function showEmployeeDetails(userId, fullname, fromDate) {
     
   } catch(e) {
     console.error('Error loading employee details:', e);
-    body.innerHTML = `<tr><td colspan="11" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="12" style="padding: 20px; text-align: center; color: #dc2626;">Error loading data: ${e.message}</td></tr>`;
   }
 }
 
@@ -2439,6 +2488,16 @@ async function showGpsAudit(userId, userName, date) {
           ${dist.meter_start && dist.meter_end ? `
             <div style="font-size: 10px; color: #1e40af; margin-top: 4px; background: #dbeafe; padding: 4px 8px; border-radius: 4px;">
               ${dist.meter_start} → ${dist.meter_end}
+            </div>
+          ` : ''}
+          ${dist.prev_meter_end ? `
+            <div style="font-size: 10px; color: #6b7280; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #cbd5e1;">
+              ↩️ Prev End: <strong>${dist.prev_meter_end}</strong>
+              ${dist.meter_gap !== null && dist.meter_gap !== 0 ? `
+                <span style="margin-left: 6px; padding: 2px 6px; border-radius: 4px; font-weight: 600; ${Math.abs(dist.meter_gap) > 25 ? 'background: #fee2e2; color: #dc2626;' : 'background: #f3f4f6; color: #6b7280;'}">
+                  ${dist.meter_gap > 0 ? '+' : ''}${dist.meter_gap} km ${Math.abs(dist.meter_gap) > 25 ? '⚠️' : ''}
+                </span>
+              ` : dist.meter_gap === 0 ? '<span style="margin-left: 6px; color: #16a34a;">✓ matches</span>' : ''}
             </div>
           ` : ''}
         </div>

@@ -46,6 +46,6 @@ ORDER BY ORDINAL_POSITION;
 
 SELECT '' as '';
 SELECT '✓ Location heartbeats will be stored every 5 minutes' as Note;
-SELECT '✓ Data older than 10 days will be auto-deleted' as Note;
+SELECT '✓ Data older than 20 days should be cleaned up periodically' as Note;
 SELECT '✓ Used for Riders Map feature in web app' as Note;
 

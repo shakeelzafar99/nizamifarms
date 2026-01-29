@@ -361,6 +361,8 @@ class AttendanceController extends Controller
                     'a.logout_time',
                     'a.picture_start',
                     'a.picture_end',
+                    'a.meter_start',
+                    'a.meter_end',
                     DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                     DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                     'lr.id as leave_request_id',
@@ -512,6 +514,8 @@ class AttendanceController extends Controller
                     'logout_time' => $record->logout_time,
                     'picture_start' => $record->picture_start,
                     'picture_end' => $record->picture_end,
+                    'meter_start' => $record->meter_start,
+                    'meter_end' => $record->meter_end,
                     'shift_start' => $userShiftStart,
                     'shift_end' => $userShiftEnd,
                     'status' => $status // ✅ Always add status field
@@ -775,6 +779,8 @@ class AttendanceController extends Controller
                     'a.logout_time',
                     'a.picture_start',
                     'a.picture_end',
+                    'a.meter_start',
+                    'a.meter_end',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -893,6 +899,13 @@ class AttendanceController extends Controller
 
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;
+                
+                // Calculate meter distance
+                if ($record->meter_start && $record->meter_end) {
+                    $record->meter_distance = abs(intval($record->meter_end) - intval($record->meter_start));
+                } else {
+                    $record->meter_distance = null;
+                }
 
                 // Format delivery times for display (handle null values)
                 if ($record->first_delivery_time && $record->first_delivery_time !== '-') {
@@ -1171,6 +1184,22 @@ class AttendanceController extends Controller
                 $meterDistance = abs((int) $meterEnd - (int) $meterStart);
             }
             
+            // ⭐ Get previous day's meter end for gap detection
+            $prevMeter = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->where('attendance_date', '<', $date)
+                ->whereNotNull('meter_end')
+                ->orderBy('attendance_date', 'desc')
+                ->select('meter_end', 'attendance_date')
+                ->first();
+            
+            $prevMeterEnd = $prevMeter->meter_end ?? null;
+            $prevMeterDate = $prevMeter->attendance_date ?? null;
+            $meterGap = null;
+            if ($prevMeterEnd && $meterStart) {
+                $meterGap = (int)$meterStart - (int)$prevMeterEnd;
+            }
+            
             // Audit status
             $auditStatus = 'good';
             $auditNotes = [];
@@ -1227,6 +1256,9 @@ class AttendanceController extends Controller
                     'meter_km' => $meterDistance,
                     'meter_start' => $meterStart,
                     'meter_end' => $meterEnd,
+                    'prev_meter_end' => $prevMeterEnd,
+                    'prev_meter_date' => $prevMeterDate,
+                    'meter_gap' => $meterGap,
                     'gps_straight_km' => $gpsDistance,
                     'gps_road_km' => $roadDistance !== null ? round($roadDistance, 1) : null,
                     'road_source' => $roadDistanceSource

@@ -275,7 +275,8 @@
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Late By</th>
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Overtime</th>
               <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Status</th>
-              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Meter Pics</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #16a34a; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Meter</th>
+              <th style="padding: 10px 16px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;">Pics</th>
             </tr>
           </thead>
           <tbody id="dailyDetailsBody" style="background: white;">
@@ -502,7 +503,7 @@ function showDailyDetails(userId) {
   document.getElementById('modalStatOTHours').textContent = `${otHours}h ${otMins}m`;
 
   if (!employee.daily || employee.daily.length === 0) {
-    body.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-500">No daily records found for this month</td></tr>';
     console.warn('No daily data for employee');
   } else {
     // DEDUPLICATE: Remove duplicate dates (keep first occurrence)
@@ -549,6 +550,53 @@ function showDailyDetails(userId) {
       const statusBg = status === 'On Time' ? '#dcfce7' : status === 'Late' ? '#fee2e2' : status === 'Absent' ? '#fef2f2' : status === 'On Leave' ? '#dbeafe' : '#f3f4f6';
       const statusColor = status === 'On Time' ? '#166534' : status === 'Late' ? '#991b1b' : status === 'Absent' ? '#991b1b' : status === 'On Leave' ? '#1e40af' : '#6b7280';
       
+      // Meter values
+      const meterStart = day.meter_start || null;
+      const meterEnd = day.meter_end || null;
+      const meterDistance = (meterStart && meterEnd) ? Math.abs(parseInt(meterEnd) - parseInt(meterStart)) : null;
+      
+      // Find previous day's meter_end to calculate gap
+      // Records are sorted by date ASC in reports, so "previous day" is PREVIOUS item in array
+      let prevMeterEnd = null;
+      let meterGap = null;
+      if (index > 0) {
+        const prevRecord = uniqueDaily[index - 1];
+        if (prevRecord && prevRecord.meter_end) {
+          prevMeterEnd = prevRecord.meter_end;
+          if (meterStart) {
+            meterGap = parseInt(meterStart) - parseInt(prevMeterEnd);
+          }
+        }
+      }
+      
+      // Build meter display with gap indicator
+      let meterValuesHtml = '-';
+      if (meterStart || meterEnd) {
+        meterValuesHtml = `<div style="font-size: 11px; text-align: center;">`;
+        if (meterStart && meterEnd) {
+          meterValuesHtml += `<div style="color: #374151;">${meterStart} → ${meterEnd}</div>`;
+          meterValuesHtml += `<div style="color: #16a34a; font-weight: 600;">${meterDistance} km</div>`;
+        } else if (meterStart) {
+          meterValuesHtml += `<div style="color: #374151;">${meterStart} →</div>`;
+          meterValuesHtml += `<div style="color: #9ca3af;">No end</div>`;
+        } else {
+          meterValuesHtml += `<div style="color: #9ca3af;">→ ${meterEnd}</div>`;
+        }
+        // Show gap indicator if previous day's meter_end exists
+        if (prevMeterEnd && meterStart) {
+          if (meterGap === 0) {
+            meterValuesHtml += `<div style="font-size: 9px; color: #16a34a; margin-top: 2px;">✓ matches prev</div>`;
+          } else if (Math.abs(meterGap) <= 25) {
+            // Normal gap up to 25km (personal use, minor discrepancies)
+            meterValuesHtml += `<div style="font-size: 9px; color: #6b7280; margin-top: 2px;">${meterGap > 0 ? '+' : ''}${meterGap} km</div>`;
+          } else {
+            // Warning for gaps > 25km
+            meterValuesHtml += `<div style="font-size: 9px; color: #dc2626; margin-top: 2px; font-weight: 600;">⚠️ ${meterGap > 0 ? '+' : ''}${meterGap} km gap</div>`;
+          }
+        }
+        meterValuesHtml += `</div>`;
+      }
+      
       // Meter pictures
       const hasPictureStart = day.picture_start && day.picture_start !== '-';
       const hasPictureEnd = day.picture_end && day.picture_end !== '-';
@@ -559,10 +607,10 @@ function showDailyDetails(userId) {
       if (hasPictureStart || hasPictureEnd) {
         meterPicsHtml = '<div style="display: flex; gap: 4px; justify-content: center;">';
         if (hasPictureStart) {
-          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureStartPath}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 Start</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureStartPath}')" style="background: #dbeafe; color: #1e40af; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 10px;">📷</button>`;
         }
         if (hasPictureEnd) {
-          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureEndPath}')" style="background: #fef3c7; color: #92400e; border: none; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">📷 End</button>`;
+          meterPicsHtml += `<button onclick="viewMeterPicturePath('${pictureEndPath}')" style="background: #fef3c7; color: #92400e; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 10px;">📷</button>`;
         }
         meterPicsHtml += '</div>';
       }
@@ -583,7 +631,8 @@ function showDailyDetails(userId) {
               ${status}
             </span>
           </td>
-          <td style="padding: 12px 16px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">${meterPicsHtml}</td>
+          <td style="padding: 8px 12px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">${meterValuesHtml}</td>
+          <td style="padding: 8px 12px; font-size: 14px; text-align: center; border-bottom: 1px solid #f3f4f6;">${meterPicsHtml}</td>
         </tr>
       `;
     }).join('');

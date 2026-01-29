@@ -501,6 +501,178 @@ class CustomerController extends Controller
     }
     
     /**
+     * Check if phone number already exists (for duplicate detection)
+     * Used by mobile app before creating new customer
+     */
+    public function checkPhone(Request $request)
+    {
+        try {
+            $phone = $request->get('phone', '');
+            
+            if (empty($phone)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Phone number is required'
+                ], 400);
+            }
+            
+            // Normalize the phone number (same logic as CustomerModel::normalizePhone)
+            $digits = preg_replace('/\D/', '', $phone);
+            $normalizedPhone = substr($digits, -10);
+            
+            // Ensure we have exactly 10 digits
+            if (strlen($normalizedPhone) < 10) {
+                $normalizedPhone = str_pad($normalizedPhone, 10, '0', STR_PAD_LEFT);
+            }
+            
+            // Check if customer exists with this normalized phone
+            $existingCustomer = CustomerModel::where('phone_normalized', $normalizedPhone)
+                ->whereNull('merged_into_customer_id') // Exclude merged customers
+                ->first();
+            
+            if ($existingCustomer) {
+                return response()->json([
+                    'success' => true,
+                    'exists' => true,
+                    'customer' => [
+                        'id' => $existingCustomer->id,
+                        'name' => trim(($existingCustomer->first_name ?? '') . ' ' . ($existingCustomer->last_name ?? '')),
+                        'phone' => $existingCustomer->phone_original ?? $existingCustomer->phone,
+                        'city' => $existingCustomer->city,
+                    ],
+                    'normalized_phone' => $normalizedPhone,
+                ]);
+            }
+            
+            return response()->json([
+                'success' => true,
+                'exists' => false,
+                'normalized_phone' => $normalizedPhone,
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error checking phone: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Create a new customer (for mobile app)
+     * Uses same normalization logic as findOrCreateByPhone
+     */
+    public function store(Request $request)
+    {
+        try {
+            // Validate required fields
+            $validated = $request->validate([
+                'first_name' => 'required|string|max:255',
+                'last_name' => 'required|string|max:255',
+                'phone' => 'required|string|max:50',
+                'email' => 'nullable|email|max:255',
+                'company' => 'nullable|string|max:255',
+                'address1' => 'nullable|string|max:500',
+                'address2' => 'nullable|string|max:500',
+                'city' => 'nullable|string|max:100',
+                'province' => 'nullable|string|max:100',
+                'postal_code' => 'nullable|string|max:20',
+                'country' => 'nullable|string|max:100',
+                'notes' => 'nullable|string',
+            ]);
+            
+            // Normalize phone number (same logic as CustomerModel::normalizePhone)
+            $phoneData = CustomerModel::normalizePhone($validated['phone']);
+            $normalizedPhone = $phoneData['normalized'];
+            $originalPhone = $phoneData['original'];
+            
+            // Check for duplicate (normalized phone must be unique)
+            $existingCustomer = CustomerModel::where('phone_normalized', $normalizedPhone)
+                ->whereNull('merged_into_customer_id')
+                ->first();
+            
+            if ($existingCustomer) {
+                $existingName = trim(($existingCustomer->first_name ?? '') . ' ' . ($existingCustomer->last_name ?? ''));
+                return response()->json([
+                    'success' => false,
+                    'message' => "A customer with this phone number already exists: {$existingName}",
+                    'existing_customer' => [
+                        'id' => $existingCustomer->id,
+                        'name' => $existingName,
+                        'phone' => $existingCustomer->phone_original ?? $existingCustomer->phone,
+                    ]
+                ], 409); // 409 Conflict
+            }
+            
+            // Create the customer (uses auto-increment ID from database)
+            $customer = CustomerModel::create([
+                'first_name' => $validated['first_name'],
+                'last_name' => $validated['last_name'],
+                'phone' => $normalizedPhone, // Legacy field - store normalized
+                'phone_normalized' => $normalizedPhone,
+                'phone_original' => $originalPhone,
+                'email' => $validated['email'] ?? null,
+                'company' => $validated['company'] ?? null,
+                'address1' => $validated['address1'] ?? null,
+                'address2' => $validated['address2'] ?? null,
+                'city' => $validated['city'] ?? null,
+                'province' => $validated['province'] ?? null,
+                'postal_code' => $validated['postal_code'] ?? null,
+                'country' => $validated['country'] ?? 'Pakistan',
+                'notes' => $validated['notes'] ?? null,
+                'is_active' => 1,
+                'total_orders' => 0,
+                'total_spent' => 0,
+                'created_by' => auth()->check() ? auth()->id() : null,
+            ]);
+            
+            \Log::info('Customer created via mobile app', [
+                'customer_id' => $customer->id,
+                'phone_normalized' => $normalizedPhone,
+                'created_by' => auth()->id()
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Customer created successfully',
+                'customer' => [
+                    'id' => $customer->id,
+                    'first_name' => $customer->first_name,
+                    'last_name' => $customer->last_name,
+                    'phone' => $customer->phone_original,
+                    'phone_normalized' => $customer->phone_normalized,
+                    'email' => $customer->email,
+                    'company' => $customer->company,
+                    'address1' => $customer->address1,
+                    'address2' => $customer->address2,
+                    'city' => $customer->city,
+                    'province' => $customer->province,
+                    'country' => $customer->country,
+                    'notes' => $customer->notes,
+                    'total_orders' => 0,
+                    'total_spent' => 0,
+                ]
+            ], 201);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to create customer', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create customer: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
      * Get history order details with line items
      * For viewing legacy/history orders from customer modal
      */
