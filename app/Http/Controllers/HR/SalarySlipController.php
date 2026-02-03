@@ -728,14 +728,18 @@ class SalarySlipController extends Controller
         foreach ($loanIds as $loanId) {
             $loan = \App\Models\HR\EmployeeLoanModel::find($loanId);
             if ($loan && $loan->isActive()) {
+                // ⭐ CRITICAL: Cap payment at outstanding balance to prevent over-payment
+                $paymentAmount = min($loan->monthly_installment, $loan->outstanding_balance);
+                
                 Log::info('Processing loan payment', [
                     'loan_id' => $loanId,
-                    'amount' => $loan->monthly_installment,
-                    'balance_before' => $loan->outstanding_balance
+                    'monthly_installment' => $loan->monthly_installment,
+                    'outstanding_balance' => $loan->outstanding_balance,
+                    'actual_payment' => $paymentAmount, // ⭐ Capped amount
                 ]);
                 
                 $payment = $loan->recordPayment(
-                    $loan->monthly_installment,
+                    $paymentAmount, // ⭐ Use capped amount
                     $slip->id,
                     'salary_deduction',
                     'Deducted from salary slip: ' . ($slip->slip_number ?? 'SLIP-' . $slip->id),

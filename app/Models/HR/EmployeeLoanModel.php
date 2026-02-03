@@ -30,6 +30,7 @@ class EmployeeLoanModel extends BaseModel
         'terms',
         'notes',
         'ledger_transaction_id',
+        'disbursement_account_id', // ⭐ Track source account (NULL = outside cash)
         'created_by',
         'updated_by',
         'completed_at',

@@ -455,6 +455,11 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/', [\App\Http\Controllers\FIN\ExpenseCategoryController::class, 'store'])->name('store');
         });
 
+        // Asset Category Management
+        Route::prefix('asset-category')->name('asset-category.')->group(function () {
+            Route::post('/', [\App\Http\Controllers\FIN\AssetCategoryController::class, 'store'])->name('store');
+        });
+
         // Vendor Routes
         Route::prefix('vendors')->name('vendors.')->group(function () {
             Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index'])->name('index');
@@ -481,6 +486,16 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{vendorId}/products/{productId}/toggle', [\App\Http\Controllers\FIN\VendorProductController::class, 'toggleStatus'])->name('products.toggle');
             Route::post('/{vendorId}/products/{productId}/set-default', [\App\Http\Controllers\FIN\VendorProductController::class, 'setAsDefault'])->name('products.set-default');
             Route::delete('/{vendorId}/products/{productId}', [\App\Http\Controllers\FIN\VendorProductController::class, 'destroy'])->name('products.delete');
+        });
+
+        // Asset Management Routes
+        Route::prefix('assets')->name('assets.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\AssetController::class, 'index'])->name('index');
+            Route::get('/create', [\App\Http\Controllers\FIN\AssetController::class, 'create'])->name('create');
+            Route::post('/', [\App\Http\Controllers\FIN\AssetController::class, 'store'])->name('store');
+            Route::get('/{id}', [\App\Http\Controllers\FIN\AssetController::class, 'show'])->name('show');
+            Route::get('/{id}/edit', [\App\Http\Controllers\FIN\AssetController::class, 'edit'])->name('edit');
+            Route::put('/{id}', [\App\Http\Controllers\FIN\AssetController::class, 'update'])->name('update');
         });
 
         // Employee Cash Routes

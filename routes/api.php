@@ -184,6 +184,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Expense Management (Store Mode)
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
     Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
+    Route::get('/expenses/payment-sources', [\App\Http\Controllers\API\RiderController::class, 'getPaymentSources']);
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
@@ -195,6 +196,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
     Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
     Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
+    
+    // Assets (Store Mode - requires view_assets permission)
+    Route::get('/nf-ledger/assets', [\App\Http\Controllers\FIN\AssetController::class, 'apiIndex']);
+    Route::get('/nf-ledger/assets/form-data', [\App\Http\Controllers\FIN\AssetController::class, 'apiFormData']);
+    Route::get('/nf-ledger/assets/{id}', [\App\Http\Controllers\FIN\AssetController::class, 'apiShow']);
+    Route::post('/nf-ledger/assets', [\App\Http\Controllers\FIN\AssetController::class, 'apiStore']);
     
     // Overall Ledger (Store Mode - requires view_nf_ledger permission)
     Route::get('/overall-ledger', [\App\Http\Controllers\API\RiderController::class, 'getOverallLedger']);
@@ -208,12 +215,45 @@ Route::middleware('auth:sanctum')->group(function () {
         // ⭐ Road Distance Calculation (on-demand) - uses OpenRouteService API
         Route::get('/store-attendance/calculate-road-distance', [\App\Http\Controllers\API\RiderController::class, 'calculateRoadDistance']);
         
+        // ⭐ Employee Profiles (Store Mode - for salary management)
+        Route::get('/store-salary/employees', [\App\Http\Controllers\HR\EmployeeProfileController::class, 'getData']);
+        
+        // ⭐ Loan Management (Store Mode - same as web)
+        Route::post('/store-salary/loans', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'store']);
+        Route::put('/store-salary/loans/{id}', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'update']);
+        Route::post('/store-salary/loans/{id}/cancel', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'cancel']);
+        Route::get('/store-salary/loans/{id}', [\App\Http\Controllers\HR\EmployeeLoanController::class, 'show']);
+        
+        // ⭐ Salary Advance Settlement (Store Mode)
+        Route::post('/store-salary/advances/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleSalaryAdvance']);
+        
+        // ⭐ Get employee details with loans and advances (Store Mode)
+        Route::get('/store-salary/employee/{userId}/details', [\App\Http\Controllers\API\RiderController::class, 'getEmployeeSalaryDetails']);
+        
+        // ⭐ Create salary advance for employee (Store Mode)
+        Route::post('/requests/create-salary-advance', [\App\Http\Controllers\API\RiderController::class, 'createSalaryAdvance']);
+        
+        // ⭐ Get available disbursement accounts (Store Mode)
+        Route::get('/store-salary/disbursement-accounts', [\App\Http\Controllers\API\RiderController::class, 'getDisbursementAccounts']);
+        
+        // ⭐ Salary Slip Management (Store Mode)
+        Route::get('/store-salary/salary-slips', [\App\Http\Controllers\API\RiderController::class, 'getSalarySlips']);
+        Route::get('/store-salary/salary-slips/calculate', [\App\Http\Controllers\API\RiderController::class, 'calculateSalary']);
+        Route::post('/store-salary/salary-slips', [\App\Http\Controllers\API\RiderController::class, 'createSalarySlip']);
+        Route::get('/store-salary/salary-slips/{id}', [\App\Http\Controllers\API\RiderController::class, 'getStoreSalarySlipDetails']);
+        
         // ⭐ ETA to destination (Google Maps with fallback to OpenRouteService)
         Route::get('/eta-to-destination', [\App\Http\Controllers\API\RiderController::class, 'getEtaToDestination']);
         Route::get('/api-usage-stats', [\App\Http\Controllers\API\RiderController::class, 'getApiUsageStats']);
         
+        // ⭐ Calculate delivery ETAs for rider's out_for_delivery orders (manual trigger)
+        Route::post('/{riderId}/calculate-delivery-etas', [\App\Http\Controllers\API\RiderController::class, 'calculateDeliveryEtas']);
+        
         // ⭐ LOCATION TRACKING: Heartbeat from mobile app (every 5 minutes when checked in)
         Route::post('/location-heartbeat', [\App\Http\Controllers\API\RiderController::class, 'locationHeartbeat']);
+        
+        // ⭐ LOCATION TRACKING: Log location failures (helps diagnose GPS gaps)
+        Route::post('/location-failure', [\App\Http\Controllers\API\RiderController::class, 'logLocationFailure']);
         
         // ⭐ LOCATION TRACKING: Get active riders for map (mobile + web)
         Route::get('/active-riders-map', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap']);
@@ -225,6 +265,9 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // ⭐ LOCATION TRACKING: Get rider location history (last N unique locations)
         Route::get('/rider-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory']);
+        
+        // ⭐ LOCATION TRACKING: Get GPS trail segment between two deliveries
+        Route::get('/rider-map/{riderId}/trail-segment', [\App\Http\Controllers\API\RiderController::class, 'getTrailSegment']);
         
         // ⭐ LOCATION TRACKING: Get all open orders for map view
         Route::get('/all-open-orders-map', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap']);

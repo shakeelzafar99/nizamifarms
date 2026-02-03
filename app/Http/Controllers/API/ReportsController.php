@@ -65,9 +65,22 @@ class ReportsController extends Controller
                     AND approval_status = ?
                 ", [$startDate, $endDate, LedgerModel::TYPE_VENDOR_PURCHASE, LedgerModel::STATUS_APPROVED]);
                 
+                // Get approved asset purchases for this month
+                $assetData = DB::selectOne("
+                    SELECT 
+                        COALESCE(SUM(amount), 0) as total,
+                        COUNT(*) as count
+                    FROM t_fin_ledger
+                    WHERE transaction_date >= ? AND transaction_date <= ?
+                    AND transaction_type = 'asset_purchase'
+                    AND approval_status = ?
+                ", [$startDate, $endDate, LedgerModel::STATUS_APPROVED]);
+                
                 $invoices = round($invoiceData->total ?? 0, 2);
                 $expenses = round($expenseData->total ?? 0, 2);
                 $vendorPurchases = round($purchaseData->total ?? 0, 2);
+                $assetPurchases = round($assetData->total ?? 0, 2);
+                // Note: Assets are capital expenditure, not deducted from operating profit
                 $profit = round($invoices - $expenses - $vendorPurchases, 2);
                 
                 $months[] = [
@@ -79,6 +92,8 @@ class ReportsController extends Controller
                     'expense_count' => (int) ($expenseData->count ?? 0),
                     'vendor_purchases' => $vendorPurchases,
                     'vendor_purchase_count' => (int) ($purchaseData->count ?? 0),
+                    'asset_purchases' => $assetPurchases,
+                    'asset_purchase_count' => (int) ($assetData->count ?? 0),
                     'profit' => $profit,
                 ];
                 
@@ -236,10 +251,55 @@ class ReportsController extends Controller
                 $purchaseCount++;
             }
             
+            // Get asset purchases grouped by transaction date
+            $assetsRaw = DB::select("
+                SELECT 
+                    l.transaction_date,
+                    l.description,
+                    l.amount,
+                    u.fullname as created_by,
+                    DATE(l.created_at) as entry_date,
+                    a.asset_name,
+                    a.asset_code,
+                    bu.name as business_unit
+                FROM t_fin_ledger l
+                LEFT JOIN t_sys_user u ON l.created_by = u.id
+                LEFT JOIN t_fin_assets a ON a.ledger_transaction_id = l.id
+                LEFT JOIN t_fin_business_units bu ON a.business_unit_id = bu.id
+                WHERE l.transaction_date >= ? AND l.transaction_date <= ?
+                AND l.transaction_type = 'asset_purchase'
+                AND l.approval_status = ?
+                ORDER BY l.transaction_date DESC
+            ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), LedgerModel::STATUS_APPROVED]);
+            
+            // Group asset purchases by date
+            $assetsByDate = [];
+            $assetTotal = 0;
+            $assetCount = 0;
+            foreach ($assetsRaw as $asset) {
+                $date = $asset->transaction_date;
+                if (!isset($assetsByDate[$date])) {
+                    $assetsByDate[$date] = ['date' => $date, 'items' => [], 'total' => 0];
+                }
+                $assetsByDate[$date]['items'][] = [
+                    'description' => $asset->description,
+                    'asset_name' => $asset->asset_name ?? 'Asset',
+                    'asset_code' => $asset->asset_code ?? '',
+                    'business_unit' => $asset->business_unit ?? 'Unknown',
+                    'amount' => round($asset->amount, 2),
+                    'user' => $asset->created_by ?? 'Unknown',
+                    'entry_date' => $asset->entry_date,
+                ];
+                $assetsByDate[$date]['total'] += $asset->amount;
+                $assetTotal += $asset->amount;
+                $assetCount++;
+            }
+            
             return response()->json([
                 'success' => true,
                 'data' => [
                     'month_name' => $startDate->format('F Y'),
+                    // Note: Assets are capital expenditure, not deducted from operating profit
                     'profit' => round($invoiceTotal - $expenseTotal - $purchaseTotal, 2),
                     'invoices' => [
                         'total' => round($invoiceTotal, 2),
@@ -255,6 +315,11 @@ class ReportsController extends Controller
                         'total' => round($purchaseTotal, 2),
                         'count' => $purchaseCount,
                         'by_date' => array_values($purchasesByDate),
+                    ],
+                    'asset_purchases' => [
+                        'total' => round($assetTotal, 2),
+                        'count' => $assetCount,
+                        'by_date' => array_values($assetsByDate),
                     ],
                 ],
             ]);
@@ -525,6 +590,21 @@ class ReportsController extends Controller
                 ORDER BY entry_date DESC
             ", [LedgerModel::TYPE_VENDOR_PAYMENT, LedgerModel::STATUS_APPROVED, $startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
             
+            // Get asset purchase totals grouped by entry date (created_at)
+            $assetTotals = DB::select("
+                SELECT 
+                    DATE(l.created_at) as entry_date,
+                    COUNT(*) as count,
+                    SUM(l.amount) as total
+                FROM t_fin_ledger l
+                WHERE l.transaction_type = 'asset_purchase'
+                AND l.approval_status = ?
+                AND DATE(l.created_at) >= ?
+                AND DATE(l.created_at) <= ?
+                GROUP BY DATE(l.created_at)
+                ORDER BY entry_date DESC
+            ", [LedgerModel::STATUS_APPROVED, $startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
+            
             // Build lookup maps
             $expenseMap = [];
             foreach ($expenseTotals as $row) {
@@ -541,12 +621,18 @@ class ReportsController extends Controller
                 $paymentMap[$row->entry_date] = ['count' => (int) $row->count, 'total' => round($row->total, 2)];
             }
             
+            $assetMap = [];
+            foreach ($assetTotals as $row) {
+                $assetMap[$row->entry_date] = ['count' => (int) $row->count, 'total' => round($row->total, 2)];
+            }
+            
             // Build result array for each day (only include days with activity)
             $dailySummaries = [];
             $allDates = array_unique(array_merge(
                 array_keys($expenseMap), 
                 array_keys($purchaseMap), 
-                array_keys($paymentMap)
+                array_keys($paymentMap),
+                array_keys($assetMap)
             ));
             rsort($allDates); // Sort descending (newest first)
             
@@ -554,8 +640,9 @@ class ReportsController extends Controller
                 $expense = $expenseMap[$date] ?? ['count' => 0, 'total' => 0];
                 $purchase = $purchaseMap[$date] ?? ['count' => 0, 'total' => 0];
                 $payment = $paymentMap[$date] ?? ['count' => 0, 'total' => 0];
+                $asset = $assetMap[$date] ?? ['count' => 0, 'total' => 0];
                 
-                $dayTotal = $expense['total'] + $purchase['total'] + $payment['total'];
+                $dayTotal = $expense['total'] + $purchase['total'] + $payment['total'] + $asset['total'];
                 
                 $dailySummaries[] = [
                     'date' => $date,
@@ -565,8 +652,9 @@ class ReportsController extends Controller
                     'expenses' => $expense,
                     'purchases' => $purchase,
                     'payments' => $payment,
+                    'assets' => $asset,
                     'total_amount' => round($dayTotal, 2),
-                    'total_count' => $expense['count'] + $purchase['count'] + $payment['count'],
+                    'total_count' => $expense['count'] + $purchase['count'] + $payment['count'] + $asset['count'],
                 ];
             }
             
@@ -692,9 +780,42 @@ class ReportsController extends Controller
                 ];
             }, $payments);
             
+            // Get asset purchases for this date
+            $assets = DB::select("
+                SELECT 
+                    l.id, l.description, l.amount, l.mode, l.transaction_date, l.created_at,
+                    u.fullname as created_by,
+                    a.asset_name,
+                    a.asset_code,
+                    bu.name as business_unit
+                FROM t_fin_ledger l
+                LEFT JOIN t_sys_user u ON l.created_by = u.id
+                LEFT JOIN t_fin_assets a ON a.ledger_transaction_id = l.id
+                LEFT JOIN t_fin_business_units bu ON a.business_unit_id = bu.id
+                WHERE l.transaction_type = 'asset_purchase'
+                AND l.approval_status = ?
+                AND DATE(l.created_at) = ?
+                ORDER BY l.created_at DESC
+            ", [LedgerModel::STATUS_APPROVED, $date]);
+            
+            // Format asset items
+            $assetItems = array_map(function ($item) {
+                return [
+                    'id' => $item->id,
+                    'description' => $item->description,
+                    'asset_name' => $item->asset_name ?? 'Asset',
+                    'asset_code' => $item->asset_code ?? '',
+                    'business_unit' => $item->business_unit ?? 'Unknown',
+                    'amount' => round($item->amount, 2),
+                    'transaction_date' => $item->transaction_date,
+                    'created_by' => $item->created_by ?? 'Unknown',
+                ];
+            }, $assets);
+            
             $expenseTotal = array_sum(array_column($expenseItems, 'amount'));
             $purchaseTotal = array_sum(array_column($purchaseItems, 'amount'));
             $paymentTotal = array_sum(array_column($paymentItems, 'amount'));
+            $assetTotal = array_sum(array_column($assetItems, 'amount'));
             
             return response()->json([
                 'success' => true,
@@ -715,6 +836,11 @@ class ReportsController extends Controller
                         'items' => $paymentItems,
                         'total' => round($paymentTotal, 2),
                         'count' => count($paymentItems),
+                    ],
+                    'assets' => [
+                        'items' => $assetItems,
+                        'total' => round($assetTotal, 2),
+                        'count' => count($assetItems),
                     ],
                 ],
             ]);

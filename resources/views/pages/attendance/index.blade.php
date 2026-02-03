@@ -1185,7 +1185,7 @@ function getLocationBadge(record) {
 }
 
 /**
- * ⭐ Get distance badge HTML showing meter and GPS distance
+ * ⭐ Get distance badge HTML showing meter, road distance (primary), and GPS distance
  */
 function getDistanceBadge(record) {
   // No attendance = no distance
@@ -1194,11 +1194,12 @@ function getDistanceBadge(record) {
   }
   
   const hasMeter = record.meter_distance !== null && record.meter_distance !== undefined;
+  const hasRoadDistance = record.road_distance_km !== null && record.road_distance_km !== undefined;
   const hasGps = record.gps_distance !== null && record.gps_distance !== undefined;
   const gpsReadings = record.gps_readings_count || 0;
   
   // Neither available
-  if (!hasMeter && !hasGps) {
+  if (!hasMeter && !hasRoadDistance && !hasGps) {
     if (record.logout_time) {
       // Has logout but no distance data
       return `
@@ -1228,10 +1229,40 @@ function getDistanceBadge(record) {
     `;
   }
   
-  // GPS distance with coverage % and audit button
+  // ⭐ ROAD DISTANCE - PRIMARY indicator (most accurate, uses actual roads)
+  if (hasRoadDistance) {
+    const roadSource = record.road_distance_source === 'openrouteservice' ? '🛣️' : '📏';
+    const roadTitle = record.road_distance_source === 'openrouteservice' 
+      ? 'Road distance via OpenRouteService (actual roads)'
+      : 'Calculated distance (straight-line fallback)';
+    
+    html += `
+      <button 
+        type="button"
+        onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
+        class="flex items-center gap-1 cursor-pointer hover:opacity-80"
+        title="${roadTitle}. Click for details."
+      >
+        <span class="text-xs font-medium text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded">
+          ${roadSource} ${record.road_distance_km} km
+        </span>
+        <span class="text-[10px] text-purple-500 font-medium">road</span>
+      </button>
+    `;
+  } else if (!record.logout_time && gpsReadings > 0) {
+    // Day not ended yet - show "calculating" badge
+    html += `
+      <span class="text-[10px] text-gray-500 bg-gray-50 px-1.5 py-0.5 rounded" title="Road distance will be calculated on checkout">
+        🛣️ in progress...
+      </span>
+    `;
+  }
+  
+  // GPS distance with coverage % and audit button (shown as secondary)
   const coverage = record.gps_coverage_percent;
   
-  if (hasGps) {
+  if (hasGps && !hasRoadDistance) {
+    // Only show GPS if no road distance (avoid redundancy)
     // Compare with meter if both exist
     let gpsClass = 'text-green-700 bg-green-50';
     let gpsIcon = '📍';
@@ -1256,7 +1287,7 @@ function getDistanceBadge(record) {
         type="button"
         onclick="showGpsAudit(${record.user_id}, '${(record.fullname || '').replace(/'/g, "\\'")}', '${record.attendance_date}')"
         class="flex items-center gap-1 cursor-pointer hover:opacity-80"
-        title="GPS: ${record.gps_distance} km, ${gpsReadings} readings, ${coverage || '?'}% coverage. Click to audit."
+        title="GPS: ${record.gps_distance} km (straight-line), ${gpsReadings} readings. Click to audit."
       >
         <span class="text-xs font-medium ${gpsClass} px-1.5 py-0.5 rounded">
           ${gpsIcon} ${record.gps_distance} km
@@ -1264,7 +1295,7 @@ function getDistanceBadge(record) {
         <span class="text-[10px] ${coverageClass} font-medium">${coverage !== null ? coverage + '%' : gpsReadings + ' pts'}</span>
       </button>
     `;
-  } else if (hasMeter && gpsReadings > 0) {
+  } else if (hasMeter && gpsReadings > 0 && !hasRoadDistance) {
     // Has meter and some GPS readings but couldn't calculate distance (rider stationary)
     let coverageClass = 'text-green-600';
     if (coverage !== null && coverage < 50) coverageClass = 'text-red-500';

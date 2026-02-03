@@ -909,6 +909,96 @@ function closeAuditModal() {
             {{ $accounts->appends(request()->query())->links() }}
         </div>
     @endif
+
+    <!-- Company Assets Section -->
+    @php
+        $assets = \App\Models\FIN\AssetModel::with(['businessUnit', 'category', 'purchasedBy'])
+            ->where('status', 'active')
+            ->orderBy('purchase_date', 'desc')
+            ->limit(10)
+            ->get();
+        $totalAssetValue = \App\Models\FIN\AssetModel::where('status', 'active')->sum('purchase_amount');
+        $assetCount = \App\Models\FIN\AssetModel::where('status', 'active')->count();
+    @endphp
+    
+    <div class="mt-8 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+        <!-- Assets Header -->
+        <div class="px-6 py-4 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-emerald-100">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
+                        <span class="text-xl">📦</span>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900">Company Assets</h2>
+                        <p class="text-sm text-gray-600">{{ $assetCount }} assets • Total Value: <span class="font-semibold text-emerald-600">Rs. {{ number_format($totalAssetValue, 0) }}</span></p>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <a href="{{ route('fin.assets.create') }}" class="inline-flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-md transition-colors">
+                        <i class="ki-filled ki-plus mr-2"></i> Add Asset
+                    </a>
+                    <a href="{{ route('fin.assets.index') }}" class="inline-flex items-center px-4 py-2 border border-emerald-600 text-emerald-600 hover:bg-emerald-50 text-sm font-medium rounded-md transition-colors">
+                        View All
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        @if($assets->count() > 0)
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Asset</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Business Unit</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Value</th>
+                    <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                @foreach($assets as $asset)
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4">
+                        <div class="text-sm font-medium text-gray-900">{{ $asset->asset_name }}</div>
+                        <div class="text-xs text-gray-500">{{ $asset->asset_code }} • {{ $asset->purchase_date->format('d M Y') }}</div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="px-2 py-1 text-xs font-medium rounded-full {{ $asset->businessUnit->code === 'NF_FOODS' ? 'bg-orange-100 text-orange-800' : 'bg-emerald-100 text-emerald-800' }}">
+                            {{ $asset->businessUnit->name ?? 'Unknown' }}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="text-sm text-gray-700">{{ $asset->category->name ?? '-' }}</span>
+                    </td>
+                    <td class="px-6 py-4 text-right">
+                        <span class="text-sm font-semibold text-gray-900">Rs. {{ number_format($asset->purchase_amount, 0) }}</span>
+                    </td>
+                    <td class="px-6 py-4 text-center">
+                        <a href="{{ route('fin.assets.show', $asset->id) }}" class="text-emerald-600 hover:text-emerald-800 text-sm font-medium">View</a>
+                    </td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+        @if($assetCount > 10)
+        <div class="px-6 py-3 bg-gray-50 border-t border-gray-200">
+            <a href="{{ route('fin.assets.index') }}" class="text-sm text-emerald-600 hover:text-emerald-800 font-medium">
+                View all {{ $assetCount }} assets →
+            </a>
+        </div>
+        @endif
+        @else
+        <div class="px-6 py-12 text-center">
+            <div class="text-4xl mb-4">📦</div>
+            <h3 class="text-lg font-medium text-gray-900 mb-2">No Assets Yet</h3>
+            <p class="text-sm text-gray-600 mb-4">Start tracking your company assets like equipment, vehicles, and furniture.</p>
+            <a href="{{ route('fin.assets.create') }}" class="inline-flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-md">
+                <i class="ki-filled ki-plus mr-2"></i> Add First Asset
+            </a>
+        </div>
+        @endif
+    </div>
 </div>
 
 <script>

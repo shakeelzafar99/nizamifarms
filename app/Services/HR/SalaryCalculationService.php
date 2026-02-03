@@ -256,31 +256,46 @@ class SalaryCalculationService
 
     /**
      * Get approved salary advances for the month
+     * ⭐ FIX: Include ALL pending advances (not settled), regardless of when approved
      */
     protected function getSalaryAdvances(int $userId, string $month): array
     {
-        $startDate = date('Y-m-01', strtotime($month));
-        $endDate = date('Y-m-t', strtotime($month));
-
         try {
+            // ⭐ Get ALL approved advances that are NOT YET SETTLED
+            // This ensures advances from previous months are also deducted
+            // Note: settlement_status can be 'not_required', 'open', 'pending', 'settled', or NULL
+            // We want everything EXCEPT 'settled'
             $advances = RequestModel::where('requester_user_id', $userId)
                 ->whereHas('category', function($q) {
                     $q->where('category_code', 'salary_advance');
                 })
                 ->where('status', 'approved')
-                ->whereBetween('completed_at', [$startDate, $endDate])
+                ->where(function($q) {
+                    // Include advances that are NOT settled
+                    // This covers: NULL, 'not_required', 'open', 'pending'
+                    $q->whereNull('settlement_status')
+                      ->orWhere('settlement_status', '!=', 'settled');
+                })
+                ->orderBy('created_at', 'asc') // Oldest first
                 ->get()
                 ->map(function($request) {
                     return [
                         'request_id' => $request->id,
                         'amount' => $request->amount ?? 0,
-                        'approved_date' => $request->completed_at,
+                        'approved_date' => $request->completed_at ?? $request->created_at,
                         'description' => $request->description ?? ''
                     ];
                 })
                 ->toArray();
 
             $totalAdvance = array_sum(array_column($advances, 'amount'));
+            
+            Log::debug('Found salary advances', [
+                'user_id' => $userId,
+                'count' => count($advances),
+                'total' => $totalAdvance,
+                'request_ids' => implode(',', array_column($advances, 'request_id'))
+            ]);
 
             return [
                 'requests' => $advances,
@@ -304,6 +319,7 @@ class SalaryCalculationService
 
     /**
      * Get active loans for employee
+     * ⭐ FIX: Cap installment at outstanding balance to prevent over-deduction
      */
     protected function getActiveLoans(int $userId): array
     {
@@ -311,17 +327,23 @@ class SalaryCalculationService
             ->where('user_id', $userId)
             ->get()
             ->map(function($loan) {
+                // ⭐ CRITICAL: Use lesser of (monthly_installment, outstanding_balance)
+                // This prevents over-deduction when loan is nearly paid off
+                $effectiveInstallment = min($loan->monthly_installment, $loan->outstanding_balance);
+                
                 return [
                     'loan_id' => $loan->id,
                     'loan_number' => $loan->loan_number,
                     'outstanding_balance' => $loan->outstanding_balance,
                     'monthly_installment' => $loan->monthly_installment,
+                    'effective_installment' => $effectiveInstallment, // ⭐ Capped amount
                     'loan_type' => $loan->loan_type
                 ];
             })
             ->toArray();
 
-        $totalInstallment = array_sum(array_column($loans, 'monthly_installment'));
+        // ⭐ Use effective_installment (capped) for total, not monthly_installment
+        $totalInstallment = array_sum(array_column($loans, 'effective_installment'));
 
         return [
             'loans' => $loans,

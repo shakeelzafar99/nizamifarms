@@ -490,6 +490,48 @@
             </div>
         </div>
 
+        <!-- Manage Asset Categories Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">📦 Manage Asset Categories</h2>
+            </div>
+            
+            <!-- Info -->
+            <div class="mb-4 p-4 bg-emerald-50 border border-emerald-200 rounded-md">
+                <h3 class="text-sm font-semibold text-emerald-800 mb-2">🏷️ Asset Categories</h3>
+                <p class="text-sm text-emerald-700">Categorize company assets (equipment, vehicles, furniture, etc.) for better tracking and reporting.</p>
+            </div>
+            
+            <!-- Existing Categories -->
+            <div class="mb-4">
+                <h3 class="text-sm font-medium text-gray-700 mb-2">Current Categories:</h3>
+                <div class="flex flex-wrap gap-2" id="assetCategoriesList">
+                    @php
+                        $assetCategories = \App\Models\FIN\AssetCategoryModel::where('is_active', 1)->orderBy('sort_order')->get();
+                    @endphp
+                    @if($assetCategories->count() > 0)
+                        @foreach($assetCategories as $cat)
+                            <span class="inline-flex items-center px-3 py-1 text-sm font-medium rounded-full bg-emerald-100 text-emerald-800">
+                                {{ $cat->name }}
+                                @if($cat->useful_life_years)
+                                    <span class="ml-1 text-xs text-emerald-600">({{ $cat->useful_life_years }}y)</span>
+                                @endif
+                            </span>
+                        @endforeach
+                    @else
+                        <p class="text-xs text-gray-500 italic">No categories yet. Add your first category below.</p>
+                    @endif
+                </div>
+            </div>
+            
+            <!-- Add New Asset Category -->
+            <div class="border-t border-gray-200 pt-4">
+                <button onclick="openAddAssetCategoryModal()" class="w-full inline-flex items-center justify-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-md">
+                    ➕ Add New Asset Category
+                </button>
+            </div>
+        </div>
+
         <script>
         function executeSelectedImport() {
             const source = document.getElementById('importSource').value;
@@ -959,6 +1001,143 @@
         </div>
     </div>
 </div>
+
+<!-- Add Asset Category Modal -->
+<div id="addAssetCategoryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 9999;">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full" onclick="event.stopPropagation()">
+        <div class="p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-gray-800">➕ Add New Asset Category</h2>
+                <button onclick="closeAddAssetCategoryModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form id="addAssetCategoryForm" onsubmit="submitAssetCategory(event)">
+                @csrf
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Category Name <span class="text-red-500">*</span></label>
+                        <input type="text" name="category_name" id="assetCategoryName" required
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                               placeholder="e.g., Machinery, Vehicles, Computers">
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Useful Life (Years)</label>
+                        <input type="number" name="useful_life_years" id="assetUsefulLife" min="1" max="50"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                               placeholder="e.g., 5" value="5">
+                        <p class="text-xs text-gray-500 mt-1">Default useful life for depreciation calculation (optional)</p>
+                    </div>
+                    
+                    <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-md">
+                        <p class="text-xs text-emerald-800">
+                            ℹ️ <strong>This will:</strong>
+                        </p>
+                        <ul class="text-xs text-emerald-700 mt-1 ml-4 list-disc">
+                            <li>Create a new asset category for classification</li>
+                            <li>Make it available when adding new company assets</li>
+                        </ul>
+                    </div>
+                    
+                    <div id="assetCategoryFeedback" class="hidden p-3 rounded-md"></div>
+                    
+                    <div class="flex gap-3 mt-6">
+                        <button type="button" onclick="closeAddAssetCategoryModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-md hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" id="assetCategorySubmitBtn" class="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-md">
+                            ✓ Create Category
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function openAddAssetCategoryModal() {
+    document.getElementById('addAssetCategoryModal').classList.remove('hidden');
+    document.getElementById('addAssetCategoryModal').style.display = 'flex';
+    document.getElementById('assetCategoryName').focus();
+}
+
+function closeAddAssetCategoryModal() {
+    document.getElementById('addAssetCategoryModal').classList.add('hidden');
+    document.getElementById('addAssetCategoryModal').style.display = 'none';
+    document.getElementById('assetCategoryName').value = '';
+    document.getElementById('assetUsefulLife').value = '5';
+    document.getElementById('assetCategoryFeedback').classList.add('hidden');
+}
+
+function submitAssetCategory(event) {
+    event.preventDefault();
+    
+    const name = document.getElementById('assetCategoryName').value.trim();
+    const usefulLife = document.getElementById('assetUsefulLife').value;
+    const feedback = document.getElementById('assetCategoryFeedback');
+    const submitBtn = document.getElementById('assetCategorySubmitBtn');
+    
+    if (!name) {
+        feedback.className = 'p-3 rounded-md bg-red-50 border border-red-200';
+        feedback.innerHTML = '<p class="text-sm text-red-700">❌ Category name is required</p>';
+        feedback.classList.remove('hidden');
+        return;
+    }
+    
+    // Disable button during submission
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '⏳ Creating...';
+    
+    // Get CSRF token
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || 
+                     document.querySelector('input[name="_token"]')?.value || '';
+    
+    fetch('{{ route("fin.asset-category.store") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify({
+            _token: csrfToken,
+            category_name: name,
+            useful_life_years: usefulLife || null
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            feedback.className = 'p-3 rounded-md bg-green-50 border border-green-200';
+            feedback.innerHTML = `<p class="text-sm text-green-700">✅ ${data.message}</p>`;
+            feedback.classList.remove('hidden');
+            
+            // Refresh page after 1 second to show new category
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } else {
+            feedback.className = 'p-3 rounded-md bg-red-50 border border-red-200';
+            feedback.innerHTML = `<p class="text-sm text-red-700">❌ ${data.message || 'Error creating category'}</p>`;
+            feedback.classList.remove('hidden');
+            
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '✓ Create Category';
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        feedback.className = 'p-3 rounded-md bg-red-50 border border-red-200';
+        feedback.innerHTML = '<p class="text-sm text-red-700">❌ An error occurred. Please try again.</p>';
+        feedback.classList.remove('hidden');
+        
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '✓ Create Category';
+    });
+}
+</script>
 
 <!-- Include the same Import modal markup used on Orders page -->
 @include('pages.orders.partials.import-modal')

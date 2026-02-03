@@ -786,6 +786,325 @@ class RiderController extends Controller
                 ]
             );
     }
+    
+    /**
+     * ⭐ Calculate and save delivery ETAs for a rider's out_for_delivery orders
+     * Called when user presses "Get Times" button in pinned rider view
+     * 
+     * Uses Google Maps Directions API with waypoints (1 API call for all orders)
+     * Adds 10 minutes stop time at each destination
+     * Saves estimated_delivery_at for each order (fixed, won't change)
+     * 
+     * @param int $riderId - The rider to calculate ETAs for
+     */
+    public function calculateDeliveryEtas(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            // Get rider info
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->where('is_active', 1)
+                ->select('id', 'fullname')
+                ->first();
+            
+            if (!$rider) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Rider not found'
+                ], 404);
+            }
+            
+            // Get rider's current location (most recent heartbeat)
+            $riderLocation = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>=', now()->subMinutes(30)) // Within last 30 min
+                ->orderBy('captured_at', 'desc')
+                ->first();
+            
+            if (!$riderLocation) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No recent GPS location for rider. Rider needs to be active.'
+                ], 400);
+            }
+            
+            // ⭐ Check if frontend passed explicit order sequence (fixes debounce timing issue)
+            $orderSequence = $request->input('order_sequence', []);
+            
+            // Get all out_for_delivery orders for this rider
+            $ordersQuery = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $riderId)
+                ->where('o.order_status', 'out_for_delivery')
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.delivery_priority',
+                    'o.estimated_delivery_at', // Check if already has ETA
+                    'c.latitude',
+                    'c.longitude',
+                    'c.geocoded_latitude',
+                    'c.geocoded_longitude',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                ]);
+            
+            // ⭐ If frontend passed order sequence, use that order
+            if (!empty($orderSequence)) {
+                // Create a map of order_id => priority
+                $priorityMap = [];
+                foreach ($orderSequence as $item) {
+                    $priorityMap[$item['order_id']] = $item['priority'];
+                }
+                
+                $orders = $ordersQuery->get();
+                
+                // Sort by the provided sequence
+                $orders = $orders->sortBy(function($order) use ($priorityMap) {
+                    return $priorityMap[$order->id] ?? 999;
+                })->values();
+            } else {
+                // Use DB priority order (fallback)
+                $orders = $ordersQuery->orderByRaw('COALESCE(o.delivery_priority, 999) ASC, o.id ASC')->get();
+            }
+            
+            if ($orders->isEmpty()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No out_for_delivery orders found for this rider'
+                ], 400);
+            }
+            
+            // Build waypoints: [rider_location, order1, order2, ...]
+            $waypoints = [];
+            $ordersWithLocation = [];
+            
+            // Start with rider's current location
+            $waypoints[] = [
+                'lat' => (float)$riderLocation->latitude,
+                'lng' => (float)$riderLocation->longitude,
+            ];
+            
+            foreach ($orders as $order) {
+                // Get order location (verified > geocoded)
+                $lat = $order->latitude ?: $order->geocoded_latitude;
+                $lng = $order->longitude ?: $order->geocoded_longitude;
+                
+                if ($lat && $lng) {
+                    $waypoints[] = [
+                        'lat' => (float)$lat,
+                        'lng' => (float)$lng,
+                    ];
+                    $ordersWithLocation[] = $order;
+                }
+            }
+            
+            if (count($ordersWithLocation) === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No orders have GPS coordinates'
+                ], 400);
+            }
+            
+            // ⭐ Call Google Maps Directions API with waypoints (1 API call)
+            $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+            
+            if (!$etaResult) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to calculate ETA (API error or limit reached)'
+                ], 500);
+            }
+            
+            // ⭐ Calculate cumulative ETA for each order
+            $stopTimeMinutes = 10; // Time spent at each stop
+            $now = now();
+            $calculatedAt = $now->copy();
+            $cumulativeMinutes = 0;
+            $updatedOrders = [];
+            
+            foreach ($ordersWithLocation as $index => $order) {
+                // Get travel time to this order from previous point
+                $legDuration = $etaResult['legs'][$index] ?? 0; // Duration in minutes
+                $cumulativeMinutes += $legDuration;
+                
+                // Calculate estimated arrival time
+                $estimatedAt = $now->copy()->addMinutes(round($cumulativeMinutes));
+                
+                // Update order with estimated time only (DO NOT change delivery_priority - that's set by the team)
+                \DB::table('t_crm_prod_order')
+                    ->where('id', $order->id)
+                    ->update([
+                        'estimated_delivery_at' => $estimatedAt,
+                        'eta_calculated_at' => $calculatedAt,
+                    ]);
+                
+                $updatedOrders[] = [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_name' => trim($order->customer_name),
+                    'sequence' => $index + 1,
+                    'delivery_priority' => $index + 1, // ⭐ Show the assigned priority
+                    'travel_minutes' => round($legDuration),
+                    'estimated_at' => $estimatedAt->format('h:i A'),
+                    'estimated_at_raw' => $estimatedAt->toIso8601String(),
+                ];
+                
+                // Add stop time for next order calculation
+                $cumulativeMinutes += $stopTimeMinutes;
+            }
+            
+            \Log::info('📊 Delivery ETAs calculated', [
+                'rider_id' => $riderId,
+                'orders_count' => count($updatedOrders),
+                'total_duration_minutes' => round($cumulativeMinutes),
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'ETAs calculated for ' . count($updatedOrders) . ' orders',
+                'rider' => [
+                    'id' => $rider->id,
+                    'name' => $rider->fullname,
+                    'current_location' => [
+                        'latitude' => (float)$riderLocation->latitude,
+                        'longitude' => (float)$riderLocation->longitude,
+                        'captured_at' => $riderLocation->captured_at,
+                    ],
+                ],
+                'calculated_at' => $calculatedAt->toIso8601String(),
+                'stop_time_minutes' => $stopTimeMinutes,
+                'orders' => $updatedOrders,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to calculate delivery ETAs', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to calculate ETAs: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get multi-stop ETA from Google Maps Directions API
+     * Returns leg durations for waypoints route
+     * 
+     * @param array $waypoints - Array of ['lat' => x, 'lng' => y]
+     * @return array|null - ['total_duration' => minutes, 'legs' => [min, min, ...]]
+     */
+    private function getMultiStopEtaFromGoogle(array $waypoints): ?array
+    {
+        if (count($waypoints) < 2) {
+            return null;
+        }
+        
+        // Check monthly usage limit
+        $monthKey = date('Y-m');
+        $usage = \DB::table('t_sys_api_usage')
+            ->where('api_name', 'google_directions')
+            ->where('month_key', $monthKey)
+            ->first();
+        
+        $currentCount = $usage->call_count ?? 0;
+        if ($currentCount >= 4500) {
+            \Log::warning('Google Maps API monthly limit reached for multi-stop ETA');
+            return null;
+        }
+        
+        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        if (empty($apiKey)) {
+            \Log::warning('Google Maps API key not configured');
+            return null;
+        }
+        
+        try {
+            // Build origin (first point)
+            $origin = $waypoints[0]['lat'] . ',' . $waypoints[0]['lng'];
+            
+            // Build destination (last point)
+            $lastIdx = count($waypoints) - 1;
+            $destination = $waypoints[$lastIdx]['lat'] . ',' . $waypoints[$lastIdx]['lng'];
+            
+            // Build waypoints (intermediate points) - Google limits to 25 waypoints
+            $intermediateWaypoints = [];
+            for ($i = 1; $i < $lastIdx && $i <= 25; $i++) {
+                $intermediateWaypoints[] = $waypoints[$i]['lat'] . ',' . $waypoints[$i]['lng'];
+            }
+            
+            $client = new \GuzzleHttp\Client(['timeout' => 15]);
+            
+            $queryParams = [
+                'origin' => $origin,
+                'destination' => $destination,
+                'mode' => 'driving',
+                'departure_time' => 'now', // For traffic data
+                'key' => $apiKey,
+            ];
+            
+            if (!empty($intermediateWaypoints)) {
+                $queryParams['waypoints'] = implode('|', $intermediateWaypoints);
+            }
+            
+            $response = $client->get('https://maps.googleapis.com/maps/api/directions/json', [
+                'query' => $queryParams
+            ]);
+            
+            $data = json_decode($response->getBody()->getContents(), true);
+            
+            // Increment usage counter
+            $this->incrementApiUsage('google_directions');
+            
+            if ($data['status'] !== 'OK' || empty($data['routes'])) {
+                \Log::warning('Google Maps multi-stop API error', ['status' => $data['status']]);
+                return null;
+            }
+            
+            $route = $data['routes'][0];
+            $legs = [];
+            $totalDuration = 0;
+            
+            foreach ($route['legs'] as $leg) {
+                // Use duration_in_traffic if available
+                $durationSeconds = $leg['duration_in_traffic']['value'] ?? $leg['duration']['value'];
+                $durationMinutes = round($durationSeconds / 60);
+                $legs[] = $durationMinutes;
+                $totalDuration += $durationMinutes;
+            }
+            
+            \Log::info('📍 Multi-stop ETA from Google', [
+                'waypoints' => count($waypoints),
+                'legs' => $legs,
+                'total_minutes' => $totalDuration,
+            ]);
+            
+            return [
+                'total_duration' => $totalDuration,
+                'legs' => $legs,
+                'source' => 'google_maps',
+            ];
+            
+        } catch (\Exception $e) {
+            \Log::error('Google Maps multi-stop API call failed', [
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
 
     /**
      * Quick verify location from address (for Store Mode)
@@ -2141,7 +2460,7 @@ class RiderController extends Controller
             }
             
             // ⭐ Sample readings intelligently for API call
-            // OpenRouteService supports up to 50 waypoints, we'll use ~25 for safety
+            // Using 25 samples with GPS drift filtering gives best accuracy
             $sampledReadings = $this->sampleGpsReadings($readings->toArray(), 25);
             
             if (count($sampledReadings) < 2) {
@@ -2171,16 +2490,31 @@ class RiderController extends Controller
                 ]);
             }
             
+            // ⭐ Store the calculated road distance in the database for future use
+            $roundedRoadDistance = round($roadDistance, 1);
+            \DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->whereDate('attendance_date', $date)
+                ->update([
+                    'road_distance_km' => $roundedRoadDistance,
+                    'road_distance_source' => 'openrouteservice',
+                    'gps_straight_distance_km' => $straightResult['distance'],
+                    'gps_readings_used' => $readings->count(),
+                ]);
+            
+            \Log::info("Road distance stored for user {$userId} on {$date}: {$roundedRoadDistance} km");
+            
             return response()->json([
                 'success' => true,
-                'road_distance' => round($roadDistance, 1),
+                'road_distance' => $roundedRoadDistance,
                 'straight_distance' => $straightResult['distance'],
                 'readings_count' => $readings->count(),
                 'sampled_points' => count($sampledReadings),
                 'accuracy_ratio' => $straightResult['distance'] > 0 
                     ? round($roadDistance / $straightResult['distance'] * 100) . '%' 
                     : null,
-                'source' => 'openrouteservice'
+                'source' => 'openrouteservice',
+                'stored' => true, // ⭐ Indicate the value was stored
             ]);
             
         } catch (\Exception $e) {
@@ -2198,33 +2532,97 @@ class RiderController extends Controller
     }
 
     /**
-     * ⭐ Sample GPS readings to reduce API calls while maintaining route accuracy
-     * Uses time-based sampling to ensure we capture the full journey
+     * ⭐ Sample GPS readings for road distance API call
+     * 
+     * Strategy:
+     * 1. Filter out GPS DRIFT - consecutive readings within ~30m are noise
+     * 2. Then sample evenly from filtered points to get max 50 waypoints
+     * 
+     * This removes fake distance from GPS drift while preserving actual route
+     * 
+     * @param array $readings GPS readings array
+     * @param int $maxPoints Maximum number of points (OpenRouteService limit is 50)
+     * @return array Sampled readings
      */
     private function sampleGpsReadings(array $readings, int $maxPoints = 25): array
     {
         $count = count($readings);
         
-        if ($count <= $maxPoints) {
+        // Handle edge cases
+        if ($count <= 2) {
             return $readings;
         }
         
-        $sampled = [];
-        $step = ($count - 1) / ($maxPoints - 1);
+        // ⭐ Step 1: Filter GPS drift - remove consecutive points within ~30m
+        // GPS drift = small fake movements when rider is stationary
+        // 0.0003 degrees ≈ 30 meters - good threshold for drift vs real movement
+        $filtered = [];
+        $prevLat = null;
+        $prevLng = null;
+        $driftThreshold = 0.0003; // ~30m - filters GPS noise but keeps real movements
         
-        for ($i = 0; $i < $maxPoints; $i++) {
-            $index = (int) round($i * $step);
-            if ($index < $count) {
-                $sampled[] = $readings[$index];
+        foreach ($readings as $reading) {
+            $lat = (float)(is_object($reading) ? $reading->latitude : ($reading['latitude'] ?? 0));
+            $lng = (float)(is_object($reading) ? $reading->longitude : ($reading['longitude'] ?? 0));
+            
+            // Include point if it's the first OR moved more than drift threshold
+            if ($prevLat === null || 
+                abs($lat - $prevLat) > $driftThreshold || 
+                abs($lng - $prevLng) > $driftThreshold) {
+                $filtered[] = $reading;
+                $prevLat = $lat;
+                $prevLng = $lng;
             }
         }
         
-        // Always include first and last point
-        if (!in_array($readings[0], $sampled)) {
-            array_unshift($sampled, $readings[0]);
+        $filteredCount = count($filtered);
+        
+        // Safety: if filtering removed too much, use original
+        if ($filteredCount < 2) {
+            $filtered = $readings;
+            $filteredCount = $count;
         }
-        if (!in_array($readings[$count - 1], $sampled)) {
-            $sampled[] = $readings[$count - 1];
+        
+        // ⭐ Step 2: If under limit, return filtered points
+        if ($filteredCount <= $maxPoints) {
+            return $filtered;
+        }
+        
+        // ⭐ Step 3: Sample evenly from filtered points
+        $sampled = [];
+        $step = ($filteredCount - 1) / ($maxPoints - 1);
+        
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $index = (int) round($i * $step);
+            if ($index < $filteredCount) {
+                $sampled[] = $filtered[$index];
+            }
+        }
+        
+        // Always ensure first and last points are included
+        $first = $filtered[0];
+        $last = $filtered[$filteredCount - 1];
+        
+        // Check first
+        $firstLat = (float)(is_object($first) ? $first->latitude : ($first['latitude'] ?? 0));
+        $firstLng = (float)(is_object($first) ? $first->longitude : ($first['longitude'] ?? 0));
+        $sampledFirst = $sampled[0];
+        $sFirstLat = (float)(is_object($sampledFirst) ? $sampledFirst->latitude : ($sampledFirst['latitude'] ?? 0));
+        $sFirstLng = (float)(is_object($sampledFirst) ? $sampledFirst->longitude : ($sampledFirst['longitude'] ?? 0));
+        
+        if (abs($firstLat - $sFirstLat) > 0.00001 || abs($firstLng - $sFirstLng) > 0.00001) {
+            array_unshift($sampled, $first);
+        }
+        
+        // Check last
+        $lastLat = (float)(is_object($last) ? $last->latitude : ($last['latitude'] ?? 0));
+        $lastLng = (float)(is_object($last) ? $last->longitude : ($last['longitude'] ?? 0));
+        $sampledLast = end($sampled);
+        $sLastLat = (float)(is_object($sampledLast) ? $sampledLast->latitude : ($sampledLast['latitude'] ?? 0));
+        $sLastLng = (float)(is_object($sampledLast) ? $sampledLast->longitude : ($sampledLast['longitude'] ?? 0));
+        
+        if (abs($lastLat - $sLastLat) > 0.00001 || abs($lastLng - $sLastLng) > 0.00001) {
+            $sampled[] = $last;
         }
         
         return $sampled;
@@ -2447,12 +2845,27 @@ class RiderController extends Controller
                 ->where('id', $existing->id)
                 ->update($updateData);
 
+            // ⭐ ROAD DISTANCE: Calculate and store after successful checkout
+            // This runs in background - doesn't block the checkout response
+            $roadDistanceResult = null;
+            try {
+                $roadDistanceResult = $this->calculateAndStoreRoadDistance($user->id, $today, $existing->id);
+            } catch (\Exception $rdError) {
+                // Non-fatal - log but don't fail checkout
+                \Log::warning('Road distance calculation failed (non-fatal)', [
+                    'user_id' => $user->id,
+                    'date' => $today,
+                    'error' => $rdError->getMessage()
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Checked out successfully at ' . date('h:i A', strtotime($currentTime)),
                 'logout_time' => $currentTime,
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
                 'location_captured' => $locationData ? true : false,
+                'road_distance' => $roadDistanceResult, // ⭐ Include calculated road distance
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to check out', [
@@ -2500,6 +2913,127 @@ class RiderController extends Controller
             'checkout_longitude' => $longitude,
             'checkout_accuracy' => $request->input('accuracy'),
             'checkout_location_captured_at' => now(),
+        ];
+    }
+
+    /**
+     * ⭐ Calculate and store road distance for attendance
+     * Called automatically on checkout or manually via button
+     * 
+     * @param int $userId
+     * @param string $date YYYY-MM-DD
+     * @param int|null $attendanceId Optional - if not provided, will look up
+     * @return array|null Result with road_distance_km or null if failed
+     */
+    private function calculateAndStoreRoadDistance(int $userId, string $date, ?int $attendanceId = null): ?array
+    {
+        // Get attendance record if not provided
+        if (!$attendanceId) {
+            $attendance = \DB::table('t_ops_attendance')
+                ->where('user_id', $userId)
+                ->whereDate('attendance_date', $date)
+                ->first();
+            if (!$attendance) {
+                return null;
+            }
+            $attendanceId = $attendance->id;
+        }
+        
+        // Get all GPS readings for the day
+        $readings = \DB::table('t_ops_rider_location')
+            ->where('user_id', $userId)
+            ->whereDate('captured_at', $date)
+            ->where('accuracy', '<=', 100)
+            ->orderBy('captured_at')
+            ->select('latitude', 'longitude', 'accuracy', 'captured_at')
+            ->get();
+        
+        // Not enough readings
+        if ($readings->count() < 2) {
+            \DB::table('t_ops_attendance')
+                ->where('id', $attendanceId)
+                ->update([
+                    'road_distance_source' => 'insufficient_data',
+                    'road_distance_calculated_at' => now(),
+                    'gps_readings_used' => $readings->count(),
+                ]);
+            return [
+                'road_distance_km' => null,
+                'source' => 'insufficient_data',
+                'readings_count' => $readings->count(),
+            ];
+        }
+        
+        // Calculate straight-line distance first
+        $straightResult = $this->calculateGpsDistanceFromReadings($readings->toArray());
+        
+        // Skip API if rider barely moved (< 100m) - likely stationary
+        if ($straightResult['distance'] === null || $straightResult['distance'] < 0.1) {
+            \DB::table('t_ops_attendance')
+                ->where('id', $attendanceId)
+                ->update([
+                    'road_distance_source' => 'skipped_stationary',
+                    'road_distance_calculated_at' => now(),
+                    'gps_straight_distance_km' => $straightResult['distance'],
+                    'gps_readings_used' => $readings->count(),
+                ]);
+            return [
+                'road_distance_km' => null,
+                'straight_distance_km' => $straightResult['distance'],
+                'source' => 'skipped_stationary',
+                'readings_count' => $readings->count(),
+            ];
+        }
+        
+        // Sample readings for API call (max 25 waypoints)
+        $sampledReadings = $this->sampleGpsReadings($readings->toArray(), 25);
+        
+        if (count($sampledReadings) < 2) {
+            \DB::table('t_ops_attendance')
+                ->where('id', $attendanceId)
+                ->update([
+                    'road_distance_source' => 'calculated',
+                    'road_distance_calculated_at' => now(),
+                    'gps_straight_distance_km' => $straightResult['distance'],
+                    'gps_readings_used' => $readings->count(),
+                ]);
+            return [
+                'road_distance_km' => null,
+                'straight_distance_km' => $straightResult['distance'],
+                'source' => 'calculated',
+                'readings_count' => $readings->count(),
+            ];
+        }
+        
+        // Call OpenRouteService for road distance
+        $roadDistance = $this->callOpenRouteService($sampledReadings);
+        
+        // Store result
+        $updateData = [
+            'road_distance_calculated_at' => now(),
+            'gps_straight_distance_km' => $straightResult['distance'],
+            'gps_readings_used' => $readings->count(),
+        ];
+        
+        if ($roadDistance !== null) {
+            $updateData['road_distance_km'] = round($roadDistance, 2);
+            $updateData['road_distance_source'] = 'openrouteservice';
+        } else {
+            // API failed - store straight-line as fallback
+            $updateData['road_distance_km'] = $straightResult['distance'];
+            $updateData['road_distance_source'] = 'calculated';
+        }
+        
+        \DB::table('t_ops_attendance')
+            ->where('id', $attendanceId)
+            ->update($updateData);
+        
+        return [
+            'road_distance_km' => $updateData['road_distance_km'],
+            'straight_distance_km' => $straightResult['distance'],
+            'source' => $updateData['road_distance_source'],
+            'readings_count' => $readings->count(),
+            'sampled_points' => count($sampledReadings),
         ];
     }
 
@@ -2605,6 +3139,124 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to record location: ' . $e->getMessage()
             ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ LOCATION TRACKING: Log location failure
+     * Records when the app tried to get location but failed
+     * Helps diagnose GPS gaps in the audit
+     */
+    public function logLocationFailure(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                \Log::warning('📍 Location failure log rejected: unauthorized');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized'
+                ], 401);
+            }
+            
+            // ⭐ Log incoming request for debugging
+            \Log::info('📍 Location failure API called', [
+                'user_id' => $user->id,
+                'request_data' => $request->all(),
+            ]);
+            
+            // Validate input - be lenient with last_success_at
+            $validated = $request->validate([
+                'failure_reason' => 'required|string|max:50',
+                'failure_source' => 'nullable|string|max:30',
+                'error_message' => 'nullable|string|max:255',
+                'device_online' => 'nullable',
+                'last_known_lat' => 'nullable|numeric',
+                'last_known_lng' => 'nullable|numeric',
+                'last_success_at' => 'nullable|string', // Changed from date to string
+                'app_state' => 'nullable|string|max:20',
+                'app_version' => 'nullable|string|max:20',
+            ]);
+            
+            // ⭐ Parse last_success_at if provided (handle various formats)
+            $lastSuccessAt = null;
+            if (!empty($validated['last_success_at'])) {
+                try {
+                    $lastSuccessAt = \Carbon\Carbon::parse($validated['last_success_at']);
+                } catch (\Exception $e) {
+                    \Log::warning('📍 Could not parse last_success_at', [
+                        'value' => $validated['last_success_at'],
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+            
+            // ⭐ Use raw SQL INSERT for maximum reliability
+            $insertData = [
+                'user_id' => (int)$user->id,
+                'failure_reason' => $validated['failure_reason'],
+                'failure_source' => $validated['failure_source'] ?? 'unknown',
+                'error_message' => isset($validated['error_message']) ? substr($validated['error_message'], 0, 255) : null,
+                'device_online' => isset($validated['device_online']) ? ($validated['device_online'] ? 1 : 0) : null,
+                'last_known_lat' => $validated['last_known_lat'] ?? null,
+                'last_known_lng' => $validated['last_known_lng'] ?? null,
+                'last_success_at' => $lastSuccessAt ? $lastSuccessAt->toDateTimeString() : null,
+                'app_state' => $validated['app_state'] ?? 'unknown',
+                'app_version' => $validated['app_version'] ?? null,
+                'captured_at' => now()->toDateTimeString(),
+            ];
+            
+            \Log::info('📍 Attempting insert with data', $insertData);
+            
+            // ⭐ Try raw INSERT statement
+            $inserted = \DB::statement(
+                "INSERT INTO t_ops_location_failures 
+                (user_id, failure_reason, failure_source, error_message, device_online, 
+                 last_known_lat, last_known_lng, last_success_at, app_state, app_version, captured_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    $insertData['user_id'],
+                    $insertData['failure_reason'],
+                    $insertData['failure_source'],
+                    $insertData['error_message'],
+                    $insertData['device_online'],
+                    $insertData['last_known_lat'],
+                    $insertData['last_known_lng'],
+                    $insertData['last_success_at'],
+                    $insertData['app_state'],
+                    $insertData['app_version'],
+                    $insertData['captured_at'],
+                ]
+            );
+            
+            \Log::info('📍 Location failure logged to DB successfully', [
+                'user_id' => $user->id,
+                'reason' => $validated['failure_reason'],
+                'inserted' => $inserted,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Failure logged',
+                'debug' => 'inserted=' . ($inserted ? 'true' : 'false'),
+            ]);
+            
+        } catch (\Exception $e) {
+            // Log the actual error for debugging
+            \Log::error('❌ Failed to log location failure (EXCEPTION)', [
+                'error' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'file' => $e->getFile(),
+                'user_id' => Auth::id(),
+            ]);
+            
+            // Return success anyway - don't block the app, but include error for debugging
+            return response()->json([
+                'success' => true,
+                'message' => 'Noted',
+                'debug_error' => substr($e->getMessage(), 0, 100),
+            ]);
         }
     }
 
@@ -2956,12 +3608,18 @@ class RiderController extends Controller
             // Get orders for this rider based on view mode
             $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded'];
             
+            // ⭐ Subquery to get LATEST delivered status per order (handles duplicate delivered statuses)
+            $latestDeliveredStatus = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MAX(id) as latest_osh_id'))
+                ->where('status_code', 'delivered')
+                ->groupBy('order_id');
+            
             $ordersQuery = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-                ->leftJoin('t_crm_order_status_history as osh', function($join) {
-                    $join->on('o.id', '=', 'osh.order_id')
-                         ->where('osh.status_code', '=', 'delivered');
+                ->leftJoinSub($latestDeliveredStatus, 'latest_del', function($join) {
+                    $join->on('o.id', '=', 'latest_del.order_id');
                 })
+                ->leftJoin('t_crm_order_status_history as osh', 'osh.id', '=', 'latest_del.latest_osh_id')
                 ->where('o.assigned_rider_user_id', $riderId);
             
             if ($isHistory) {
@@ -3279,6 +3937,156 @@ class RiderController extends Controller
             'point_count' => $group['point_count'],
             'sources' => implode(', ', $group['sources']),
         ];
+    }
+
+    /**
+     * ⭐ Get GPS trail segment between two deliveries
+     * Used by RiderMapModal to show trail for a selected order
+     * 
+     * @param riderId - Rider ID
+     * @param from_time - Start timestamp (e.g., previous delivery time or check-in time)
+     * @param to_time - End timestamp (e.g., this order's delivery time)
+     * @param office_lat/office_lng - Office coordinates for batch break detection
+     * 
+     * @return GPS trail with batch break detection
+     */
+    public function getTrailSegment(Request $request, $riderId)
+    {
+        try {
+            $fromTime = $request->get('from_time');
+            $toTime = $request->get('to_time');
+            $officeLat = $request->get('office_lat');
+            $officeLng = $request->get('office_lng');
+            $proximityThreshold = $request->get('proximity_threshold', 500); // 500m default
+            
+            if (!$fromTime || !$toTime) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'from_time and to_time are required'
+                ], 400);
+            }
+            
+            // Parse timestamps
+            $from = \Carbon\Carbon::parse($fromTime);
+            $to = \Carbon\Carbon::parse($toTime);
+            
+            // Get GPS readings between timestamps
+            $readings = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->whereBetween('captured_at', [$from, $to])
+                ->orderBy('captured_at')
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
+                ->get();
+            
+            if ($readings->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'trail' => [],
+                    'count' => 0,
+                    'batch_breaks' => [],
+                    'message' => 'No GPS readings in this time range'
+                ]);
+            }
+            
+            // Format trail points
+            $trail = $readings->map(function($loc) {
+                $capturedAt = \Carbon\Carbon::parse($loc->captured_at);
+                return [
+                    'latitude' => (float)$loc->latitude,
+                    'longitude' => (float)$loc->longitude,
+                    'accuracy' => $loc->accuracy,
+                    'time' => $capturedAt->format('h:i A'),
+                    'timestamp' => $loc->captured_at,
+                    'source' => $loc->source,
+                ];
+            })->values();
+            
+            // ⭐ Detect batch breaks (times when rider was near office)
+            $batchBreaks = [];
+            if ($officeLat && $officeLng) {
+                $officeLat = (float)$officeLat;
+                $officeLng = (float)$officeLng;
+                $currentBatchBreak = null;
+                
+                foreach ($readings as $loc) {
+                    $lat = (float)$loc->latitude;
+                    $lng = (float)$loc->longitude;
+                    
+                    // Calculate distance from office (Haversine formula)
+                    $distance = $this->haversineDistance($lat, $lng, $officeLat, $officeLng);
+                    
+                    if ($distance < $proximityThreshold) {
+                        // Near office
+                        if (!$currentBatchBreak) {
+                            $currentBatchBreak = [
+                                'entered_at' => $loc->captured_at,
+                                'latitude' => $lat,
+                                'longitude' => $lng,
+                            ];
+                        }
+                        $currentBatchBreak['exited_at'] = $loc->captured_at;
+                    } else {
+                        // Away from office
+                        if ($currentBatchBreak) {
+                            // Calculate duration at office
+                            $entered = \Carbon\Carbon::parse($currentBatchBreak['entered_at']);
+                            $exited = \Carbon\Carbon::parse($currentBatchBreak['exited_at']);
+                            $durationMinutes = $entered->diffInMinutes($exited);
+                            
+                            // Only count as batch break if stayed > 5 minutes
+                            if ($durationMinutes >= 5) {
+                                $batchBreaks[] = [
+                                    'entered_at' => $entered->format('h:i A'),
+                                    'exited_at' => $exited->format('h:i A'),
+                                    'duration_minutes' => $durationMinutes,
+                                    'latitude' => $currentBatchBreak['latitude'],
+                                    'longitude' => $currentBatchBreak['longitude'],
+                                ];
+                            }
+                            $currentBatchBreak = null;
+                        }
+                    }
+                }
+                
+                // Handle case where trail ends at office
+                if ($currentBatchBreak) {
+                    $entered = \Carbon\Carbon::parse($currentBatchBreak['entered_at']);
+                    $exited = \Carbon\Carbon::parse($currentBatchBreak['exited_at']);
+                    $durationMinutes = $entered->diffInMinutes($exited);
+                    
+                    if ($durationMinutes >= 5) {
+                        $batchBreaks[] = [
+                            'entered_at' => $entered->format('h:i A'),
+                            'exited_at' => $exited->format('h:i A') . ' (current)',
+                            'duration_minutes' => $durationMinutes,
+                            'latitude' => $currentBatchBreak['latitude'],
+                            'longitude' => $currentBatchBreak['longitude'],
+                        ];
+                    }
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'trail' => $trail,
+                'count' => $trail->count(),
+                'from_time' => $from->format('h:i A'),
+                'to_time' => $to->format('h:i A'),
+                'batch_breaks' => $batchBreaks,
+                'has_batch_break' => count($batchBreaks) > 0,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get trail segment', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load trail segment: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -3631,12 +4439,18 @@ class RiderController extends Controller
                 ], 404);
             }
             
-            // Get all delivered orders for this rider in the last 3 months
+            // ⭐ Get all delivered orders for this rider in the last 3 months
+            // Use subquery to get LATEST delivered status per order (handles duplicate delivered statuses)
+            $latestDeliveredSubquery = \DB::table('t_crm_order_status_history')
+                ->select('order_id', \DB::raw('MAX(id) as latest_osh_id'))
+                ->where('status_code', 'delivered')
+                ->groupBy('order_id');
+            
             $orders = \DB::table('t_crm_prod_order as o')
-                ->join('t_crm_order_status_history as osh', function($join) {
-                    $join->on('o.id', '=', 'osh.order_id')
-                         ->where('osh.status_code', '=', 'delivered');
+                ->joinSub($latestDeliveredSubquery, 'latest_osh', function($join) {
+                    $join->on('o.id', '=', 'latest_osh.order_id');
                 })
+                ->join('t_crm_order_status_history as osh', 'osh.id', '=', 'latest_osh.latest_osh_id')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where('o.assigned_rider_user_id', $riderId)
                 ->where('osh.changed_at', '>=', $threeMonthsAgo)
@@ -3725,6 +4539,7 @@ class RiderController extends Controller
                     'amount_formatted' => 'Rs. ' . number_format($amount, 0),
                     'payment_type' => $isCash ? 'cash' : 'online',
                     'delivered_at' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                    'delivered_at_raw' => $order->delivered_at, // ⭐ Raw timestamp for trail segment calculation
                     'location' => $location,
                 ];
             }
@@ -4436,6 +5251,405 @@ class RiderController extends Controller
             ], 500);
         }
     }
+    
+    /**
+     * ⭐ Get available accounts for loan/advance disbursement (Store Mode)
+     */
+    public function getDisbursementAccounts(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            // Get company accounts that can be used for disbursement
+            // Include: All cash/asset accounts that can be payment sources
+            $accounts = \DB::table('t_fin_accounts')
+                ->where(function($q) {
+                    $q->whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'PETTY_CASH', 'ONLINE', 'NF_ONLINE', 'BANK', 'NF_FOOD'])
+                      ->orWhere('account_category', 'company_cash')
+                      ->orWhere('account_category', 'cash') // ⭐ Include 'cash' category
+                      ->orWhere('account_category', 'online')
+                      ->orWhere('account_category', 'bank')
+                      ->orWhere('account_type', 'bank')
+                      ->orWhere('account_type', 'online')
+                      // Also include accounts with 'online' or 'bank' in name
+                      ->orWhere('account_name', 'LIKE', '%online%')
+                      ->orWhere('account_name', 'LIKE', '%bank%')
+                      ->orWhere('account_name', 'LIKE', '%jazzcash%')
+                      ->orWhere('account_name', 'LIKE', '%easypaisa%')
+                      // ⭐ Include NF subsidiary accounts
+                      ->orWhere('account_code', 'LIKE', 'NF_%');
+                })
+                ->where('is_active', 1)
+                // ⭐ Exclude employee cash and expense accounts (only want source accounts)
+                ->where('account_category', '!=', 'employee_cash')
+                ->where('account_type', '!=', 'expense')
+                ->select('id', 'account_code', 'account_name', 'current_balance', 'account_category', 'account_type')
+                ->orderByRaw("CASE 
+                    WHEN account_code = 'NF_CASH' THEN 1
+                    WHEN account_code = 'EXP_FUND' THEN 2
+                    WHEN account_name LIKE '%online%' THEN 3
+                    ELSE 4
+                END")
+                ->get()
+                ->map(function($acc) {
+                    // Determine icon based on account type
+                    $icon = '💵';
+                    $isOnline = in_array($acc->account_category, ['online', 'bank']) 
+                        || in_array($acc->account_type, ['online', 'bank'])
+                        || stripos($acc->account_name, 'online') !== false
+                        || stripos($acc->account_name, 'bank') !== false
+                        || stripos($acc->account_name, 'jazzcash') !== false
+                        || stripos($acc->account_name, 'easypaisa') !== false;
+                    
+                    if ($isOnline) {
+                        $icon = '🏦';
+                    } elseif ($acc->account_code === 'EXP_FUND') {
+                        $icon = '📋';
+                    }
+                    
+                    return [
+                        'id' => $acc->id,
+                        'code' => $acc->account_code,
+                        'name' => $acc->account_name,
+                        'balance' => (float)$acc->current_balance,
+                        'icon' => $icon,
+                        'category' => $acc->account_category,
+                        'is_online' => $isOnline,
+                    ];
+                });
+            
+            return response()->json([
+                'success' => true,
+                'accounts' => $accounts,
+                // Add "Outside Cash" option for loans
+                'outside_cash_option' => [
+                    'id' => null,
+                    'code' => 'OUTSIDE_CASH',
+                    'name' => 'Outside Cash (Not from company)',
+                    'balance' => null,
+                ],
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load accounts: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Create salary advance for employee (Store Mode)
+     * Auto-approves if requested by store manager
+     */
+    public function createSalaryAdvance(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:t_sys_user,id',
+                'amount' => 'required|numeric|min:1',
+                'reason' => 'nullable|string|max:500',
+                'auto_approve' => 'nullable|boolean',
+                'payment_source_account_id' => 'nullable|integer|exists:t_fin_accounts,id', // ⭐ Payment source
+            ]);
+            
+            // Get salary_advance category
+            $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'salary_advance')->first();
+            
+            if (!$category) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Salary advance category not configured'
+                ], 500);
+            }
+            
+            // Generate request number
+            $requestNumber = 'REQ-' . date('Ymd') . '-' . str_pad(
+                \App\Models\Request\RequestModel::whereDate('created_at', today())->count() + 1,
+                3, '0', STR_PAD_LEFT
+            );
+            
+            $autoApprove = $validated['auto_approve'] ?? false;
+            
+            // Create the request using only valid columns
+            $advanceRequest = \App\Models\Request\RequestModel::create([
+                'request_number' => $requestNumber,
+                'requester_user_id' => $validated['user_id'],
+                'category_id' => $category->id,
+                'title' => 'Salary Advance',
+                'description' => $validated['reason'] ?? 'Salary advance requested by store manager',
+                'amount' => $validated['amount'],
+                'status' => 'pending', // Start as pending
+                'submitted_at' => now(),
+                'created_by' => $user->id,
+                'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                // No approval workflow required for store manager
+                'requires_level_1' => false,
+                'requires_level_2' => false,
+            ]);
+            
+            // ⭐ If auto-approved, use the model's approve method
+            if ($autoApprove) {
+                // Approve the request properly
+                $advanceRequest->status = 'approved';
+                $advanceRequest->completed_at = now();
+                $advanceRequest->updated_by = $user->id;
+                $advanceRequest->save();
+                
+                // Post to ledger
+                try {
+                    $ledgerService = new \App\Services\FIN\LedgerPostingService();
+                    $ledgerService->postSalaryAdvanceFromRequest($advanceRequest);
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to post salary advance to ledger', [
+                        'request_id' => $advanceRequest->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Don't fail - advance is created, ledger can be posted later
+                }
+            }
+            
+            \Log::info('Salary advance created from store mode', [
+                'request_id' => $advanceRequest->id,
+                'request_number' => $requestNumber,
+                'for_user_id' => $validated['user_id'],
+                'amount' => $validated['amount'],
+                'auto_approved' => $autoApprove,
+                'created_by' => $user->id,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => $autoApprove ? 'Salary advance created and approved' : 'Salary advance created',
+                'request' => [
+                    'id' => $advanceRequest->id,
+                    'request_number' => $requestNumber,
+                    'amount' => $validated['amount'],
+                    'status' => $advanceRequest->status,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to create salary advance', [
+                'user_id' => $request->input('user_id'),
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create advance: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get employee salary details (loans and pending advances) for store mode
+     */
+    public function getEmployeeSalaryDetails(Request $request, $userId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            // Get employee profile with active loans
+            $profile = \App\Models\HR\EmployeeProfileModel::with(['activeLoans' => function($q) {
+                $q->where('loan_status', 'active');
+            }])
+            ->where('user_id', $userId)
+            ->first();
+            
+            // Get pending salary advances (not settled)
+            $pendingAdvances = \App\Models\Request\RequestModel::where('requester_user_id', $userId)
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'salary_advance');
+                })
+                ->where('status', 'approved')
+                ->where(function($q) {
+                    $q->whereNull('settlement_status')
+                      ->orWhere('settlement_status', '!=', 'settled');
+                })
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(function($adv) {
+                    return [
+                        'id' => $adv->id,
+                        'request_number' => $adv->request_number,
+                        'amount' => (float)$adv->amount,
+                        'title' => $adv->title,
+                        'description' => $adv->description,
+                        'created_at' => $adv->created_at->format('Y-m-d'),
+                        'settlement_status' => $adv->settlement_status ?? 'pending',
+                    ];
+                });
+            
+            // ⭐ Get advance history (all advances including settled ones for history view)
+            $advanceHistory = \App\Models\Request\RequestModel::where('requester_user_id', $userId)
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'salary_advance');
+                })
+                ->where('status', 'approved')
+                ->orderByDesc('created_at')
+                ->limit(20) // Last 20 advances
+                ->get()
+                ->map(function($adv) {
+                    return [
+                        'id' => $adv->id,
+                        'request_number' => $adv->request_number,
+                        'amount' => (float)$adv->amount,
+                        'title' => $adv->title,
+                        'description' => $adv->description,
+                        'created_at' => $adv->created_at->format('Y-m-d'),
+                        'settlement_status' => $adv->settlement_status ?? 'pending',
+                        'settled_at' => $adv->settled_at ? $adv->settled_at->format('Y-m-d') : null,
+                        'is_settled' => $adv->settlement_status === 'settled',
+                    ];
+                });
+            
+            // Get active loans summary - ensure it's always a Collection
+            $activeLoans = collect(); // Start with empty collection
+            if ($profile && $profile->activeLoans) {
+                $activeLoans = $profile->activeLoans->map(function($loan) {
+                    return [
+                        'id' => $loan->id,
+                        'loan_number' => $loan->loan_number,
+                        'principal_amount' => (float)$loan->principal_amount,
+                        'monthly_installment' => (float)$loan->monthly_installment,
+                        'outstanding_balance' => (float)$loan->outstanding_balance, // ⭐ Fixed: use property
+                        'total_paid' => (float)$loan->getAmountPaid(), // ⭐ Fixed: correct method name
+                        'description' => $loan->description,
+                        'loan_date' => $loan->loan_date ? $loan->loan_date->format('Y-m-d') : null,
+                        'loan_status' => $loan->loan_status,
+                    ];
+                });
+            }
+            
+            return response()->json([
+                'success' => true,
+                'user_id' => $userId,
+                'loans' => $activeLoans->values(), // Convert to array
+                'advances' => $pendingAdvances->values(), // Convert to array
+                'advance_history' => $advanceHistory->values(), // ⭐ History including settled
+                'total_loan_outstanding' => $activeLoans->sum('outstanding_balance'),
+                'total_advances_pending' => $pendingAdvances->sum('amount'),
+                'has_advance_history' => $advanceHistory->count() > 0,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get employee salary details', [
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load details: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Settle a salary advance manually (Store Mode)
+     * Marks the advance as settled so it no longer shows on employee's pending balance
+     */
+    public function settleSalaryAdvance(Request $request, $advanceId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            // Find the advance request
+            $advance = \App\Models\Request\RequestModel::whereHas('category', function($q) {
+                    $q->where('category_code', 'salary_advance');
+                })
+                ->where('id', $advanceId)
+                ->where('status', 'approved')
+                ->first();
+            
+            if (!$advance) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Salary advance not found or not approved'
+                ], 404);
+            }
+            
+            // Check if already settled
+            if ($advance->settlement_status === 'settled') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This advance is already settled'
+                ], 400);
+            }
+            
+            // Mark as settled
+            $advance->settlement_status = 'settled';
+            $advance->settled_at = now();
+            $advance->settled_by = $user->id;
+            $advance->settlement_notes = $request->input('notes', 'Manually settled from store mobile app');
+            $advance->save();
+            
+            \Log::info('Salary advance manually settled', [
+                'advance_id' => $advance->id,
+                'request_number' => $advance->request_number,
+                'amount' => $advance->amount,
+                'settled_by' => $user->id,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Salary advance marked as settled',
+                'advance' => [
+                    'id' => $advance->id,
+                    'request_number' => $advance->request_number,
+                    'amount' => $advance->amount,
+                    'settlement_status' => $advance->settlement_status,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to settle salary advance', [
+                'advance_id' => $advanceId,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to settle advance: ' . $e->getMessage()
+            ], 500);
+        }
+    }
 
     /**
      * Helper: Get status color for salary slip
@@ -4914,6 +6128,11 @@ class RiderController extends Controller
                     'order_status' => $order->order_status,
                     'total_price' => $order->total_price,
                     'delivery_priority' => $order->delivery_priority, // ⭐ Delivery sequence priority
+                    // ⭐ Estimated delivery time (from "Get Times" button)
+                    'estimated_delivery_at' => $order->estimated_delivery_at,
+                    'estimated_delivery_at_display' => $order->estimated_delivery_at 
+                        ? \Carbon\Carbon::parse($order->estimated_delivery_at)->format('h:i A')
+                        : null,
                     'expected_packets' => $order->expected_packets, // ⭐ Packet info (from manager)
                     'actual_packets' => $order->actual_packets,     // ⭐ Actual packets (from rider, after delivery)
                     'payment_method' => $order->payment_method,     // ⭐ Payment method (cash/online)
@@ -5164,6 +6383,8 @@ class RiderController extends Controller
                     'longitude' => (float)$riderLocation->longitude,
                     'accuracy' => $riderLocation->accuracy,
                     'captured_at' => $riderLocation->captured_at,
+                    // ⭐ Pre-computed age for consistent display (avoids client-side timezone issues)
+                    'age' => \Carbon\Carbon::parse($riderLocation->captured_at)->diffForHumans(),
                 ] : null,
                 'office' => $distanceInfo && $distanceInfo['base_location'] ? [
                     'name' => $distanceInfo['base_location']->location_name ?? 'Office',
@@ -6898,17 +8119,29 @@ class RiderController extends Controller
                 ], 403);
             }
             
+            // ⭐ Check if user can see ALL payment sources (EXP_FUND, NF_CASH, ONLINE)
+            // Without this permission, user only sees EXP_FUND expenses
+            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources');
+            
             // Get filter parameters
             $month = $request->input('month'); // Format: YYYY-MM
             $category = $request->input('category');
             $settlementStatus = $request->input('settlement_status');
+            $paymentSourceFilter = $request->input('payment_source'); // New filter: account_id or 'all'
             
             \Log::debug('Expense filter params received', [
                 'month' => $month,
                 'category' => $category,
                 'settlement_status' => $settlementStatus,
+                'payment_source' => $paymentSourceFilter,
+                'has_all_sources_permission' => $hasAllPaymentSourcesPermission,
                 'all_params' => $request->all()
             ]);
+            
+            // ⭐ Get EXP_FUND account ID for filtering
+            $expenseFundAccount = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
+                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            $expenseFundAccountId = $expenseFundAccount ? $expenseFundAccount->id : null;
             
             // Build base query for expenses and salary advances
             $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) {
@@ -6917,6 +8150,21 @@ class RiderController extends Controller
                 ->whereNotNull('ledger_transaction_id')
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
+            
+            // ⭐ Apply payment source filter based on permission
+            if (!$hasAllPaymentSourcesPermission) {
+                // User can only see EXP_FUND expenses
+                if ($expenseFundAccountId) {
+                    $expensesQuery->where(function($q) use ($expenseFundAccountId) {
+                        $q->where('payment_source_account_id', $expenseFundAccountId)
+                          ->orWhereNull('payment_source_account_id'); // Old records default to EXP_FUND
+                    });
+                }
+            } else if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
+                // User has permission and wants to filter by specific source
+                $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
+            }
+            // If paymentSourceFilter is 'all' or empty with permission, show all sources
             
             // Apply date filter only if month is provided AND is valid format
             if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
@@ -6987,7 +8235,16 @@ class RiderController extends Controller
                                  ->whereRaw('DATE(created_at) <= ?', [$dateTo]);
             }
             
-            $includeSalarySlips = !$category || strtolower($category) === 'salary';
+            // ⭐ FIX: Only include salary slips if:
+            // 1. No category filter OR category is 'salary'
+            // 2. AND no payment source filter OR filter is EXP_FUND
+            $includeSalarySlips = (!$category || strtolower($category) === 'salary');
+            
+            // ⭐ If user filters by a specific non-EXP_FUND source, exclude salary slips
+            if ($paymentSourceFilter && $paymentSourceFilter !== 'all' && $paymentSourceFilter != $expenseFundAccountId) {
+                $includeSalarySlips = false;
+            }
+            
             $salarySlips = $includeSalarySlips ? $salarySlipsQuery->orderBy('created_at', 'desc')->get() : collect([]);
             $totalSalaryExpenses = $salarySlips->sum('net_salary');
             
@@ -7033,9 +8290,49 @@ class RiderController extends Controller
             $needsSettlement = $allExpenses->filter(fn($exp) => $exp->settlement_status === 'pending')->sum('amount');
             $settled = $allExpenses->filter(fn($exp) => $exp->settlement_status === 'settled')->sum('amount');
             
-            // Get expense fund balance
-            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
-                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            // ⭐ Calculate expenses breakdown by payment source
+            $expensesBySource = [];
+            
+            // Group expenses by source account
+            foreach ($allExpenses as $expense) {
+                $sourceId = $expense->payment_source_account_id ?? 'exp_fund'; // Default to exp_fund for old records
+                $sourceName = $expense->paymentSourceAccount ? $expense->paymentSourceAccount->account_name : 'Expense Fund';
+                
+                if (!isset($expensesBySource[$sourceId])) {
+                    $expensesBySource[$sourceId] = [
+                        'id' => $sourceId,
+                        'name' => $sourceName,
+                        'amount' => 0,
+                        'count' => 0
+                    ];
+                }
+                $expensesBySource[$sourceId]['amount'] += $expense->amount;
+                $expensesBySource[$sourceId]['count']++;
+            }
+            
+            // Add salary slips (always from Expense Fund / EXP_FUND)
+            if ($totalSalaryExpenses > 0) {
+                $expFundId = $expenseFundAccount ? $expenseFundAccount->id : 'exp_fund';
+                $expFundName = $expenseFundAccount ? $expenseFundAccount->account_name : 'Expense Fund';
+                
+                if (!isset($expensesBySource[$expFundId])) {
+                    $expensesBySource[$expFundId] = [
+                        'id' => $expFundId,
+                        'name' => $expFundName,
+                        'amount' => 0,
+                        'count' => 0
+                    ];
+                }
+                $expensesBySource[$expFundId]['amount'] += $totalSalaryExpenses;
+                $expensesBySource[$expFundId]['count'] += $salarySlips->count();
+            }
+            
+            // Sort by amount descending and convert to array
+            $expensesBySourceArray = array_values($expensesBySource);
+            usort($expensesBySourceArray, fn($a, $b) => $b['amount'] <=> $a['amount']);
+            
+            // Get expense fund balance (reuse $expenseFundAccount from earlier)
+            $expenseFund = $expenseFundAccount;
             
             // Get pending approvals (real-time, not filtered by month)
             // Include approvals relationship to check L1/L2 status
@@ -7191,6 +8488,62 @@ class RiderController extends Controller
             $hasL1Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
             $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
             
+            // ⭐ Get available payment sources for dropdown (if user has permission)
+            $availablePaymentSources = [];
+            if ($hasAllPaymentSourcesPermission) {
+                // User can see all sources
+                $nfCashAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
+                $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+                
+                if ($expenseFund) {
+                    $availablePaymentSources[] = [
+                        'id' => $expenseFund->id,
+                        'code' => $expenseFund->account_code,
+                        'name' => $expenseFund->account_name,
+                        'balance' => $expenseFund->current_balance
+                    ];
+                }
+                if ($nfCashAccount) {
+                    $availablePaymentSources[] = [
+                        'id' => $nfCashAccount->id,
+                        'code' => $nfCashAccount->account_code,
+                        'name' => $nfCashAccount->account_name,
+                        'balance' => $nfCashAccount->current_balance
+                    ];
+                }
+                if ($onlineAccount) {
+                    $availablePaymentSources[] = [
+                        'id' => $onlineAccount->id,
+                        'code' => $onlineAccount->account_code,
+                        'name' => $onlineAccount->account_name,
+                        'balance' => $onlineAccount->current_balance
+                    ];
+                }
+                
+                // Add NF Food accounts (any account with code starting with NF_FOOD)
+                $nfFoodAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                    ->where('account_code', 'LIKE', 'NF_FOOD%')
+                    ->get();
+                foreach ($nfFoodAccounts as $nfFoodAccount) {
+                    $availablePaymentSources[] = [
+                        'id' => $nfFoodAccount->id,
+                        'code' => $nfFoodAccount->account_code,
+                        'name' => $nfFoodAccount->account_name,
+                        'balance' => $nfFoodAccount->current_balance
+                    ];
+                }
+            } else {
+                // User can only use EXP_FUND
+                if ($expenseFund) {
+                    $availablePaymentSources[] = [
+                        'id' => $expenseFund->id,
+                        'code' => $expenseFund->account_code,
+                        'name' => $expenseFund->account_name,
+                        'balance' => $expenseFund->current_balance
+                    ];
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -7211,13 +8564,18 @@ class RiderController extends Controller
                         'pending_l1_amount' => $pendingL1->sum('amount'),
                         'pending_l2_count' => $pendingL2->count(),
                         'pending_l2_amount' => $pendingL2->sum('amount'),
-                        'top_categories' => $topCategories
+                        'top_categories' => $topCategories,
+                        // ⭐ Expenses breakdown by source
+                        'expenses_by_source' => $expensesBySourceArray
                     ],
                     // ⭐ User's approval rights
                     'user_approval_rights' => [
                         'has_l1' => $hasL1Rights,
                         'has_l2' => $hasL2Rights,
                     ],
+                    // ⭐ Payment source permission and available sources
+                    'has_all_payment_sources_permission' => $hasAllPaymentSourcesPermission,
+                    'available_payment_sources' => $availablePaymentSources,
                     'categories' => $categories,
                     'current_month' => $month ?: now()->format('Y-m')
                 ]
@@ -7321,6 +8679,108 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load fund transfers: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get available payment sources for expense creation
+     * Returns different sources based on user's expense_all_payment_sources permission
+     * - Without permission: Only EXP_FUND
+     * - With permission: EXP_FUND, NF_CASH, ONLINE
+     */
+    public function getPaymentSources(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission to view expenses
+            if (!$user->hasMobilePermission('view_expenses')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view expenses'
+                ], 403);
+            }
+            
+            // Check if user can see ALL payment sources
+            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources');
+            
+            $paymentSources = [];
+            
+            // Get EXP_FUND account (always available)
+            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
+                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            
+            if ($expenseFund) {
+                $paymentSources[] = [
+                    'id' => $expenseFund->id,
+                    'code' => $expenseFund->account_code,
+                    'name' => $expenseFund->account_name,
+                    'display_name' => 'Exp Fund',
+                    'balance' => (float) $expenseFund->current_balance,
+                    'is_default' => true
+                ];
+            }
+            
+            // Only add other sources if user has permission
+            if ($hasAllPaymentSourcesPermission) {
+                // Get NF_CASH account
+                $nfCashAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
+                if ($nfCashAccount) {
+                    $paymentSources[] = [
+                        'id' => $nfCashAccount->id,
+                        'code' => $nfCashAccount->account_code,
+                        'name' => $nfCashAccount->account_name,
+                        'display_name' => 'NF Cash',
+                        'balance' => (float) $nfCashAccount->current_balance,
+                        'is_default' => false
+                    ];
+                }
+                
+                // Get ONLINE account
+                $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+                if ($onlineAccount) {
+                    $paymentSources[] = [
+                        'id' => $onlineAccount->id,
+                        'code' => $onlineAccount->account_code,
+                        'name' => $onlineAccount->account_name,
+                        'display_name' => 'Online',
+                        'balance' => (float) $onlineAccount->current_balance,
+                        'is_default' => false
+                    ];
+                }
+                
+                // Get NF Food accounts (any account with code starting with NF_FOOD)
+                $nfFoodAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                    ->where('account_code', 'LIKE', 'NF_FOOD%')
+                    ->get();
+                foreach ($nfFoodAccounts as $nfFoodAccount) {
+                    $paymentSources[] = [
+                        'id' => $nfFoodAccount->id,
+                        'code' => $nfFoodAccount->account_code,
+                        'name' => $nfFoodAccount->account_name,
+                        'display_name' => $nfFoodAccount->account_name,
+                        'balance' => (float) $nfFoodAccount->current_balance,
+                        'is_default' => false
+                    ];
+                }
+            }
+            
+            return response()->json([
+                'success' => true,
+                'payment_sources' => $paymentSources,
+                'has_all_payment_sources_permission' => $hasAllPaymentSourcesPermission
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get payment sources', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load payment sources: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -7878,6 +9338,11 @@ class RiderController extends Controller
                     'a.is_remote_checkin',
                     'a.checkout_latitude',
                     'a.checkout_longitude',
+                    // ⭐ Road distance columns (auto-calculated on checkout)
+                    'a.road_distance_km',
+                    'a.road_distance_source',
+                    'a.gps_straight_distance_km',
+                    'a.gps_readings_used',
                     DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                     DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
                     'lr.id as leave_request_id',
@@ -7911,20 +9376,23 @@ class RiderController extends Controller
                 if ($row->login_time && $row->logout_time) {
                     $login = \Carbon\Carbon::parse($row->login_time);
                     $logout = \Carbon\Carbon::parse($row->logout_time);
-                    $hours = $logout->diffInHours($login, true);
+                    // ⭐ Calculate hours worked (round to 2 decimal places)
+                    $hours = round(abs($logout->diffInMinutes($login)) / 60, 2);
                     
                     // Check if late
                     $shiftStart = \Carbon\Carbon::parse($shiftData['shift_start']);
                     if ($login->gt($shiftStart)) {
                         $isLate = true;
-                        $lateMinutes = $login->diffInMinutes($shiftStart);
+                        // ⭐ Use abs() to ensure positive, round to whole number
+                        $lateMinutes = (int) abs($login->diffInMinutes($shiftStart));
                     }
                     
                     // Check if overtime
                     $shiftEnd = \Carbon\Carbon::parse($shiftData['shift_end']);
                     if ($logout->gt($shiftEnd)) {
                         $isOvertime = true;
-                        $overtimeMinutes = $logout->diffInMinutes($shiftEnd);
+                        // ⭐ Use abs() to ensure positive, round to whole number
+                        $overtimeMinutes = (int) abs($logout->diffInMinutes($shiftEnd));
                     }
                 }
                 
@@ -7968,9 +9436,13 @@ class RiderController extends Controller
                     'is_remote_checkin' => $row->is_remote_checkin ?? 0,
                     'checkout_latitude' => $row->checkout_latitude ?? null,
                     'checkout_longitude' => $row->checkout_longitude ?? null,
+                    // ⭐ Road distance (auto-calculated on checkout) - PRIMARY indicator
+                    'road_distance_km' => $row->road_distance_km ?? null,
+                    'road_distance_source' => $row->road_distance_source ?? null,
                     // ⭐ GPS distance will be calculated in batch after the loop
                     'gps_distance' => null,
                     'gps_readings_count' => 0,
+                    'gps_straight_distance_km' => $row->gps_straight_distance_km ?? null,
                 ];
             }
             
@@ -8187,6 +9659,11 @@ class RiderController extends Controller
                     'a.is_remote_checkin',
                     'a.checkout_latitude',
                     'a.checkout_longitude',
+                    // ⭐ Include stored road distance columns
+                    'a.road_distance_km',
+                    'a.road_distance_source',
+                    'a.gps_straight_distance_km',
+                    'a.gps_readings_used',
                     'lr.leave_request_id',
                     'lr.leave_status',
                     'lr.leave_type',
@@ -8391,14 +9868,18 @@ class RiderController extends Controller
                             $daysWithGpsReadings++;
                         }
                         
-                        // ⭐ Calculate road distance for most recent day OR if straight-line > 0.5km
-                        $record->road_distance = null;
-                        $record->road_source = null;
+                        // ⭐ Check for stored road distance first, otherwise calculate for most recent day
                         $record->gap_info = null;
                         
-                        if ($recordDate === $autoCalcRoadDate && $record->gps_distance !== null && $record->gps_distance >= 0.5) {
-                            // Auto-calculate road distance for most recent day
-                            $sampledReadings = $this->sampleGpsReadings($readings, 25);
+                        // ⭐ USE STORED VALUE if available (from checkout or manual calculation)
+                        if ($record->road_distance_km !== null) {
+                            $record->road_distance = (float)$record->road_distance_km;
+                            $record->road_source = $record->road_distance_source ?? 'stored';
+                            $totalRoadDistance += $record->road_distance;
+                            $daysWithRoadDistance++;
+                        } elseif ($recordDate === $autoCalcRoadDate && $record->gps_distance !== null && $record->gps_distance >= 0.5) {
+                            // Auto-calculate road distance for most recent day only (if not stored)
+                            $sampledReadings = $this->sampleGpsReadings($readings, 25); // ⭐ Use 25 samples
                             if (count($sampledReadings) >= 2) {
                                 $roadDist = $this->callOpenRouteService($sampledReadings);
                                 if ($roadDist !== null) {
@@ -8406,33 +9887,65 @@ class RiderController extends Controller
                                     $record->road_source = 'openrouteservice';
                                     $totalRoadDistance += $roadDist;
                                     $daysWithRoadDistance++;
+                                } else {
+                                    $record->road_distance = null;
+                                    $record->road_source = null;
                                 }
+                            } else {
+                                $record->road_distance = null;
+                                $record->road_source = null;
                             }
                         } elseif ($record->gps_distance !== null && $record->gps_distance < 0.5) {
+                            $record->road_distance = null;
                             $record->road_source = 'skipped_stationary';
+                        } else {
+                            $record->road_distance = null;
+                            $record->road_source = null;
                         }
                         
                         // ⭐ Calculate gap info for this day
+                        // IMPORTANT: Combine date + time to get full timestamp for accurate gap calculation
                         if ($record->login_time && count($readings) >= 2) {
-                            $gapInfo = $this->calculateGapInfo($readings, $record->login_time, $record->logout_time);
+                            $fullLoginTime = $recordDate . ' ' . $record->login_time;
+                            $fullLogoutTime = $record->logout_time ? ($recordDate . ' ' . $record->logout_time) : null;
+                            $gapInfo = $this->calculateGapInfo($readings, $fullLoginTime, $fullLogoutTime);
                             $record->gap_info = $gapInfo;
                         }
                     } else {
+                        // No GPS readings for this day, but check for stored road distance
                         $record->gps_distance = null;
                         $record->gps_readings_count = 0;
-                        $record->road_distance = null;
-                        $record->road_source = null;
                         $record->gap_info = null;
+                        
+                        // ⭐ Still use stored road_distance_km if available
+                        if ($record->road_distance_km !== null) {
+                            $record->road_distance = (float)$record->road_distance_km;
+                            $record->road_source = $record->road_distance_source ?? 'stored';
+                            $totalRoadDistance += $record->road_distance;
+                            $daysWithRoadDistance++;
+                        } else {
+                            $record->road_distance = null;
+                            $record->road_source = null;
+                        }
                     }
                 }
             } else {
-                // No attendance, set all GPS values to null
+                // No attendance dates, but still check for stored road distance
                 foreach ($query as $record) {
                     $record->gps_distance = null;
                     $record->gps_readings_count = 0;
-                    $record->road_distance = null;
-                    $record->road_source = null;
                     $record->gap_info = null;
+                    
+                    // ⭐ Still use stored road_distance_km if available
+                    if ($record->road_distance_km !== null) {
+                        $record->road_distance = (float)$record->road_distance_km;
+                        $record->road_source = $record->road_distance_source ?? 'stored';
+                        $totalRoadDistance += $record->road_distance;
+                        $daysWithRoadDistance++;
+                    } else {
+                        $record->road_distance = null;
+                        $record->road_source = null;
+                    }
                 }
             }
             
@@ -10208,6 +11721,8 @@ class RiderController extends Controller
                     'o.order_date',
                     'o.expected_packets',
                     'o.actual_packets',
+                    // ⭐ Estimated delivery time (from "Get Times" button)
+                    'o.estimated_delivery_at',
                     'u.fullname as rider_name',
                     'osh.changed_at as delivered_at',
                     \DB::raw('DATE(osh.changed_at) as delivery_date'),
@@ -10293,20 +11808,11 @@ class RiderController extends Controller
                 $verifiedLocation = null;
                 $hasVerifiedLocation = false;
                 
-                // Check for verified location - either from lat/lng columns or parse from URL
+                // Check for verified location - use stored lat/lng columns only
+                // ⭐ NOTE: Do NOT resolve URLs here - it makes HTTP requests and causes timeouts!
+                // URL resolution should only happen when viewing/editing a single order
                 $verifiedLat = $order->verified_lat ? (float)$order->verified_lat : null;
                 $verifiedLng = $order->verified_lng ? (float)$order->verified_lng : null;
-                
-                // If no stored coords but URL exists, try to resolve and parse coords from URL
-                if ((!$verifiedLat || !$verifiedLng) && $order->verified_location_url) {
-                    // Resolve shortened URLs (maps.app.goo.gl, etc.)
-                    $resolvedUrl = $this->resolveGoogleMapsUrl($order->verified_location_url);
-                    $parsedCoords = $this->parseCoordinatesFromGoogleMapsUrl($resolvedUrl);
-                    if ($parsedCoords) {
-                        $verifiedLat = $parsedCoords['latitude'];
-                        $verifiedLng = $parsedCoords['longitude'];
-                    }
-                }
                 
                 if ($verifiedLat && $verifiedLng) {
                     $hasVerifiedLocation = true;
@@ -10402,6 +11908,27 @@ class RiderController extends Controller
                     ];
                 })->values()->toArray();
                 
+                // ⭐ Calculate ETA comparison if both estimated and actual times exist
+                $etaComparison = null;
+                if ($order->estimated_delivery_at && $order->delivered_at) {
+                    $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                    $actualTime = \Carbon\Carbon::parse($order->delivered_at);
+                    $diffMinutes = $actualTime->diffInMinutes($estimatedTime, false); // negative if late
+                    
+                    $etaComparison = [
+                        'estimated_at' => $order->estimated_delivery_at,
+                        'estimated_at_display' => $estimatedTime->format('h:i A'),
+                        'actual_at' => $order->delivered_at,
+                        'actual_at_display' => $actualTime->format('h:i A'),
+                        'diff_minutes' => $diffMinutes,
+                        'status' => $diffMinutes >= 0 ? 'early' : 'late',
+                        'status_text' => $diffMinutes >= 0 
+                            ? ($diffMinutes == 0 ? 'On time' : "{$diffMinutes} min early")
+                            : (abs($diffMinutes) . ' min late'),
+                        'status_emoji' => $diffMinutes >= 0 ? '✅' : '⚠️',
+                    ];
+                }
+                
                 $dateGroups[$dateKey]['orders'][] = [
                     'id' => $order->id,
                     'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
@@ -10417,6 +11944,12 @@ class RiderController extends Controller
                     'order_date' => $order->order_date,
                     'delivered_at' => $order->delivered_at,
                     'delivered_at_display' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                    // ⭐ ETA comparison (estimated vs actual delivery time)
+                    'estimated_delivery_at' => $order->estimated_delivery_at,
+                    'estimated_delivery_at_display' => $order->estimated_delivery_at 
+                        ? \Carbon\Carbon::parse($order->estimated_delivery_at)->format('h:i A') 
+                        : null,
+                    'eta_comparison' => $etaComparison,
                     'expected_packets' => $order->expected_packets,
                     'actual_packets' => $order->actual_packets,
                     'delivery_location' => $deliveryLocation,     // ⭐ GPS location when delivered
@@ -11257,6 +12790,627 @@ class RiderController extends Controller
                 'message' => 'Failed to fetch delivered quantities: ' . $e->getMessage()
             ], 500);
         }
+    }
+    
+    // ========================================================================
+    // ⭐ SALARY SLIP MANAGEMENT (Store Mode)
+    // ========================================================================
+    
+    /**
+     * ⭐ Get salary slips - history for employees
+     * Can filter by user_id, month, or get all
+     */
+    public function getSalarySlips(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            $query = \App\Models\HR\SalarySlipModel::with(['employee']);
+            
+            // Filter by specific user
+            if ($request->filled('user_id')) {
+                $query->where('user_id', $request->user_id);
+            }
+            
+            // Filter by month
+            if ($request->filled('month')) {
+                $startDate = date('Y-m-01', strtotime($request->month));
+                $endDate = date('Y-m-t', strtotime($request->month));
+                $query->whereBetween('salary_month', [$startDate, $endDate]);
+            }
+            
+            // Filter by status
+            if ($request->filled('status')) {
+                $query->where('slip_status', $request->status);
+            }
+            
+            $slips = $query->orderByDesc('salary_month')
+                          ->orderByDesc('created_at')
+                          ->limit(50)
+                          ->get()
+                          ->map(function($slip) {
+                              return [
+                                  'id' => $slip->id,
+                                  'slip_number' => $slip->slip_number,
+                                  'employee_name' => $slip->employee->fullname ?? 'Unknown',
+                                  'user_id' => $slip->user_id,
+                                  'salary_month' => $slip->salary_month->format('Y-m-d'),
+                                  'salary_month_display' => $slip->salary_month->format('M Y'),
+                                  'gross_salary' => (float) $slip->gross_salary,
+                                  'total_deductions' => (float) $slip->total_deductions,
+                                  'net_salary' => (float) $slip->net_salary,
+                                  'slip_status' => $slip->slip_status,
+                                  'status_badge' => match($slip->slip_status) {
+                                      'draft' => '📝',
+                                      'approved' => '✅',
+                                      'paid' => '💰',
+                                      'cancelled' => '❌',
+                                      default => '⏳'
+                                  },
+                                  'paid_at' => $slip->paid_at ? $slip->paid_at->format('M d, Y') : null,
+                                  'created_at' => $slip->created_at->format('M d, Y'),
+                              ];
+                          });
+            
+            return response()->json([
+                'success' => true,
+                'slips' => $slips,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error fetching salary slips: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load salary slips: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Calculate salary for an employee and month
+     * Uses existing SalaryCalculationService for consistency
+     */
+    public function calculateSalary(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:t_sys_user,id',
+                'month' => 'required|date_format:Y-m', // Format: 2026-02
+            ]);
+            
+            $salaryMonth = $validated['month'] . '-01'; // Convert to full date
+            
+            // Use existing salary calculation service
+            $salaryService = new \App\Services\HR\SalaryCalculationService();
+            $calculation = $salaryService->calculateSalary($validated['user_id'], $salaryMonth);
+            
+            // ⭐ DEBUG: Log what IDs are returned from calculation
+            \Log::info('Salary calculation result - IDs', [
+                'user_id' => $validated['user_id'],
+                'month' => $salaryMonth,
+                'loan_ids' => $calculation['loan_ids'] ?? 'NOT SET',
+                'advance_request_ids' => $calculation['advance_request_ids'] ?? 'NOT SET',
+                'loan_installment' => $calculation['loan_installment'] ?? 0,
+                'salary_advance' => $calculation['salary_advance'] ?? 0,
+            ]);
+            
+            if (!$calculation['success']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $calculation['error'] ?? 'Failed to calculate salary'
+                ], 400);
+            }
+            
+            // Check for existing slips in this month (for weekly support)
+            $startDate = date('Y-m-01', strtotime($salaryMonth));
+            $endDate = date('Y-m-t', strtotime($salaryMonth));
+            $existingSlips = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
+                ->whereBetween('salary_month', [$startDate, $endDate])
+                ->whereIn('slip_status', ['draft', 'approved', 'paid'])
+                ->orderBy('created_at', 'desc')
+                ->get()
+                ->map(function($slip) {
+                    return [
+                        'id' => $slip->id,
+                        'slip_number' => $slip->slip_number,
+                        'net_salary' => (float)$slip->net_salary,
+                        'status' => $slip->slip_status,
+                        'created_at' => $slip->created_at->format('M d'),
+                    ];
+                });
+            
+            return response()->json([
+                'success' => true,
+                'calculation' => $calculation,
+                'existing_slips' => $existingSlips,
+                'has_existing_slip' => $existingSlips->count() > 0,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Error calculating salary: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to calculate salary: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Create salary slip (Store Mode)
+     * Supports weekly salaries by allowing multiple slips per month
+     */
+    public function createSalarySlip(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            $validated = $request->validate([
+                'user_id' => 'required|integer|exists:t_sys_user,id',
+                'salary_month' => 'required|date_format:Y-m-d',
+                'slip_status' => 'required|in:draft,approved',
+                'allow_multiple' => 'nullable|boolean', // ⭐ Allow multiple slips in same month
+                'period_label' => 'nullable|string|max:50', // ⭐ e.g., "Week 1", "Week 2"
+                
+                // Earnings
+                'base_salary' => 'required|numeric|min:0',
+                'overtime_hours' => 'nullable|numeric|min:0',
+                'overtime_amount' => 'nullable|numeric|min:0',
+                'bonuses' => 'nullable|numeric|min:0',
+                'allowances' => 'nullable|numeric|min:0',
+                'other_earnings' => 'nullable|numeric|min:0',
+                'other_earnings_desc' => 'nullable|string|max:500',
+                
+                // Deductions
+                'late_minutes' => 'nullable|numeric|min:0',
+                'late_deduction' => 'nullable|numeric|min:0',
+                'absent_days' => 'nullable|integer|min:0',
+                'absent_deduction' => 'nullable|numeric|min:0',
+                'salary_advance' => 'nullable|numeric|min:0',
+                'loan_installment' => 'nullable|numeric|min:0',
+                'tax_deduction' => 'nullable|numeric|min:0',
+                'other_deductions' => 'nullable|numeric|min:0',
+                'other_deductions_desc' => 'nullable|string|max:500',
+                
+                // Attendance
+                'working_days' => 'nullable|integer|min:0',
+                'present_days' => 'nullable|integer|min:0',
+                'leave_days' => 'nullable|integer|min:0',
+                'half_days' => 'nullable|integer|min:0',
+                
+                // Overrides
+                'late_deduction_overridden' => 'nullable|boolean',
+                'overtime_overridden' => 'nullable|boolean',
+                'absent_deduction_overridden' => 'nullable|boolean',
+                'loan_installment_skipped' => 'nullable|boolean',
+                'salary_advance_overridden' => 'nullable|boolean',
+                'has_manual_adjustments' => 'nullable|boolean',
+                'override_notes' => 'nullable|string|max:1000',
+                
+                // Totals
+                'gross_salary' => 'required|numeric|min:0',
+                'total_deductions' => 'required|numeric|min:0',
+                'net_salary' => 'required|numeric',
+                
+                // IDs for settlement tracking
+                'advance_request_ids' => 'nullable|string',
+                'loan_ids' => 'nullable|string'
+            ]);
+            
+            // ⭐ DEBUG: Log what we received for loan/advance IDs
+            \Log::info('Salary slip creation - IDs received', [
+                'user_id' => $validated['user_id'],
+                'slip_status' => $validated['slip_status'],
+                'loan_ids' => $validated['loan_ids'] ?? 'NOT SET',
+                'advance_request_ids' => $validated['advance_request_ids'] ?? 'NOT SET',
+                'loan_installment' => $validated['loan_installment'] ?? 0,
+                'salary_advance' => $validated['salary_advance'] ?? 0,
+            ]);
+            
+            \DB::beginTransaction();
+            
+            // Check for duplicate unless explicitly allowed
+            if (!($validated['allow_multiple'] ?? false)) {
+                $startDate = date('Y-m-01', strtotime($validated['salary_month']));
+                $endDate = date('Y-m-t', strtotime($validated['salary_month']));
+                $existingSlip = \App\Models\HR\SalarySlipModel::where('user_id', $validated['user_id'])
+                    ->whereBetween('salary_month', [$startDate, $endDate])
+                    ->whereIn('slip_status', ['draft', 'approved', 'paid'])
+                    ->first();
+                
+                if ($existingSlip) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'A salary slip already exists for this month (Slip #' . $existingSlip->slip_number . '). Enable "Allow multiple" for weekly salaries.',
+                        'existing_slip' => [
+                            'id' => $existingSlip->id,
+                            'slip_number' => $existingSlip->slip_number,
+                        ]
+                    ], 400);
+                }
+            }
+            
+            // Generate slip number with period label if provided
+            $slipCount = \App\Models\HR\SalarySlipModel::whereDate('created_at', today())->count() + 1;
+            $slipNumber = 'SAL-' . date('Ymd') . '-' . str_pad($slipCount, 3, '0', STR_PAD_LEFT);
+            
+            // Create salary slip
+            $slip = \App\Models\HR\SalarySlipModel::create([
+                'user_id' => $validated['user_id'],
+                'salary_month' => $validated['salary_month'],
+                'slip_number' => $slipNumber,
+                'slip_status' => 'draft', // Always start as draft
+                
+                // Earnings
+                'base_salary' => $validated['base_salary'],
+                'overtime_hours' => $validated['overtime_hours'] ?? 0,
+                'overtime_amount' => $validated['overtime_amount'] ?? 0,
+                'bonuses' => $validated['bonuses'] ?? 0,
+                'allowances' => $validated['allowances'] ?? 0,
+                'other_earnings' => $validated['other_earnings'] ?? 0,
+                'other_earnings_description' => $validated['other_earnings_desc'] ?? null,
+                
+                // Deductions
+                'late_minutes' => $validated['late_minutes'] ?? 0,
+                'late_deduction' => $validated['late_deduction'] ?? 0,
+                'absent_days' => $validated['absent_days'] ?? 0,
+                'absent_deduction' => $validated['absent_deduction'] ?? 0,
+                'salary_advance' => $validated['salary_advance'] ?? 0,
+                'loan_installment' => $validated['loan_installment'] ?? 0,
+                'tax_deduction' => $validated['tax_deduction'] ?? 0,
+                'other_deductions' => $validated['other_deductions'] ?? 0,
+                'other_deductions_description' => $validated['other_deductions_desc'] ?? null,
+                
+                // Attendance
+                'working_days' => $validated['working_days'] ?? 0,
+                'present_days' => $validated['present_days'] ?? 0,
+                'leave_days' => $validated['leave_days'] ?? 0,
+                'half_days' => $validated['half_days'] ?? 0,
+                
+                // Overrides
+                'late_deduction_overridden' => $validated['late_deduction_overridden'] ?? false,
+                'overtime_overridden' => $validated['overtime_overridden'] ?? false,
+                'absent_deduction_overridden' => $validated['absent_deduction_overridden'] ?? false,
+                'loan_installment_skipped' => $validated['loan_installment_skipped'] ?? false,
+                'salary_advance_overridden' => $validated['salary_advance_overridden'] ?? false,
+                'has_manual_adjustments' => $validated['has_manual_adjustments'] ?? false,
+                'override_notes' => $validated['override_notes'] ?? null,
+                
+                // Totals
+                'gross_salary' => $validated['gross_salary'],
+                'total_deductions' => $validated['total_deductions'],
+                'net_salary' => $validated['net_salary'],
+                
+                // IDs
+                'advance_request_ids' => $validated['advance_request_ids'] ?? null,
+                'loan_ids' => $validated['loan_ids'] ?? null,
+                
+                // Meta
+                'created_by' => $user->id
+            ]);
+            
+            // If user wants it approved immediately, do full approval flow
+            if ($validated['slip_status'] === 'approved') {
+                // Approve the slip
+                $slip->approve($user->id);
+                
+                // Create ledger entry for salary payment using the SalarySlipController logic
+                try {
+                    // Get employee cash account
+                    $employeeCashAccount = \App\Models\FIN\AccountModel::where('user_id', $slip->user_id)
+                        ->where('account_category', 'employee_cash')
+                        ->first();
+
+                    if (!$employeeCashAccount) {
+                        // Auto-create employee cash account if doesn't exist
+                        $employee = \App\Models\SysAdmin\UserModel::find($slip->user_id);
+                        $employeeCashAccount = \App\Models\FIN\AccountModel::create([
+                            'account_code' => 'EMP_' . $slip->user_id . '_CASH',
+                            'account_name' => 'Employee Cash - ' . ($employee->fullname ?? 'Employee'),
+                            'account_type' => 'liability',
+                            'account_category' => 'employee_cash',
+                            'user_id' => $slip->user_id,
+                            'is_active' => true,
+                            'current_balance' => 0,
+                        ]);
+                    }
+
+                    // Get payment source account
+                    $paymentSource = \App\Models\FIN\AccountModel::whereIn('account_code', ['EXP_FUND', 'NF_CASH'])
+                        ->where('is_active', true)
+                        ->first();
+
+                    if ($paymentSource && $employeeCashAccount) {
+                        // Create ledger transaction
+                        $ledger = \App\Models\FIN\LedgerModel::create([
+                            'transaction_date' => now(),
+                            'transaction_type' => 'salary_payment',
+                            'description' => 'Salary payment - ' . ($slip->employee->fullname ?? 'Employee') . ' - ' . date('M Y', strtotime($slip->salary_month)),
+                            'from_account_id' => $paymentSource->id,
+                            'to_account_id' => $employeeCashAccount->id,
+                            'amount' => $slip->net_salary,
+                            'reference_type' => 'salary_slip',
+                            'reference_id' => $slip->id,
+                            'created_by' => $user->id,
+                            'status' => 'completed',
+                        ]);
+
+                        // Update account balances
+                        $paymentSource->decrement('current_balance', $slip->net_salary);
+                        $employeeCashAccount->increment('current_balance', $slip->net_salary);
+
+                        // Mark slip as paid
+                        $slip->markAsPaid($ledger->id, 'cash');
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to post salary to ledger', [
+                        'slip_id' => $slip->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    // Continue - slip is created and approved, ledger can be fixed manually
+                }
+                
+                // ⭐ CRITICAL: Process loan payments and settle advances OUTSIDE the ledger block
+                // This ensures loans/advances are settled even if ledger posting fails
+                try {
+                    // Process loan payments if any
+                    if ($slip->loan_ids && !$slip->loan_installment_skipped) {
+                        \Log::info('Processing loan payments for slip', [
+                            'slip_id' => $slip->id,
+                            'loan_ids' => $slip->loan_ids,
+                        ]);
+                        $this->processSlipLoanPayments($slip);
+                    }
+
+                    // Settle salary advances if any
+                    if ($slip->advance_request_ids) {
+                        \Log::info('Settling salary advances for slip', [
+                            'slip_id' => $slip->id,
+                            'advance_request_ids' => $slip->advance_request_ids,
+                        ]);
+                        $this->settleSlipAdvances($slip);
+                    }
+                } catch (\Exception $e) {
+                    \Log::error('Failed to process loan/advance settlements', [
+                        'slip_id' => $slip->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+            
+            \DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => $validated['slip_status'] === 'approved' 
+                    ? 'Salary slip created and approved successfully'
+                    : 'Salary slip saved as draft',
+                'slip' => [
+                    'id' => $slip->id,
+                    'slip_number' => $slipNumber,
+                    'net_salary' => (float)$slip->net_salary,
+                    'status' => $slip->slip_status,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Error creating salary slip: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create salary slip: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * ⭐ Get salary slip details (Store Mode)
+     */
+    public function getStoreSalarySlipDetails(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Check permission
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Permission denied'
+                ], 403);
+            }
+            
+            $slip = \App\Models\HR\SalarySlipModel::with(['employee', 'approver'])->findOrFail($id);
+            
+            return response()->json([
+                'success' => true,
+                'slip' => [
+                    'id' => $slip->id,
+                    'slip_number' => $slip->slip_number,
+                    'employee_name' => $slip->employee->fullname ?? 'Unknown',
+                    'user_id' => $slip->user_id,
+                    'salary_month' => $slip->salary_month->format('Y-m-d'),
+                    'salary_month_display' => $slip->salary_month->format('M Y'),
+                    
+                    // Earnings
+                    'base_salary' => (float)$slip->base_salary,
+                    'overtime_hours' => (float)$slip->overtime_hours,
+                    'overtime_amount' => (float)$slip->overtime_amount,
+                    'bonuses' => (float)$slip->bonuses,
+                    'allowances' => (float)$slip->allowances,
+                    'other_earnings' => (float)$slip->other_earnings,
+                    'gross_salary' => (float)$slip->gross_salary,
+                    
+                    // Deductions
+                    'late_minutes' => (float)$slip->late_minutes,
+                    'late_deduction' => (float)$slip->late_deduction,
+                    'absent_days' => (int)$slip->absent_days,
+                    'absent_deduction' => (float)$slip->absent_deduction,
+                    'salary_advance' => (float)$slip->salary_advance,
+                    'loan_installment' => (float)$slip->loan_installment,
+                    'other_deductions' => (float)$slip->other_deductions,
+                    'total_deductions' => (float)$slip->total_deductions,
+                    
+                    // Net
+                    'net_salary' => (float)$slip->net_salary,
+                    
+                    // Attendance
+                    'working_days' => (int)$slip->working_days,
+                    'present_days' => (int)$slip->present_days,
+                    'leave_days' => (int)$slip->leave_days,
+                    
+                    // Status
+                    'slip_status' => $slip->slip_status,
+                    'approved_by' => $slip->approver->fullname ?? null,
+                    'approved_at' => $slip->approved_at ? $slip->approved_at->format('M d, Y h:i A') : null,
+                    'paid_at' => $slip->paid_at ? $slip->paid_at->format('M d, Y h:i A') : null,
+                    
+                    // Overrides
+                    'has_manual_adjustments' => (bool)$slip->has_manual_adjustments,
+                    'override_notes' => $slip->override_notes,
+                    
+                    'created_at' => $slip->created_at->format('M d, Y'),
+                ],
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load salary slip: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Helper: Process loan payments for a salary slip
+     */
+    private function processSlipLoanPayments($slip)
+    {
+        if (!$slip->loan_ids || $slip->loan_installment_skipped) {
+            \Log::info('No loan_ids to process or loan installment skipped');
+            return;
+        }
+        
+        $loanIds = array_filter(explode(',', $slip->loan_ids));
+        
+        \Log::info('Processing loan payments', [
+            'loan_ids' => $loanIds,
+            'slip_id' => $slip->id,
+        ]);
+        
+        foreach ($loanIds as $loanId) {
+            $loan = \App\Models\HR\EmployeeLoanModel::find($loanId);
+            
+            if (!$loan) {
+                \Log::warning('Loan not found', ['loan_id' => $loanId]);
+                continue;
+            }
+            
+            if ($loan->loan_status !== 'active') {
+                \Log::warning('Loan not active', ['loan_id' => $loanId, 'status' => $loan->loan_status]);
+                continue;
+            }
+            
+            // Calculate payment amount (use full installment or remaining balance, whichever is less)
+            $paymentAmount = min($loan->monthly_installment, $loan->outstanding_balance);
+            
+            \Log::info('Processing loan payment', [
+                'loan_id' => $loanId,
+                'payment_amount' => $paymentAmount,
+                'outstanding_before' => $loan->outstanding_balance,
+            ]);
+            
+            // Create loan payment record
+            // ⭐ FIX: Use correct field names matching LoanPaymentModel fillable
+            $payment = \App\Models\HR\LoanPaymentModel::create([
+                'loan_id' => $loan->id,
+                'salary_slip_id' => $slip->id,
+                'payment_date' => now(),
+                'payment_amount' => $paymentAmount,
+                'balance_before' => $loan->outstanding_balance,
+                'balance_after' => $loan->outstanding_balance - $paymentAmount,
+                'payment_type' => 'salary_deduction',
+                'payment_notes' => 'Salary deduction via slip: ' . $slip->slip_number,
+                'created_by' => auth()->id(),
+            ]);
+            
+            // Update loan balance
+            // ⭐ FIX: Only update fields that exist in the model
+            $loan->outstanding_balance -= $paymentAmount;
+            
+            // Check if loan is fully paid
+            if ($loan->outstanding_balance <= 0) {
+                $loan->outstanding_balance = 0; // Ensure it's not negative
+                $loan->loan_status = 'completed';
+                $loan->completed_at = now();
+            }
+            
+            $loan->save();
+            
+            \Log::info('Loan payment processed', [
+                'loan_id' => $loanId,
+                'payment_id' => $payment->id,
+                'outstanding_after' => $loan->outstanding_balance,
+                'loan_status' => $loan->loan_status,
+            ]);
+        }
+    }
+    
+    /**
+     * Helper: Settle salary advances for a salary slip
+     */
+    private function settleSlipAdvances($slip)
+    {
+        if (!$slip->advance_request_ids) {
+            \Log::info('No advance_request_ids to settle');
+            return;
+        }
+        
+        $advanceIds = array_filter(explode(',', $slip->advance_request_ids));
+        
+        \Log::info('Settling advances', [
+            'advance_ids' => $advanceIds,
+            'slip_id' => $slip->id,
+        ]);
+        
+        // Update settlement status for each advance
+        // Note: settled_via_slip_id column may not exist, so we only update fields that exist
+        $updated = \App\Models\Request\RequestModel::whereIn('id', $advanceIds)
+            ->update([
+                'settlement_status' => 'settled',
+                'settled_at' => now(),
+            ]);
+        
+        \Log::info('Advances settled', [
+            'count' => $updated,
+            'advance_ids' => $advanceIds,
+        ]);
     }
 }
 

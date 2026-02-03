@@ -96,9 +96,10 @@ class EmployeeProfileController extends Controller
                 ]);
             }
 
-            // Get salary slip count and last slip month
+            // Get salary slip count and last slip details
             $salarySlipCount = 0;
             $lastSlipMonth = null;
+            $lastSalarySlip = null;
             try {
                 $slips = \App\Models\HR\SalarySlipModel::where('user_id', $user->id)
                     ->whereIn('slip_status', ['approved', 'paid'])
@@ -107,17 +108,69 @@ class EmployeeProfileController extends Controller
                 
                 $salarySlipCount = $slips->count();
                 if ($salarySlipCount > 0) {
-                    $lastSlipMonth = $slips->first()->salary_month;
+                    $lastSlip = $slips->first();
+                    $lastSlipMonth = $lastSlip->salary_month;
                     // Ensure it's in YYYY-MM-DD format
                     if ($lastSlipMonth instanceof \Carbon\Carbon) {
                         $lastSlipMonth = $lastSlipMonth->format('Y-m-d');
                     }
+                    // ⭐ Include last salary slip details for mobile display
+                    $lastSalarySlip = [
+                        'id' => $lastSlip->id,
+                        'slip_number' => $lastSlip->slip_number,
+                        'net_salary' => (float)$lastSlip->net_salary,
+                        'status' => $lastSlip->slip_status,
+                        'paid_date' => $lastSlip->paid_at ? $lastSlip->paid_at->format('M d') : ($lastSlip->approved_at ? $lastSlip->approved_at->format('M d') : null),
+                    ];
                 }
             } catch (\Exception $e) {
                 Log::error('Error getting salary slip count', [
                     'user_id' => $user->id,
                     'error' => $e->getMessage()
                 ]);
+            }
+            
+            // ⭐ Get active loans for history display
+            $activeLoans = [];
+            if ($user->hrProfile && $user->hrProfile->activeLoans) {
+                $activeLoans = $user->hrProfile->activeLoans->map(function($loan) {
+                    return [
+                        'id' => $loan->id,
+                        'loan_number' => $loan->loan_number,
+                        'principal_amount' => (float)$loan->principal_amount,
+                        'monthly_installment' => (float)$loan->monthly_installment,
+                        'outstanding_balance' => (float)$loan->outstanding_balance,
+                        'total_paid' => (float)$loan->getAmountPaid(), // ⭐ Fixed: use method instead of property
+                        'loan_status' => $loan->loan_status,
+                        'created_at' => $loan->created_at ? $loan->created_at->format('M d, Y') : null,
+                    ];
+                })->toArray();
+            }
+            
+            // ⭐ Get pending advances for history display
+            $pendingAdvances = [];
+            try {
+                $advances = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
+                    ->where('status', 'approved')
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'salary_advance');
+                    })
+                    ->orderByDesc('created_at')
+                    ->get();
+                    
+                $pendingAdvances = $advances->map(function($adv) {
+                    $isSettled = $adv->settlement_status === 'settled';
+                    return [
+                        'id' => $adv->id,
+                        'request_number' => $adv->request_number,
+                        'amount' => (float)$adv->amount,
+                        'created_at' => $adv->created_at ? $adv->created_at->format('M d, Y') : null,
+                        'is_settled' => $isSettled,
+                        'settled_at' => $adv->settled_at ? $adv->settled_at->format('M d, Y') : null,
+                    ];
+                })->toArray();
+            } catch (\Exception $e) {
+                // Ignore
             }
 
             return [
@@ -129,6 +182,10 @@ class EmployeeProfileController extends Controller
                 'unadjusted_salary_advances' => (float) ($unadjustedAdvances ?? 0),
                 'salary_slip_count' => $salarySlipCount,
                 'last_slip_month' => $lastSlipMonth,
+                'last_salary_slip' => $lastSalarySlip,
+                'active_loans' => $activeLoans,
+                'pending_advances' => $pendingAdvances,
+                'has_advance_history' => count($pendingAdvances) > 0, // ⭐ Show history card even when balance is 0
                 'hr_profile' => $user->hrProfile ? [
                     'id' => $user->hrProfile->id,
                     'base_salary' => $user->hrProfile->base_salary,

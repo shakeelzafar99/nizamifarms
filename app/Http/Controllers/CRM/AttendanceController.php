@@ -1166,7 +1166,7 @@ class AttendanceController extends Controller
             $roadDistance = null;
             $roadDistanceSource = null;
             if ($actualReadings >= 2 && $gpsDistance !== null && $gpsDistance >= 0.5) {
-                // Sample readings to max 25 points for API efficiency
+                // Sample readings to max 25 points with GPS drift filtering
                 $sampledReadings = $this->sampleGpsReadings($readings->toArray(), 25);
                 if (count($sampledReadings) >= 2) {
                     $roadDistance = $this->callOpenRouteService($sampledReadings);
@@ -1347,33 +1347,85 @@ class AttendanceController extends Controller
     }
     
     /**
-     * ⭐ Sample GPS readings to reduce API calls while maintaining route accuracy
-     * Uses time-based sampling to ensure we capture the full journey
+     * ⭐ Sample GPS readings for road distance API call
+     * 
+     * Strategy:
+     * 1. Filter out GPS DRIFT - consecutive readings within ~30m are noise
+     * 2. Then sample evenly from filtered points to get max 50 waypoints
+     * 
+     * This removes fake distance from GPS drift while preserving actual route
      */
     private function sampleGpsReadings(array $readings, int $maxPoints = 25): array
     {
         $count = count($readings);
         
-        if ($count <= $maxPoints) {
+        if ($count <= 2) {
             return $readings;
         }
         
-        $sampled = [];
-        $step = ($count - 1) / ($maxPoints - 1);
+        // ⭐ Step 1: Filter GPS drift - consecutive points within ~30m
+        $filtered = [];
+        $prevLat = null;
+        $prevLng = null;
+        $driftThreshold = 0.0003; // ~30m
         
-        for ($i = 0; $i < $maxPoints; $i++) {
-            $index = (int) round($i * $step);
-            if ($index < $count) {
-                $sampled[] = $readings[$index];
+        foreach ($readings as $reading) {
+            $lat = (float)(is_object($reading) ? $reading->latitude : ($reading['latitude'] ?? 0));
+            $lng = (float)(is_object($reading) ? $reading->longitude : ($reading['longitude'] ?? 0));
+            
+            if ($prevLat === null || 
+                abs($lat - $prevLat) > $driftThreshold || 
+                abs($lng - $prevLng) > $driftThreshold) {
+                $filtered[] = $reading;
+                $prevLat = $lat;
+                $prevLng = $lng;
             }
         }
         
-        // Always include first and last point
-        if (!in_array($readings[0], $sampled)) {
-            array_unshift($sampled, $readings[0]);
+        $filteredCount = count($filtered);
+        
+        if ($filteredCount < 2) {
+            $filtered = $readings;
+            $filteredCount = $count;
         }
-        if (!in_array($readings[$count - 1], $sampled)) {
-            $sampled[] = $readings[$count - 1];
+        
+        if ($filteredCount <= $maxPoints) {
+            return $filtered;
+        }
+        
+        // ⭐ Step 2: Sample evenly
+        $sampled = [];
+        $step = ($filteredCount - 1) / ($maxPoints - 1);
+        
+        for ($i = 0; $i < $maxPoints; $i++) {
+            $index = (int) round($i * $step);
+            if ($index < $filteredCount) {
+                $sampled[] = $filtered[$index];
+            }
+        }
+        
+        // Ensure first/last included
+        $first = $filtered[0];
+        $last = $filtered[$filteredCount - 1];
+        
+        $firstLat = (float)(is_object($first) ? $first->latitude : ($first['latitude'] ?? 0));
+        $firstLng = (float)(is_object($first) ? $first->longitude : ($first['longitude'] ?? 0));
+        $sFirst = $sampled[0];
+        $sFirstLat = (float)(is_object($sFirst) ? $sFirst->latitude : ($sFirst['latitude'] ?? 0));
+        $sFirstLng = (float)(is_object($sFirst) ? $sFirst->longitude : ($sFirst['longitude'] ?? 0));
+        
+        if (abs($firstLat - $sFirstLat) > 0.00001 || abs($firstLng - $sFirstLng) > 0.00001) {
+            array_unshift($sampled, $first);
+        }
+        
+        $lastLat = (float)(is_object($last) ? $last->latitude : ($last['latitude'] ?? 0));
+        $lastLng = (float)(is_object($last) ? $last->longitude : ($last['longitude'] ?? 0));
+        $sLast = end($sampled);
+        $sLastLat = (float)(is_object($sLast) ? $sLast->latitude : ($sLast['latitude'] ?? 0));
+        $sLastLng = (float)(is_object($sLast) ? $sLast->longitude : ($sLast['longitude'] ?? 0));
+        
+        if (abs($lastLat - $sLastLat) > 0.00001 || abs($lastLng - $sLastLng) > 0.00001) {
+            $sampled[] = $last;
         }
         
         return $sampled;
@@ -1391,10 +1443,17 @@ class AttendanceController extends Controller
         // Build coordinates array [lng, lat] format (GeoJSON standard)
         $coordinates = array_map(function($reading) {
             return [
-                (float) (is_object($reading) ? $reading->longitude : $reading['longitude']),
-                (float) (is_object($reading) ? $reading->latitude : $reading['latitude'])
+                (float) (is_object($reading) ? $reading->longitude : ($reading['longitude'] ?? 0)),
+                (float) (is_object($reading) ? $reading->latitude : ($reading['latitude'] ?? 0))
             ];
         }, $readings);
+        
+        // ⭐ Debug logging
+        Log::info('OpenRouteService: Attempting API call', [
+            'coordinates_count' => count($coordinates),
+            'first_coord' => $coordinates[0] ?? null,
+            'last_coord' => $coordinates[count($coordinates) - 1] ?? null,
+        ]);
         
         try {
             $client = new \GuzzleHttp\Client([
@@ -1419,7 +1478,9 @@ class AttendanceController extends Controller
             $data = json_decode($response->getBody()->getContents(), true);
             
             if (isset($data['routes'][0]['summary']['distance'])) {
-                return $data['routes'][0]['summary']['distance']; // Already in km
+                $distance = $data['routes'][0]['summary']['distance'];
+                Log::info('OpenRouteService: Success', ['distance_km' => $distance]);
+                return $distance; // Already in km
             }
             
             Log::warning('OpenRouteService response missing distance', ['data' => $data]);
@@ -1427,9 +1488,25 @@ class AttendanceController extends Controller
             
         } catch (\GuzzleHttp\Exception\ClientException $e) {
             $responseBody = $e->hasResponse() ? $e->getResponse()->getBody()->getContents() : 'No response';
-            Log::warning('OpenRouteService API client error', [
+            Log::warning('OpenRouteService API client error (4xx)', [
                 'status' => $e->hasResponse() ? $e->getResponse()->getStatusCode() : null,
                 'body' => $responseBody,
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+            
+        } catch (\GuzzleHttp\Exception\ServerException $e) {
+            $responseBody = $e->hasResponse() ? $e->getResponse()->getBody()->getContents() : 'No response';
+            Log::warning('OpenRouteService API server error (5xx)', [
+                'status' => $e->hasResponse() ? $e->getResponse()->getStatusCode() : null,
+                'body' => $responseBody,
+                'coordinates_count' => count($coordinates)
+            ]);
+            return null;
+            
+        } catch (\GuzzleHttp\Exception\ConnectException $e) {
+            Log::warning('OpenRouteService API connection error', [
+                'error' => $e->getMessage(),
                 'coordinates_count' => count($coordinates)
             ]);
             return null;

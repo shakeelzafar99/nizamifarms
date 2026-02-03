@@ -134,7 +134,9 @@ class EmployeeLoanController extends Controller
             'description' => 'nullable|string|max:1000',
             'terms' => 'nullable|string|max:2000',
             'notes' => 'nullable|string|max:1000',
-            'disburse_via_ledger' => 'nullable|boolean'
+            'disburse_via_ledger' => 'nullable|boolean',
+            'disbursement_account_id' => 'nullable|integer|exists:t_fin_accounts,id', // ⭐ Source account
+            'is_outside_cash' => 'nullable|boolean' // ⭐ If true, skip ledger
         ]);
 
         try {
@@ -142,6 +144,19 @@ class EmployeeLoanController extends Controller
 
             // Generate loan number
             $loanNumber = EmployeeLoanModel::generateLoanNumber();
+            
+            // ⭐ Determine disbursement source
+            $isOutsideCash = $request->input('is_outside_cash', false);
+            $disbursementAccountId = null;
+            
+            if (!$isOutsideCash) {
+                // Get disbursement account - use provided or default to NF_CASH
+                $disbursementAccountId = $validated['disbursement_account_id'] ?? null;
+                if (!$disbursementAccountId) {
+                    $nfCash = DB::table('t_fin_accounts')->where('account_code', 'NF_CASH')->first();
+                    $disbursementAccountId = $nfCash?->id;
+                }
+            }
 
             // Create loan
             $loan = EmployeeLoanModel::create([
@@ -153,15 +168,17 @@ class EmployeeLoanController extends Controller
                 'outstanding_balance' => $validated['principal_amount'], // Initially equals principal
                 'loan_status' => EmployeeLoanModel::STATUS_ACTIVE,
                 'loan_type' => $validated['loan_type'] ?? 'Personal Loan',
-                'description' => $validated['description'],
-                'terms' => $validated['terms'],
-                'notes' => $validated['notes'],
+                'description' => $validated['description'] ?? null,
+                'terms' => $validated['terms'] ?? null, // ⭐ Fixed: use null coalescing
+                'notes' => $validated['notes'] ?? null, // ⭐ Fixed: use null coalescing
+                'disbursement_account_id' => $disbursementAccountId, // ⭐ Track source
                 'created_by' => auth()->id()
             ]);
 
-            // If disburse via ledger, create ledger entry
-            if ($request->input('disburse_via_ledger', false)) {
-                $ledgerEntry = $this->createLoanDisbursementLedger($loan);
+            // ⭐ If NOT outside cash, create ledger entry
+            $shouldPostToLedger = !$isOutsideCash && $request->input('disburse_via_ledger', !$isOutsideCash);
+            if ($shouldPostToLedger && $disbursementAccountId) {
+                $ledgerEntry = $this->createLoanDisbursementLedger($loan, $disbursementAccountId);
                 if ($ledgerEntry) {
                     $loan->ledger_transaction_id = $ledgerEntry->id;
                     $loan->save();
@@ -275,6 +292,7 @@ class EmployeeLoanController extends Controller
 
     /**
      * Cancel loan
+     * ⭐ If loan was from company account, refunds remaining balance
      */
     public function cancel(Request $request, $id)
     {
@@ -283,6 +301,8 @@ class EmployeeLoanController extends Controller
         ]);
 
         try {
+            DB::beginTransaction();
+            
             $loan = EmployeeLoanModel::findOrFail($id);
 
             if (!$loan->isActive()) {
@@ -291,15 +311,87 @@ class EmployeeLoanController extends Controller
                     'message' => 'Only active loans can be cancelled'
                 ], 400);
             }
+            
+            $refundAmount = $loan->outstanding_balance;
+            $refundedToAccount = null;
+            
+            // ⭐ If loan was disbursed from a company account, refund remaining balance
+            if ($loan->disbursement_account_id && $refundAmount > 0) {
+                $sourceAccount = DB::table('t_fin_accounts')
+                    ->where('id', $loan->disbursement_account_id)
+                    ->first();
+                
+                if ($sourceAccount) {
+                    // Create refund ledger entry
+                    $loansReceivableAccount = DB::table('t_fin_accounts')
+                        ->where('account_code', 'ASSET_EMPLOYEE_LOANS')
+                        ->first();
+                    
+                    $employeeCashAccount = DB::table('t_fin_accounts')
+                        ->where('user_id', $loan->user_id)
+                        ->where('account_category', 'employee_cash')
+                        ->first();
+                    
+                    DB::table('t_fin_ledger')->insert([
+                        'transaction_date' => now()->toDateString(),
+                        'transaction_type' => 'loan_cancellation_refund',
+                        'description' => 'Loan cancelled - Refund remaining balance - ' . $loan->loan_number,
+                        'from_account_id' => $employeeCashAccount?->id,
+                        'to_account_id' => $sourceAccount->id,
+                        'amount' => $refundAmount,
+                        'mode' => 'adjustment',
+                        'approval_status' => 'approved',
+                        'approval_date' => now(),
+                        'approved_by' => auth()->id(),
+                        'external_source' => 'hr_loan_system',
+                        'external_ref_id' => $loan->loan_number,
+                        'comments' => 'Loan cancellation refund - ' . $validated['cancellation_reason'],
+                        'created_at' => now(),
+                        'created_by' => auth()->id()
+                    ]);
+                    
+                    // Refund to source account
+                    DB::table('t_fin_accounts')
+                        ->where('id', $sourceAccount->id)
+                        ->increment('current_balance', $refundAmount);
+                    
+                    // Decrease loans receivable
+                    if ($loansReceivableAccount) {
+                        DB::table('t_fin_accounts')
+                            ->where('id', $loansReceivableAccount->id)
+                            ->decrement('current_balance', $refundAmount);
+                    }
+                    
+                    $refundedToAccount = $sourceAccount->account_name;
+                    
+                    Log::info('Loan cancellation refund processed', [
+                        'loan_id' => $loan->id,
+                        'loan_number' => $loan->loan_number,
+                        'refund_amount' => $refundAmount,
+                        'refunded_to' => $refundedToAccount,
+                    ]);
+                }
+            }
 
             $loan->cancel($validated['cancellation_reason'], auth()->id());
+            
+            DB::commit();
+
+            $message = 'Loan cancelled successfully';
+            if ($refundedToAccount) {
+                $message .= ". Rs. " . number_format($refundAmount) . " refunded to {$refundedToAccount}";
+            }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Loan cancelled successfully'
+                'message' => $message,
+                'refund_amount' => $refundAmount,
+                'refunded_to' => $refundedToAccount,
             ]);
 
         } catch (\Exception $e) {
+            DB::rollBack();
+            
             Log::error('Error cancelling loan', [
                 'loan_id' => $id,
                 'error' => $e->getMessage()
@@ -314,8 +406,10 @@ class EmployeeLoanController extends Controller
 
     /**
      * Create ledger entry for loan disbursement
+     * @param EmployeeLoanModel $loan
+     * @param int|null $sourceAccountId - The account to disburse from (defaults to NF_CASH)
      */
-    protected function createLoanDisbursementLedger(EmployeeLoanModel $loan)
+    protected function createLoanDisbursementLedger(EmployeeLoanModel $loan, ?int $sourceAccountId = null)
     {
         try {
             // Get employee cash account
@@ -324,17 +418,26 @@ class EmployeeLoanController extends Controller
                 ->where('account_category', 'employee_cash')
                 ->first();
 
-            // Get company cash account
-            $companyCashAccount = DB::table('t_fin_accounts')
-                ->where('account_code', 'NF_CASH')
-                ->first();
+            // ⭐ Get source account (provided or default to NF_CASH)
+            $sourceAccount = null;
+            if ($sourceAccountId) {
+                $sourceAccount = DB::table('t_fin_accounts')->where('id', $sourceAccountId)->first();
+            }
+            if (!$sourceAccount) {
+                $sourceAccount = DB::table('t_fin_accounts')->where('account_code', 'NF_CASH')->first();
+            }
 
             // Get loans receivable account
             $loansReceivableAccount = DB::table('t_fin_accounts')
                 ->where('account_code', 'ASSET_EMPLOYEE_LOANS')
                 ->first();
 
-            if (!$employeeCashAccount || !$companyCashAccount || !$loansReceivableAccount) {
+            if (!$employeeCashAccount || !$sourceAccount || !$loansReceivableAccount) {
+                Log::warning('Missing accounts for loan disbursement', [
+                    'employee_cash' => $employeeCashAccount ? 'found' : 'missing',
+                    'source_account' => $sourceAccount ? 'found' : 'missing',
+                    'loans_receivable' => $loansReceivableAccount ? 'found' : 'missing',
+                ]);
                 return null;
             }
 
@@ -343,7 +446,7 @@ class EmployeeLoanController extends Controller
                 'transaction_date' => $loan->loan_date,
                 'transaction_type' => 'loan_disbursement',
                 'description' => 'Loan disbursement - ' . $loan->employee->fullname . ' - ' . $loan->loan_type,
-                'from_account_id' => $companyCashAccount->id,
+                'from_account_id' => $sourceAccount->id,
                 'to_account_id' => $employeeCashAccount->id,
                 'amount' => $loan->principal_amount,
                 'mode' => 'cash',
@@ -352,15 +455,15 @@ class EmployeeLoanController extends Controller
                 'approved_by' => auth()->id(),
                 'external_source' => 'hr_loan_system',
                 'external_ref_id' => $loan->loan_number,
-                'comments' => 'Loan disbursement via HR system',
+                'comments' => 'Loan disbursement from: ' . $sourceAccount->account_name,
                 'created_at' => now(),
                 'created_by' => auth()->id()
             ]);
 
             // Update account balances
-            // Company cash decreases
+            // Source account decreases
             DB::table('t_fin_accounts')
-                ->where('id', $companyCashAccount->id)
+                ->where('id', $sourceAccount->id)
                 ->decrement('current_balance', $loan->principal_amount);
 
             // IMPORTANT: DO NOT update employee cash balance for loan disbursements
