@@ -1171,13 +1171,18 @@ class DashboardAnalyticsService
         $cashPendingTotal = 0;
         $cashPendingCount = 0;
         
-        $onlinePaymentMethods = ['online', 'Online', 'ONLINE', 'card', 'Card'];
+        // ⭐ Fixed: Include all online payment method variations (case-insensitive)
+        // Covers: online, online_payment, bank_transfer, card, etc.
+        $cashPaymentMethods = ['cash', 'cash_on_delivery', 'cod'];
         
         foreach ($invoiceData as $row) {
             $invoiceTotal += $row->total;
             $invoiceCount += $row->count;
             
-            $isOnline = in_array($row->payment_method, $onlinePaymentMethods);
+            // Case-insensitive check - anything not cash is considered online
+            $paymentMethodLower = strtolower(trim($row->payment_method ?? 'cash'));
+            $isCash = in_array($paymentMethodLower, $cashPaymentMethods);
+            $isOnline = !$isCash;
             
             if ($isOnline) {
                 $onlineTotal += $row->total;

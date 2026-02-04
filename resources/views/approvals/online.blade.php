@@ -365,7 +365,7 @@
         <div class="tab-card all-pending" id="tab-all" data-tab="all" onclick="selectTab('all')" style="border-left: 4px solid #8B5CF6;">
             <div class="title">📋 All Pending</div>
             <div class="count" id="count-all">{{ $summaries['l1']['count'] + $summaries['l2']['count'] }}</div>
-            <div class="amount">Rs. {{ number_format($summaries['l1']['amount'] + $summaries['l2']['amount'], 0) }}</div>
+            <div class="amount" id="amount-all">Rs. {{ number_format($summaries['l1']['amount'] + $summaries['l2']['amount'], 0) }}</div>
         </div>
         @endif
 
@@ -373,7 +373,7 @@
         <div class="tab-card l1" id="tab-l1" data-tab="l1" onclick="selectTab('l1')">
             <div class="title">📋 L1 Pending</div>
             <div class="count" id="count-l1">{{ $summaries['l1']['count'] }}</div>
-            <div class="amount">Rs. {{ number_format($summaries['l1']['amount'], 0) }}</div>
+            <div class="amount" id="amount-l1">Rs. {{ number_format($summaries['l1']['amount'], 0) }}</div>
         </div>
         @endif
 
@@ -381,14 +381,14 @@
         <div class="tab-card l2" id="tab-l2" data-tab="l2" onclick="selectTab('l2')">
             <div class="title">📋 L2 Pending</div>
             <div class="count" id="count-l2">{{ $summaries['l2']['count'] }}</div>
-            <div class="amount">Rs. {{ number_format($summaries['l2']['amount'], 0) }}</div>
+            <div class="amount" id="amount-l2">Rs. {{ number_format($summaries['l2']['amount'], 0) }}</div>
         </div>
         @endif
 
         <div class="tab-card approved" id="tab-approved" data-tab="approved" onclick="selectTab('approved')">
             <div class="title">✅ Approved</div>
             <div class="count" id="count-approved">{{ $summaries['approved']['count'] }}</div>
-            <div class="amount">Rs. {{ number_format($summaries['approved']['amount'], 0) }}</div>
+            <div class="amount" id="amount-approved">Rs. {{ number_format($summaries['approved']['amount'], 0) }}</div>
         </div>
     </div>
 
@@ -446,32 +446,77 @@
     </div>
 </div>
 
-<!-- Approval Modal -->
-<div id="approvalModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display: none;">
-    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4">
-        <div class="p-6 border-b border-gray-200">
-            <div class="flex items-center justify-between">
-                <h3 class="text-lg font-bold text-gray-900" id="modalTitle">Approve Invoice</h3>
-                <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
-            </div>
+@endsection
+
+@push('modals')
+<!-- Approval Modal (Single Item) -->
+<div id="approvalModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeModal()">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 420px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+            <h3 id="modalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">Approve Invoice</h3>
+            <button onclick="closeModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
         </div>
-        <div class="p-6" id="modalBody">
+        <div id="modalBody" style="padding: 24px;">
             <!-- Modal content will be loaded here -->
         </div>
-        <div class="p-6 bg-gray-50 border-t border-gray-200 flex gap-3">
-            <button id="modalApproveBtn" onclick="confirmApprove()" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition">
-                ✓ Approve
+        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 12px;">
+            <button id="modalApproveBtn" onclick="confirmApprove()" style="flex: 1; background: #16a34a; color: white; font-weight: 600; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
+                ✓ Full Approve
             </button>
-            <button id="modalL1OnlyBtn" onclick="confirmL1Only()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition" style="display: none;">
+            <button id="modalL1OnlyBtn" onclick="confirmL1Only()" style="display: none; flex: 1; background: #2563eb; color: white; font-weight: 600; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
                 L1 Only → L2
             </button>
-            <button onclick="closeModal()" class="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold rounded-lg transition">
+            <button onclick="closeModal()" style="padding: 14px 24px; background: #e5e7eb; color: #374151; font-weight: 600; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
                 Cancel
             </button>
         </div>
     </div>
 </div>
-@endsection
+
+<!-- Bulk Approval Modal -->
+<div id="bulkApprovalModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeBulkModal()">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 450px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+            <h3 id="bulkModalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">Bulk Approval</h3>
+            <button onclick="closeBulkModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+        </div>
+        <div id="bulkModalBody" style="padding: 24px;">
+            <!-- Bulk modal content will be loaded here -->
+        </div>
+        <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb;">
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                <!-- Full Approve Button -->
+                <button id="bulkFullApproveBtn" onclick="confirmBulkApprove('full')" style="width: 100%; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: white; font-weight: 600; padding: 16px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(22,163,74,0.4)';" onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
+                    <span>✓</span>
+                    <span>Full Approve</span>
+                    <span style="font-size: 12px; opacity: 0.85;">(Complete approval)</span>
+                </button>
+                
+                <!-- L1 Only Button (shown only when L1 items present) -->
+                <button id="bulkL1OnlyBtn" onclick="confirmBulkApprove('l1_only')" style="display: none; width: 100%; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; font-weight: 600; padding: 16px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(37,99,235,0.4)';" onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
+                    <span>→</span>
+                    <span>L1 Only</span>
+                    <span style="font-size: 12px; opacity: 0.85;">(Move to L2 pending)</span>
+                </button>
+                
+                <!-- Cancel Button -->
+                <button onclick="closeBulkModal()" style="width: 100%; padding: 14px 24px; background: #e5e7eb; color: #374151; font-weight: 600; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;" onmouseover="this.style.background='#d1d5db';" onmouseout="this.style.background='#e5e7eb';">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Processing Overlay -->
+<div id="processingOverlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 10001; justify-content: center; align-items: center;">
+    <div style="background: white; border-radius: 16px; padding: 40px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
+        <div class="loading-spinner" style="margin-bottom: 20px;"></div>
+        <p id="processingText" style="font-size: 18px; font-weight: 600; color: #111827; margin: 0;">Processing approvals...</p>
+        <p id="processingProgress" style="font-size: 14px; color: #6b7280; margin-top: 8px;">0 / 0</p>
+    </div>
+</div>
+@endpush
 
 @push('demo1_js')
 <script>
@@ -553,6 +598,62 @@ async function loadData() {
     }
 }
 
+// Refresh stats (counts and amounts) without full page reload
+async function refreshStats() {
+    try {
+        // Fetch stats for all tabs to update counts
+        const [l1Response, l2Response, approvedResponse] = await Promise.all([
+            fetch(`{{ route('approvals.online') }}?tab=l1`, { headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } }),
+            fetch(`{{ route('approvals.online') }}?tab=l2`, { headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } }),
+            fetch(`{{ route('approvals.online') }}?tab=approved`, { headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } })
+        ]);
+        
+        const [l1Data, l2Data, approvedData] = await Promise.all([
+            l1Response.json(),
+            l2Response.json(),
+            approvedResponse.json()
+        ]);
+        
+        // Update L1 counts
+        if (l1Data.success) {
+            const l1Count = document.getElementById('count-l1');
+            const l1Amount = document.getElementById('amount-l1');
+            if (l1Count) l1Count.textContent = l1Data.count;
+            if (l1Amount) l1Amount.textContent = `Rs. ${numberFormat(l1Data.total_amount)}`;
+        }
+        
+        // Update L2 counts
+        if (l2Data.success) {
+            const l2Count = document.getElementById('count-l2');
+            const l2Amount = document.getElementById('amount-l2');
+            if (l2Count) l2Count.textContent = l2Data.count;
+            if (l2Amount) l2Amount.textContent = `Rs. ${numberFormat(l2Data.total_amount)}`;
+        }
+        
+        // Update Approved counts
+        if (approvedData.success) {
+            const approvedCount = document.getElementById('count-approved');
+            const approvedAmount = document.getElementById('amount-approved');
+            if (approvedCount) approvedCount.textContent = approvedData.count;
+            if (approvedAmount) approvedAmount.textContent = `Rs. ${numberFormat(approvedData.total_amount)}`;
+        }
+        
+        // Update All Pending (L1 + L2)
+        const allCount = document.getElementById('count-all');
+        const allAmount = document.getElementById('amount-all');
+        if (allCount && l1Data.success && l2Data.success) {
+            allCount.textContent = l1Data.count + l2Data.count;
+        }
+        if (allAmount && l1Data.success && l2Data.success) {
+            allAmount.textContent = `Rs. ${numberFormat(l1Data.total_amount + l2Data.total_amount)}`;
+        }
+        
+        console.log('Stats refreshed:', { l1: l1Data.count, l2: l2Data.count, approved: approvedData.count });
+    } catch (error) {
+        console.error('Error refreshing stats:', error);
+    }
+}
+
 // Render grouped items
 function renderItems(groups) {
     const container = document.getElementById('itemsContainer');
@@ -611,6 +712,9 @@ function renderInvoiceRow(item, isApproved) {
     const itemKey = `${item.type}_${item.id}`;
     const isSelected = selectedItems.has(itemKey);
     
+    // Format approval date if available
+    const approvalDateStr = item.approved_at ? formatDate(item.approved_at) : '';
+    
     return `
         <div class="invoice-row ${isSelected ? 'selected' : ''}" data-item-key="${itemKey}">
             ${!isApproved ? `
@@ -624,6 +728,7 @@ function renderInvoiceRow(item, isApproved) {
             <span class="invoice-level ${item.level === 1 ? 'l1' : 'l2'}">L${item.level}</span>
             ` : `
             <span class="invoice-approved-by">✅ ${item.approved_by || 'System'}</span>
+            ${approvalDateStr ? `<span class="invoice-approved-date" style="color: #059669; font-size: 12px; margin-left: 8px;">📅 ${approvalDateStr}</span>` : ''}
             `}
             <span class="invoice-amount">Rs. ${numberFormat(item.amount)}</span>
             <div class="invoice-actions">
@@ -727,7 +832,10 @@ function openApprovalModal(ledgerId, level) {
     // Store item for confirmation
     window.pendingApprovalItem = item;
     
-    document.getElementById('approvalModal').style.display = 'flex';
+    const modal = document.getElementById('approvalModal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
 }
 
 function closeModal() {
@@ -748,13 +856,18 @@ async function confirmL1Only() {
 }
 
 async function doApprove(ledgerId, approvalType) {
+    // Use web routes (session auth) instead of API routes (Sanctum auth)
     const url = approvalType === 'l1_only' 
-        ? `/api/ledger/${ledgerId}/approve-l1-only`
-        : `/api/ledger/${ledgerId}/approve`;
+        ? `/finance/ledger/${ledgerId}/approve-l1-only`
+        : `/finance/ledger/${ledgerId}/approve`;
     
     const body = approvalType === 'l1_only'
         ? { approval_notes: 'Approved from Online Approvals web' }
         : { approval_notes: 'Approved from Online Approvals web', force_full_approval: true };
+    
+    console.log('=== doApprove ===');
+    console.log('URL:', url);
+    console.log('Body:', body);
     
     try {
         const response = await fetch(url, {
@@ -767,11 +880,14 @@ async function doApprove(ledgerId, approvalType) {
             body: JSON.stringify(body)
         });
         
+        console.log('Response status:', response.status);
         const data = await response.json();
+        console.log('Response data:', data);
         
         if (data.success) {
             showToast(data.message || 'Approved successfully!', 'success');
             loadData(); // Refresh data
+            refreshStats(); // Refresh counts
         } else {
             showToast(data.message || 'Failed to approve', 'error');
         }
@@ -781,52 +897,197 @@ async function doApprove(ledgerId, approvalType) {
     }
 }
 
-// Bulk approval
-async function approveSelected() {
-    if (selectedItems.size === 0) return;
-    
-    const items = allItems.filter(item => selectedItems.has(`${item.type}_${item.id}`));
-    const hasL1 = items.some(i => i.level === 1);
-    
-    let message = `Approve ${items.length} selected invoice(s)?`;
-    if (hasL1) {
-        message += '\n\n• Full Approve: Complete approval\n• L1 Only: Move L1 items to L2 pending';
+// =============================================
+// BULK APPROVAL FUNCTIONS (Similar to Mobile)
+// =============================================
+
+// Store pending bulk items
+window.pendingBulkItems = [];
+window.pendingBulkContext = ''; // 'selection' or customer name for group
+
+// Open bulk approval modal for selected items
+function approveSelected() {
+    if (selectedItems.size === 0) {
+        showToast('Please select items to approve', 'error');
+        return;
     }
     
-    const result = confirm(message);
-    if (!result) return;
+    const items = allItems.filter(item => selectedItems.has(`${item.type}_${item.id}`));
     
-    // For simplicity, do full approval for all
-    await doBulkApprove(items, 'full');
+    if (items.length === 0) {
+        showToast('No items found for selection', 'error');
+        return;
+    }
+    
+    openBulkApprovalModal(items, 'Selected Items');
 }
 
-async function approveGroup(customerName) {
+// Open bulk approval modal for a customer group
+function approveGroup(customerName) {
     const group = groupedItems.find(g => g.customer === customerName);
-    if (!group) return;
+    if (!group || !group.items || group.items.length === 0) {
+        showToast('No items found for this group', 'error');
+        return;
+    }
     
-    const hasL1 = group.items.some(i => i.level === 1);
-    
-    let message = `Approve all ${group.items.length} invoice(s) for ${customerName}?`;
-    
-    const result = confirm(message);
-    if (!result) return;
-    
-    await doBulkApprove(group.items, 'full');
+    openBulkApprovalModal(group.items, customerName);
 }
 
+// Open the bulk approval modal with item details
+function openBulkApprovalModal(items, contextLabel) {
+    window.pendingBulkItems = items;
+    window.pendingBulkContext = contextLabel;
+    
+    const hasL1 = items.some(i => i.level === 1);
+    const hasL2 = items.some(i => i.level === 2);
+    const l1Count = items.filter(i => i.level === 1).length;
+    const l2Count = items.filter(i => i.level === 2).length;
+    const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    
+    // Set modal title
+    document.getElementById('bulkModalTitle').textContent = `Approve ${items.length} Invoice(s)`;
+    
+    // Build modal body
+    let bodyHtml = `
+        <div class="space-y-4">
+            <div class="bg-gray-50 rounded-lg p-4">
+                <div class="text-sm text-gray-600 mb-1">Customer/Group</div>
+                <div class="font-semibold text-gray-900">${escapeHtml(contextLabel)}</div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-blue-50 rounded-lg p-4 text-center">
+                    <div class="text-2xl font-bold text-blue-700">${items.length}</div>
+                    <div class="text-xs text-blue-600">Invoices</div>
+                </div>
+                <div class="bg-green-50 rounded-lg p-4 text-center">
+                    <div class="text-lg font-bold text-green-700">Rs. ${numberFormat(totalAmount)}</div>
+                    <div class="text-xs text-green-600">Total Amount</div>
+                </div>
+            </div>
+            
+            <div class="border-t border-gray-200 pt-4">
+                <div class="text-sm font-medium text-gray-700 mb-2">Approval Levels:</div>
+                <div class="flex gap-3">
+                    ${hasL1 ? `<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-amber-100 text-amber-800">
+                        L1: ${l1Count} invoice${l1Count > 1 ? 's' : ''}
+                    </span>` : ''}
+                    ${hasL2 ? `<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
+                        L2: ${l2Count} invoice${l2Count > 1 ? 's' : ''}
+                    </span>` : ''}
+                </div>
+            </div>
+    `;
+    
+    // Add explanation based on what's present
+    if (hasL1) {
+        bodyHtml += `
+            <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <div class="text-sm text-amber-800">
+                    <strong>💡 Approval Options:</strong><br>
+                    • <strong>Full Approve</strong>: Fully approve all items (L1→Approved, L2→Approved)<br>
+                    • <strong>L1 Only</strong>: Move L1 items to L2 pending (for second review)
+                </div>
+            </div>
+        `;
+    }
+    
+    bodyHtml += '</div>';
+    
+    document.getElementById('bulkModalBody').innerHTML = bodyHtml;
+    
+    // Show/hide L1 Only button based on whether there are L1 items
+    const l1Btn = document.getElementById('bulkL1OnlyBtn');
+    if (l1Btn) l1Btn.style.display = hasL1 ? 'flex' : 'none';
+    
+    // Show modal
+    const modal = document.getElementById('bulkApprovalModal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+}
+
+function closeBulkModal() {
+    document.getElementById('bulkApprovalModal').style.display = 'none';
+    window.pendingBulkItems = [];
+    window.pendingBulkContext = '';
+}
+
+// Confirm and execute bulk approval
+async function confirmBulkApprove(approvalType) {
+    console.log('=== confirmBulkApprove called ===');
+    console.log('approvalType:', approvalType);
+    console.log('pendingBulkItems:', window.pendingBulkItems);
+    
+    if (!window.pendingBulkItems || window.pendingBulkItems.length === 0) {
+        showToast('No items to approve', 'error');
+        return;
+    }
+    
+    // IMPORTANT: Save items to local variable BEFORE closing modal (which clears them)
+    const itemsToApprove = [...window.pendingBulkItems];
+    
+    closeBulkModal();
+    await doBulkApprove(itemsToApprove, approvalType);
+}
+
+// Execute bulk approval with progress tracking
 async function doBulkApprove(items, approvalType) {
+    console.log('=== doBulkApprove started ===');
+    console.log('Items count:', items.length);
+    console.log('Approval type:', approvalType);
+    
+    const total = items.length;
     let successCount = 0;
     let errorCount = 0;
+    const errors = [];
     
-    for (const item of items) {
+    // Show processing overlay (with error handling)
+    try {
+        const overlay = document.getElementById('processingOverlay');
+        if (overlay) {
+            overlay.style.display = 'flex';
+            document.getElementById('processingText').textContent = approvalType === 'l1_only' 
+                ? 'Processing L1 approvals...' 
+                : 'Processing full approvals...';
+            document.getElementById('processingProgress').textContent = `0 / ${total}`;
+        } else {
+            console.warn('Processing overlay not found');
+        }
+    } catch (e) {
+        console.error('Error showing overlay:', e);
+    }
+    
+    console.log('Starting approval loop...');
+    
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        console.log(`Processing item ${i + 1}/${total}:`, item.number, item.id);
+        
         try {
-            const url = (approvalType === 'l1_only' && item.level === 1)
-                ? `/api/ledger/${item.id}/approve-l1-only`
-                : `/api/ledger/${item.id}/approve`;
+            const progressEl = document.getElementById('processingProgress');
+            if (progressEl) progressEl.textContent = `${i + 1} / ${total}`;
+        } catch (e) {}
+        
+        try {
+            // Determine URL and body based on approval type and item level
+            // Use web routes (session auth) instead of API routes (Sanctum auth)
+            let url, body;
             
-            const body = (approvalType === 'l1_only' && item.level === 1)
-                ? { approval_notes: 'Bulk approved from Online Approvals web' }
-                : { approval_notes: 'Bulk approved from Online Approvals web', force_full_approval: true };
+            if (approvalType === 'l1_only' && item.level === 1) {
+                // L1 Only: Move L1 items to L2 pending
+                url = `/finance/ledger/${item.id}/approve-l1-only`;
+                body = { approval_notes: 'Bulk L1-approved from Online Approvals web' };
+            } else {
+                // Full approval for all items
+                url = `/finance/ledger/${item.id}/approve`;
+                body = { 
+                    approval_notes: 'Bulk approved from Online Approvals web', 
+                    force_full_approval: true 
+                };
+            }
+            
+            console.log(`Approving item ${item.number}: ${url}`);
             
             const response = await fetch(url, {
                 method: 'POST',
@@ -838,22 +1099,59 @@ async function doBulkApprove(items, approvalType) {
                 body: JSON.stringify(body)
             });
             
+            console.log(`Response status for ${item.number}:`, response.status);
+            
             const data = await response.json();
+            console.log(`Response data for ${item.number}:`, data);
+            
             if (data.success) {
                 successCount++;
             } else {
                 errorCount++;
+                errors.push(`${item.number}: ${data.message || 'Unknown error'}`);
             }
         } catch (error) {
+            console.error(`Error for ${item.number}:`, error);
             errorCount++;
+            errors.push(`${item.number}: ${error.message || 'Network error'}`);
         }
     }
     
-    showToast(`✅ Approved: ${successCount}${errorCount > 0 ? ` | ❌ Failed: ${errorCount}` : ''}`, successCount > 0 ? 'success' : 'error');
+    console.log('=== Approval loop completed ===');
+    console.log('Success:', successCount, 'Errors:', errorCount);
     
+    // Hide processing overlay
+    try {
+        const overlay = document.getElementById('processingOverlay');
+        if (overlay) overlay.style.display = 'none';
+    } catch (e) {}
+    
+    // Show result
+    let resultMessage = `✅ Approved: ${successCount}`;
+    if (errorCount > 0) {
+        resultMessage += ` | ❌ Failed: ${errorCount}`;
+    }
+    
+    showToast(resultMessage, successCount > 0 ? 'success' : 'error');
+    
+    // Show detailed errors if any
+    if (errors.length > 0) {
+        console.error('Bulk approval errors:', errors);
+        // Optionally show a detailed error dialog
+        if (errors.length <= 5) {
+            setTimeout(() => {
+                alert('Some approvals failed:\n\n' + errors.join('\n'));
+            }, 500);
+        }
+    }
+    
+    // Clear selection and refresh
     selectedItems.clear();
     updateSelectionBar();
+    
+    // Refresh the data list and stats
     loadData();
+    refreshStats();
 }
 
 // Search
