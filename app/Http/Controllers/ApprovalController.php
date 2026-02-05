@@ -1170,6 +1170,7 @@ class ApprovalController extends Controller
             'id' => $ledger->id,
             'number' => $displayNumber,
             'order_number' => $orderNumber,
+            'order_id' => $ledger->order_id, // ⭐ For direct order view link
             'requester' => $requester,
             'title' => $ledger->order ? "Invoice #{$ledger->order->order_number}" : $ledger->description,
             'description' => $ledger->description,

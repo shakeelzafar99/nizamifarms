@@ -194,6 +194,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // NF Ledger (Store Mode - requires view_nf_ledger permission)
     Route::get('/nf-ledger/accounts', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerAccounts']);
     Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
+    Route::post('/nf-ledger/accounts/{accountId}/petty-cash', [\App\Http\Controllers\API\RiderController::class, 'updatePettyCash']);
     Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
     Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
     

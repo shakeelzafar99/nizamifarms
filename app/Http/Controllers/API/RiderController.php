@@ -10509,6 +10509,34 @@ class RiderController extends Controller
             // Use effective balance: calculated for employee_cash, stored for others
             $effectiveBalance = $account->getEffectiveBalance();
             
+            // Get loan and advance balances for employee accounts
+            $loanBalance = 0;
+            $advanceBalance = 0;
+            if ($account->account_category === 'employee_cash' && $account->user_id) {
+                // Get total outstanding loan balance
+                $loanBalance = \App\Models\HR\EmployeeLoanModel::where('user_id', $account->user_id)
+                    ->where('loan_status', 'active')
+                    ->sum('outstanding_balance');
+                
+                // Get total pending salary advances (from approved but not settled requests)
+                $advanceBalance = \App\Models\Request\RequestModel::where('requester_user_id', $account->user_id)
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'salary_advance');
+                    })
+                    ->where('status', 'approved')
+                    ->where(function($q) {
+                        $q->whereNull('settlement_status')
+                          ->orWhere('settlement_status', '!=', 'settled');
+                    })
+                    ->sum('amount');
+            }
+            
+            // Get company accounts for petty cash source selection
+            $companyAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                ->where('account_category', '!=', 'employee_cash')
+                ->whereIn('account_code', ['NF_CASH', 'ONLINE', 'EXP_FUND'])
+                ->get(['id', 'account_code', 'account_name']);
+            
             return response()->json([
                 'success' => true,
                 'account' => [
@@ -10519,13 +10547,17 @@ class RiderController extends Controller
                     'current_balance' => $effectiveBalance,
                     'user_id' => $account->user_id,
                     'user_name' => $account->user ? ($account->user->fullname ?? $account->user->name) : null,
+                    'petty_cash' => $account->petty_cash ?? 0,
                 ],
                 'summary' => [
                     'total_in' => $totalIn,
                     'total_out' => $totalOut,
                     'current_balance' => $effectiveBalance,
+                    'loan_balance' => $loanBalance,
+                    'advance_balance' => $advanceBalance,
                 ],
                 'grouped_transactions' => $groupedTransactions,
+                'company_accounts' => $companyAccounts,
             ]);
             
         } catch (\Exception $e) {
@@ -10533,6 +10565,68 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load ledger details: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Update petty cash for an employee account
+     * Only Taimur can modify, all can view
+     */
+    public function updatePettyCash(Request $request, $accountId)
+    {
+        try {
+            $user = Auth::user();
+            
+            // Only Taimur can modify petty cash
+            $isTaimur = strtolower($user->name ?? '') === 'taimur' || 
+                        strtolower($user->fullname ?? '') === 'taimur' ||
+                        strtolower($user->urole_name ?? '') === 'taimur';
+            
+            if (!$isTaimur) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only Taimur can modify petty cash'
+                ], 403);
+            }
+            
+            $account = \App\Models\FIN\AccountModel::find($accountId);
+            
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Account not found'
+                ], 404);
+            }
+            
+            $amount = $request->input('amount', 0);
+            $sourceType = $request->input('source_type', 'outside_cash');
+            $sourceAccountId = $request->input('source_account_id');
+            
+            // Update petty cash
+            $account->petty_cash = $amount;
+            $account->save();
+            
+            // Log the change
+            \Log::info('Petty cash updated', [
+                'account_id' => $accountId,
+                'amount' => $amount,
+                'source_type' => $sourceType,
+                'source_account_id' => $sourceAccountId,
+                'updated_by' => $user->id,
+            ]);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Petty cash updated successfully',
+                'petty_cash' => $amount,
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to update petty cash: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update petty cash: ' . $e->getMessage()
             ], 500);
         }
     }

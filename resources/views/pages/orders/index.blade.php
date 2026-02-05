@@ -5301,6 +5301,9 @@ function saveOrderChanges(orderId) {
             expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null, // Packet tracking
             items: items,
             discounts: discounts,
+            // ⭐ Order's name field - stores customer display name directly on order
+            // This must be updated when customer is changed to keep order list/modal in sync
+            name: formData.get('name'),
             // Address fields
             address_first_name: formData.get('address_first_name'),
             address_last_name: formData.get('address_last_name'),
@@ -5514,6 +5517,9 @@ function saveAndCloseOrder(orderId) {
             expected_packets: formData.get('expected_packets') ? parseInt(formData.get('expected_packets')) : null,
             items: items,
             discounts: discounts,
+            // ⭐ Order's name field - stores customer display name directly on order
+            // This must be updated when customer is changed to keep order list/modal in sync
+            name: formData.get('name'),
             address_first_name: formData.get('address_first_name'),
             address_last_name: formData.get('address_last_name'),
             address_email: formData.get('address_email'),
@@ -5873,6 +5879,8 @@ function popoutOrder() {
                 payment_method: formData.get('payment_method'),
                 note: formData.get('note'),
                 items: items,
+                // ⭐ Order's name field - customer display name on order
+                name: formData.get('name'),
                 address_first_name: formData.get('address_first_name'),
                 address_last_name: formData.get('address_last_name'),
                 address_email: formData.get('address_email'),

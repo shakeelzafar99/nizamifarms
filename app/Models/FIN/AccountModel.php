@@ -24,6 +24,7 @@ class AccountModel extends BaseModel
         'user_id',
         'opening_balance',
         'current_balance',
+        'petty_cash',
         'is_active',
         'created_by',
         'updated_by'
@@ -32,6 +33,7 @@ class AccountModel extends BaseModel
     protected $casts = [
         'opening_balance' => 'decimal:2',
         'current_balance' => 'decimal:2',
+        'petty_cash' => 'decimal:2',
         'is_active' => 'boolean'
     ];
 

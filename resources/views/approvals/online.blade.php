@@ -123,21 +123,34 @@
     }
 
     .approve-group-btn {
-        background: linear-gradient(135deg, #10B981 0%, #059669 100%);
         color: white;
         border: none;
-        padding: 10px 20px;
-        border-radius: 8px;
-        font-size: 13px;
+        padding: 8px 14px;
+        border-radius: 6px;
+        font-size: 12px;
         font-weight: 700;
         cursor: pointer;
         transition: all 0.2s;
-        box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
     }
 
-    .approve-group-btn:hover {
+    .approve-group-btn.full-approve {
+        background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+        box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
+    }
+
+    .approve-group-btn.full-approve:hover {
         transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+        box-shadow: 0 4px 10px rgba(16, 185, 129, 0.4);
+    }
+
+    .approve-group-btn.l1-only {
+        background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+        box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3);
+    }
+
+    .approve-group-btn.l1-only:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(59, 130, 246, 0.4);
     }
 
     /* Invoice Row */
@@ -287,6 +300,41 @@
         cursor: pointer;
     }
 
+    .selection-bar .full-approve-btn {
+        background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .selection-bar .full-approve-btn:hover {
+        background: linear-gradient(135deg, #059669 0%, #047857 100%);
+        transform: translateY(-1px);
+    }
+
+    .selection-bar .l1-approve-btn {
+        background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .selection-bar .l1-approve-btn:hover {
+        background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+        transform: translateY(-1px);
+    }
+
+    /* Legacy - keeping for backward compatibility */
     .selection-bar .approve-btn {
         background: linear-gradient(135deg, #10B981 0%, #059669 100%);
         color: white;
@@ -442,7 +490,8 @@
     <div id="selectionBar" class="selection-bar" style="display: none;">
         <span class="count"><span id="selectedCount">0</span> selected</span>
         <button class="clear-btn" onclick="clearSelection()">✕ Clear</button>
-        <button class="approve-btn" onclick="approveSelected()">✓ Approve Selected</button>
+        <button class="full-approve-btn" onclick="fullApproveSelected()">✓ Full Approve</button>
+        <button class="l1-approve-btn" onclick="l1ApproveSelected()">→ L1 Only</button>
     </div>
 </div>
 
@@ -691,8 +740,11 @@ function renderItems(groups) {
                     <div class="customer-actions">
                         <span class="customer-total">Rs. ${numberFormat(group.total_amount)}</span>
                         ${!isApproved ? `
-                        <button class="approve-group-btn" onclick="approveGroup('${escapeHtml(group.customer)}')">
-                            ✓ Approve All
+                        <button class="approve-group-btn full-approve" onclick="fullApproveGroup('${escapeHtml(group.customer)}')" title="Fully approve all invoices">
+                            ✓ Full
+                        </button>
+                        <button class="approve-group-btn l1-only" onclick="l1ApproveGroup('${escapeHtml(group.customer)}')" title="Move L1 items to L2 pending">
+                            → L1 Only
                         </button>
                         ` : ''}
                     </div>
@@ -715,6 +767,9 @@ function renderInvoiceRow(item, isApproved) {
     // Format approval date if available
     const approvalDateStr = item.approved_at ? formatDate(item.approved_at) : '';
     
+    // ⭐ Build order view URL - opens order details modal in new tab
+    const orderViewUrl = item.order_id ? `/orders?edit_order_id=${item.order_id}` : '#';
+    
     return `
         <div class="invoice-row ${isSelected ? 'selected' : ''}" data-item-key="${itemKey}">
             ${!isApproved ? `
@@ -722,7 +777,7 @@ function renderInvoiceRow(item, isApproved) {
                 <span class="check-icon">${isSelected ? '✓' : ''}</span>
             </div>
             ` : ''}
-            <a href="${item.view_url}" target="_blank" class="invoice-number">${item.number}</a>
+            <a href="${orderViewUrl}" target="_blank" class="invoice-number" title="View order details">${item.number}</a>
             <span class="invoice-date">📅 ${formatDate(item.date)}</span>
             ${!isApproved ? `
             <span class="invoice-level ${item.level === 1 ? 'l1' : 'l2'}">L${item.level}</span>
@@ -735,7 +790,7 @@ function renderInvoiceRow(item, isApproved) {
                 ${!isApproved ? `
                 <button class="view-btn" onclick="openApprovalModal(${item.id}, ${item.level})">Review</button>
                 ` : `
-                <a href="${item.view_url}" target="_blank" class="view-btn">View</a>
+                <a href="${orderViewUrl}" target="_blank" class="view-btn">View Order</a>
                 `}
             </div>
         </div>
@@ -905,7 +960,7 @@ async function doApprove(ledgerId, approvalType) {
 window.pendingBulkItems = [];
 window.pendingBulkContext = ''; // 'selection' or customer name for group
 
-// Open bulk approval modal for selected items
+// Open bulk approval modal for selected items (legacy - kept for backwards compatibility)
 function approveSelected() {
     if (selectedItems.size === 0) {
         showToast('Please select items to approve', 'error');
@@ -922,7 +977,67 @@ function approveSelected() {
     openBulkApprovalModal(items, 'Selected Items');
 }
 
-// Open bulk approval modal for a customer group
+// ⭐ Direct full approval for selected items (skips modal)
+async function fullApproveSelected() {
+    if (selectedItems.size === 0) {
+        showToast('Please select items to approve', 'error');
+        return;
+    }
+    
+    const items = allItems.filter(item => selectedItems.has(`${item.type}_${item.id}`));
+    
+    if (items.length === 0) {
+        showToast('No items found for selection', 'error');
+        return;
+    }
+    
+    const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const confirmed = confirm(
+        `FULL APPROVE ${items.length} invoice(s)?\n\n` +
+        `Total: Rs. ${numberFormat(totalAmount)}\n\n` +
+        `This will fully approve all items (L1→Approved, L2→Approved).`
+    );
+    
+    if (!confirmed) return;
+    
+    await doBulkApprove([...items], 'full');
+}
+
+// ⭐ Direct L1-only approval for selected items (skips modal)
+async function l1ApproveSelected() {
+    if (selectedItems.size === 0) {
+        showToast('Please select items to approve', 'error');
+        return;
+    }
+    
+    const items = allItems.filter(item => selectedItems.has(`${item.type}_${item.id}`));
+    
+    if (items.length === 0) {
+        showToast('No items found for selection', 'error');
+        return;
+    }
+    
+    const l1Items = items.filter(i => i.level === 1);
+    if (l1Items.length === 0) {
+        showToast('No L1 items in your selection - L1 Only is for moving L1 items to L2 pending', 'info');
+        return;
+    }
+    
+    const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const confirmed = confirm(
+        `L1 APPROVE ${items.length} invoice(s)?\n\n` +
+        `Total: Rs. ${numberFormat(totalAmount)}\n` +
+        `L1 items: ${l1Items.length}\n\n` +
+        `This will move L1 items to L2 pending for second review.\n` +
+        `L2 items will be fully approved.`
+    );
+    
+    if (!confirmed) return;
+    
+    await doBulkApprove([...items], 'l1_only');
+}
+
+// Open bulk approval modal for a customer group (legacy - now replaced by direct buttons)
 function approveGroup(customerName) {
     const group = groupedItems.find(g => g.customer === customerName);
     if (!group || !group.items || group.items.length === 0) {
@@ -931,6 +1046,53 @@ function approveGroup(customerName) {
     }
     
     openBulkApprovalModal(group.items, customerName);
+}
+
+// ⭐ Direct full approval for customer group (skips modal)
+async function fullApproveGroup(customerName) {
+    const group = groupedItems.find(g => g.customer === customerName);
+    if (!group || !group.items || group.items.length === 0) {
+        showToast('No items found for this group', 'error');
+        return;
+    }
+    
+    const totalAmount = group.items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const confirmed = confirm(
+        `FULL APPROVE ${group.items.length} invoice(s) for ${customerName}?\n\n` +
+        `Total: Rs. ${numberFormat(totalAmount)}\n\n` +
+        `This will fully approve all items (L1→Approved, L2→Approved).`
+    );
+    
+    if (!confirmed) return;
+    
+    await doBulkApprove([...group.items], 'full');
+}
+
+// ⭐ Direct L1-only approval for customer group (skips modal)
+async function l1ApproveGroup(customerName) {
+    const group = groupedItems.find(g => g.customer === customerName);
+    if (!group || !group.items || group.items.length === 0) {
+        showToast('No items found for this group', 'error');
+        return;
+    }
+    
+    const l1Items = group.items.filter(i => i.level === 1);
+    if (l1Items.length === 0) {
+        showToast('No L1 items in this group', 'info');
+        return;
+    }
+    
+    const totalAmount = group.items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const confirmed = confirm(
+        `L1 APPROVE ${group.items.length} invoice(s) for ${customerName}?\n\n` +
+        `Total: Rs. ${numberFormat(totalAmount)}\n` +
+        `L1 items: ${l1Items.length}\n\n` +
+        `This will move L1 items to L2 pending for second review.`
+    );
+    
+    if (!confirmed) return;
+    
+    await doBulkApprove([...group.items], 'l1_only');
 }
 
 // Open the bulk approval modal with item details

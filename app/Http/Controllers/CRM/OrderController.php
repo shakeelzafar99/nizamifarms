@@ -594,6 +594,51 @@ class OrderController extends Controller
             
             $validated = $request->validate($validationRules);
             
+            // ================================================================
+            // ⭐ SERVER-SIDE TOTAL RECALCULATION (Feb 2026)
+            // Always recalculate totals from line items to prevent frontend/backend mismatches
+            // ================================================================
+            if (isset($validated['items']) && is_array($validated['items']) && !empty($validated['items'])) {
+                // Calculate subtotal from line items
+                $calculatedSubtotal = collect($validated['items'])->sum(function($item) {
+                    return floatval($item['line_total'] ?? ($item['quantity'] * $item['unit_price']));
+                });
+                
+                // Calculate discount total from discounts array (if provided)
+                $calculatedDiscountTotal = 0;
+                if (isset($validated['discounts']) && is_array($validated['discounts'])) {
+                    $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                } elseif (isset($validated['discount_total'])) {
+                    $calculatedDiscountTotal = floatval($validated['discount_total']);
+                }
+                
+                // Calculate expected total
+                $shipping = floatval($validated['shipping_total'] ?? 0);
+                $tip = floatval($validated['tip_amount'] ?? 0);
+                $calculatedTotal = $calculatedSubtotal - $calculatedDiscountTotal + $shipping + $tip;
+                
+                // Log if there's a mismatch (for debugging)
+                $frontendSubtotal = floatval($validated['subtotal_price'] ?? 0);
+                $frontendTotal = floatval($validated['total_price'] ?? 0);
+                
+                if (abs($frontendSubtotal - $calculatedSubtotal) > 1 || abs($frontendTotal - $calculatedTotal) > 1) {
+                    \Log::warning('Order total mismatch detected - using server-calculated values', [
+                        'order_id' => $id,
+                        'frontend_subtotal' => $frontendSubtotal,
+                        'calculated_subtotal' => $calculatedSubtotal,
+                        'frontend_total' => $frontendTotal,
+                        'calculated_total' => $calculatedTotal,
+                        'discount' => $calculatedDiscountTotal,
+                        'shipping' => $shipping,
+                        'tip' => $tip,
+                    ]);
+                }
+                
+                // Always use server-calculated values
+                $validated['subtotal_price'] = $calculatedSubtotal;
+                $validated['total_price'] = $calculatedTotal;
+            }
+            
             // ⭐ Calculate discount_total from discounts array
             // If discounts array is provided (even if empty), update discount_total
             if (isset($validated['discounts']) && is_array($validated['discounts'])) {
@@ -1104,6 +1149,50 @@ class OrderController extends Controller
                 'discounts.*.coupon_code' => 'nullable|string|max:100',
                 'discounts.*.notes' => 'nullable|string'
             ]);
+            
+            // ================================================================
+            // ⭐ SERVER-SIDE TOTAL RECALCULATION (Feb 2026)
+            // Always recalculate totals from line items to prevent frontend/backend mismatches
+            // ================================================================
+            if (isset($validated['items']) && is_array($validated['items']) && !empty($validated['items'])) {
+                // Calculate subtotal from line items
+                $calculatedSubtotal = collect($validated['items'])->sum(function($item) {
+                    return floatval($item['line_total'] ?? ($item['quantity'] * $item['unit_price']));
+                });
+                
+                // Calculate discount total from discounts array (if provided)
+                $calculatedDiscountTotal = 0;
+                if (isset($validated['discounts']) && is_array($validated['discounts'])) {
+                    $calculatedDiscountTotal = collect($validated['discounts'])->sum('amount');
+                } elseif (isset($validated['discount_total'])) {
+                    $calculatedDiscountTotal = floatval($validated['discount_total']);
+                }
+                
+                // Calculate expected total
+                $shipping = floatval($validated['shipping_total'] ?? 0);
+                $tip = floatval($validated['tip_amount'] ?? 0);
+                $calculatedTotal = $calculatedSubtotal - $calculatedDiscountTotal + $shipping + $tip;
+                
+                // Log if there's a mismatch (for debugging)
+                $frontendSubtotal = floatval($validated['subtotal_price'] ?? 0);
+                $frontendTotal = floatval($validated['total_price'] ?? 0);
+                
+                if (abs($frontendSubtotal - $calculatedSubtotal) > 1 || abs($frontendTotal - $calculatedTotal) > 1) {
+                    \Log::warning('New order total mismatch detected - using server-calculated values', [
+                        'frontend_subtotal' => $frontendSubtotal,
+                        'calculated_subtotal' => $calculatedSubtotal,
+                        'frontend_total' => $frontendTotal,
+                        'calculated_total' => $calculatedTotal,
+                        'discount' => $calculatedDiscountTotal,
+                        'shipping' => $shipping,
+                        'tip' => $tip,
+                    ]);
+                }
+                
+                // Always use server-calculated values
+                $validated['subtotal_price'] = $calculatedSubtotal;
+                $validated['total_price'] = $calculatedTotal;
+            }
             
             // ⭐ Calculate discount_total from discounts array
             // If discounts array is provided (even if empty), update discount_total

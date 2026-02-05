@@ -199,6 +199,7 @@ class ApprovalsAPIController extends Controller
                     'customer_phone' => $customerPhone, // ⭐ For WhatsApp messaging
                     'category' => 'Invoice',
                     'category_color' => '#DBEAFE',
+                    'order_id' => $ledger->order_id, // ⭐ For direct order view link
                 ];
             }
             $timings['process_loop'] = round((microtime(true) - $processStart) * 1000, 2);
@@ -277,6 +278,7 @@ class ApprovalsAPIController extends Controller
                         'customer_phone' => $customerPhone,
                         'category' => 'Invoice',
                         'category_color' => '#D1FAE5', // Green tint for approved
+                        'order_id' => $ledger->order_id, // ⭐ For direct order view link
                         // ⭐ Approval details
                         'l1_approved_by' => $l1ApprovedBy,
                         'l1_approved_at' => $l1ApprovedBy ? $ledger->approval_date?->format('Y-m-d') : null, // Use approval_date as proxy
