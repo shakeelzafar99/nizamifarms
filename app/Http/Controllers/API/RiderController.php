@@ -3057,6 +3057,22 @@ class RiderController extends Controller
                 ->first();
 
             if (!$attendance) {
+                // ⭐ Log when we return 400 - helps diagnose why heartbeats stop
+                $anyAttendanceToday = \DB::table('t_ops_attendance')
+                    ->where('user_id', $user->id)
+                    ->whereDate('attendance_date', $today)
+                    ->first();
+                    
+                \Log::warning('📍 Heartbeat rejected - not checked in', [
+                    'user_id' => $user->id,
+                    'user_name' => $user->fullname,
+                    'today' => $today,
+                    'has_attendance_record' => $anyAttendanceToday ? 'yes' : 'no',
+                    'login_time' => $anyAttendanceToday->login_time ?? null,
+                    'logout_time' => $anyAttendanceToday->logout_time ?? null,
+                    'source' => $request->input('source'),
+                ]);
+                
                 return response()->json([
                     'success' => false,
                     'message' => 'Not checked in or already checked out'
@@ -7387,22 +7403,6 @@ class RiderController extends Controller
             }
 
             $finalizeNode = function (&$node) use (&$finalizeNode) {
-                // DEBUG: Track if this is an order node and log quantity before/after
-                $isOrderNode = ($node['field'] ?? '') === 'orders';
-                $qtyBefore = $node['quantity'] ?? 'N/A';
-                
-                // DEBUG: Log node details BEFORE any modifications
-                static $debugFinalizeCount = 0;
-                if ($debugFinalizeCount < 5 && $isOrderNode) {
-                    Log::debug("🔍 finalizeNode START", [
-                        'order_id' => $node['order_id'] ?? 'N/A',
-                        'quantity_at_start' => $node['quantity'],
-                        'has_children' => !empty($node['children']),
-                        'children_count' => count($node['children'] ?? []),
-                    ]);
-                    $debugFinalizeCount++;
-                }
-                
                 $node['order_count'] = count($node['_order_ids']);
                 $node['product_count'] = count(array_filter(array_keys($node['_product_ids'])));
 
@@ -7420,60 +7420,8 @@ class RiderController extends Controller
                         $finalizeNode($child);
                     }
                     unset($child); // Break the reference to avoid issues
-                    
-                    // REMOVED: usort breaks PHP references!
-                    // When we store references like: $currentMap[$key] =& $currentList[...]
-                    // usort() re-indexes the array and breaks those references
-                    // This was causing order node quantities to reset to 0
-                    // 
-                    // usort($node['children'], function ($a, $b) {
-                    //     return $b['quantity'] <=> $a['quantity'];
-                    // });
-                }
-                
-                // DEBUG: Log if order node quantity changed
-                if ($isOrderNode) {
-                        Log::debug('🔧 finalizeNode on order node', [
-                            'order_id' => $node['order_id'] ?? 'N/A',
-                            'order_name' => $node['name'] ?? 'N/A',
-                            'quantity_before' => $qtyBefore,
-                            'quantity_after' => $node['quantity'] ?? 'N/A',
-                            'has_children' => !empty($node['children']),
-                        ]);
                 }
             };
-
-            // DEBUG: Log order nodes BEFORE finalization - check multiple products
-            $orderCheckCount = 0;
-            foreach ($tree as $rootNode) {
-                if (!empty($rootNode['children']) && $orderCheckCount < 5) {
-                    foreach ($rootNode['children'] as $child1) {
-                        if (!empty($child1['children']) && $orderCheckCount < 5) {
-                            foreach ($child1['children'] as $child2) {
-                                if (!empty($child2['children']) && $orderCheckCount < 5) {
-                                    foreach ($child2['children'] as $child3) {
-                                        if (($child3['field'] ?? '') === 'product_name' && !empty($child3['children']) && $orderCheckCount < 5) {
-                                            // Check ALL orders in this product, not just first
-                                            foreach ($child3['children'] as $orderNode) {
-                                                if (($orderNode['field'] ?? '') === 'orders' && $orderCheckCount < 5) {
-                                                    Log::debug("🔎 Order BEFORE finalize", [
-                                                        'product' => $child3['name'],
-                                                        'order_id' => $orderNode['order_id'] ?? 'N/A',
-                                                        'order_name' => $orderNode['name'] ?? 'N/A',
-                                                        'quantity' => $orderNode['quantity'] ?? 'N/A',
-                                                        'check_num' => $orderCheckCount,
-                                                    ]);
-                                                    $orderCheckCount++;
-                    }
-                }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             foreach ($tree as &$rootNode) {
                 $finalizeNode($rootNode);

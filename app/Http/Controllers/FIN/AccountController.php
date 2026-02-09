@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
+use App\Models\FIN\BusinessUnitModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -63,7 +64,10 @@ class AccountController extends Controller
             ]
         ];
 
-        return view('fin.account.create', compact('accountTypes'));
+        // Get business units for dropdown
+        $businessUnits = BusinessUnitModel::where('is_active', 1)->ordered()->get();
+
+        return view('fin.account.create', compact('accountTypes', 'businessUnits'));
     }
 
     /**
@@ -78,7 +82,8 @@ class AccountController extends Controller
             'account_category' => 'required|string|max:100',
             'opening_balance' => 'nullable|numeric',
             'description' => 'nullable|string|max:1000',
-            'is_active' => 'nullable|boolean'
+            'is_active' => 'nullable|boolean',
+            'business_unit_id' => 'nullable|exists:t_fin_business_units,id'
         ]);
 
         try {
@@ -91,6 +96,7 @@ class AccountController extends Controller
                 'current_balance' => $request->opening_balance ?? 0,
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? 1,
+                'business_unit_id' => $request->business_unit_id ?? 1, // Default to Nizami Farms (id=1)
                 'created_by' => auth()->id()
             ]);
 
@@ -195,7 +201,10 @@ class AccountController extends Controller
             ]
         ];
 
-        return view('fin.account.edit', compact('account', 'accountTypes'));
+        // Get business units for dropdown
+        $businessUnits = BusinessUnitModel::where('is_active', 1)->ordered()->get();
+
+        return view('fin.account.edit', compact('account', 'accountTypes', 'businessUnits'));
     }
 
     /**
@@ -210,7 +219,8 @@ class AccountController extends Controller
             'account_code' => 'required|string|max:50|unique:t_fin_accounts,account_code,' . $id,
             'account_category' => 'required|string|max:100',
             'description' => 'nullable|string|max:1000',
-            'is_active' => 'nullable|boolean'
+            'is_active' => 'nullable|boolean',
+            'business_unit_id' => 'nullable|exists:t_fin_business_units,id'
         ]);
 
         try {
@@ -220,6 +230,7 @@ class AccountController extends Controller
                 'account_category' => $request->account_category,
                 'description' => $request->description,
                 'is_active' => $request->is_active ?? $account->is_active,
+                'business_unit_id' => $request->business_unit_id ?? $account->business_unit_id ?? 1,
                 'updated_by' => auth()->id()
             ]);
 

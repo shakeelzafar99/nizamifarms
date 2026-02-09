@@ -705,6 +705,46 @@ input:focus, select:focus, button:focus {
     transform: translateY(-1px);
 }
 
+/* ⭐ Select Multiple Mode - Hide checkboxes by default */
+.checkbox-column {
+    display: none;
+}
+
+.select-mode-active .checkbox-column {
+    display: table-cell;
+}
+
+/* Select Multiple button styling */
+.select-multiple-btn {
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    color: #374151;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.select-multiple-btn:hover {
+    background: #e5e7eb;
+    border-color: #9ca3af;
+}
+
+.select-multiple-btn.active {
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1d4ed8;
+}
+
+.select-multiple-btn.active:hover {
+    background: #bfdbfe;
+}
+
 /* Toast notifications */
 .toast-container {
     position: fixed;
@@ -940,18 +980,14 @@ input:focus, select:focus, button:focus {
                         </button>
                         
                         @if($source !== 'shopify')
-                        <button onclick="openBulkStatusModal()" class="action-btn action-btn-purple">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                        <!-- ⭐ Select Multiple Button - Toggles checkbox visibility -->
+                        <button id="selectMultipleBtn" onclick="toggleSelectMultipleMode()" class="select-multiple-btn">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                             </svg>
-                            Bulk Status
+                            <span id="selectMultipleBtnText">Select Multiple</span>
                         </button>
-                        <button onclick="openBulkRiderModal()" class="action-btn action-btn-cyan">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
-                            </svg>
-                            Bulk Assign Rider
-                        </button>
+                        <!-- Bulk Status and Bulk Assign Rider buttons hidden - functionality available in floating bar when orders are selected -->
                         <!-- ⭐ All Riders Map Button -->
                         <button onclick="openAllRidersMapModal()" class="action-btn" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #f59e0b; color: #92400e;">
                             <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5952,6 +5988,14 @@ function openEditInTab() {
     }
 }
 
+// ⭐ Pop out order directly from table row (opens in new tab in pop-out mode)
+function popOutOrder(orderId) {
+    if (orderId) {
+        const url = '/orders?edit_order_id=' + encodeURIComponent(String(orderId));
+        window.open(url, '_blank');
+    }
+}
+
 // Open create order in a full Orders tab (loads entire app and auto-opens create modal)
 function openCreateInTab() {
     const url = '/orders?create_new_order=1';
@@ -7668,23 +7712,44 @@ function renderTableHeader() {
     header.innerHTML = '';
     if (colgroup) colgroup.innerHTML = '';
     
-    // Add checkbox column first (only for non-Shopify orders)
+    // Add checkbox column first (only for non-Shopify orders) - Hidden by default until Select Multiple is clicked
     const isShopifyView = window.location.search.includes('source=shopify');
     if (!isShopifyView) {
         const checkboxTh = document.createElement('th');
-        checkboxTh.className = 'px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-12';
+        // ⭐ Add checkbox-column class - hidden by default via CSS
+        checkboxTh.className = 'checkbox-column px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-12';
         checkboxTh.innerHTML = '<input type="checkbox" id="selectAllOrders" onchange="toggleAllOrdersSelection()" class="rounded" title="Select all on page">';
         header.appendChild(checkboxTh);
         
         if (colgroup) {
             const checkboxCol = document.createElement('col');
+            checkboxCol.className = 'checkbox-column';
             checkboxCol.style.width = '48px';
             colgroup.appendChild(checkboxCol);
         }
     }
     
+    // ⭐ Render actions column FIRST (after checkbox) for better visibility
+    const actionsColumn = currentColumns.find(c => c.id === 'actions');
+    if (actionsColumn && actionsColumn.visible) {
+        const actionsConfig = availableColumns['actions'];
+        if (actionsConfig) {
+            const actionsTh = document.createElement('th');
+            actionsTh.className = `px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider`;
+            actionsTh.textContent = actionsConfig.label;
+            header.appendChild(actionsTh);
+            
+            if (colgroup) {
+                const actionsCol = document.createElement('col');
+                actionsCol.style.width = '90px'; // Compact width for 3 action buttons
+                colgroup.appendChild(actionsCol);
+            }
+        }
+    }
+    
+    // Render other columns (excluding actions which is already rendered)
     currentColumns.forEach(column => {
-        if (column.visible) {
+        if (column.visible && column.id !== 'actions') {
             const columnConfig = availableColumns[column.id];
             if (columnConfig) {
                 const th = document.createElement('th');
@@ -7751,17 +7816,18 @@ function renderTableBody() {
             // Make entire row clickable to open view order details
             row.onclick = function(e) {
                 // Don't trigger row click if user clicked on action buttons, customer name, or checkboxes
-                if (e.target.closest('.sticky-actions') || e.target.closest('.customer-name-link') || e.target.closest('input[type="checkbox"]')) {
+                if (e.target.closest('.sticky-actions') || e.target.closest('.action-buttons') || e.target.closest('.customer-name-link') || e.target.closest('input[type="checkbox"]') || e.target.closest('button')) {
                     return;
                 }
                 viewOrderDetails(order.id);
             };
             
-            // Add checkbox column first (only for non-Shopify orders)
+            // Add checkbox column first (only for non-Shopify orders) - Hidden by default
             const isShopifyView = window.location.search.includes('source=shopify');
             if (!isShopifyView) {
                 const checkboxTd = document.createElement('td');
-                checkboxTd.className = 'px-3 py-4 whitespace-nowrap text-sm';
+                // ⭐ Add checkbox-column class - hidden by default via CSS
+                checkboxTd.className = 'checkbox-column px-3 py-4 whitespace-nowrap text-sm';
                 if (order.external_source === 'shopify') {
                     checkboxTd.innerHTML = ''; // No checkbox for Shopify orders
                 } else {
@@ -7770,15 +7836,25 @@ function renderTableBody() {
                 row.appendChild(checkboxTd);
             }
             
+            // ⭐ Render actions column FIRST (after checkbox) for better visibility
+            const actionsColumn = currentColumns.find(c => c.id === 'actions');
+            if (actionsColumn && actionsColumn.visible) {
+                try {
+                    const actionsTd = document.createElement('td');
+                    actionsTd.className = 'px-2 py-2 whitespace-nowrap text-sm';
+                    actionsTd.innerHTML = getCellContent(order, 'actions');
+                    row.appendChild(actionsTd);
+                } catch (cellError) {
+                    console.error('Error rendering actions cell:', cellError);
+                }
+            }
+            
+            // Render other columns (excluding actions which is already rendered)
             currentColumns.forEach(column => {
-                if (column.visible) {
+                if (column.visible && column.id !== 'actions') {
                     try {
                         const td = document.createElement('td');
-                        // Make actions sticky on the right
                         td.className = 'px-6 py-4 whitespace-nowrap text-sm';
-                        if (column.id === 'actions') {
-                            td.className += ' sticky-actions';
-                        }
                         // ⭐ SMART SYNC: Mark rider cell for updates
                         if (column.id === 'rider') {
                             td.className += ' order-rider-cell';
@@ -8088,22 +8164,22 @@ function getCellContent(order, columnId) {
                 if (isConverted || isIgnored) {
                     // Already processed - show only view details
                     return `
-                        <div class="flex items-center justify-center gap-1.5">
-                            <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                        <div class="action-buttons flex items-center gap-1">
+                            <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                             </button>
                         </div>`;
                 } else {
                     // Pending approval - show approve/ignore/view
                 return `
-                    <div class="flex items-center justify-center gap-1.5">
-                        <button onclick="convertOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="Approve (Convert)">
+                    <div class="action-buttons flex items-center gap-1">
+                        <button onclick="event.stopPropagation(); convertOrder(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="Approve (Convert)">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                         </button>
-                        <button onclick="ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 hover:border-rose-300 hover:shadow-sm transition-all duration-200 group" title="Ignore">
+                        <button onclick="event.stopPropagation(); ignoreOrder(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-rose-600 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 hover:border-rose-300 transition-all duration-200" title="Ignore">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
-                            <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                        <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                         </button>
                     </div>`;
@@ -8111,32 +8187,17 @@ function getCellContent(order, columnId) {
             }
             
             // Default full actions for non-Shopify orders (webapp, manual, etc.)
-            // Check if order is delivered with ledger entry (restrict quick edit)
-            const hasLedger = order.ledger_transaction_id && order.ledger_transaction_id > 0;
-            const isDelivered = order.order_status === 'delivered';
-            const restrictEdit = hasLedger && isDelivered;
-            
-            // Build edit button - disabled if delivered with ledger
-            let editButton = '';
-            if (restrictEdit) {
-                // Show disabled edit button with lock icon and tooltip
-                editButton = `<button disabled class="inline-flex items-center justify-center w-8 h-8 text-gray-400 bg-gray-50 border border-gray-200 rounded-lg cursor-not-allowed opacity-60" title="Quick edit disabled for delivered orders. Use full edit modal from view details.">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                </button>`;
-            } else {
-                // Show normal edit button
-                editButton = `<button onclick="editOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 hover:border-amber-300 hover:shadow-sm transition-all duration-200 group" title="Edit Order">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                </button>`;
-            }
-            
+            // ⭐ Only 3 action buttons: Pop Out, View, Invoice
+            // Edit functionality is available via View modal or Pop Out
             return `
-                <div class="flex items-center justify-center gap-1.5">
-                    <button onclick="viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-8 h-8 text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 hover:border-blue-300 hover:shadow-sm transition-all duration-200 group" title="View Order Details">
+                <div class="action-buttons flex items-center gap-1">
+                    <button onclick="event.stopPropagation(); popOutOrder(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-violet-600 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100 hover:border-violet-300 transition-all duration-200" title="Pop Out (Open in New Tab)">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </button>
+                    <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    ${editButton}
-                    <button onclick="window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-8 h-8 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 hover:border-emerald-300 hover:shadow-sm transition-all duration-200 group" title="View Invoice (PDF)">
+                    <button onclick="event.stopPropagation(); window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
                 </div>`;
@@ -11162,6 +11223,35 @@ function showToast(title, message, type = 'success') {
     }, 4000);
 }
 
+// ============= Select Multiple Mode =============
+window.isSelectMultipleMode = false;
+
+function toggleSelectMultipleMode() {
+    window.isSelectMultipleMode = !window.isSelectMultipleMode;
+    
+    const btn = document.getElementById('selectMultipleBtn');
+    const btnText = document.getElementById('selectMultipleBtnText');
+    const table = document.querySelector('table');
+    
+    if (window.isSelectMultipleMode) {
+        // Activate select mode
+        btn.classList.add('active');
+        btnText.textContent = 'Exit Selection';
+        if (table) table.classList.add('select-mode-active');
+        
+        // Show a toast
+        showToast('Selection Mode', 'Click checkboxes to select orders for bulk actions', 'info');
+    } else {
+        // Deactivate select mode
+        btn.classList.remove('active');
+        btnText.textContent = 'Select Multiple';
+        if (table) table.classList.remove('select-mode-active');
+        
+        // Clear all selections when exiting
+        clearAllSelections();
+    }
+}
+
 // ============= Phase 3: Bulk Action Bar =============
 function updateBulkActionBar() {
     const checkboxes = document.querySelectorAll('.order-checkbox:checked');
@@ -11237,7 +11327,11 @@ function clearAllSelections() {
     }
     
     updateBulkActionBar();
-    showToast('Selection Cleared', 'All orders have been deselected', 'success');
+    
+    // Only show toast if we actually cleared something
+    if (checkboxes.length > 0) {
+        showToast('Selection Cleared', 'All orders have been deselected', 'success');
+    }
 }
 
 // Initialize bulk bar on page load

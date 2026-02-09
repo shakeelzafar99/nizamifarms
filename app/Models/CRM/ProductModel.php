@@ -5,7 +5,9 @@ namespace App\Models\CRM;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Notifications\Notifiable;
 use App\Models\Shared\BaseModel;
+use App\Models\FIN\BusinessUnitModel;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ProductModel extends BaseModel
 {
@@ -14,6 +16,26 @@ class ProductModel extends BaseModel
     protected $table = 't_crm_prod_product';
     protected $primaryKey = 'id';
     public $timestamps = true;
+
+    /**
+     * Default business unit ID (Nizami Farms)
+     */
+    const DEFAULT_BUSINESS_UNIT_ID = 1;
+
+    /**
+     * Boot method to auto-set business_unit_id if not provided
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            // ⭐ CRITICAL: Default to Nizami Farms (1) if business_unit_id not set
+            if (empty($model->business_unit_id)) {
+                $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
+            }
+        });
+    }
 
     protected $fillable = [
         'shopify_product_id',
@@ -47,6 +69,7 @@ class ProductModel extends BaseModel
         'last_synced_at',
         'sync_error',
         'is_active',
+        'business_unit_id', // ⭐ FK to t_fin_business_units
         'created_by',
         'updated_by'
     ];
@@ -183,6 +206,25 @@ class ProductModel extends BaseModel
     public function changeHistory(): HasMany
     {
         return $this->hasMany(ProductChangeHistory::class, 'product_id')->orderBy('created_at', 'desc');
+    }
+
+    /**
+     * Business Unit relationship
+     */
+    public function businessUnit(): BelongsTo
+    {
+        return $this->belongsTo(BusinessUnitModel::class, 'business_unit_id', 'id');
+    }
+
+    /**
+     * Scope: Filter by business unit
+     */
+    public function scopeForBusinessUnit($query, $businessUnitId)
+    {
+        if ($businessUnitId) {
+            return $query->where('business_unit_id', $businessUnitId);
+        }
+        return $query;
     }
 
     /**

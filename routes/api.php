@@ -319,6 +319,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Payment source accounts (for vendor payments in mobile)
     Route::get('/finance/accounts/payment-sources', [\App\Http\Controllers\FIN\AccountController::class, 'getPaymentSources']);
     
+    // ⭐ Business Units (for dropdowns in mobile/web)
+    Route::get('/business-units', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'apiList']);
+    
     // ============================
     // Products (Mobile Store Mode)
     // ============================

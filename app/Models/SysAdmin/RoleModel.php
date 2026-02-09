@@ -31,6 +31,8 @@ class RoleModel extends BaseModel
         'is_default',
         'is_active',
         'expense_backdate_days', // ⭐ Number of days allowed for backdating expense entries
+        'business_unit_access', // ⭐ 'all', 'single', or 'multiple' - controls BU dropdown visibility
+        'default_business_unit_id', // ⭐ FK to t_fin_business_units - default BU for this role
         'created_at',
         'created_by',
         'updated_at',
@@ -84,6 +86,65 @@ class RoleModel extends BaseModel
             'role_id',
             'mobile_permission_id'
         );
+    }
+
+    /**
+     * Get business units this role has access to
+     */
+    public function businessUnits()
+    {
+        return $this->belongsToMany(
+            \App\Models\FIN\BusinessUnitModel::class,
+            't_sys_role_business_unit',
+            'role_id',
+            'business_unit_id'
+        )->withPivot('is_default');
+    }
+
+    /**
+     * Get the default business unit for this role
+     */
+    public function defaultBusinessUnit()
+    {
+        return $this->belongsTo(\App\Models\FIN\BusinessUnitModel::class, 'default_business_unit_id', 'id');
+    }
+
+    /**
+     * Check if role has access to a specific business unit
+     */
+    public function hasBusinessUnitAccess($businessUnitId)
+    {
+        // 'all' access = can access any BU
+        if ($this->business_unit_access === 'all') {
+            return true;
+        }
+        
+        // 'single' access = only default BU
+        if ($this->business_unit_access === 'single') {
+            return $businessUnitId == $this->default_business_unit_id;
+        }
+        
+        // 'multiple' access = check mapping table
+        return $this->businessUnits()->where('t_fin_business_units.id', $businessUnitId)->exists();
+    }
+
+    /**
+     * Get accessible business units for this role
+     */
+    public function getAccessibleBusinessUnits()
+    {
+        // 'all' access = return all active BUs
+        if ($this->business_unit_access === 'all') {
+            return \App\Models\FIN\BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        }
+        
+        // 'single' access = return only default BU
+        if ($this->business_unit_access === 'single') {
+            return \App\Models\FIN\BusinessUnitModel::where('id', $this->default_business_unit_id)->get();
+        }
+        
+        // 'multiple' access = return assigned BUs
+        return $this->businessUnits()->where('is_active', 1)->orderBy('display_order')->get();
     }
 
 

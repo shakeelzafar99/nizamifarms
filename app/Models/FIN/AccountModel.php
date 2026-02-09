@@ -16,6 +16,26 @@ class AccountModel extends BaseModel
     protected $primaryKey = 'id';
     public $timestamps = true;
 
+    /**
+     * Default business unit ID (Nizami Farms)
+     */
+    const DEFAULT_BUSINESS_UNIT_ID = 1;
+
+    /**
+     * Boot method to auto-set business_unit_id if not provided
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            // ⭐ CRITICAL: Default to Nizami Farms (1) if business_unit_id not set
+            if (empty($model->business_unit_id)) {
+                $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
+            }
+        });
+    }
+
     protected $fillable = [
         'account_code',
         'account_name',
@@ -26,6 +46,7 @@ class AccountModel extends BaseModel
         'current_balance',
         'petty_cash',
         'is_active',
+        'business_unit_id', // ⭐ FK to t_fin_business_units
         'created_by',
         'updated_by'
     ];
@@ -86,6 +107,14 @@ class AccountModel extends BaseModel
     }
 
     /**
+     * Business Unit relationship
+     */
+    public function businessUnit()
+    {
+        return $this->belongsTo(BusinessUnitModel::class, 'business_unit_id', 'id');
+    }
+
+    /**
      * Scopes
      */
     public function scopeActive($query)
@@ -113,6 +142,17 @@ class AccountModel extends BaseModel
     {
         return $query->where('account_category', self::CATEGORY_VENDOR_PAYABLE)
                      ->where('is_active', 1);
+    }
+
+    /**
+     * Scope: Filter by business unit
+     */
+    public function scopeForBusinessUnit($query, $businessUnitId)
+    {
+        if ($businessUnitId) {
+            return $query->where('business_unit_id', $businessUnitId);
+        }
+        return $query;
     }
 
     /**
@@ -193,8 +233,10 @@ class AccountModel extends BaseModel
 
     /**
      * Create vendor payable account
+     * @param string $vendorName
+     * @param int $businessUnitId - Defaults to 1 (Nizami Farms)
      */
-    public static function createVendorAccount($vendorName)
+    public static function createVendorAccount($vendorName, $businessUnitId = 1)
     {
         $code = 'VEN_' . strtoupper(str_replace([' ', '-', '.', '(', ')'], '_', $vendorName));
         $code = substr($code, 0, 50); // Limit length
@@ -205,6 +247,7 @@ class AccountModel extends BaseModel
                 'account_name' => 'Vendor - ' . $vendorName,
                 'account_type' => self::TYPE_LIABILITY,
                 'account_category' => self::CATEGORY_VENDOR_PAYABLE,
+                'business_unit_id' => $businessUnitId, // ⭐ Business unit
                 'is_active' => 1,
                 'created_by' => auth()->id() ?? 1
             ]
@@ -344,6 +387,138 @@ class AccountModel extends BaseModel
         return $accounts->sum(function($account) {
             return $account->getCalculatedBalance();
         });
+    }
+
+    /**
+     * ⭐ Get company payment accounts accessible to the current user based on their role's BU access
+     * 
+     * Company accounts are those with specific account_codes (ONLINE, NF_CASH, EXP_FUND, etc.)
+     * and their business_unit_id determines which business unit they belong to.
+     * 
+     * @param array $accountCodes Optional specific account codes to filter (e.g., ['ONLINE', 'NF_CASH', 'EXP_FUND'])
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public static function getAccessibleCompanyAccounts($accountCodes = ['ONLINE', 'NF_CASH', 'EXP_FUND', 'NF_MAIN_TILL'])
+    {
+        $user = auth()->user();
+        if (!$user) {
+            // Fallback: return all active company accounts
+            return static::where('is_active', 1)
+                ->whereIn('account_code', $accountCodes)
+                ->orderBy('account_name')
+                ->get();
+        }
+
+        // Get user's primary role for BU access check
+        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $user->id)
+            ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
+            ->first();
+
+        if (!$userRole) {
+            // No role assigned - return empty or default
+            return static::where('is_active', 1)
+                ->whereIn('account_code', $accountCodes)
+                ->where('business_unit_id', 1) // Only default NF accounts
+                ->orderBy('account_name')
+                ->get();
+        }
+
+        $query = static::where('is_active', 1)
+            ->whereIn('account_code', $accountCodes);
+
+        // Filter by business unit access
+        if ($userRole->business_unit_access === 'all') {
+            // Full access - return all company accounts
+            // No additional filtering needed
+        } elseif ($userRole->business_unit_access === 'single') {
+            // Single BU access - only accounts for default BU
+            $query->where('business_unit_id', $userRole->default_business_unit_id);
+        } elseif ($userRole->business_unit_access === 'multiple') {
+            // Multiple BU access - get assigned BUs
+            $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
+                ->where('role_id', $userRole->id)
+                ->pluck('business_unit_id')
+                ->toArray();
+            
+            if (!empty($assignedBuIds)) {
+                $query->whereIn('business_unit_id', $assignedBuIds);
+            } else {
+                // Fallback to default BU if no assignments
+                $query->where('business_unit_id', $userRole->default_business_unit_id ?? 1);
+            }
+        } else {
+            // Default: only Nizami Farms (BU 1) accounts
+            $query->where('business_unit_id', 1);
+        }
+
+        return $query->orderBy('account_name')->get();
+    }
+
+    /**
+     * ⭐ Get user's default business unit ID based on their role
+     * 
+     * @return int Default business unit ID (defaults to 1 = Nizami Farms)
+     */
+    public static function getUserDefaultBusinessUnitId()
+    {
+        $user = auth()->user();
+        if (!$user) {
+            return 1; // Default to Nizami Farms
+        }
+
+        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $user->id)
+            ->select('r.default_business_unit_id')
+            ->first();
+
+        return $userRole->default_business_unit_id ?? 1;
+    }
+
+    /**
+     * ⭐ Get user's accessible business units based on their role
+     * 
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public static function getUserAccessibleBusinessUnits()
+    {
+        $user = auth()->user();
+        if (!$user) {
+            return BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        }
+
+        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', $user->id)
+            ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
+            ->first();
+
+        if (!$userRole) {
+            return BusinessUnitModel::where('id', 1)->get(); // Only default
+        }
+
+        if ($userRole->business_unit_access === 'all') {
+            return BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        } elseif ($userRole->business_unit_access === 'single') {
+            return BusinessUnitModel::where('id', $userRole->default_business_unit_id)->get();
+        } elseif ($userRole->business_unit_access === 'multiple') {
+            $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
+                ->where('role_id', $userRole->id)
+                ->pluck('business_unit_id')
+                ->toArray();
+            
+            if (!empty($assignedBuIds)) {
+                return BusinessUnitModel::whereIn('id', $assignedBuIds)
+                    ->where('is_active', 1)
+                    ->ordered()
+                    ->get();
+            }
+        }
+        
+        // Fallback
+        return BusinessUnitModel::where('id', 1)->get();
     }
 }
 

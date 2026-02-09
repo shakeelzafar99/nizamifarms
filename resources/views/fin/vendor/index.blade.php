@@ -229,7 +229,7 @@
                                    title="View Ledger">
                                     📊 View
                                 </a>
-                                <button onclick="event.stopPropagation(); openEditVendorModal({{ $vendor->id }}, '{{ addslashes($vendor->vendor_name) }}', '{{ addslashes($vendor->contact_person ?? '') }}', '{{ addslashes($vendor->contact_phone ?? '') }}', '{{ addslashes($vendor->contact_email ?? '') }}', '{{ $vendor->default_purchase_method ?? 'by_total' }}', '{{ $vendor->default_payment_source_id ?? '' }}')" 
+                                <button onclick="event.stopPropagation(); openEditVendorModal({{ $vendor->id }}, '{{ addslashes($vendor->vendor_name) }}', '{{ addslashes($vendor->contact_person ?? '') }}', '{{ addslashes($vendor->contact_phone ?? '') }}', '{{ addslashes($vendor->contact_email ?? '') }}', '{{ $vendor->default_purchase_method ?? 'by_total' }}', '{{ $vendor->default_payment_source_id ?? '' }}', '{{ $vendor->business_unit_id ?? 1 }}')" 
                                         class="text-indigo-600 hover:text-indigo-900"
                                         title="Edit Vendor">
                                     ✏️ Edit
@@ -330,17 +330,24 @@
                         <select name="default_payment_source_id"
                                 class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-900 bg-white">
                             <option value="">NF Cash (Default)</option>
-                            @php
-                                $paymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
-                                    ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
-                                    ->orderBy('account_name')
-                                    ->get();
-                            @endphp
-                            @foreach($paymentSources as $source)
+                            @foreach($accessibleCompanyAccounts ?? [] as $source)
                                 <option value="{{ $source->id }}">{{ $source->account_name }}</option>
                             @endforeach
                         </select>
                         <p class="text-xs text-gray-600 mt-1">💳 Pre-selected when recording payments for this vendor</p>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-800 mb-1">Business Unit</label>
+                        <select name="business_unit_id"
+                                class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-900 bg-white">
+                            @foreach($businessUnits as $unit)
+                                <option value="{{ $unit->id }}" {{ $unit->id == ($userDefaultBuId ?? 1) ? 'selected' : '' }}>
+                                    {{ $unit->name }} {{ $unit->short_code ? '(' . $unit->short_code . ')' : '' }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="text-xs text-gray-600 mt-1">🏢 Tag vendor to a business unit for expense tracking</p>
                     </div>
                     
                     <div class="p-3 bg-blue-50 border-2 border-blue-200 rounded-md">
@@ -435,17 +442,24 @@
                         <select id="edit_default_payment_source_id" name="default_payment_source_id"
                                 class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-gray-900 bg-white">
                             <option value="">NF Cash (Default)</option>
-                            @php
-                                $editPaymentSources = \App\Models\FIN\AccountModel::where('is_active', 1)
-                                    ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
-                                    ->orderBy('account_name')
-                                    ->get();
-                            @endphp
-                            @foreach($editPaymentSources as $source)
+                            @foreach($accessibleCompanyAccounts ?? [] as $source)
                                 <option value="{{ $source->id }}">{{ $source->account_name }}</option>
                             @endforeach
                         </select>
                         <p class="text-xs text-gray-600 mt-1">💳 Pre-selected when recording payments for this vendor</p>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-800 mb-1">Business Unit</label>
+                        <select id="edit_business_unit_id" name="business_unit_id"
+                                class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-gray-900 bg-white">
+                            @foreach($businessUnits as $unit)
+                                <option value="{{ $unit->id }}">
+                                    {{ $unit->name }} {{ $unit->short_code ? '(' . $unit->short_code . ')' : '' }}
+                                </option>
+                            @endforeach
+                        </select>
+                        <p class="text-xs text-gray-600 mt-1">🏢 Tag vendor to a business unit for expense tracking</p>
                     </div>
                     
                 </div>
@@ -507,7 +521,7 @@ document.addEventListener('click', function(event) {
 });
 
 // Edit Vendor Modal Functions
-function openEditVendorModal(vendorId, vendorName, contactPerson, contactPhone, contactEmail, defaultPurchaseMethod, defaultPaymentSourceId) {
+function openEditVendorModal(vendorId, vendorName, contactPerson, contactPhone, contactEmail, defaultPurchaseMethod, defaultPaymentSourceId, businessUnitId) {
     const modal = document.getElementById('editVendorModal');
     const form = document.getElementById('editVendorForm');
     
@@ -521,6 +535,7 @@ function openEditVendorModal(vendorId, vendorName, contactPerson, contactPhone, 
     document.getElementById('edit_contact_email').value = contactEmail || '';
     document.getElementById('edit_default_purchase_method').value = defaultPurchaseMethod || 'by_total';
     document.getElementById('edit_default_payment_source_id').value = defaultPaymentSourceId || '';
+    document.getElementById('edit_business_unit_id').value = businessUnitId || '1';
     
     // Portalize to body if not already there
     if (modal.parentElement !== document.body) {

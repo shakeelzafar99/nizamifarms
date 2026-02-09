@@ -669,21 +669,18 @@
                         <select name="payment_source_account_id" id="payment_source_account_id"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent">
                             @php
-                                // Get Online Bank account for vendor payments
-                                // NF Cash is the default (empty value) - backend handles it automatically
-                                $onlineAccount = \App\Models\FIN\AccountModel::where('is_active', 1)
-                                    ->where('account_code', 'ONLINE')
-                                    ->first();
                                 $vendorDefaultPaymentSourceId = $vendor->default_payment_source_id;
-                                // Check if vendor's default is Online
-                                $isOnlineDefault = $onlineAccount && $vendorDefaultPaymentSourceId == $onlineAccount->id;
                             @endphp
-                            <option value="" {{ !$isOnlineDefault ? 'selected' : '' }}>NF Cash (Auto-Approved)</option>
-                            @if($onlineAccount)
-                                <option value="{{ $onlineAccount->id }}" {{ $isOnlineDefault ? 'selected' : '' }}>
-                                    Online Bank (Rs. {{ number_format($onlineAccount->current_balance, 2) }})
+                            @foreach($accessibleCompanyAccounts ?? [] as $source)
+                                @php
+                                    $isSelected = $vendorDefaultPaymentSourceId == $source->id;
+                                    $requiresApproval = $source->account_code === 'ONLINE';
+                                @endphp
+                                <option value="{{ $source->id }}" {{ $isSelected ? 'selected' : '' }}>
+                                    {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
+                                    @if($requiresApproval) - Requires Approval @endif
                                 </option>
-                            @endif
+                            @endforeach
                         </select>
                         <p style="font-size: 11px; color: #047857; font-weight: 600; margin: 6px 0 0 0;">
                             ⚠️ Online payments require approval

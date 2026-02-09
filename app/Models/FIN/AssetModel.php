@@ -16,6 +16,26 @@ class AssetModel extends BaseModel
     protected $primaryKey = 'id';
     public $timestamps = true;
 
+    /**
+     * Default business unit ID (Nizami Farms)
+     */
+    const DEFAULT_BUSINESS_UNIT_ID = 1;
+
+    /**
+     * Boot method to auto-set business_unit_id if not provided
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            // ⭐ CRITICAL: Default to Nizami Farms (1) if business_unit_id not set
+            if (empty($model->business_unit_id)) {
+                $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
+            }
+        });
+    }
+
     protected $fillable = [
         'asset_code',
         'asset_name',

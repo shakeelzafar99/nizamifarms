@@ -733,6 +733,36 @@ document.addEventListener('DOMContentLoaded', function() {
                     </select>
                 </div>
 
+                       <!-- ⭐ Business Unit (for Expense Reimbursement) -->
+                       <div id="quick-business-unit-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>💼 Business Unit</span>
+                           </label>
+                           <select name="business_unit_id" id="quick_business_unit" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
+                               @foreach($businessUnits ?? [] as $bu)
+                                   <option value="{{ $bu->id }}" {{ $bu->id == ($userDefaultBuId ?? 1) ? 'selected' : '' }} style="color: {{ $bu->color_hex ?? '#374151' }}">
+                                       {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                                   </option>
+                               @endforeach
+                           </select>
+                           <p class="text-xs text-gray-500 mt-1">Select which business unit this expense belongs to</p>
+                       </div>
+
+                       <!-- ⭐ Pay From Account (for Expense Reimbursement) -->
+                       <div id="quick-pay-from-field" style="display: none;" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>💳 Pay From Account</span>
+                           </label>
+                           <select name="payment_source_account_id" id="quick_payment_source" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
+                               @foreach($accessibleCompanyAccounts ?? [] as $acc)
+                                   <option value="{{ $acc->id }}" {{ $acc->account_code == 'EXP_FUND' ? 'selected' : '' }}>
+                                       {{ $acc->account_name }}
+                                   </option>
+                               @endforeach
+                           </select>
+                           <p class="text-xs text-gray-500 mt-1">Select which company account to debit for this expense</p>
+                       </div>
+
                        <!-- Amount (for Expense & Salary Advance) -->
                        <div id="quick-amount-field" style="display: none;" class="mb-6">
                            <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
@@ -785,7 +815,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 <!-- Hidden Fields -->
                 <input type="hidden" name="title" id="quick-hidden-title" value="">
-                <input type="hidden" name="payment_source" value="EXP_FUND">
             </form>
         </div>
         
@@ -890,6 +919,12 @@ function handleQuickCategoryChange() {
     // ⭐ Hide expense date field by default
     const expenseDateField = document.getElementById('quick-expense-date-field');
     if (expenseDateField) expenseDateField.style.display = 'none';
+    // ⭐ Hide business unit field by default
+    const businessUnitField = document.getElementById('quick-business-unit-field');
+    if (businessUnitField) businessUnitField.style.display = 'none';
+    // ⭐ Hide pay from field by default
+    const payFromField = document.getElementById('quick-pay-from-field');
+    if (payFromField) payFromField.style.display = 'none';
     form.querySelector('[name="leave_start_date"]').required = false;
     form.querySelector('[name="leave_end_date"]').required = false;
     form.querySelector('[name="amount"]').required = false;
@@ -913,6 +948,12 @@ function handleQuickCategoryChange() {
         // ⭐ Show expense date field for expenses
         const expenseDateField = document.getElementById('quick-expense-date-field');
         if (expenseDateField) expenseDateField.style.display = 'block';
+        // ⭐ Show business unit field for expenses
+        const businessUnitField = document.getElementById('quick-business-unit-field');
+        if (businessUnitField) businessUnitField.style.display = 'block';
+        // ⭐ Show pay from field for expenses
+        const payFromField = document.getElementById('quick-pay-from-field');
+        if (payFromField) payFromField.style.display = 'block';
     } else if (categoryCode === 'salary_advance') {
         amountField.style.display = 'block';
         form.querySelector('[name="amount"]').required = true;

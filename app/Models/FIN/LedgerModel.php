@@ -17,9 +17,31 @@ class LedgerModel extends BaseModel
     protected $primaryKey = 'id';
     public $timestamps = true;
 
+    /**
+     * Default business unit ID (Nizami Farms)
+     */
+    const DEFAULT_BUSINESS_UNIT_ID = 1;
+
+    /**
+     * Boot method to auto-set business_unit_id if not provided
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            // ⭐ CRITICAL: Default to Nizami Farms (1) if business_unit_id not set
+            // This prevents any ledger creation from failing due to missing BU
+            if (empty($model->business_unit_id)) {
+                $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
+            }
+        });
+    }
+
     protected $fillable = [
         'transaction_date',
         'transaction_type',
+        'business_unit_id', // ⭐ FK to t_fin_business_units - defaults to 1 (Nizami Farms)
         'description',
         'from_account_id',
         'to_account_id',
@@ -124,6 +146,14 @@ class LedgerModel extends BaseModel
         return $this->belongsTo(OrderModel::class, 'order_id', 'id');
     }
 
+    /**
+     * Business Unit relationship
+     */
+    public function businessUnit(): BelongsTo
+    {
+        return $this->belongsTo(BusinessUnitModel::class, 'business_unit_id', 'id');
+    }
+
     public function settledViaDeposit(): BelongsTo
     {
         return $this->belongsTo(LedgerModel::class, 'settled_via_ledger_id', 'id');
@@ -178,6 +208,17 @@ class LedgerModel extends BaseModel
     public function scopeByMode($query, $mode)
     {
         return $query->where('mode', $mode);
+    }
+
+    /**
+     * Filter by business unit
+     */
+    public function scopeForBusinessUnit($query, $businessUnitId)
+    {
+        if ($businessUnitId) {
+            return $query->where('business_unit_id', $businessUnitId);
+        }
+        return $query;
     }
 
     public function scopeOpenInvoices($query)

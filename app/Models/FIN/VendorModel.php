@@ -16,6 +16,26 @@ class VendorModel extends BaseModel
     protected $primaryKey = 'id';
     public $timestamps = true;
 
+    /**
+     * Default business unit ID (Nizami Farms)
+     */
+    const DEFAULT_BUSINESS_UNIT_ID = 1;
+
+    /**
+     * Boot method to auto-set business_unit_id if not provided
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($model) {
+            // ⭐ CRITICAL: Default to Nizami Farms (1) if business_unit_id not set
+            if (empty($model->business_unit_id)) {
+                $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
+            }
+        });
+    }
+
     protected $fillable = [
         'vendor_code',
         'vendor_name',
@@ -28,6 +48,7 @@ class VendorModel extends BaseModel
         'default_purchase_method',
         'default_payment_source_id',
         'is_active',
+        'business_unit_id', // ⭐ FK to t_fin_business_units
         'notes',
         'created_by',
         'updated_by'
@@ -62,6 +83,14 @@ class VendorModel extends BaseModel
         return $this->belongsTo(UserModel::class, 'updated_by', 'id');
     }
 
+    /**
+     * Business Unit relationship
+     */
+    public function businessUnit(): BelongsTo
+    {
+        return $this->belongsTo(BusinessUnitModel::class, 'business_unit_id', 'id');
+    }
+
     public function purchases()
     {
         return $this->hasManyThrough(
@@ -92,6 +121,17 @@ class VendorModel extends BaseModel
     public function scopeActive($query)
     {
         return $query->where('is_active', 1);
+    }
+
+    /**
+     * Scope: Filter by business unit
+     */
+    public function scopeForBusinessUnit($query, $businessUnitId)
+    {
+        if ($businessUnitId) {
+            return $query->where('business_unit_id', $businessUnitId);
+        }
+        return $query;
     }
 
     /**
@@ -141,19 +181,23 @@ class VendorModel extends BaseModel
 
     /**
      * Get or create vendor with account
+     * @param string $vendorName
+     * @param int|null $createdBy
+     * @param int $businessUnitId - Defaults to 1 (Nizami Farms)
      */
-    public static function getOrCreateVendor($vendorName, $createdBy = null)
+    public static function getOrCreateVendor($vendorName, $createdBy = null, $businessUnitId = 1)
     {
         $vendor = static::where('vendor_name', $vendorName)->first();
         
         if (!$vendor) {
-            // Create account first
-            $account = AccountModel::createVendorAccount($vendorName);
+            // Create account first (also with business unit)
+            $account = AccountModel::createVendorAccount($vendorName, $businessUnitId);
             
             // Create vendor
             $vendor = static::create([
                 'vendor_name' => $vendorName,
                 'account_id' => $account->id,
+                'business_unit_id' => $businessUnitId, // ⭐ Default to Nizami Farms
                 'is_active' => 1,
                 'created_by' => $createdBy ?? auth()->id() ?? 1
             ]);

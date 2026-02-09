@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\FIN\VendorModel;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
+use App\Models\FIN\BusinessUnitModel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -83,7 +84,16 @@ class VendorController extends Controller
             ]);
         }
 
-        return view('fin.vendor.index', compact('vendors', 'totalBalance'));
+        // ⭐ Get business units for dropdown - filtered by user's access
+        $businessUnits = AccountModel::getUserAccessibleBusinessUnits();
+        
+        // ⭐ Get accessible company accounts for payment source dropdown
+        $accessibleCompanyAccounts = AccountModel::getAccessibleCompanyAccounts();
+        
+        // ⭐ Get user's default business unit ID
+        $userDefaultBuId = AccountModel::getUserDefaultBusinessUnitId();
+        
+        return view('fin.vendor.index', compact('vendors', 'totalBalance', 'businessUnits', 'accessibleCompanyAccounts', 'userDefaultBuId'));
     }
 
     /**
@@ -106,7 +116,8 @@ class VendorController extends Controller
             'contact_phone' => 'nullable|string|max:50',
             'default_purchase_method' => 'required|in:by_weight,by_total',
             'default_payment_source_id' => 'nullable|exists:t_fin_accounts,id',
-            'opening_balance' => 'nullable|numeric|min:0'
+            'opening_balance' => 'nullable|numeric|min:0',
+            'business_unit_id' => 'nullable|exists:t_fin_business_units,id'
         ], [
             'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
         ]);
@@ -154,6 +165,7 @@ class VendorController extends Controller
                 'default_purchase_method' => $request->default_purchase_method,
                 'default_payment_source_id' => $request->default_payment_source_id,
                 'account_id' => $account->id,
+                'business_unit_id' => $request->business_unit_id ?? 1, // Default to Nizami Farms (id=1)
                 'is_active' => 1,
                 'created_by' => auth()->id()
             ]);
@@ -355,7 +367,10 @@ class VendorController extends Controller
             ]);
         }
         
-        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll'));
+        // ⭐ Get accessible company accounts for payment source dropdown
+        $accessibleCompanyAccounts = AccountModel::getAccessibleCompanyAccounts();
+        
+        return view('fin.vendor.show', compact('vendor', 'ledgerWithBalance', 'groupedTransactions', 'dailySummaries', 'summary', 'expandAll', 'accessibleCompanyAccounts'));
     }
 
     /**
@@ -379,7 +394,8 @@ class VendorController extends Controller
             'contact_email' => 'nullable|email|max:255',
             'contact_phone' => 'nullable|string|max:50',
             'default_purchase_method' => 'required|in:by_weight,by_total',
-            'default_payment_source_id' => 'nullable|exists:t_fin_accounts,id'
+            'default_payment_source_id' => 'nullable|exists:t_fin_accounts,id',
+            'business_unit_id' => 'nullable|exists:t_fin_business_units,id'
         ], [
             'vendor_name.regex' => 'Vendor name can only contain letters, numbers, spaces, hyphens (-), underscores (_), dots (.), and parentheses.'
         ]);
@@ -394,6 +410,7 @@ class VendorController extends Controller
                 'contact_email' => $request->contact_email,
                 'default_purchase_method' => $request->default_purchase_method,
                 'default_payment_source_id' => $request->default_payment_source_id,
+                'business_unit_id' => $request->business_unit_id ?? $vendor->business_unit_id ?? 1,
                 'updated_by' => auth()->id()
             ]);
 

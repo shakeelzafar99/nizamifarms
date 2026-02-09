@@ -87,6 +87,22 @@
                         @enderror
                     </div>
                 </div>
+                
+                <!-- Business Unit -->
+                <div class="flex flex-col gap-2 mt-5">
+                    <label class="form-label text-sm font-medium">🏢 Business Unit</label>
+                    <select name="business_unit_id" class="form-select" style="max-width: 300px;">
+                        @foreach($businessUnits as $unit)
+                            <option value="{{ $unit->id }}" {{ old('business_unit_id', 1) == $unit->id ? 'selected' : '' }}>
+                                {{ $unit->name }} {{ $unit->short_code ? '(' . $unit->short_code . ')' : '' }}
+                            </option>
+                        @endforeach
+                    </select>
+                    <p class="text-xs text-gray-500">Tag this product to a specific business unit for reporting</p>
+                    @error('business_unit_id')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
 
                 <!-- Description -->
                 <div class="flex flex-col gap-2 mt-5">

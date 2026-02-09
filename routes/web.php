@@ -426,6 +426,16 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/retry', [\App\Http\Controllers\FIN\ActionItemController::class, 'retryPosting'])->name('retry');
             Route::post('/toggle-posting', [\App\Http\Controllers\FIN\ActionItemController::class, 'toggleLedgerPosting'])->name('toggle-posting');
         });
+
+        // ⭐ Business Unit Management Routes
+        Route::prefix('business-units')->name('business-units.')->group(function () {
+            Route::get('/', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'index'])->name('index');
+            Route::get('/create', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'create'])->name('create');
+            Route::post('/', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'store'])->name('store');
+            Route::get('/{id}/edit', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'edit'])->name('edit');
+            Route::put('/{id}', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'update'])->name('update');
+            Route::delete('/{id}', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'destroy'])->name('destroy');
+        });
         
         // Account Management Routes
         Route::prefix('accounts')->name('accounts.')->group(function () {

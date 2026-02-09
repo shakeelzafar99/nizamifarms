@@ -5,7 +5,9 @@ namespace App\Http\Controllers\SysAdmin;
 use App\Http\Controllers\Controller;
 use App\Models\SysAdmin\RoleModel;
 use App\Models\SysAdmin\RolePermissionModel;
+use App\Models\FIN\BusinessUnitModel;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class RolePermissionController extends Controller
 {
@@ -72,7 +74,16 @@ class RolePermissionController extends Controller
             ->pluck('is_allowed', 'permission_key')
             ->toArray();
 
-        return view('pages.roles.permissions', compact('role', 'availablePermissions', 'currentPermissions'));
+        // Get all active business units
+        $businessUnits = BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        
+        // Get assigned business units for this role (if 'multiple' access type)
+        $assignedBusinessUnits = DB::table('t_sys_role_business_unit')
+            ->where('role_id', $roleId)
+            ->pluck('business_unit_id')
+            ->toArray();
+
+        return view('pages.roles.permissions', compact('role', 'availablePermissions', 'currentPermissions', 'businessUnits', 'assignedBusinessUnits'));
     }
 
     public function update(Request $request, $roleId)
@@ -81,6 +92,8 @@ class RolePermissionController extends Controller
         $availablePermissions = array_keys($this->getAvailablePermissions());
         
         try {
+            DB::beginTransaction();
+            
             // Delete existing permissions for this role
             RolePermissionModel::where('role_id', $roleId)->delete();
             
@@ -96,11 +109,52 @@ class RolePermissionController extends Controller
                     'created_by' => auth()->id()
                 ]);
             }
+            
+            // ⭐ Update Business Unit Access settings
+            $businessUnitAccess = $request->input('business_unit_access', 'all');
+            $defaultBusinessUnitId = $request->input('default_business_unit_id', 1);
+            
+            $role->update([
+                'business_unit_access' => $businessUnitAccess,
+                'default_business_unit_id' => $defaultBusinessUnitId,
+                'updated_by' => auth()->id()
+            ]);
+            
+            // ⭐ Handle assigned business units for 'multiple' access type
+            // First, delete existing assignments
+            DB::table('t_sys_role_business_unit')->where('role_id', $roleId)->delete();
+            
+            if ($businessUnitAccess === 'multiple') {
+                // Insert new assignments
+                $assignedUnits = $request->input('assigned_business_units', []);
+                foreach ($assignedUnits as $buId) {
+                    DB::table('t_sys_role_business_unit')->insert([
+                        'role_id' => $roleId,
+                        'business_unit_id' => $buId,
+                        'is_default' => ($buId == $defaultBusinessUnitId) ? 1 : 0,
+                        'created_at' => now(),
+                        'updated_at' => now()
+                    ]);
+                }
+            } elseif ($businessUnitAccess === 'single') {
+                // For single access, just insert the default BU
+                DB::table('t_sys_role_business_unit')->insert([
+                    'role_id' => $roleId,
+                    'business_unit_id' => $defaultBusinessUnitId,
+                    'is_default' => 1,
+                    'created_at' => now(),
+                    'updated_at' => now()
+                ]);
+            }
+            // For 'all' access, no entries needed - they have full access
+            
+            DB::commit();
 
             return redirect()->route('roles.index')
                 ->with('success', "Permissions updated for role: {$role->urole_name}");
                 
         } catch (\Exception $e) {
+            DB::rollBack();
             return redirect()->back()
                 ->with('error', 'Error updating permissions: ' . $e->getMessage());
         }

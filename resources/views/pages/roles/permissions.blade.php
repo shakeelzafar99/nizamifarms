@@ -204,6 +204,67 @@
                     @endforeach
                 </div>
 
+                <!-- Business Unit Access -->
+                <div class="space-y-4 bg-gradient-to-r from-purple-50 to-indigo-50 p-6 rounded-lg border border-purple-200">
+                    <h3 class="text-lg font-semibold text-gray-900 border-b-2 border-purple-300 pb-2">🏢 Business Unit Access</h3>
+                    <p class="text-sm text-purple-700 mb-4">
+                        Control which business units users with this role can access for expenses, vendors, and company accounts.
+                    </p>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-gray-800 mb-2">Access Type</label>
+                            <select name="business_unit_access" id="business_unit_access" 
+                                    onchange="toggleBusinessUnitOptions()"
+                                    class="w-full px-3 py-2 border-2 border-purple-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white text-gray-900">
+                                <option value="all" {{ ($role->business_unit_access ?? 'all') == 'all' ? 'selected' : '' }}>
+                                    All Business Units (Full Access)
+                                </option>
+                                <option value="single" {{ ($role->business_unit_access ?? '') == 'single' ? 'selected' : '' }}>
+                                    Single Business Unit Only
+                                </option>
+                                <option value="multiple" {{ ($role->business_unit_access ?? '') == 'multiple' ? 'selected' : '' }}>
+                                    Multiple Business Units
+                                </option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">
+                                "All" = sees all company accounts | "Single/Multiple" = only sees accounts tagged to assigned units
+                            </p>
+                        </div>
+                        
+                        <div id="default_bu_section">
+                            <label class="block text-sm font-semibold text-gray-800 mb-2">Default Business Unit</label>
+                            <select name="default_business_unit_id" 
+                                    class="w-full px-3 py-2 border-2 border-purple-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white text-gray-900">
+                                @foreach($businessUnits ?? [] as $bu)
+                                    <option value="{{ $bu->id }}" {{ ($role->default_business_unit_id ?? 1) == $bu->id ? 'selected' : '' }}
+                                            style="color: {{ $bu->color_hex ?? '#374151' }}">
+                                        {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                                    </option>
+                                @endforeach
+                            </select>
+                            <p class="text-xs text-gray-500 mt-1">Pre-selected when creating expenses or vendors</p>
+                        </div>
+                        
+                        <div id="multiple_bu_section" style="display: none;">
+                            <label class="block text-sm font-semibold text-gray-800 mb-2">Assigned Business Units</label>
+                            <div class="space-y-2 bg-white p-4 rounded-lg border border-purple-200">
+                                @foreach($businessUnits ?? [] as $bu)
+                                    <label class="flex items-center hover:bg-purple-50 p-2 rounded">
+                                        <input type="checkbox" name="assigned_business_units[]" value="{{ $bu->id }}"
+                                               {{ in_array($bu->id, $assignedBusinessUnits ?? []) ? 'checked' : '' }}
+                                               class="rounded border-gray-300 text-purple-600 shadow-sm focus:ring-purple-500">
+                                        <span class="ml-3 text-sm font-medium" style="color: {{ $bu->color_hex ?? '#374151' }}">
+                                            {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                                        </span>
+                                    </label>
+                                @endforeach
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Select which business units this role can access</p>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -219,5 +280,29 @@
         </div>
     </form>
 </div>
+
+<script>
+function toggleBusinessUnitOptions() {
+    const accessType = document.getElementById('business_unit_access').value;
+    const multipleBuSection = document.getElementById('multiple_bu_section');
+    const defaultBuSection = document.getElementById('default_bu_section');
+    
+    if (accessType === 'all') {
+        multipleBuSection.style.display = 'none';
+        defaultBuSection.style.display = 'block';
+    } else if (accessType === 'single') {
+        multipleBuSection.style.display = 'none';
+        defaultBuSection.style.display = 'block';
+    } else if (accessType === 'multiple') {
+        multipleBuSection.style.display = 'block';
+        defaultBuSection.style.display = 'block';
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    toggleBusinessUnitOptions();
+});
+</script>
 @endsection
 

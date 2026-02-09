@@ -2143,13 +2143,17 @@ class ProductController extends Controller
             '3' => 'Category Level 3'
         ];
         
+        // Get business units for dropdown
+        $businessUnits = \App\Models\FIN\BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        
         return view('pages.products.create', compact(
             'productTypes',
             'vendors',
             'attribute1s',
             'attribute2s',
             'attribute3s',
-            'attributeLabels'
+            'attributeLabels',
+            'businessUnits'
         ));
     }
 
@@ -2304,6 +2308,7 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -2344,6 +2349,10 @@ class ProductController extends Controller
             
             // Use the same function as API to maintain consistency
             $product = ProductModel::storeProductFromApi($productData);
+            
+            // Set business unit (defaults to Nizami Farms id=1 if not provided)
+            $product->business_unit_id = $request->business_unit_id ?? 1;
+            $product->save();
 
             // Return JSON for API requests
             if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
@@ -2411,6 +2420,9 @@ class ProductController extends Controller
                 '3' => 'Category Level 3'
             ];
             
+            // Get business units for dropdown
+            $businessUnits = \App\Models\FIN\BusinessUnitModel::where('is_active', 1)->ordered()->get();
+            
             return view('pages.products.edit', compact(
                 'product',
                 'productTypes',
@@ -2418,7 +2430,8 @@ class ProductController extends Controller
                 'attribute1s',
                 'attribute2s',
                 'attribute3s',
-                'attributeLabels'
+                'attributeLabels',
+                'businessUnits'
             ));
         } catch (\Exception $e) {
             Log::error('Error fetching product for edit: ' . $e->getMessage());
@@ -2453,6 +2466,7 @@ class ProductController extends Controller
                 'is_lean' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'weight_factor' => 'nullable|numeric|min:0.01',
+                'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
                 
                 // Variants
                 'variants' => 'required|array|min:1',
@@ -2510,6 +2524,12 @@ class ProductController extends Controller
             
             // Use the same function as API to maintain consistency
             $updatedProduct = ProductModel::storeProductFromApi($productData);
+            
+            // Update business unit if provided
+            if ($request->has('business_unit_id')) {
+                $updatedProduct->business_unit_id = $request->business_unit_id ?? $updatedProduct->business_unit_id ?? 1;
+                $updatedProduct->save();
+            }
 
             // Return JSON for API requests
             if ($request->expectsJson() || $request->header('X-Requested-With') === 'XMLHttpRequest') {

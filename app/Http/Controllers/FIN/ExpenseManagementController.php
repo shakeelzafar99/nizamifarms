@@ -8,6 +8,7 @@ use App\Models\Request\RequestModel;
 use App\Models\FIN\AccountModel;
 use App\Models\FIN\LedgerModel;
 use App\Models\FIN\ConfigModel;
+use App\Models\FIN\BusinessUnitModel;
 use App\Models\HR\SalarySlipModel;
 use App\Services\FIN\ExpenseSettlementService;
 use Illuminate\Support\Facades\DB;
@@ -271,6 +272,15 @@ class ExpenseManagementController extends Controller
             'top_categories' => $topCategories // Top 10 categories + others
         ];
         
+        // ⭐ Get business units for expense form dropdown - filtered by user's access
+        $businessUnits = AccountModel::getUserAccessibleBusinessUnits();
+        
+        // ⭐ Get user's accessible company accounts for "Pay From" dropdown
+        $accessibleCompanyAccounts = AccountModel::getAccessibleCompanyAccounts();
+        
+        // ⭐ Get user's default business unit ID
+        $userDefaultBuId = AccountModel::getUserDefaultBusinessUnitId();
+        
         return view('fin.expense.index', compact(
             'allExpensesForDisplay', // Changed from 'allExpenses' to include salary slips
             'allExpenses', // Keep original for backward compatibility if needed
@@ -285,7 +295,10 @@ class ExpenseManagementController extends Controller
             'dateTo',
             'category',
             'paymentSource',
-            'settlementStatus'
+            'settlementStatus',
+            'businessUnits',
+            'accessibleCompanyAccounts',
+            'userDefaultBuId'
         ));
     }
     

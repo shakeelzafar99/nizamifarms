@@ -426,20 +426,33 @@
                          Finance Admin
                      </span>
                  </div>
-                 <div class="kt-menu-item ps-2" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                     <a href="/finance/accounts">
-                         <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
-                             <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                                 <i class="ki-filled ki-category text-lg">
-                                 </i>
-                             </span>
-                             <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
-                                 Accounts
-                             </span>
-                         </div>
-                     </a>
-                 </div>
-                 @php
+                <div class="kt-menu-item ps-2" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/finance/accounts">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-category text-lg">
+                                </i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                Accounts
+                            </span>
+                        </div>
+                    </a>
+                </div>
+                <div class="kt-menu-item ps-2" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                    <a href="/finance/business-units">
+                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                <i class="ki-filled ki-briefcase text-lg">
+                                </i>
+                            </span>
+                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                Business Units
+                            </span>
+                        </div>
+                    </a>
+                </div>
+                @php
                      $openActionItems = \App\Models\FIN\ActionItemModel::where('status', 'open')->count();
                  @endphp
                  <div class="kt-menu-item ps-2" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
