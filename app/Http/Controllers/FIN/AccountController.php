@@ -352,15 +352,25 @@ class AccountController extends Controller
 
     /**
      * Get payment source accounts for vendor payments (API endpoint for mobile)
+     * Now uses Business Unit filtering based on user's role permissions
      */
     public function getPaymentSources()
     {
         try {
-            // Only show Online, NF Cash, and Expense Fund for vendor payments
-            $accounts = AccountModel::where('is_active', 1)
-                ->whereIn('account_code', ['ONLINE', 'NF_CASH', 'EXP_FUND'])
-                ->orderBy('account_name')
-                ->get(['id', 'account_name', 'account_code', 'current_balance']);
+            // Use the new BU-filtered method to get company accounts (cash, bank)
+            // This respects user's business unit access permissions
+            $accounts = AccountModel::getAccessibleCompanyAccounts(['cash', 'bank']);
+            
+            // Transform to include only necessary fields
+            $accounts = $accounts->map(function($account) {
+                return [
+                    'id' => $account->id,
+                    'account_name' => $account->account_name,
+                    'account_code' => $account->account_code,
+                    'current_balance' => $account->current_balance,
+                    'business_unit_id' => $account->business_unit_id
+                ];
+            });
 
             return response()->json([
                 'success' => true,

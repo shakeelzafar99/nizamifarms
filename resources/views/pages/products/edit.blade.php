@@ -511,8 +511,19 @@
         <div class="card">
             <div class="card-body">
                 <div class="flex justify-between items-center">
-                    <div class="text-sm text-gray-600">
-                        💡 <strong>Tip:</strong> Use the "Additional Information" section for SEO and categorization.
+                    <div class="flex items-center gap-3">
+                        <div class="text-sm text-gray-600">
+                            💡 <strong>Tip:</strong> Use the "Additional Information" section for SEO and categorization.
+                        </div>
+                        
+                        @if(!empty($canDeleteProduct))
+                        <button type="button" onclick="confirmDeleteProduct()" 
+                            style="background: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: background 0.2s;"
+                            onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
+                            <i class="ki-filled ki-trash"></i>
+                            Delete Product
+                        </button>
+                        @endif
                     </div>
                     
                     <div class="flex gap-3">
@@ -528,10 +539,37 @@
             </div>
         </div>
     </form>
+    
+    @if(!empty($canDeleteProduct))
+    <!-- Delete Product Form (separate from edit form) -->
+    <form id="deleteProductForm" action="{{ route('products.destroy', $product->id) }}" method="POST" style="display: none;">
+        @csrf
+        @method('DELETE')
+    </form>
+    @endif
 </div>
 
 <script>
 let variantIndex = {{ count($product->variants) }};
+
+// Delete product confirmation
+function confirmDeleteProduct() {
+    const productTitle = @json($product->title);
+    const variantCount = {{ count($product->variants) }};
+    
+    let message = `Are you sure you want to permanently delete "${productTitle}"?`;
+    if (variantCount > 0) {
+        message += `\n\nThis will also delete ${variantCount} variant(s).`;
+    }
+    message += '\n\nThis action cannot be undone.';
+    
+    if (confirm(message)) {
+        // Double confirmation for safety
+        if (confirm('⚠️ FINAL CONFIRMATION: This will permanently delete this product and all its data. Proceed?')) {
+            document.getElementById('deleteProductForm').submit();
+        }
+    }
+}
 
 // Toggle collapsible sections
 function toggleSection(sectionId) {

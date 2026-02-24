@@ -401,9 +401,14 @@
             <h1 class="text-3xl font-bold text-gray-900">💳 Online Approvals</h1>
             <p class="text-gray-600 mt-2">Manage online payment approvals</p>
         </div>
-        <a href="{{ route('approvals.index') }}" class="text-blue-600 hover:text-blue-800 font-medium text-sm">
-            ← Back to All Approvals
-        </a>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <button onclick="openBankAccountsModal()" style="background: #F0F9FF; color: #0369A1; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid #BAE6FD; cursor: pointer; font-size: 13px; transition: all 0.2s;" onmouseover="this.style.background='#E0F2FE'" onmouseout="this.style.background='#F0F9FF'">
+                🏦 Manage Banks
+            </button>
+            <a href="{{ route('approvals.index') }}" class="text-blue-600 hover:text-blue-800 font-medium text-sm">
+                ← Back to All Approvals
+            </a>
+        </div>
     </div>
 
     <!-- Tab Cards -->
@@ -488,7 +493,7 @@
 
     <!-- Selection Action Bar (hidden by default) -->
     <div id="selectionBar" class="selection-bar" style="display: none;">
-        <span class="count"><span id="selectedCount">0</span> selected</span>
+        <span class="count"><span id="selectedCount">0</span> selected &bull; <span style="color: #34D399; font-weight: 700;">Rs. <span id="selectedAmount">0</span></span></span>
         <button class="clear-btn" onclick="clearSelection()">✕ Clear</button>
         <button class="full-approve-btn" onclick="fullApproveSelected()">✓ Full Approve</button>
         <button class="l1-approve-btn" onclick="l1ApproveSelected()">→ L1 Only</button>
@@ -507,6 +512,24 @@
         </div>
         <div id="modalBody" style="padding: 24px;">
             <!-- Modal content will be loaded here -->
+        </div>
+        <!-- ⭐ Receiving Bank Account Selection -->
+        <div style="padding: 0 24px 12px 24px;">
+            <label style="display: block; font-size: 13px; font-weight: 600; color: #0369A1; margin-bottom: 6px;">🏦 Received in Bank (optional)</label>
+            <div id="bankAccountChips" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                <button type="button" class="bank-chip bank-chip-active" data-bank-id="" onclick="selectBankAccount(this, '')" style="padding: 4px 12px; border-radius: 16px; border: 1px solid #CBD5E1; background: #3B82F6; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                    None
+                </button>
+            </div>
+        </div>
+        <!-- ⭐ Proof of Payment Image Upload -->
+        <div style="padding: 0 24px 16px 24px;">
+            <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px;">📷 Proof of Payment (optional)</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="file" id="proofImageInput" accept="image/*" onchange="previewProofImage(this)" style="font-size: 13px; color: #6B7280;">
+                <button id="clearProofBtn" onclick="clearProofImage()" style="display: none; background: #FEE2E2; color: #DC2626; border: 1px solid #FCA5A5; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;">✕ Remove</button>
+            </div>
+            <img id="proofImagePreview" src="" style="display: none; margin-top: 8px; max-height: 120px; border-radius: 8px; border: 1px solid #E5E7EB;">
         </div>
         <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 12px;">
             <button id="modalApproveBtn" onclick="confirmApprove()" style="flex: 1; background: #16a34a; color: white; font-weight: 600; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
@@ -557,6 +580,66 @@
     </div>
 </div>
 
+<!-- ⭐ Customer Report Modal -->
+<div id="reportModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeReportModal()">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 520px; margin: 20px; overflow: hidden;" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between;">
+            <h3 id="reportModalTitle" style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">📋 Report</h3>
+            <button onclick="closeReportModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+        </div>
+        <div id="reportModalBody" style="padding: 24px;">
+            <!-- Report content will be loaded here -->
+        </div>
+        <div style="padding: 16px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; gap: 10px;">
+                <button onclick="copyReportText()" style="flex: 1; background: #F3F4F6; color: #374151; font-weight: 600; padding: 12px 16px; border-radius: 10px; border: 1px solid #D1D5DB; cursor: pointer; font-size: 14px; transition: background 0.2s;" onmouseover="this.style.background='#E5E7EB'" onmouseout="this.style.background='#F3F4F6'">
+                    📋 Copy Text
+                </button>
+                <button onclick="printReport()" style="flex: 1; background: #EEF2FF; color: #4F46E5; font-weight: 600; padding: 12px 16px; border-radius: 10px; border: 1px solid #C7D2FE; cursor: pointer; font-size: 14px; transition: background 0.2s;" onmouseover="this.style.background='#E0E7FF'" onmouseout="this.style.background='#EEF2FF'">
+                    🖨️ Print
+                </button>
+            </div>
+            <button id="reportWhatsAppBtn" onclick="" style="display: none; width: 100%; background: #25D366; color: white; font-weight: 700; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(37,211,102,0.4)';" onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
+                💬 Send to Customer via WhatsApp
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ⭐ Bank Accounts Management Modal -->
+<div id="bankAccountsModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closeBankAccountsModal()">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 520px; margin: 20px; overflow: hidden; max-height: 90vh; display: flex; flex-direction: column;" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+            <h3 style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">🏦 Manage Bank Accounts</h3>
+            <button onclick="closeBankAccountsModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+        </div>
+        
+        <!-- Add new account form -->
+        <div style="padding: 16px 24px; background: #F0F9FF; border-bottom: 1px solid #BAE6FD; flex-shrink: 0;">
+            <div style="display: flex; gap: 8px; align-items: flex-end;">
+                <div style="flex: 1.5;">
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;">Name</label>
+                    <input type="text" id="newBankName" placeholder="e.g. HBL" style="width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 13px;">
+                </div>
+                <div style="flex: 1;">
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;">Short Code</label>
+                    <input type="text" id="newBankCode" placeholder="e.g. HBL" style="width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB; border-radius: 6px; font-size: 13px;">
+                </div>
+                <div style="flex: 0.6;">
+                    <label style="display: block; font-size: 11px; font-weight: 600; color: #6B7280; margin-bottom: 4px;">Color</label>
+                    <input type="color" id="newBankColor" value="#3B82F6" style="width: 100%; height: 36px; border: 1px solid #D1D5DB; border-radius: 6px; cursor: pointer; padding: 2px;">
+                </div>
+                <button onclick="addBankAccount()" style="background: #0369A1; color: white; font-weight: 600; padding: 8px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; white-space: nowrap; height: 36px;">+ Add</button>
+            </div>
+        </div>
+        
+        <!-- Accounts list -->
+        <div id="bankAccountsList" style="padding: 16px 24px; overflow-y: auto; flex: 1;">
+            <div style="text-align: center; color: #9CA3AF; padding: 20px;">Loading...</div>
+        </div>
+    </div>
+</div>
+
 <!-- Processing Overlay -->
 <div id="processingOverlay" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); z-index: 10001; justify-content: center; align-items: center;">
     <div style="background: white; border-radius: 16px; padding: 40px; text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);">
@@ -575,6 +658,8 @@ let selectedItems = new Set();
 let allItems = [];
 let groupedItems = [];
 let searchTimeout;
+// ⭐ Receiving bank accounts for dropdown
+const receivingAccounts = @json($receivingAccounts ?? []);
 
 // Initialize
 document.addEventListener('DOMContentLoaded', function() {
@@ -719,6 +804,44 @@ function renderItems(groups) {
     }
     
     let html = '';
+    
+    // ⭐ Bank-wise summary bar for approved tab
+    if (currentTab === 'approved' && allItems.length > 0) {
+        const bankMap = {};
+        let untaggedCount = 0, untaggedAmount = 0;
+        allItems.forEach(item => {
+            if (item.receiving_account_short) {
+                const key = item.receiving_account_short;
+                if (!bankMap[key]) bankMap[key] = {count: 0, amount: 0, color: item.receiving_account_color || '#6B7280'};
+                bankMap[key].count++;
+                bankMap[key].amount += parseFloat(item.amount) || 0;
+            } else {
+                untaggedCount++;
+                untaggedAmount += parseFloat(item.amount) || 0;
+            }
+        });
+        const bankEntries = Object.entries(bankMap);
+        if (bankEntries.length > 0 || untaggedCount > 0) {
+            html += '<div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; background: #F0F9FF; border-bottom: 1px solid #BAE6FD;">';
+            html += '<span style="font-size: 13px; font-weight: 600; color: #0369A1; align-self: center; margin-right: 4px;">🏦 Bank-wise:</span>';
+            bankEntries.forEach(([bank, data]) => {
+                html += `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: white; border: 1px solid ${data.color}40; font-size: 12px;">
+                    <span style="font-weight: 700; color: ${data.color};">${escapeHtml(bank)}</span>
+                    <span style="font-weight: 700; color: #111827;">Rs. ${numberFormat(data.amount)}</span>
+                    <span style="color: #6B7280; font-size: 11px;">(${data.count})</span>
+                </span>`;
+            });
+            if (untaggedCount > 0) {
+                html += `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: white; border: 1px solid #D1D5DB; font-size: 12px;">
+                    <span style="font-weight: 700; color: #6B7280;">Untagged</span>
+                    <span style="font-weight: 700; color: #111827;">Rs. ${numberFormat(untaggedAmount)}</span>
+                    <span style="color: #6B7280; font-size: 11px;">(${untaggedCount})</span>
+                </span>`;
+            }
+            html += '</div>';
+        }
+    }
+    
     groups.forEach((group, index) => {
         const colorClass = index % 2 === 0 ? 'blue' : 'yellow';
         const isApproved = currentTab === 'approved';
@@ -739,7 +862,17 @@ function renderItems(groups) {
                     </div>
                     <div class="customer-actions">
                         <span class="customer-total">Rs. ${numberFormat(group.total_amount)}</span>
+                        ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
+                        <a href="https://wa.me/${formatPhoneForWhatsApp(group.customer_phone)}" target="_blank"
+                           class="approve-group-btn" style="background: #25D366; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: white;" 
+                           title="WhatsApp ${escapeHtml(group.customer)}">
+                            💬
+                        </a>
+                        ` : ''}
                         ${!isApproved ? `
+                        <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="openCustomerReport('${escapeHtml(group.customer)}')" title="Generate report for ${escapeHtml(group.customer)}">
+                            📋
+                        </button>
                         <button class="approve-group-btn full-approve" onclick="fullApproveGroup('${escapeHtml(group.customer)}')" title="Fully approve all invoices">
                             ✓ Full
                         </button>
@@ -783,6 +916,7 @@ function renderInvoiceRow(item, isApproved) {
             <span class="invoice-level ${item.level === 1 ? 'l1' : 'l2'}">L${item.level}</span>
             ` : `
             <span class="invoice-approved-by">✅ ${item.approved_by || 'System'}</span>
+            ${item.receiving_account_short ? `<span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: ${(item.receiving_account_color || '#3B82F6')}20; color: ${item.receiving_account_color || '#3B82F6'}; border: 1px solid ${item.receiving_account_color || '#3B82F6'}40;">🏦 ${escapeHtml(item.receiving_account_short)}</span>` : ''}
             ${approvalDateStr ? `<span class="invoice-approved-date" style="color: #059669; font-size: 12px; margin-left: 8px;">📅 ${approvalDateStr}</span>` : ''}
             `}
             <span class="invoice-amount">Rs. ${numberFormat(item.amount)}</span>
@@ -841,10 +975,16 @@ function updateSelectionUI() {
 function updateSelectionBar() {
     const bar = document.getElementById('selectionBar');
     const count = document.getElementById('selectedCount');
+    const amountEl = document.getElementById('selectedAmount');
     
     if (selectedItems.size > 0 && currentTab !== 'approved') {
         bar.style.display = 'flex';
         count.textContent = selectedItems.size;
+        // ⭐ Compute total amount of selected items
+        const selectedTotal = allItems
+            .filter(item => selectedItems.has(`${item.type}_${item.id}`))
+            .reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+        amountEl.textContent = numberFormat(selectedTotal);
     } else {
         bar.style.display = 'none';
     }
@@ -884,6 +1024,9 @@ function openApprovalModal(ledgerId, level) {
     // Show L1 Only button for L1 items
     document.getElementById('modalL1OnlyBtn').style.display = level === 1 ? 'block' : 'none';
     
+    // ⭐ Render bank account chips (pre-select if already tagged)
+    renderBankChips(item.receiving_account_id || '');
+    
     // Store item for confirmation
     window.pendingApprovalItem = item;
     
@@ -896,6 +1039,56 @@ function openApprovalModal(ledgerId, level) {
 function closeModal() {
     document.getElementById('approvalModal').style.display = 'none';
     window.pendingApprovalItem = null;
+    window.selectedBankAccountId = '';
+    clearProofImage();
+}
+
+function previewProofImage(input) {
+    const preview = document.getElementById('proofImagePreview');
+    const clearBtn = document.getElementById('clearProofBtn');
+    if (input.files && input.files[0]) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            preview.src = e.target.result;
+            preview.style.display = 'block';
+            clearBtn.style.display = 'inline-block';
+        };
+        reader.readAsDataURL(input.files[0]);
+    }
+}
+
+function clearProofImage() {
+    const input = document.getElementById('proofImageInput');
+    const preview = document.getElementById('proofImagePreview');
+    const clearBtn = document.getElementById('clearProofBtn');
+    if (input) input.value = '';
+    if (preview) { preview.src = ''; preview.style.display = 'none'; }
+    if (clearBtn) clearBtn.style.display = 'none';
+}
+
+// ⭐ Bank account selection
+window.selectedBankAccountId = '';
+
+function renderBankChips(preselectedId) {
+    const container = document.getElementById('bankAccountChips');
+    if (!container) return;
+    
+    let html = `<button type="button" class="bank-chip ${!preselectedId ? 'bank-chip-active' : ''}" data-bank-id="" onclick="selectBankAccount(this, '')" style="padding: 4px 12px; border-radius: 16px; border: 1px solid #CBD5E1; background: ${!preselectedId ? '#3B82F6' : '#F1F5F9'}; color: ${!preselectedId ? '#fff' : '#475569'}; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;">None</button>`;
+    
+    receivingAccounts.forEach(account => {
+        const isActive = preselectedId == account.id;
+        const color = account.color_hex || '#3B82F6';
+        html += `<button type="button" class="bank-chip ${isActive ? 'bank-chip-active' : ''}" data-bank-id="${account.id}" onclick="selectBankAccount(this, ${account.id})" style="padding: 4px 12px; border-radius: 16px; border: 1px solid ${isActive ? color : '#CBD5E1'}; background: ${isActive ? color : '#F1F5F9'}; color: ${isActive ? '#fff' : '#475569'}; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s;">${account.short_code || account.name}</button>`;
+    });
+    
+    container.innerHTML = html;
+    window.selectedBankAccountId = preselectedId || '';
+}
+
+function selectBankAccount(btn, bankId) {
+    window.selectedBankAccountId = bankId;
+    // Re-render all chips to update active state
+    renderBankChips(bankId);
 }
 
 async function confirmApprove() {
@@ -916,24 +1109,59 @@ async function doApprove(ledgerId, approvalType) {
         ? `/finance/ledger/${ledgerId}/approve-l1-only`
         : `/finance/ledger/${ledgerId}/approve`;
     
-    const body = approvalType === 'l1_only'
-        ? { approval_notes: 'Approved from Online Approvals web' }
-        : { approval_notes: 'Approved from Online Approvals web', force_full_approval: true };
-    
     console.log('=== doApprove ===');
     console.log('URL:', url);
-    console.log('Body:', body);
+    console.log('Approval type:', approvalType);
     
     try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify(body)
-        });
+        // ⭐ Check if there's a proof image to upload
+        const proofInput = document.getElementById('proofImageInput');
+        const hasProofImage = proofInput && proofInput.files && proofInput.files.length > 0;
+        
+        let fetchOptions;
+        const bankId = window.selectedBankAccountId || '';
+        
+        if (hasProofImage) {
+            // Use FormData for multipart upload
+            const formData = new FormData();
+            formData.append('approval_notes', 'Approved from Online Approvals web');
+            if (approvalType !== 'l1_only') {
+                formData.append('force_full_approval', '1');
+            }
+            if (bankId) {
+                formData.append('receiving_account_id', bankId);
+            }
+            formData.append('proof_image', proofInput.files[0]);
+            
+            fetchOptions = {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    'Accept': 'application/json'
+                },
+                body: formData
+            };
+        } else {
+            // Regular JSON request (no image)
+            const body = approvalType === 'l1_only'
+                ? { approval_notes: 'Approved from Online Approvals web' }
+                : { approval_notes: 'Approved from Online Approvals web', force_full_approval: true };
+            if (bankId) {
+                body.receiving_account_id = parseInt(bankId);
+            }
+            
+            fetchOptions = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(body)
+            };
+        }
+        
+        const response = await fetch(url, fetchOptions);
         
         console.log('Response status:', response.status);
         const data = await response.json();
@@ -941,6 +1169,7 @@ async function doApprove(ledgerId, approvalType) {
         
         if (data.success) {
             showToast(data.message || 'Approved successfully!', 'success');
+            clearProofImage(); // ⭐ Reset image after success
             loadData(); // Refresh data
             refreshStats(); // Refresh counts
         } else {
@@ -1363,6 +1592,346 @@ function showToast(message, type) {
     setTimeout(() => {
         toast.remove();
     }, 3000);
+}
+
+// ⭐ Format phone number with Pakistan country code (+92) for WhatsApp
+function formatPhoneForWhatsApp(phone) {
+    if (!phone) return '';
+    let cleaned = phone.replace(/\D/g, '');
+    if (cleaned.length > 10) cleaned = cleaned.slice(-10);
+    if (cleaned.length < 10) return '';
+    return '92' + cleaned;
+}
+
+// ⭐ Per-customer report modal
+function openCustomerReport(customerName) {
+    const group = groupedItems.find(g => g.customer === customerName);
+    if (!group || !group.items || group.items.length === 0) {
+        showToast('No items found for this customer', 'error');
+        return;
+    }
+    
+    const items = group.items;
+    const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const customerPhone = group.customer_phone;
+    const waNumber = customerPhone ? formatPhoneForWhatsApp(customerPhone) : '';
+    const dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    
+    // Build report table rows
+    let tableRows = '';
+    items.forEach((item, index) => {
+        tableRows += `
+            <tr style="background: ${index % 2 === 0 ? '#FAFAFA' : '#fff'};">
+                <td style="padding: 10px 12px; font-weight: 600; color: #3B82F6; border-bottom: 1px solid #E5E7EB;">${item.number}</td>
+                <td style="padding: 10px 12px; color: #6B7280; border-bottom: 1px solid #E5E7EB; text-align: center;">${formatDate(item.date)}</td>
+                <td style="padding: 10px 12px; font-weight: 700; color: #059669; border-bottom: 1px solid #E5E7EB; text-align: right;">Rs. ${numberFormat(item.amount)}</td>
+            </tr>`;
+    });
+    
+    // Build report text for copy/WhatsApp
+    let reportText = `📋 PENDING ONLINE INVOICES\n━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    reportText += `Customer: ${customerName}\n`;
+    reportText += `Generated: ${dateStr}\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    items.forEach((item, index) => {
+        reportText += `${index + 1}. ${item.number}\n   📅 ${formatDate(item.date)}\n   💰 Rs. ${numberFormat(item.amount)}\n\n`;
+    });
+    reportText += `━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 SUMMARY\nTotal Invoices: ${items.length}\nTotal Amount: Rs. ${numberFormat(totalAmount)}\n━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    
+    // Store for copy/share
+    window.currentReportText = reportText;
+    
+    const modal = document.getElementById('reportModal');
+    document.getElementById('reportModalTitle').textContent = `📋 Report: ${customerName}`;
+    document.getElementById('reportModalBody').innerHTML = `
+        <div style="margin-bottom: 16px; display: flex; gap: 12px;">
+            <div style="flex: 1; background: #EFF6FF; padding: 12px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: 800; color: #1E40AF;">${items.length}</div>
+                <div style="font-size: 11px; color: #3B82F6;">Invoices</div>
+            </div>
+            <div style="flex: 1; background: #ECFDF5; padding: 12px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 18px; font-weight: 800; color: #059669;">Rs. ${numberFormat(totalAmount)}</div>
+                <div style="font-size: 11px; color: #10B981;">Total Amount</div>
+            </div>
+        </div>
+        <div style="max-height: 350px; overflow-y: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #F3F4F6;">
+                        <th style="padding: 10px 12px; text-align: left; font-size: 12px; font-weight: 700; color: #6B7280;">Invoice #</th>
+                        <th style="padding: 10px 12px; text-align: center; font-size: 12px; font-weight: 700; color: #6B7280;">Date</th>
+                        <th style="padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #6B7280;">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>${tableRows}</tbody>
+                <tfoot>
+                    <tr style="background: #ECFDF5; border-top: 2px solid #10B981;">
+                        <td colspan="2" style="padding: 12px; font-weight: 700; color: #065F46;">Total (${items.length} invoices)</td>
+                        <td style="padding: 12px; font-weight: 800; color: #059669; text-align: right; font-size: 16px;">Rs. ${numberFormat(totalAmount)}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <div style="margin-top: 4px; text-align: right; font-size: 11px; color: #9CA3AF;">Generated ${dateStr}</div>
+    `;
+    
+    // Show/hide WhatsApp button based on phone availability
+    const waBtn = document.getElementById('reportWhatsAppBtn');
+    if (waBtn) {
+        if (waNumber) {
+            waBtn.style.display = 'flex';
+            waBtn.onclick = function() {
+                const encodedText = encodeURIComponent(window.currentReportText);
+                window.open('https://wa.me/' + waNumber + '?text=' + encodedText, '_blank');
+            };
+        } else {
+            waBtn.style.display = 'none';
+        }
+    }
+    
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+}
+
+function closeReportModal() {
+    document.getElementById('reportModal').style.display = 'none';
+    window.currentReportText = '';
+}
+
+function copyReportText() {
+    if (!window.currentReportText) return;
+    navigator.clipboard.writeText(window.currentReportText).then(() => {
+        showToast('Report copied to clipboard!', 'success');
+    }).catch(() => {
+        // Fallback for older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = window.currentReportText;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showToast('Report copied to clipboard!', 'success');
+    });
+}
+
+function printReport() {
+    const content = document.getElementById('reportModalBody').innerHTML;
+    const title = document.getElementById('reportModalTitle').textContent;
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <html>
+        <head><title>${title}</title>
+        <style>body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }</style>
+        </head>
+        <body>
+            <h2>${title}</h2>
+            ${content}
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+}
+
+// =====================================================
+// ⭐ Bank Accounts Management
+// =====================================================
+let bankAccountsData = [];
+
+function openBankAccountsModal() {
+    document.getElementById('bankAccountsModal').style.display = 'flex';
+    loadBankAccounts();
+}
+
+function closeBankAccountsModal() {
+    document.getElementById('bankAccountsModal').style.display = 'none';
+}
+
+async function loadBankAccounts() {
+    const container = document.getElementById('bankAccountsList');
+    container.innerHTML = '<div style="text-align: center; color: #9CA3AF; padding: 20px;">Loading...</div>';
+    
+    try {
+        const response = await fetch('/online-receiving-accounts', {
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' }
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            bankAccountsData = result.data;
+            renderBankAccountsList();
+        }
+    } catch (error) {
+        container.innerHTML = '<div style="text-align: center; color: #EF4444; padding: 20px;">Failed to load accounts</div>';
+    }
+}
+
+function renderBankAccountsList() {
+    const container = document.getElementById('bankAccountsList');
+    
+    if (bankAccountsData.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: #9CA3AF; padding: 20px;">No bank accounts configured yet. Add one above.</div>';
+        return;
+    }
+    
+    container.innerHTML = bankAccountsData.map(acc => `
+        <div id="bank-row-${acc.id}" style="display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #F3F4F6; ${!acc.is_active ? 'opacity: 0.5;' : ''}">
+            <div style="width: 14px; height: 14px; border-radius: 50%; background: ${escapeHtml(acc.color_hex || '#3B82F6')}; flex-shrink: 0; border: 2px solid ${escapeHtml(acc.color_hex || '#3B82F6')}40;"></div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-weight: 600; color: #1F2937; font-size: 14px;">${escapeHtml(acc.name)}</span>
+                    <span style="background: #F3F4F6; color: #6B7280; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600;">${escapeHtml(acc.short_code)}</span>
+                    ${!acc.is_active ? '<span style="background: #FEE2E2; color: #DC2626; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">INACTIVE</span>' : ''}
+                </div>
+            </div>
+            <button onclick="editBankAccount(${acc.id})" style="background: #F3F4F6; color: #374151; padding: 4px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px;" title="Edit">✏️</button>
+            <button onclick="toggleBankAccount(${acc.id})" style="background: ${acc.is_active ? '#FEF3C7' : '#D1FAE5'}; color: ${acc.is_active ? '#92400E' : '#065F46'}; padding: 4px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px;" title="${acc.is_active ? 'Deactivate' : 'Activate'}">${acc.is_active ? '⏸' : '▶'}</button>
+            <button onclick="deleteBankAccount(${acc.id}, '${escapeHtml(acc.name)}')" style="background: #FEE2E2; color: #DC2626; padding: 4px 8px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px;" title="Delete">🗑</button>
+        </div>
+    `).join('');
+}
+
+async function addBankAccount() {
+    const name = document.getElementById('newBankName').value.trim();
+    const shortCode = document.getElementById('newBankCode').value.trim();
+    const color = document.getElementById('newBankColor').value;
+    
+    if (!name) { alert('Please enter a bank name'); return; }
+    if (!shortCode) { alert('Please enter a short code'); return; }
+    
+    try {
+        const response = await fetch('/online-receiving-accounts', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            },
+            body: JSON.stringify({ name, short_code: shortCode, color_hex: color })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            document.getElementById('newBankName').value = '';
+            document.getElementById('newBankCode').value = '';
+            document.getElementById('newBankColor').value = '#3B82F6';
+            loadBankAccounts();
+            // Refresh the receivingAccounts used in approval modal
+            refreshReceivingAccountsData();
+        } else {
+            alert(result.message || 'Failed to add account');
+        }
+    } catch (error) {
+        alert('Failed to add account: ' + error.message);
+    }
+}
+
+function editBankAccount(id) {
+    const acc = bankAccountsData.find(a => a.id === id);
+    if (!acc) return;
+    
+    const row = document.getElementById(`bank-row-${id}`);
+    row.innerHTML = `
+        <div style="width: 100%; display: flex; align-items: center; gap: 8px;">
+            <input type="text" id="edit-name-${id}" value="${escapeHtml(acc.name)}" style="flex: 1.5; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
+            <input type="text" id="edit-code-${id}" value="${escapeHtml(acc.short_code)}" style="flex: 1; padding: 6px 8px; border: 1px solid #3B82F6; border-radius: 4px; font-size: 13px;">
+            <input type="color" id="edit-color-${id}" value="${acc.color_hex || '#3B82F6'}" style="width: 36px; height: 30px; border: 1px solid #D1D5DB; border-radius: 4px; cursor: pointer; padding: 1px;">
+            <button onclick="saveBankAccount(${id})" style="background: #16A34A; color: white; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600;">Save</button>
+            <button onclick="renderBankAccountsList()" style="background: #E5E7EB; color: #374151; padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px;">Cancel</button>
+        </div>
+    `;
+}
+
+async function saveBankAccount(id) {
+    const name = document.getElementById(`edit-name-${id}`).value.trim();
+    const shortCode = document.getElementById(`edit-code-${id}`).value.trim();
+    const color = document.getElementById(`edit-color-${id}`).value;
+    
+    if (!name || !shortCode) { alert('Name and short code are required'); return; }
+    
+    try {
+        const response = await fetch(`/online-receiving-accounts/${id}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            },
+            body: JSON.stringify({ name, short_code: shortCode, color_hex: color })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            loadBankAccounts();
+            refreshReceivingAccountsData();
+        } else {
+            alert(result.message || 'Failed to update');
+        }
+    } catch (error) {
+        alert('Failed to update: ' + error.message);
+    }
+}
+
+async function toggleBankAccount(id) {
+    try {
+        const response = await fetch(`/online-receiving-accounts/${id}/toggle-active`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            loadBankAccounts();
+            refreshReceivingAccountsData();
+        }
+    } catch (error) {
+        alert('Failed to toggle: ' + error.message);
+    }
+}
+
+async function deleteBankAccount(id, name) {
+    if (!confirm(`Delete "${name}"? This cannot be undone. If this account is in use, it will be rejected.`)) return;
+    
+    try {
+        const response = await fetch(`/online-receiving-accounts/${id}`, {
+            method: 'DELETE',
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            loadBankAccounts();
+            refreshReceivingAccountsData();
+        } else {
+            alert(result.message || 'Failed to delete');
+        }
+    } catch (error) {
+        alert('Failed to delete: ' + error.message);
+    }
+}
+
+// Refresh the receivingAccounts array used in the approval modal chips
+async function refreshReceivingAccountsData() {
+    try {
+        const resp = await fetch('/online-receiving-accounts', {
+            headers: { 'Accept': 'application/json' }
+        });
+        const result = await resp.json();
+        if (result.success) {
+            // Update the global receivingAccounts with only active ones
+            receivingAccounts.length = 0;
+            result.data.filter(a => a.is_active).forEach(a => receivingAccounts.push(a));
+        }
+    } catch (e) {
+        // Silently fail - chips will update on next page load
+    }
 }
 </script>
 @endpush

@@ -65,6 +65,7 @@ class LedgerModel extends BaseModel
         'comments',
         'settlement_metadata',
         'bill_image',
+        'receiving_account_id', // ⭐ FK to t_fin_online_receiving_accounts - which bank received online payment
         'posted_date',
         'created_by',
         'updated_by'
@@ -124,6 +125,11 @@ class LedgerModel extends BaseModel
     public function approvedBy(): BelongsTo
     {
         return $this->belongsTo(UserModel::class, 'approved_by', 'id');
+    }
+
+    public function receivingAccount(): BelongsTo
+    {
+        return $this->belongsTo(OnlineReceivingAccountModel::class, 'receiving_account_id', 'id');
     }
 
     public function createdBy(): BelongsTo

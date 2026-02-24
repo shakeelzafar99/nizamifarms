@@ -731,6 +731,8 @@ async function loadRiderMapData(riderId) {
             const isDelivered = ['delivered', 'completed'].includes(order.status);
             const color = isDelivered ? '#10b981' : (order.status.includes('delivery') ? '#f59e0b' : '#6b7280');
             const deliveryTime = isDelivered && order.delivered_at ? new Date(order.delivered_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }) : '';
+            const etaTime = order.estimated_delivery_at_display || '';
+            const etaCompare = order.eta_comparison;
             
             const icon = L.divIcon({
                 className: 'order-marker',
@@ -741,9 +743,14 @@ async function loadRiderMapData(riderId) {
                 iconSize: isDelivered ? [40, 55] : [28, 28], iconAnchor: isDelivered ? [20, 28] : [14, 14]
             });
             
+            let popupHtml = `<b>${order.order_number}</b><br>${order.customer_name}<br><span style="color: ${color};">${order.status_display}</span>`;
+            if (deliveryTime) popupHtml += `<br>🕐 Delivered: ${deliveryTime}`;
+            if (etaTime) popupHtml += `<br>⏱️ ETA: ${etaTime}`;
+            if (etaCompare) popupHtml += `<br><span style="color: ${etaCompare.status === 'early' ? '#10b981' : '#ef4444'}; font-weight: 600;">${etaCompare.status_text}</span>`;
+            
             L.marker([order.location.latitude, order.location.longitude], {icon})
                 .addTo(singleRiderMap)
-                .bindPopup(`<b>${order.order_number}</b><br>${order.customer_name}<br><span style="color: ${color};">${order.status_display}</span>${deliveryTime ? `<br>🕐 ${deliveryTime}` : ''}`);
+                .bindPopup(popupHtml);
             bounds.push([order.location.latitude, order.location.longitude]);
         });
         
@@ -1057,6 +1064,8 @@ async function openRiderHistory(riderId, riderName) {
                                             ${order.payment_type === 'cash' ? '💵 Cash' : '💳 Online'}
                                         </span>
                                         <span style="color: #6b7280; font-size: 11px;">🕐 ${order.delivered_at}</span>
+                                        ${order.estimated_delivery_at_display ? `<span style="color: #8B5CF6; font-size: 11px;">⏱️ ${order.estimated_delivery_at_display}</span>` : ''}
+                                        ${order.eta_comparison ? `<span style="color: ${order.eta_comparison.status === 'early' ? '#10b981' : '#ef4444'}; font-size: 10px; font-weight: 600;">${order.eta_comparison.status_text}</span>` : ''}
                                         <span style="color: ${order.location ? '#10b981' : '#ef4444'};">${order.location ? '📍' : '❌'}</span>
                                     </div>
                                 </div>
@@ -1133,9 +1142,15 @@ async function openHistoryDate(date, displayDate) {
             iconSize: [40, 55], iconAnchor: [20, 28]
         });
         
+        let histPopup = `<b>${order.order_number}</b><br>${order.customer_name}<br>Delivered`;
+        if (deliveryTime) histPopup += `<br>🕐 Delivered: ${deliveryTime}`;
+        if (order.estimated_delivery_at_display) histPopup += `<br>⏱️ ETA: ${order.estimated_delivery_at_display}`;
+        if (order.eta_comparison) histPopup += `<br><span style="color: ${order.eta_comparison.status === 'early' ? '#10b981' : '#ef4444'}; font-weight: 600;">${order.eta_comparison.status_text}</span>`;
+        histPopup += `<br>${order.amount_formatted}`;
+        
         L.marker([order.location.latitude, order.location.longitude], {icon})
             .addTo(historyMap)
-            .bindPopup(`<b>${order.order_number}</b><br>${order.customer_name}<br>Delivered${deliveryTime ? `<br>🕐 ${deliveryTime}` : ''}<br>${order.amount_formatted}`);
+            .bindPopup(histPopup);
         bounds.push([order.location.latitude, order.location.longitude]);
     });
     
@@ -1148,21 +1163,27 @@ async function openHistoryDate(date, displayDate) {
     // Render orders list
     document.getElementById('historyOrdersList').innerHTML = dateOrders.length > 0 ? dateOrders.map(order => {
         const hasLoc = order.location !== null;
-        return `<div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #f3f4f6;">
-            <div>
-                <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
-                <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+        return `<div style="border-bottom: 1px solid #f3f4f6;">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 16px;">
+                <div>
+                    <span style="font-weight: 600; color: #3b82f6;">${order.order_number}</span>
+                    <span style="color: #374151; margin-left: 8px;">${order.customer_name}</span>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-weight: 600; color: ${order.payment_type === 'cash' ? '#10b981' : '#3b82f6'};">
+                        ${order.amount_formatted}
+                    </span>
+                    <span style="background: ${order.payment_type === 'cash' ? '#d1fae5' : '#dbeafe'}; color: ${order.payment_type === 'cash' ? '#065f46' : '#1e40af'}; padding: 2px 6px; border-radius: 4px; font-size: 10px;">
+                        ${order.payment_type === 'cash' ? '💵' : '💳'}
+                    </span>
+                    <span style="color: #6b7280; font-size: 11px;">🕐 ${order.delivered_at}</span>
+                    ${order.estimated_delivery_at_display ? `<span style="color: #8B5CF6; font-size: 11px;">⏱️ ${order.estimated_delivery_at_display}</span>` : ''}
+                    ${order.eta_comparison ? `<span style="color: ${order.eta_comparison.status === 'early' ? '#10b981' : '#ef4444'}; font-size: 10px; font-weight: 600;">${order.eta_comparison.status_text}</span>` : ''}
+                    <span style="color: ${hasLoc ? '#10b981' : '#ef4444'};">${hasLoc ? '📍' : '❌'}</span>
+                    <button onclick="event.stopPropagation(); loadDeliveryJourney(${order.id}, '${(order.order_number || '').replace(/'/g, "\\'")}');" style="padding: 2px 8px; background: #8B5CF6; color: white; border: none; border-radius: 4px; font-size: 10px; cursor: pointer; font-weight: 500;" title="View delivery journey">🛣️ Journey</button>
+                </div>
             </div>
-            <div style="display: flex; gap: 8px; align-items: center;">
-                <span style="font-weight: 600; color: ${order.payment_type === 'cash' ? '#10b981' : '#3b82f6'};">
-                    ${order.amount_formatted}
-                </span>
-                <span style="background: ${order.payment_type === 'cash' ? '#d1fae5' : '#dbeafe'}; color: ${order.payment_type === 'cash' ? '#065f46' : '#1e40af'}; padding: 2px 6px; border-radius: 4px; font-size: 10px;">
-                    ${order.payment_type === 'cash' ? '💵' : '💳'}
-                </span>
-                <span style="color: #6b7280; font-size: 11px;">🕐 ${order.delivered_at}</span>
-                <span style="color: ${hasLoc ? '#10b981' : '#ef4444'};">${hasLoc ? '📍' : '❌'}</span>
-            </div>
+            <div id="journey-panel-${order.id}" style="display: none;"></div>
         </div>`;
     }).join('') : '<div style="padding: 20px; text-align: center; color: #6b7280;">No orders for this date</div>';
 }
@@ -1221,6 +1242,144 @@ function saveVerifiedLocation(customerId, googleMapsUrl) {
     .catch(error => {
         console.error('Error saving location:', error);
         alert('❌ Error saving location');
+    });
+}
+
+// =============================================
+// DELIVERY JOURNEY
+// =============================================
+let journeyMaps = {}; // Track Leaflet maps per order to clean up
+
+function loadDeliveryJourney(orderId, orderNumber) {
+    const panel = document.getElementById('journey-panel-' + orderId);
+    if (!panel) return;
+    
+    // Toggle: if already visible, hide it
+    if (panel.style.display === 'block') {
+        panel.style.display = 'none';
+        if (journeyMaps[orderId]) {
+            journeyMaps[orderId].remove();
+            delete journeyMaps[orderId];
+        }
+        return;
+    }
+    
+    // Show loading
+    panel.style.display = 'block';
+    panel.innerHTML = '<div style="padding: 16px; text-align: center; color: #6b7280; font-size: 13px;"><span style="display: inline-block; animation: spin 1s linear infinite; font-size: 16px;">⏳</span> Loading journey for ' + orderNumber + '...</div>';
+    
+    fetch('/orders/delivery-journey/' + orderId, {
+        headers: { 'Accept': 'application/json' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) {
+            panel.innerHTML = '<div style="padding: 12px 16px; color: #ef4444; font-size: 12px;">❌ ' + (data.message || 'Failed to load journey') + '</div>';
+            return;
+        }
+        
+        const s = data.summary;
+        const hasTrail = data.trail && data.trail.length > 1;
+        const hasStops = data.stops && data.stops.length > 0;
+        
+        let html = '<div style="background: #f8fafc; border-top: 1px solid #e5e7eb; padding: 12px 16px;">';
+        
+        // Summary bar
+        html += '<div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">';
+        html += '<span style="font-size: 12px; font-weight: 600; color: #374151;">🛣️ Journey: ' + data.journey_start_label + '</span>';
+        html += '<span style="font-size: 11px; color: #6b7280;">' + data.journey_start + ' → ' + data.journey_end + '</span>';
+        html += '<span style="background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">⏱ ' + s.total_duration_display + '</span>';
+        html += '<span style="background: #dcfce7; color: #166534; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">📏 ' + s.total_distance_display + '</span>';
+        html += '<span style="background: #f3e8ff; color: #7c3aed; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">🏃 ' + s.moving_time_display + '</span>';
+        if (s.stop_count > 0) {
+            html += '<span style="background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;">🛑 ' + s.stop_count + ' stop' + (s.stop_count > 1 ? 's' : '') + ' (' + s.stopped_time_display + ')</span>';
+        }
+        if (s.avg_speed_kmh > 0) {
+            html += '<span style="font-size: 10px; color: #6b7280;">Avg: ' + s.avg_speed_kmh + ' km/h</span>';
+        }
+        if (data.eta_comparison) {
+            const ec = data.eta_comparison;
+            html += '<span style="color: ' + (ec.status === 'early' ? '#10b981' : '#ef4444') + '; font-size: 10px; font-weight: 600;">ETA ' + ec.estimated_at_display + ' → Actual ' + ec.actual_at_display + ' (' + ec.status_text + ')</span>';
+        }
+        html += '</div>';
+        
+        // Stops detail (if any)
+        if (hasStops) {
+            html += '<div style="margin-bottom: 10px;">';
+            data.stops.forEach(function(stop, idx) {
+                html += '<div style="display: inline-flex; align-items: center; gap: 4px; background: #fef3c7; border: 1px solid #fbbf24; border-radius: 4px; padding: 2px 8px; margin-right: 6px; margin-bottom: 4px; font-size: 10px;">';
+                html += '<span style="font-weight: 600; color: #92400e;">🛑 Stop ' + (idx + 1) + '</span>';
+                html += '<span style="color: #78350f;">' + stop.start_time + ' - ' + stop.end_time + '</span>';
+                html += '<span style="color: #b45309; font-weight: 600;">' + stop.duration_display + '</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+        
+        // Mini map
+        if (hasTrail) {
+            html += '<div id="journey-map-' + orderId + '" style="height: 250px; border-radius: 8px; border: 1px solid #e5e7eb;"></div>';
+        } else {
+            html += '<div style="padding: 20px; text-align: center; color: #9ca3af; font-size: 12px;">No GPS trail data available for this journey segment</div>';
+        }
+        
+        html += '</div>';
+        panel.innerHTML = html;
+        
+        // Render Leaflet map
+        if (hasTrail) {
+            setTimeout(function() {
+                try {
+                    const mapEl = document.getElementById('journey-map-' + orderId);
+                    if (!mapEl) return;
+                    
+                    const map = L.map(mapEl);
+                    journeyMaps[orderId] = map;
+                    
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '© OpenStreetMap',
+                        maxZoom: 19
+                    }).addTo(map);
+                    
+                    // Draw trail polyline
+                    const trailCoords = data.trail.map(function(p) { return [p.latitude, p.longitude]; });
+                    const polyline = L.polyline(trailCoords, {
+                        color: '#3b82f6',
+                        weight: 3,
+                        opacity: 0.8
+                    }).addTo(map);
+                    
+                    // Start marker (green)
+                    L.circleMarker(trailCoords[0], {
+                        radius: 7, color: '#16a34a', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+                    }).addTo(map).bindPopup('<b>Journey Start</b><br>' + data.journey_start + '<br><small>' + data.journey_start_label + '</small>');
+                    
+                    // End marker (red - delivery point)
+                    L.circleMarker(trailCoords[trailCoords.length - 1], {
+                        radius: 7, color: '#dc2626', fillColor: '#ef4444', fillOpacity: 1, weight: 2
+                    }).addTo(map).bindPopup('<b>Delivered</b><br>' + data.journey_end + '<br>' + (data.address || ''));
+                    
+                    // Stop markers (orange)
+                    if (hasStops) {
+                        data.stops.forEach(function(stop, idx) {
+                            L.circleMarker([stop.latitude, stop.longitude], {
+                                radius: 6, color: '#d97706', fillColor: '#fbbf24', fillOpacity: 0.9, weight: 2
+                            }).addTo(map).bindPopup('<b>🛑 Stop ' + (idx + 1) + '</b><br>' + stop.start_time + ' - ' + stop.end_time + '<br>' + stop.duration_display);
+                        });
+                    }
+                    
+                    // Fit to trail bounds
+                    map.fitBounds(polyline.getBounds(), { padding: [20, 20] });
+                    
+                } catch(e) {
+                    console.error('Journey map render error:', e);
+                }
+            }, 100);
+        }
+    })
+    .catch(err => {
+        console.error('Journey load error:', err);
+        panel.innerHTML = '<div style="padding: 12px 16px; color: #ef4444; font-size: 12px;">❌ Error loading journey data</div>';
     });
 }
 

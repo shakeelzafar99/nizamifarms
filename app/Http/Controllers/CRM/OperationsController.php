@@ -294,10 +294,29 @@ class OperationsController extends Controller
         $phoneData = CustomerModel::normalizePhone($phone);
         $normalizedPhone = $phoneData['normalized'];
         
-        // Find existing customer
+        // Find existing customer (prefer non-merged, follow merge chain if needed)
         $customer = DB::table('t_crm_prod_customer')
             ->where('phone_normalized', $normalizedPhone)
+            ->whereNull('merged_into_customer_id')
             ->first();
+        
+        if (!$customer) {
+            // Check if there's a merged customer - follow chain to primary
+            $mergedCustomer = DB::table('t_crm_prod_customer')
+                ->where('phone_normalized', $normalizedPhone)
+                ->whereNotNull('merged_into_customer_id')
+                ->first();
+            if ($mergedCustomer) {
+                $primaryId = $mergedCustomer->merged_into_customer_id;
+                $primary = DB::table('t_crm_prod_customer')
+                    ->where('id', $primaryId)
+                    ->whereNull('merged_into_customer_id')
+                    ->first();
+                if ($primary) {
+                    $customer = $primary;
+                }
+            }
+        }
         
         $orderDate = $orderData['order_date'];
         $isDelivered = in_array($orderData['order_status'], ['delivered', 'completed']);

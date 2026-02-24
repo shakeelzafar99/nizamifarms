@@ -47,6 +47,9 @@ Route::group([
     Route::post('/menu', [MenuController::class, 'list']);
 });
 
+// Web logout - always accessible, clears session even if token expired
+Route::get('/logout', [AuthController::class, 'webLogout'])->name('web.logout');
+
 
 // AppSheet Webhook Routes (no auth required)
 Route::prefix('webhook/appsheet')->group(function () {
@@ -124,6 +127,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
     Route::get('/orders/riders-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory'])->name('orders.riders-map.rider-history');
     Route::get('/orders/riders-map/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderMapData'])->name('orders.riders-map.rider');
+    Route::get('/orders/delivery-journey/{orderId}', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryJourney'])->name('orders.delivery-journey');
     Route::get('/orders/open-quantities', [OrderController::class, 'openQuantities'])->name('orders.open-quantities');
     Route::get('/orders/open-quantities/data', [OrderController::class, 'openQuantitiesData'])->name('orders.open-quantities.data');
     Route::get('/orders/open-quantities/settings', [OrderController::class, 'getOpenQuantitiesSettings'])->name('orders.open-quantities.settings.get');
@@ -250,6 +254,8 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/find-duplicates', [\App\Http\Controllers\CRM\CustomerController::class, 'findDuplicates'])->name('customers.find-duplicates');
         Route::get('/search-for-merge', [\App\Http\Controllers\CRM\CustomerController::class, 'searchForMerge'])->name('customers.search-for-merge');
         Route::post('/merge', [\App\Http\Controllers\CRM\CustomerController::class, 'mergeCustomers'])->name('customers.merge');
+        Route::post('/upload-promo-image', [\App\Http\Controllers\CRM\CustomerController::class, 'uploadPromoImage'])->name('customers.upload-promo-image');
+        Route::post('/delete-promo-image', [\App\Http\Controllers\CRM\CustomerController::class, 'deletePromoImage'])->name('customers.delete-promo-image');
         Route::get('/{id}', [\App\Http\Controllers\CRM\CustomerController::class, 'show'])->name('customers.show');
         Route::get('/{id}/orders', [\App\Http\Controllers\CRM\CustomerController::class, 'orders'])->name('customers.orders');
         Route::get('/history-order/{historyOrderId}', [\App\Http\Controllers\CRM\CustomerController::class, 'historyOrderDetails'])->name('customers.history-order');
@@ -294,6 +300,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/products/{id}/edit', [\App\Http\Controllers\CRM\ProductController::class, 'edit'])->name('products.edit');
     Route::get('/products/{id}/history', [\App\Http\Controllers\CRM\ProductController::class, 'getHistory'])->name('products.history');
     Route::put('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update'])->name('products.update');
+    Route::delete('/products/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'destroy'])->name('products.destroy');
     Route::post('/products/import', [\App\Http\Controllers\CRM\ProductController::class, 'importProducts'])->name('products.import');
     Route::post('/products/import-all', [\App\Http\Controllers\CRM\ProductController::class, 'importAllProducts'])->name('products.import-all');
     Route::post('/products/{id}/sync', [\App\Http\Controllers\CRM\ProductController::class, 'syncProduct'])->name('products.sync');
@@ -392,6 +399,15 @@ Route::middleware(['auth'])->group(function () {
     // ⭐ Online Approvals - Dedicated page for online payment approvals
     Route::get('/approvals/online', [\App\Http\Controllers\ApprovalController::class, 'onlineApprovals'])->name('approvals.online');
     
+    // ⭐ Online Receiving Accounts CRUD (manage bank accounts for online approvals)
+    Route::prefix('online-receiving-accounts')->group(function () {
+        Route::get('/', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'index']);
+        Route::post('/', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'store']);
+        Route::put('/{id}', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'update']);
+        Route::post('/{id}/toggle-active', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'toggleActive']);
+        Route::delete('/{id}', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'destroy']);
+    });
+    
     // Debug route for testing virtual assignment
     Route::get('/test-virtual-assignment', function() {
         $requests = \App\Models\Request\RequestModel::where('status', 'pending')
@@ -414,6 +430,22 @@ Route::middleware(['auth'])->group(function () {
         return response()->json($results);
     });
     
+    // ⭐ Khaas Mode Routes (Business Unit dedicated area)
+    Route::prefix('khaas')->name('khaas.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\KhaasController::class, 'dashboard'])->name('dashboard');
+        Route::get('/products', [\App\Http\Controllers\KhaasController::class, 'products'])->name('products');
+        Route::get('/operations', [\App\Http\Controllers\KhaasController::class, 'operations'])->name('operations');
+        // Keep individual routes for backward compatibility
+        Route::get('/vendors', [\App\Http\Controllers\KhaasController::class, 'vendors'])->name('vendors');
+        Route::get('/expenses', [\App\Http\Controllers\KhaasController::class, 'expenses'])->name('expenses');
+        Route::get('/transfers', [\App\Http\Controllers\KhaasController::class, 'transfers'])->name('transfers');
+        Route::post('/transfers/{id}/approve', [\App\Http\Controllers\KhaasController::class, 'approveTransfer'])->name('transfers.approve');
+        Route::post('/transfers/{id}/reject', [\App\Http\Controllers\KhaasController::class, 'rejectTransfer'])->name('transfers.reject');
+        Route::post('/warehouse/stock', [\App\Http\Controllers\KhaasController::class, 'updateStock'])->name('warehouse.stock');
+        Route::post('/warehouse/transfer', [\App\Http\Controllers\KhaasController::class, 'initiateTransfer'])->name('warehouse.transfer');
+        Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReport'])->name('sales-report');
+    });
+
     // Finance & Ledger Routes
     Route::prefix('finance')->name('fin.')->group(function () {
         
@@ -568,6 +600,17 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/{id}/settlement-details', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'getSettlementDetails'])->name('settlement-details');
             Route::delete('/{id}', [\App\Http\Controllers\FIN\ExpenseManagementController::class, 'destroy'])->name('destroy');
         });
+    });
+    
+    // ⭐ Reports (Web version of mobile store mode Reports tab)
+    Route::get('/reports', function () {
+        return view('reports.index');
+    })->name('reports.index');
+    Route::prefix('reports/api')->group(function () {
+        Route::get('/monthly-summary', [\App\Http\Controllers\API\ReportsController::class, 'getMonthlySummary']);
+        Route::get('/month-details', [\App\Http\Controllers\API\ReportsController::class, 'getMonthDetails']);
+        Route::get('/daily-summary', [\App\Http\Controllers\API\ReportsController::class, 'getDailySummary']);
+        Route::get('/daily-details', [\App\Http\Controllers\API\ReportsController::class, 'getDailyDetails']);
     });
     
     // HR & Salary Management Routes

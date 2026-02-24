@@ -553,13 +553,18 @@ class LedgerController extends Controller
             'approval_notes' => 'nullable|string|max:500',
             'override_destination_account_id' => 'nullable|exists:t_fin_accounts,id',
             'override_source_account_id' => 'nullable|exists:t_fin_accounts,id',
-            'force_full_approval' => 'nullable|boolean' // ⭐ Allow bypassing L2 if user has L2 rights
+            'force_full_approval' => 'nullable|boolean', // ⭐ Allow bypassing L2 if user has L2 rights
+            'proof_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // ⭐ Optional proof of payment image (max 5MB)
+            'receiving_account_id' => 'nullable|exists:t_fin_online_receiving_accounts,id', // ⭐ Which bank received this payment
         ]);
 
         try {
             DB::beginTransaction();
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // ⭐ Handle optional proof of payment image upload
+            $proofImagePath = $this->handleApprovalImageUpload($request, $ledger);
 
             if (!$ledger->isPending()) {
                 throw new \Exception("Transaction is not pending approval");
@@ -644,6 +649,16 @@ class LedgerController extends Controller
             if ($request->approval_notes) {
                 $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
                                    "Approval Notes: " . $request->approval_notes;
+            }
+
+            // ⭐ Save proof of payment image if uploaded
+            if ($proofImagePath) {
+                $ledger->bill_image = $proofImagePath;
+            }
+
+            // ⭐ Save receiving bank account if provided (which bank received this online payment)
+            if ($request->receiving_account_id) {
+                $ledger->receiving_account_id = $request->receiving_account_id;
             }
             
             $ledger->save();
@@ -801,13 +816,18 @@ class LedgerController extends Controller
     public function approveAtL1Only(Request $request, $id)
     {
         $request->validate([
-            'approval_notes' => 'nullable|string|max:500'
+            'approval_notes' => 'nullable|string|max:500',
+            'proof_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // ⭐ Optional proof of payment image
+            'receiving_account_id' => 'nullable|exists:t_fin_online_receiving_accounts,id', // ⭐ Which bank received this payment
         ]);
 
         try {
             DB::beginTransaction();
 
             $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
+
+            // ⭐ Handle optional proof of payment image upload
+            $proofImagePath = $this->handleApprovalImageUpload($request, $ledger);
 
             // Validation: Must be at L1 pending stage
             if (!in_array($ledger->approval_status, [LedgerModel::STATUS_PENDING, LedgerModel::STATUS_PENDING_L1])) {
@@ -853,6 +873,16 @@ class LedgerController extends Controller
             if ($request->approval_notes) {
                 $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
                                    "L1 Approval Notes: " . $request->approval_notes;
+            }
+
+            // ⭐ Save proof of payment image if uploaded
+            if ($proofImagePath) {
+                $ledger->bill_image = $proofImagePath;
+            }
+
+            // ⭐ Save receiving bank account if provided
+            if ($request->receiving_account_id) {
+                $ledger->receiving_account_id = $request->receiving_account_id;
             }
 
             $ledger->save();
@@ -1270,6 +1300,32 @@ class LedgerController extends Controller
                 'message' => 'Error updating transaction: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * ⭐ Handle optional proof of payment image upload during approval
+     * Supports both multipart file upload (web/mobile) and base64 (mobile fallback)
+     * Follows same pattern as VendorController::handleImageUpload
+     */
+    private function handleApprovalImageUpload(Request $request, LedgerModel $ledger): ?string
+    {
+        // Check for multipart file upload (web & mobile FormData)
+        if ($request->hasFile('proof_image')) {
+            $file = $request->file('proof_image');
+            $filename = 'approval_' . $ledger->id . '_' . time() . '.' . $file->getClientOriginalExtension();
+            return $file->storeAs('approval_proofs', $filename, 'public');
+        }
+
+        // Check for base64 upload (mobile fallback)
+        if ($request->has('proof_image_base64') && $request->input('proof_image_base64')) {
+            $base64Image = $request->input('proof_image_base64');
+            $image = base64_decode(preg_replace('#^data:image/\w+;base64,#i', '', $base64Image));
+            $filename = 'approval_' . $ledger->id . '_' . time() . '.jpg';
+            \Storage::disk('public')->put('approval_proofs/' . $filename, $image);
+            return 'approval_proofs/' . $filename;
+        }
+
+        return null;
     }
 }
 

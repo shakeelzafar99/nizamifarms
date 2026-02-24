@@ -148,10 +148,17 @@
                        placeholder="Search vendors..." 
                        class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
             </div>
-            <select name="status" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Statuses</option>
-                <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                <option value="inactive" {{ request('status') == 'inactive' ? 'selected' : '' }}>Inactive</option>
+            @php
+                // Default to BU 1 (Nizami Farms) when page loads without explicit filter
+                $selectedBuFilter = request('business_unit_id', '1');
+            @endphp
+            <select name="business_unit_id" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="all" {{ $selectedBuFilter === 'all' ? 'selected' : '' }}>All Business Units</option>
+                @foreach($businessUnits ?? [] as $bu)
+                    <option value="{{ $bu->id }}" {{ $selectedBuFilter == $bu->id ? 'selected' : '' }}>
+                        {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                    </option>
+                @endforeach
             </select>
             <button type="submit" class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700">
                 Search
@@ -180,7 +187,7 @@
                 <tr>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor Name</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Purchase Method</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Payment</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Business Unit</th>
                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Balance Payable</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -205,11 +212,14 @@
                             @endif
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">
-                            @if($vendor->last_payment_date && $vendor->last_payment_amount)
-                                <div class="text-sm font-medium text-gray-900">Rs. {{ number_format($vendor->last_payment_amount, 2) }}</div>
-                                <div class="text-xs text-gray-500">{{ \Carbon\Carbon::parse($vendor->last_payment_date)->format('M d, Y') }}</div>
+                            @if($vendor->businessUnit)
+                                <span class="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full" style="background-color: {{ ($vendor->businessUnit->color_hex ?? '#6b7280') }}20; color: {{ $vendor->businessUnit->color_hex ?? '#6b7280' }}">
+                                    {{ $vendor->businessUnit->name }} {{ $vendor->businessUnit->short_code ? '(' . $vendor->businessUnit->short_code . ')' : '' }}
+                                </span>
                             @else
-                                <div class="text-sm text-gray-400">No payments yet</div>
+                                <span class="px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-600">
+                                    Nizami Farms
+                                </span>
                             @endif
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-right">
@@ -263,7 +273,7 @@
     <!-- Pagination -->
     @if($vendors->hasPages())
         <div class="mt-4">
-            {{ $vendors->links() }}
+            {{ $vendors->appends(request()->query())->links() }}
         </div>
     @endif
 </div>
@@ -331,7 +341,9 @@
                                 class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 text-gray-900 bg-white">
                             <option value="">NF Cash (Default)</option>
                             @foreach($accessibleCompanyAccounts ?? [] as $source)
+                                @if($source->account_code !== 'EXP_FUND')
                                 <option value="{{ $source->id }}">{{ $source->account_name }}</option>
+                                @endif
                             @endforeach
                         </select>
                         <p class="text-xs text-gray-600 mt-1">💳 Pre-selected when recording payments for this vendor</p>
@@ -443,7 +455,9 @@
                                 class="w-full px-3 py-2 border-2 border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-gray-900 bg-white">
                             <option value="">NF Cash (Default)</option>
                             @foreach($accessibleCompanyAccounts ?? [] as $source)
+                                @if($source->account_code !== 'EXP_FUND')
                                 <option value="{{ $source->id }}">{{ $source->account_name }}</option>
+                                @endif
                             @endforeach
                         </select>
                         <p class="text-xs text-gray-600 mt-1">💳 Pre-selected when recording payments for this vendor</p>

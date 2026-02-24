@@ -10,8 +10,10 @@ class RoleController extends Controller
 {
     public function index(Request $request)
     {
-        // Get roles with user count
-        $roles = RoleModel::withCount('userRoles')->paginate(10);
+        // Get roles with user count and mobile permissions (for mode access indicators)
+        $roles = RoleModel::withCount('userRoles')
+            ->with('mobilePermissions')
+            ->paginate(10);
         
         return view('pages.roles.index', compact('roles'));
     }

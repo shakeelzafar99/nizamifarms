@@ -30,6 +30,7 @@ class OrderLineItemModel extends BaseModel
         'tax_amount',
         'line_total',
         'preparation_status',
+        'inventory_deducted',
         'created_by',
         'updated_by'
     ];
@@ -82,6 +83,120 @@ class OrderLineItemModel extends BaseModel
     public function getCalculatedTotalAttribute(): float
     {
         return ($this->line_subtotal ?? 0) - ($this->discount_amount ?? 0) + ($this->tax_amount ?? 0);
+    }
+
+    /**
+     * Deduct inventory for this line item (when marked as prepared).
+     * Only deducts if not already deducted (inventory_deducted = 0).
+     * Returns true if inventory was actually deducted, false if skipped.
+     */
+    public function deductInventory(): bool
+    {
+        if ($this->inventory_deducted) {
+            return false; // Already deducted — prevent double deduction
+        }
+
+        $variantId = $this->variant_id;
+        $quantity = $this->quantity ?? 0;
+
+        // Fallback: resolve variant by SKU if variant_id is missing
+        if (!$variantId && !empty($this->sku)) {
+            $resolvedVariant = ProductVariantModel::where('sku', $this->sku)->first();
+            if ($resolvedVariant) {
+                $variantId = $resolvedVariant->id;
+            }
+        }
+
+        if ($variantId && $quantity > 0) {
+            $variant = ProductVariantModel::find($variantId);
+            if ($variant) {
+                $variant->decrement('inventory_quantity', $quantity);
+
+                // Sync product.total_inventory from variants
+                if ($variant->product_id) {
+                    $product = ProductModel::find($variant->product_id);
+                    if ($product) {
+                        $newTotal = ProductVariantModel::where('product_id', $product->id)
+                            ->sum('inventory_quantity');
+                        $product->update(['total_inventory' => $newTotal]);
+                    }
+                }
+
+                $this->inventory_deducted = 1;
+                $this->save();
+
+                \Log::info('Inventory deducted (mark as prepared)', [
+                    'line_item_id' => $this->id,
+                    'order_id' => $this->order_id,
+                    'variant_id' => $variantId,
+                    'product_id' => $variant->product_id,
+                    'sku' => $variant->sku,
+                    'quantity_deducted' => $quantity,
+                    'new_variant_inventory' => $variant->fresh()->inventory_quantity,
+                ]);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Restore inventory for this line item (when un-prepared or order cancelled).
+     * Only restores if previously deducted (inventory_deducted = 1).
+     * Returns true if inventory was actually restored, false if skipped.
+     */
+    public function restoreInventory(): bool
+    {
+        if (!$this->inventory_deducted) {
+            return false; // Nothing to restore
+        }
+
+        $variantId = $this->variant_id;
+        $quantity = $this->quantity ?? 0;
+
+        // Fallback: resolve variant by SKU if variant_id is missing
+        if (!$variantId && !empty($this->sku)) {
+            $resolvedVariant = ProductVariantModel::where('sku', $this->sku)->first();
+            if ($resolvedVariant) {
+                $variantId = $resolvedVariant->id;
+            }
+        }
+
+        if ($variantId && $quantity > 0) {
+            $variant = ProductVariantModel::find($variantId);
+            if ($variant) {
+                $variant->increment('inventory_quantity', $quantity);
+
+                // Sync product.total_inventory from variants
+                if ($variant->product_id) {
+                    $product = ProductModel::find($variant->product_id);
+                    if ($product) {
+                        $newTotal = ProductVariantModel::where('product_id', $product->id)
+                            ->sum('inventory_quantity');
+                        $product->update(['total_inventory' => $newTotal]);
+                    }
+                }
+
+                $this->inventory_deducted = 0;
+                $this->save();
+
+                \Log::info('Inventory restored', [
+                    'line_item_id' => $this->id,
+                    'order_id' => $this->order_id,
+                    'variant_id' => $variantId,
+                    'product_id' => $variant->product_id,
+                    'sku' => $variant->sku,
+                    'quantity_restored' => $quantity,
+                    'new_variant_inventory' => $variant->fresh()->inventory_quantity,
+                ]);
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Automatically calculate line_total if not provided

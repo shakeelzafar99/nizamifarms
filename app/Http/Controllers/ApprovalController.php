@@ -1042,11 +1042,16 @@ class ApprovalController extends Controller
         if ($request->ajax()) {
             return $this->getOnlineFilteredData($request, $l1Items, $l2Items, $approvedItems);
         }
+
+        // ⭐ Load receiving accounts for bank selection dropdown
+        $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex']);
         
         return view('approvals.online', compact(
             'summaries',
             'hasLevel1Rights',
-            'hasLevel2Rights'
+            'hasLevel2Rights',
+            'receivingAccounts'
         ));
     }
 
@@ -1063,7 +1068,7 @@ class ApprovalController extends Controller
             ])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer'])
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
             ->get();
         
@@ -1084,7 +1089,7 @@ class ApprovalController extends Controller
         $pendingLedger = LedgerModel::where('approval_status', LedgerModel::STATUS_PENDING_L2)
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer'])
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
             ->orderBy('transaction_date', 'desc')
             ->get();
         
@@ -1117,7 +1122,7 @@ class ApprovalController extends Controller
             ->whereBetween('approval_date', [$dateFrom, $dateTo])
             ->whereNull('request_id')
             ->where('mode', 'online') // ⭐ Only online mode
-            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'approvedBy'])
+            ->with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'approvedBy', 'receivingAccount'])
             ->orderBy('approval_date', 'desc')
             ->get();
         
@@ -1133,14 +1138,17 @@ class ApprovalController extends Controller
      */
     private function formatOnlineLedgerItem($ledger, $level = null, $overrideStatus = null)
     {
-        // Determine customer name
+        // Determine customer name and phone
         $requester = 'Unknown';
+        $customerPhone = null;
         if ($ledger->order && $ledger->order->customer) {
             $fullName = trim($ledger->order->customer->full_name ?? '');
             $requester = $fullName ?: 
                         $ledger->order->customer->company ?: 
                         $ledger->order->customer->phone ?: 
                         'Unknown';
+            // ⭐ Get customer phone for WhatsApp
+            $customerPhone = $ledger->order->customer->phone_original ?? $ledger->order->customer->phone ?? null;
         }
         
         // Display number and date
@@ -1151,7 +1159,11 @@ class ApprovalController extends Controller
         if ($ledger->order) {
             $orderNumber = $ledger->order->order_number;
             $displayNumber = $orderNumber;
-            if ($ledger->order->order_date) {
+            // ⭐ Use delivery_date (actual delivered date) instead of order_date
+            $deliveryDate = $ledger->order->delivery_date;
+            if ($deliveryDate) {
+                $displayDate = $deliveryDate;
+            } elseif ($ledger->order->order_date) {
                 $displayDate = $ledger->order->order_date->format('Y-m-d');
             }
         }
@@ -1172,6 +1184,7 @@ class ApprovalController extends Controller
             'order_number' => $orderNumber,
             'order_id' => $ledger->order_id, // ⭐ For direct order view link
             'requester' => $requester,
+            'customer_phone' => $customerPhone, // ⭐ For WhatsApp
             'title' => $ledger->order ? "Invoice #{$ledger->order->order_number}" : $ledger->description,
             'description' => $ledger->description,
             'amount' => $ledger->amount ?? 0,
@@ -1181,6 +1194,11 @@ class ApprovalController extends Controller
             'level' => $level,
             'status' => $overrideStatus ?? $ledger->approval_status,
             'view_url' => route('fin.ledger.show', ['id' => $ledger->id, 'origin' => 'online-approvals']),
+            // ⭐ Receiving bank account info (which bank received this online payment)
+            'receiving_account_id' => $ledger->receiving_account_id,
+            'receiving_account_name' => $ledger->receivingAccount?->name,
+            'receiving_account_short' => $ledger->receivingAccount?->short_code,
+            'receiving_account_color' => $ledger->receivingAccount?->color_hex,
         ];
     }
 
@@ -1242,6 +1260,7 @@ class ApprovalController extends Controller
             if (!isset($grouped[$customer])) {
                 $grouped[$customer] = [
                     'customer' => $customer,
+                    'customer_phone' => $item['customer_phone'] ?? null, // ⭐ For WhatsApp
                     'items' => [],
                     'total_amount' => 0,
                 ];

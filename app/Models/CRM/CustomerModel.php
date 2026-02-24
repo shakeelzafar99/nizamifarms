@@ -233,7 +233,35 @@ class CustomerModel extends BaseModel
         $isShopifyOrder = isset($orderData['external_source']) && strtolower($orderData['external_source']) === 'shopify';
 
         // Find customer by normalized phone
-        $customer = static::where('phone_normalized', $normalizedPhone)->first();
+        // ⭐ Prefer non-merged customers first; if only a merged one exists, follow the merge chain
+        $customer = static::where('phone_normalized', $normalizedPhone)
+            ->whereNull('merged_into_customer_id')
+            ->first();
+        
+        if (!$customer) {
+            // Check if there's a merged customer with this phone - follow the chain to the primary
+            $mergedCustomer = static::where('phone_normalized', $normalizedPhone)
+                ->whereNotNull('merged_into_customer_id')
+                ->first();
+            
+            if ($mergedCustomer) {
+                // Follow the merge chain to the primary customer (handle multi-level merges)
+                $primaryId = $mergedCustomer->merged_into_customer_id;
+                $maxDepth = 5; // Safety limit for merge chains
+                $visited = [];
+                while ($maxDepth-- > 0) {
+                    if (in_array($primaryId, $visited)) break; // Circular reference protection
+                    $visited[] = $primaryId;
+                    $primary = static::find($primaryId);
+                    if (!$primary) break;
+                    if (!$primary->merged_into_customer_id) {
+                        $customer = $primary;
+                        break;
+                    }
+                    $primaryId = $primary->merged_into_customer_id;
+                }
+            }
+        }
         
         if (!$customer) {
             // Create new customer

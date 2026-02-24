@@ -108,6 +108,18 @@ class AuthController extends Controller
         Auth::guard('web')->login($user);
         $request->session()->regenerate();
 
+        // ⭐ Redirect based on user's mode access (priority: main dashboard > khaas dashboard)
+        // Khaas-only users go directly to the Khaas dashboard
+        $user->load(['roles.mobilePermissions']);
+        $webPermissions = $user->getMobilePermissions();
+        $hasKhaasWeb = in_array('access_khaas_mode', $webPermissions);
+        $hasStoreWeb = in_array('access_store_mode', $webPermissions);
+        
+        // If user has only Khaas access (no store/admin), redirect to Khaas dashboard
+        if ($hasKhaasWeb && !$hasStoreWeb && !in_array($user->user_type, ['admin'])) {
+            return redirect()->intended('khaas');
+        }
+
         return redirect()->intended('dashboard');
     }
 
@@ -194,6 +206,40 @@ class AuthController extends Controller
 
 
     /**
+     * Web logout - always works even if session/token is expired.
+     * Clears session, cookies, and redirects to login page.
+     */
+    public function webLogout(Request $request)
+    {
+        // Try to delete API tokens if user is authenticated
+        try {
+            $user = Auth::user();
+            if ($user) {
+                $user->tokens()->delete();
+                \Log::info('Web logout - tokens deleted', ['user_id' => $user->id]);
+            }
+        } catch (\Exception $e) {
+            // Ignore - user might not be authenticated
+        }
+        
+        // Always clear the web session
+        try {
+            Auth::guard('web')->logout();
+        } catch (\Exception $e) {
+            // Ignore
+        }
+        
+        try {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        } catch (\Exception $e) {
+            // Ignore - session might already be invalid
+        }
+        
+        return redirect('/auth/login')->with('message', 'You have been logged out successfully.');
+    }
+
+    /**
      * Refresh a token.
      *
      * @return \Illuminate\Http\JsonResponse
@@ -227,9 +273,25 @@ class AuthController extends Controller
         // Get mobile permissions
         $mobilePermissions = $user->getMobilePermissions();
         $hasStoreAccess = in_array('access_store_mode', $mobilePermissions);
+        $hasKhaasAccess = in_array('access_khaas_mode', $mobilePermissions);
         
-        // Determine default view: 'store' if user has store access, otherwise 'rider'
-        $defaultView = $hasStoreAccess ? 'store' : 'rider';
+        // Determine default view based on available modes
+        // Priority: store > khaas > rider
+        if ($hasStoreAccess) {
+            $defaultView = 'store';
+        } elseif ($hasKhaasAccess) {
+            $defaultView = 'khaas';
+        } else {
+            $defaultView = 'rider';
+        }
+        
+        // ⭐ Get Khaas business unit info if user has khaas access
+        $khaasBusinessUnit = null;
+        if ($hasKhaasAccess) {
+            $khaasBusinessUnit = \App\Models\FIN\BusinessUnitModel::where('code', 'KHAAS')
+                ->where('is_active', 1)
+                ->first(['id', 'code', 'name', 'short_code', 'color_hex']);
+        }
         
         // ⭐ Get expense backdate days from user's roles (take maximum)
         $expenseBackdateDays = \DB::table('t_sys_user_role as ur')
@@ -252,6 +314,8 @@ class AuthController extends Controller
             ],
             'mobile_permissions' => $mobilePermissions, // All mobile permissions
             'has_store_access' => $hasStoreAccess, // Quick check for store access
+            'has_khaas_access' => $hasKhaasAccess, // ⭐ Quick check for khaas access
+            'khaas_business_unit' => $khaasBusinessUnit, // ⭐ Khaas BU details (id, name, color)
             'default_view' => $defaultView, // Default starting view for mobile app
             'expense_backdate_days' => (int)$expenseBackdateDays, // ⭐ Expense backdate days allowed
         ];

@@ -2351,10 +2351,18 @@ class EmployeeCashController extends Controller
                 $invoicesByDate = $this->groupSettledInvoicesByDate($settledInvoices, $onlineData);
             }
             
+            // ============================================================
+            // ⭐ Online WhatsApp Message Tracking (separate from ledger/settlement)
+            // Shows today's online delivered orders and whether rider sent payment reminder
+            // This does NOT affect any settlement, ledger, or invoice logic
+            // ============================================================
+            $onlineMessageTracking = $this->fetchOnlineMessageTracking($riderFilter);
+            
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
                 'invoicesByDate' => $invoicesByDate, // ⭐ New: Date-level grouping
                 'onlineData' => $onlineData, // ⭐ New: Online orders data
+                'onlineMessageTracking' => $onlineMessageTracking, // ⭐ WhatsApp message tracking
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
                 'allRiders' => $allRiders,
@@ -2371,6 +2379,90 @@ class EmployeeCashController extends Controller
         } catch (\Exception $e) {
             \Log::error("Error fetching all outstanding invoices: " . $e->getMessage());
             return back()->with('error', 'Error loading outstanding invoices: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * ⭐ Fetch Online WhatsApp Message Tracking for Today
+     * Returns today's online delivered orders grouped by rider with message sent/pending status
+     * This is purely informational - does NOT affect any ledger, settlement, or invoice logic
+     */
+    private function fetchOnlineMessageTracking($riderFilter = 'all')
+    {
+        try {
+            $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment', 'direct_bank_transfer', 'bacs'];
+            
+            // Find orders delivered today with online payment methods
+            $query = \App\Models\CRM\OrderModel::whereIn('order_status', ['delivered', 'completed'])
+                ->whereIn('payment_method', $onlinePaymentMethods)
+                ->whereExists(function($q) {
+                    $q->select(\DB::raw(1))
+                      ->from('t_crm_order_status_history as h')
+                      ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                      ->where('h.status_code', 'delivered')
+                      ->whereDate('h.changed_at', today());
+                })
+                ->with(['customer', 'assignedRider']);
+            
+            // Apply rider filter if specific rider selected
+            if ($riderFilter !== 'all') {
+                $riderAccount = AccountModel::find($riderFilter);
+                if ($riderAccount && $riderAccount->user_id) {
+                    $query->where('assigned_rider_user_id', $riderAccount->user_id);
+                }
+            }
+            
+            $orders = $query->orderBy('order_number', 'desc')->get();
+            
+            if ($orders->isEmpty()) {
+                return null;
+            }
+            
+            $messageSent = $orders->whereNotNull('online_message_sent_at');
+            $messagePending = $orders->whereNull('online_message_sent_at');
+            
+            // Group by rider
+            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) {
+                $rider = $riderOrders->first()->assignedRider;
+                $riderName = $rider ? $rider->fullname : 'Unknown Rider';
+                
+                return [
+                    'rider_name' => $riderName,
+                    'sent_count' => $riderOrders->whereNotNull('online_message_sent_at')->count(),
+                    'pending_count' => $riderOrders->whereNull('online_message_sent_at')->count(),
+                    'total_amount' => round($riderOrders->sum('total_price')),
+                    'message_sent' => $riderOrders->whereNotNull('online_message_sent_at')->map(function($order) {
+                        return [
+                            'order_number' => $order->order_number,
+                            'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
+                                ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                            'amount' => round($order->total_price),
+                            'sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('h:i A') : null,
+                        ];
+                    })->values(),
+                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) {
+                        return [
+                            'order_number' => $order->order_number,
+                            'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
+                                ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                            'amount' => round($order->total_price),
+                        ];
+                    })->values(),
+                ];
+            })->values();
+            
+            return [
+                'total_count' => $orders->count(),
+                'sent_count' => $messageSent->count(),
+                'pending_count' => $messagePending->count(),
+                'sent_amount' => round($messageSent->sum('total_price')),
+                'pending_amount' => round($messagePending->sum('total_price')),
+                'by_rider' => $byRider,
+            ];
+            
+        } catch (\Exception $e) {
+            \Log::error('fetchOnlineMessageTracking error: ' . $e->getMessage());
+            return null;
         }
     }
 

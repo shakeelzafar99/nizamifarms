@@ -145,15 +145,17 @@ class ApprovalsAPIController extends Controller
             $queryStart = microtime(true);
             $pendingLedger = \App\Models\FIN\LedgerModel::select([
                     'id', 'order_id', 'created_by', 'approval_status', 
-                    'amount', 'description', 'transaction_date', 'mode'
+                    'amount', 'description', 'transaction_date', 'mode',
+                    'receiving_account_id' // ⭐ Which bank received this payment
                 ])
                 ->whereIn('approval_status', ['pending', 'pending_l1', 'pending_l2'])
                 ->whereNull('request_id') // Exclude ledger entries linked to requests
                 ->where('mode', 'online') // ⭐ Simplified: Only online mode (most common case)
                 ->with([
-                    'order:id,order_number,order_date,customer_id', // Only needed columns
+                    'order:id,order_number,order_date,customer_id,order_status', // ⭐ Added order_status for delivery_date accessor
                     'order.customer:id,first_name,last_name,company,phone,phone_original', // ⭐ Added phone_original for WhatsApp
-                    'createdBy:id,fullname'
+                    'createdBy:id,fullname',
+                    'receivingAccount:id,name,short_code,color_hex' // ⭐ Which bank received payment
                 ])
                 ->orderBy('transaction_date', 'desc')
                 ->get();
@@ -167,10 +169,12 @@ class ApprovalsAPIController extends Controller
                 // Use order number if available
                 $displayNumber = $ledger->order ? $ledger->order->order_number : ('TXN-' . $ledger->id);
                 
-                // Use order_date if available, otherwise transaction_date
-                $displayDate = $ledger->order && $ledger->order->order_date 
-                    ? $ledger->order->order_date->format('Y-m-d') 
-                    : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null);
+                // ⭐ Use delivery_date (actual delivered date) instead of order_date
+                $deliveryDate = $ledger->order ? $ledger->order->delivery_date : null;
+                $displayDate = $deliveryDate 
+                    ?? ($ledger->order && $ledger->order->order_date 
+                        ? $ledger->order->order_date->format('Y-m-d') 
+                        : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null));
                 
                 // ⭐ For invoices, requester = CUSTOMER NAME (for grouping by customer)
                 $requester = 'Unknown';
@@ -200,6 +204,11 @@ class ApprovalsAPIController extends Controller
                     'category' => 'Invoice',
                     'category_color' => '#DBEAFE',
                     'order_id' => $ledger->order_id, // ⭐ For direct order view link
+                    // ⭐ Receiving bank account info
+                    'receiving_account_id' => $ledger->receiving_account_id,
+                    'receiving_account_name' => $ledger->receivingAccount?->name,
+                    'receiving_account_short' => $ledger->receivingAccount?->short_code,
+                    'receiving_account_color' => $ledger->receivingAccount?->color_hex,
                 ];
             }
             $timings['process_loop'] = round((microtime(true) - $processStart) * 1000, 2);
@@ -212,26 +221,30 @@ class ApprovalsAPIController extends Controller
                 $approvedLedger = \App\Models\FIN\LedgerModel::select([
                         'id', 'order_id', 'created_by', 'approved_by', 'approval_status', 
                         'amount', 'description', 'transaction_date', 'approval_date', 
-                        'mode', 'comments'
+                        'mode', 'comments', 'receiving_account_id'
                     ])
                     ->where('approval_status', 'approved')
                     ->whereNull('request_id')
                     ->where('mode', 'online')
                     ->where('approval_date', '>=', $thirtyDaysAgo)
                     ->with([
-                        'order:id,order_number,order_date,customer_id',
+                        'order:id,order_number,order_date,customer_id,order_status', // ⭐ Added order_status for delivery_date accessor
                         'order.customer:id,first_name,last_name,company,phone,phone_original',
                         'createdBy:id,fullname',
-                        'approvedBy:id,fullname'
+                        'approvedBy:id,fullname',
+                        'receivingAccount:id,name,short_code,color_hex' // ⭐ Which bank received payment
                     ])
                     ->orderBy('approval_date', 'desc')
                     ->get();
                 
                 foreach ($approvedLedger as $ledger) {
                     $displayNumber = $ledger->order ? $ledger->order->order_number : ('TXN-' . $ledger->id);
-                    $displayDate = $ledger->order && $ledger->order->order_date 
-                        ? $ledger->order->order_date->format('Y-m-d') 
-                        : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null);
+                    // ⭐ Use delivery_date (actual delivered date) instead of order_date
+                    $deliveryDateApproved = $ledger->order ? $ledger->order->delivery_date : null;
+                    $displayDate = $deliveryDateApproved 
+                        ?? ($ledger->order && $ledger->order->order_date 
+                            ? $ledger->order->order_date->format('Y-m-d') 
+                            : ($ledger->transaction_date ? $ledger->transaction_date->format('Y-m-d') : null));
                     
                     $requester = 'Unknown';
                     $customerPhone = null;
@@ -285,6 +298,11 @@ class ApprovalsAPIController extends Controller
                         'l2_approved_by' => $ledger->approvedBy?->fullname ?? null,
                         'l2_approved_at' => $ledger->approval_date?->format('Y-m-d'),
                         'approved_by' => $ledger->approvedBy?->fullname ?? 'System',
+                        // ⭐ Receiving bank account info
+                        'receiving_account_id' => $ledger->receiving_account_id,
+                        'receiving_account_name' => $ledger->receivingAccount?->name,
+                        'receiving_account_short' => $ledger->receivingAccount?->short_code,
+                        'receiving_account_color' => $ledger->receivingAccount?->color_hex,
                     ];
                 }
                 $timings['approved_query'] = round((microtime(true) - $approvedStart) * 1000, 2);
@@ -308,6 +326,10 @@ class ApprovalsAPIController extends Controller
             // Log timings for debugging
             Log::info('Online approvals timing', $timings);
             
+            // ⭐ Fetch receiving accounts for bank selection dropdown
+            $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+                ->get(['id', 'name', 'short_code', 'color_hex']);
+
             $responseData = [
                 'items' => $items,
                 'count' => count($items),
@@ -325,6 +347,7 @@ class ApprovalsAPIController extends Controller
                 ],
                 'has_level_1_rights' => $hasLevel1Rights,
                 'has_level_2_rights' => $hasLevel2Rights,
+                'receiving_accounts' => $receivingAccounts, // ⭐ Bank accounts for dropdown
                 'last_synced' => now()->toIso8601String(),
                 '_debug_timings' => $timings
             ];

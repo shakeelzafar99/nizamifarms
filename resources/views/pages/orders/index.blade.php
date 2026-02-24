@@ -4396,7 +4396,7 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
         if (!modal) {
             modal = document.createElement('div');
             modal.id = 'quickRiderModal';
-            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
+            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:10200;';
             modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:560px;padding:16px;border:1px solid #e5e7eb;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                     <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Assign Rider</h3>
@@ -4592,7 +4592,7 @@ function openQuickPaymentMethodChange(orderId, currentMethod) {
         if (!modal) {
             modal = document.createElement('div');
             modal.id = 'quickPaymentMethodModal';
-            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
+            modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:10200;';
             modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:520px;padding:16px;border:1px solid #e5e7eb;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                     <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Change Payment Method</h3>
@@ -5056,7 +5056,7 @@ function openQuickStatusChange(orderId, currentStatus) {
     if (!modal) {
         modal = document.createElement('div');
         modal.id = 'quickStatusModal';
-        modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;';
+        modal.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:10200;';
         modal.innerHTML = `<div style="background:#fff;border-radius:10px;min-width:420px;max-width:520px;padding:16px;border:1px solid #e5e7eb;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                 <h3 style="margin:0;font-weight:600;color:#111827;font-size:16px;">Change Status</h3>
@@ -5988,11 +5988,36 @@ function openEditInTab() {
     }
 }
 
-// ⭐ Pop out order directly from table row (opens in new tab in pop-out mode)
+// ⭐ Open any URL in a background tab (Ctrl+Click simulation)
+function openInBackground(url) {
+    // Create a visible (but transparent) anchor - display:none won't trigger navigation
+    const a = document.createElement('a');
+    a.href = url;
+    // Don't set target='_blank' - let Ctrl+Click handle the new-tab behavior
+    // Use opacity + off-screen positioning instead of display:none
+    a.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01;pointer-events:none;';
+    document.body.appendChild(a);
+
+    // Detect OS for correct modifier key
+    const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+    // Ctrl+Click = background tab on Windows/Linux, Cmd+Click on Mac
+    a.dispatchEvent(new MouseEvent('click', {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: !isMac,
+        metaKey: isMac
+    }));
+
+    // Cleanup after a tick
+    setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); }, 100);
+}
+
+// ⭐ Pop out order directly from table row (opens in background tab - doesn't navigate away)
 function popOutOrder(orderId) {
     if (orderId) {
-        const url = '/orders?edit_order_id=' + encodeURIComponent(String(orderId));
-        window.open(url, '_blank');
+        openInBackground('/orders?edit_order_id=' + encodeURIComponent(String(orderId)));
     }
 }
 
@@ -6996,7 +7021,7 @@ const availableColumns = {
     order_number: { label: 'Order #', width: 'w-24', key: 'order_number' },
     order_date: { label: 'Order Date', width: 'w-40', key: 'order_date' },
     delivery_date: { label: 'Delivery Date', width: 'w-36', key: 'delivery_date' },
-    order_status: { label: 'Status', width: 'w-32', key: 'order_status' },
+    order_status: { label: 'Status', width: 'w-24', key: 'order_status' },
     external_source: { label: 'Source', width: 'w-20', key: 'external_source' },
     external_id: { label: 'External ID', width: 'w-24', key: 'external_id' },
     
@@ -7011,7 +7036,7 @@ const availableColumns = {
     address_full_name: { label: 'Address Name', width: 'w-44', key: 'address_full_name' },
     address_email: { label: 'Address Email', width: 'w-48', key: 'address_email' },
     address_phone: { label: 'Address Phone', width: 'w-32', key: 'address_phone' },
-    address1: { label: 'Address', width: 'w-40', key: 'address1' },
+    address1: { label: 'Address', width: 'w-56', key: 'address1' },
     address2: { label: 'Address Line 2', width: 'w-48', key: 'address2' },
     address_city: { label: 'City', width: 'w-28', key: 'address_city' },
     address_province: { label: 'Province', width: 'w-28', key: 'address_province' },
@@ -7753,7 +7778,11 @@ function renderTableHeader() {
             const columnConfig = availableColumns[column.id];
             if (columnConfig) {
                 const th = document.createElement('th');
-                th.className = `px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
+                // Use compact padding for status, matching padding for address columns
+                let headerPx = 'px-6';
+                if (column.id === 'order_status') headerPx = 'px-2';
+                else if (column.id === 'address1' || column.id === 'address2') headerPx = 'px-4';
+                th.className = `${headerPx} py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${columnConfig.width}`;
                 th.textContent = columnConfig.label;
                 header.appendChild(th);
 
@@ -7779,10 +7808,7 @@ function renderTableHeader() {
                     // Handle arbitrary like w-[150px]
                     const match = tw.match(/w-\[(\d+)px\]/);
                     if (!px && match) px = parseInt(match[1], 10);
-                    // Shrink address1 a bit to protect actions visibility
-                    if ((column.id === 'address1' || column.id === 'address_line_1') && px && px > 200) {
-                        px = 200;
-                    }
+                    // Address column uses its configured width (w-56 = 224px)
                     if (px) col.style.width = px + 'px';
                     colgroup.appendChild(col);
                 }
@@ -7813,13 +7839,13 @@ function renderTableBody() {
             row.className = 'hover:bg-gray-50 transition-colors duration-150 cursor-pointer';
             row.setAttribute('data-order-id', order.id); // ⭐ SMART SYNC: For row updates
             
-            // Make entire row clickable to open view order details
+            // Make entire row clickable to pop out order in background tab
             row.onclick = function(e) {
                 // Don't trigger row click if user clicked on action buttons, customer name, or checkboxes
                 if (e.target.closest('.sticky-actions') || e.target.closest('.action-buttons') || e.target.closest('.customer-name-link') || e.target.closest('input[type="checkbox"]') || e.target.closest('button')) {
                     return;
                 }
-                viewOrderDetails(order.id);
+                popOutOrder(order.id);
             };
             
             // Add checkbox column first (only for non-Shopify orders) - Hidden by default
@@ -7854,7 +7880,16 @@ function renderTableBody() {
                 if (column.visible && column.id !== 'actions') {
                     try {
                         const td = document.createElement('td');
-                        td.className = 'px-6 py-4 whitespace-nowrap text-sm';
+                        // Use compact padding for status column, allow wrapping for address columns
+                        if (column.id === 'order_status') {
+                            td.className = 'px-2 py-2 whitespace-nowrap text-sm';
+                        } else if (column.id === 'address1' || column.id === 'address2') {
+                            td.className = 'px-4 py-3 text-sm';
+                            td.style.whiteSpace = 'normal';
+                            td.style.wordBreak = 'break-word';
+                        } else {
+                            td.className = 'px-6 py-4 whitespace-nowrap text-sm';
+                        }
                         // ⭐ SMART SYNC: Mark rider cell for updates
                         if (column.id === 'rider') {
                             td.className += ' order-rider-cell';
@@ -7946,15 +7981,15 @@ function getCellContent(order, columnId) {
             
             if (restrictStatusChange) {
                 // Show non-clickable badge with lock indicator
-                return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" title="Status change restricted for delivered orders with ledger entry">
-                            <span class="mr-1 text-xs">${config.icon}</span>
+                return `<span class="inline-flex items-center rounded text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" style="padding: 2px 6px; gap: 2px; line-height: 1.3;" title="Status change restricted for delivered orders with ledger entry">
+                            ${config.icon ? '<span style="font-size: 10px;">' + config.icon + '</span>' : ''}
                             ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
-                            <span class="ml-1 text-xs">🔒</span>
+                            <span style="font-size: 10px;">🔒</span>
                         </span>`;
             }
             
-            return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" title="Click to change status">
-                        <span class="mr-1 text-xs">${config.icon}</span>
+            return `<button type="button" onclick="event.stopPropagation(); openQuickStatusChange(${order.id}, '${status}')" class="inline-flex items-center rounded text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" style="padding: 2px 6px; gap: 2px; line-height: 1.3;" title="Click to change status">
+                        ${config.icon ? '<span style="font-size: 10px;">' + config.icon + '</span>' : ''}
                         ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
                     </button>`;
         case 'external_source':
@@ -8024,7 +8059,7 @@ function getCellContent(order, columnId) {
             const fullAddrName = (fullAddrFirstName + ' ' + fullAddrLastName).trim();
             return fullAddrName || '';
         case 'address1':
-            // Create compact multi-line address display
+            // Show full wrapped address
             const addressParts = [];
             if (order.address_line1) addressParts.push(order.address_line1);
             if (order.address_line2) addressParts.push(order.address_line2);
@@ -8034,17 +8069,13 @@ function getCellContent(order, columnId) {
             if (addressParts.length === 0) return '<span class="table-text-small">N/A</span>';
             
             const fullAddress = addressParts.join(', ');
-            const shortAddress = addressParts.length > 2 ? 
-                `${addressParts[0]}, ${addressParts[addressParts.length - 1]}` : 
-                addressParts.join(', ');
             
-            return `<div class="table-cell-address-compact" title="${fullAddress}">
-                        <div class="text-xs text-gray-700 leading-tight" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis;">${shortAddress}</div>
-                        ${addressParts.length > 2 ? '<div class="text-xs text-gray-400 mt-0.5" style="font-size: 10px;">+' + (addressParts.length - 2) + ' more</div>' : ''}
+            return `<div style="max-width: 240px; line-height: 1.4;">
+                        <div class="text-xs text-gray-700">${fullAddress}</div>
                     </div>`;
         case 'address2':
             const addr2 = order.address_line2 || '';
-            return addr2 ? `<div class="table-cell-address" title="${addr2}">${addr2}</div>` : '';
+            return addr2 ? `<div style="max-width: 200px; line-height: 1.4;"><div class="text-xs text-gray-700">${addr2}</div></div>` : '';
         case 'postal_code':
             return order.postal_code || '';
             
@@ -8187,17 +8218,14 @@ function getCellContent(order, columnId) {
             }
             
             // Default full actions for non-Shopify orders (webapp, manual, etc.)
-            // ⭐ Only 3 action buttons: Pop Out, View, Invoice
-            // Edit functionality is available via View modal or Pop Out
+            // ⭐ 2 action buttons: View Details, Invoice
+            // Pop Out is triggered by clicking the row itself (opens in background tab)
             return `
                 <div class="action-buttons flex items-center gap-1">
-                    <button onclick="event.stopPropagation(); popOutOrder(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-violet-600 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100 hover:border-violet-300 transition-all duration-200" title="Pop Out (Open in New Tab)">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                    </button>
                     <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                     </button>
-                    <button onclick="event.stopPropagation(); window.open('/orders/${order.id}/invoice', '_blank')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
+                    <button onclick="event.stopPropagation(); openInBackground('/orders/${order.id}/invoice')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
                 </div>`;

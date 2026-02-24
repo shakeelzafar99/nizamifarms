@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\CRM\CustomerModel;
 use App\Models\CRM\OrderModel;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class CustomerController extends Controller
 {
@@ -25,7 +26,10 @@ class CustomerController extends Controller
                   ->orWhere('last_name', 'like', "%{$searchTerm}%")
                   ->orWhere('email', 'like', "%{$searchTerm}%")
                   ->orWhere('phone', 'like', "%{$searchTerm}%")
-                  ->orWhere('company', 'like', "%{$searchTerm}%");
+                  ->orWhere('phone_original', 'like', "%{$searchTerm}%")
+                  ->orWhere('phone_normalized', 'like', "%{$searchTerm}%")
+                  ->orWhere('company', 'like', "%{$searchTerm}%")
+                  ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$searchTerm}%"]);
             });
         }
         
@@ -34,14 +38,42 @@ class CustomerController extends Controller
             $query->where('city', $request->city);
         }
         
-        // Filter by status
-        if ($request->has('status') && $request->status) {
-            $query->where('is_active', $request->status === 'active' ? 1 : 0);
+        // Filter by activity period (30-day or 90-day active)
+        $activity = $request->get('activity', '');
+        if ($activity === '30day') {
+            $query->where('last_order_date', '>=', now()->subDays(30));
+        } elseif ($activity === '90day') {
+            $query->where('last_order_date', '>=', now()->subDays(90));
         }
         
-        // Order by last order date (most recent first)
-        $customers = $query->orderBy('last_order_date', 'desc')
-                          ->orderBy('created_at', 'desc')
+        // Sorting: support sort_by (last_order_date, total_spent) and sort_dir (asc, desc)
+        $sortBy = $request->get('sort_by', 'last_order_date');
+        $sortDir = $request->get('sort_dir', 'desc');
+        
+        // Validate sort parameters
+        $allowedSortFields = ['last_order_date', 'total_spent', 'created_at'];
+        $allowedSortDirs = ['asc', 'desc'];
+        if (!in_array($sortBy, $allowedSortFields)) $sortBy = 'last_order_date';
+        if (!in_array($sortDir, $allowedSortDirs)) $sortDir = 'desc';
+        
+        // For total_spent sorting, use a subquery to sort by COMBINED total (production + history)
+        // This ensures the sort order matches the displayed combined values
+        if ($sortBy === 'total_spent') {
+            $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
+            
+            $prodSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_prod_order WHERE t_crm_prod_order.customer_id = t_crm_prod_customer.id AND (external_source != 'shopify' OR external_source IS NULL) AND order_status IN ('delivered', 'completed'))";
+            
+            if ($hasHistoryTable) {
+                $histSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_history_order WHERE t_crm_history_order.customer_id = t_crm_prod_customer.id AND order_status = 'delivered')";
+                $query->orderByRaw("($prodSubquery + $histSubquery) $sortDir");
+            } else {
+                $query->orderByRaw("$prodSubquery $sortDir");
+            }
+        } else {
+            $query->orderBy($sortBy, $sortDir);
+        }
+        
+        $customers = $query->orderBy('created_at', 'desc')
                           ->paginate(15);
         
         // =========================================
@@ -286,7 +318,7 @@ class CustomerController extends Controller
         try {
             $search = $request->get('search', '');
             $city = $request->get('city', '');
-            $status = $request->get('status', '');
+            $activity = $request->get('activity', '');
             
             // Start with base query
             $query = CustomerModel::query();
@@ -313,14 +345,39 @@ class CustomerController extends Controller
                 $query->where('city', $city);
             }
             
-            // Apply status filter
-            if (!empty($status)) {
-                $query->where('is_active', $status === 'active' ? 1 : 0);
+            // Apply activity filter
+            if ($activity === '30day') {
+                $query->where('last_order_date', '>=', now()->subDays(30));
+            } elseif ($activity === '90day') {
+                $query->where('last_order_date', '>=', now()->subDays(90));
+            }
+            
+            // Sorting
+            $sortBy = $request->get('sort_by', 'last_order_date');
+            $sortDir = $request->get('sort_dir', 'desc');
+            $allowedSortFields = ['last_order_date', 'total_spent', 'created_at'];
+            $allowedSortDirs = ['asc', 'desc'];
+            if (!in_array($sortBy, $allowedSortFields)) $sortBy = 'last_order_date';
+            if (!in_array($sortDir, $allowedSortDirs)) $sortDir = 'desc';
+            
+            // For total_spent sorting, use a subquery to sort by COMBINED total (production + history)
+            if ($sortBy === 'total_spent') {
+                $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
+                
+                $prodSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_prod_order WHERE t_crm_prod_order.customer_id = t_crm_prod_customer.id AND (external_source != 'shopify' OR external_source IS NULL) AND order_status IN ('delivered', 'completed'))";
+                
+                if ($hasHistoryTable) {
+                    $histSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_history_order WHERE t_crm_history_order.customer_id = t_crm_prod_customer.id AND order_status = 'delivered')";
+                    $query->orderByRaw("($prodSubquery + $histSubquery) $sortDir");
+                } else {
+                    $query->orderByRaw("$prodSubquery $sortDir");
+                }
+            } else {
+                $query->orderBy($sortBy, $sortDir);
             }
             
             // Get results (limit to 100 for performance)
-            $customers = $query->orderBy('last_order_date', 'desc')
-                             ->orderBy('created_at', 'desc')
+            $customers = $query->orderBy('created_at', 'desc')
                              ->limit(100)
                              ->get();
             
@@ -1415,6 +1472,69 @@ class CustomerController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to get stats: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Upload a promo image for WhatsApp messaging
+     * Stores image in public storage and returns the URL
+     */
+    public function uploadPromoImage(Request $request)
+    {
+        try {
+            $request->validate([
+                'image' => 'required|image|mimes:jpeg,jpg,png,gif,webp|max:5120', // 5MB max
+            ]);
+            
+            $file = $request->file('image');
+            $filename = 'whatsapp_promo_' . time() . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+            $path = $file->storeAs('whatsapp_promo', $filename, 'public');
+            
+            $url = asset('storage/' . $path);
+            
+            return response()->json([
+                'success' => true,
+                'url' => $url,
+                'path' => $path
+            ]);
+            
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid image: ' . implode(', ', $e->validator->errors()->all())
+            ], 422);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to upload image: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Delete a promo image from storage
+     */
+    public function deletePromoImage(Request $request)
+    {
+        try {
+            $path = $request->input('path');
+            
+            // Security: Only allow deleting from whatsapp_promo directory
+            if (!$path || !str_starts_with($path, 'whatsapp_promo/')) {
+                return response()->json(['success' => false, 'message' => 'Invalid path'], 400);
+            }
+            
+            if (Storage::disk('public')->exists($path)) {
+                Storage::disk('public')->delete($path);
+            }
+            
+            return response()->json(['success' => true]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete image: ' . $e->getMessage()
             ], 500);
         }
     }

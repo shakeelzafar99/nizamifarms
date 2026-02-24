@@ -829,8 +829,8 @@ class ProductController extends Controller
 
     public function index(Request $request)
     {
-        // Get products with variants
-        $query = ProductModel::with('variants');
+        // Get products with variants and business unit
+        $query = ProductModel::with(['variants', 'businessUnit']);
         
         // Add search functionality
         if ($request->has('search') && $request->search) {
@@ -894,6 +894,12 @@ class ProductController extends Controller
             $query->where('sync_status', $request->sync_status);
         }
 
+        // Filter by business_unit_id (used by Khaas Mode to show only BU-specific products)
+        $businessUnitId = $request->input('business_unit_id');
+        if ($businessUnitId) {
+            $query->where('business_unit_id', $businessUnitId);
+        }
+
         $products = $query->orderBy('title')->paginate(20);
 
         // Get filter options based on CURRENT filters (cascading/dependent filters)
@@ -902,6 +908,11 @@ class ProductController extends Controller
         
         // Base query for filter options (reusable)
         $baseFilterQuery = ProductModel::query();
+        
+        // Apply business_unit_id filter to base query so all filter option queries inherit it
+        if ($businessUnitId) {
+            $baseFilterQuery->where('business_unit_id', $businessUnitId);
+        }
         
         // Sync Status options - respect other filters
         $syncStatusQuery = clone $baseFilterQuery;
@@ -1891,11 +1902,12 @@ class ProductController extends Controller
     public function show($id)
     {
         try {
-            $product = ProductModel::with('variants')->findOrFail($id);
+            $product = ProductModel::with(['variants', 'businessUnit'])->findOrFail($id);
             
             return response()->json([
                 'success' => true,
-                'product' => $product
+                'product' => $product,
+                'can_delete' => $this->userCanDeleteProducts(),
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -1908,14 +1920,22 @@ class ProductController extends Controller
     /**
      * Get dropdown options for product creation/editing (mobile API)
      */
-    public function getDropdownOptions()
+    public function getDropdownOptions(Request $request)
     {
         try {
-            $productTypes = ProductModel::distinct()->pluck('product_type')->filter()->sort()->values();
-            $vendors = ProductModel::distinct()->pluck('vendor')->filter()->sort()->values();
-            $attribute1s = ProductModel::distinct()->pluck('attribute_1')->filter()->sort()->values();
-            $attribute2s = ProductModel::distinct()->pluck('attribute_2')->filter()->sort()->values();
-            $attribute3s = ProductModel::distinct()->pluck('attribute_3')->filter()->sort()->values();
+            $baseQuery = ProductModel::query();
+            
+            // Filter by business_unit_id if provided (used by Khaas Mode)
+            $businessUnitId = $request->input('business_unit_id');
+            if ($businessUnitId) {
+                $baseQuery->where('business_unit_id', $businessUnitId);
+            }
+            
+            $productTypes = (clone $baseQuery)->distinct()->pluck('product_type')->filter()->sort()->values();
+            $vendors = (clone $baseQuery)->distinct()->pluck('vendor')->filter()->sort()->values();
+            $attribute1s = (clone $baseQuery)->distinct()->pluck('attribute_1')->filter()->sort()->values();
+            $attribute2s = (clone $baseQuery)->distinct()->pluck('attribute_2')->filter()->sort()->values();
+            $attribute3s = (clone $baseQuery)->distinct()->pluck('attribute_3')->filter()->sort()->values();
             
             return response()->json([
                 'success' => true,
@@ -2423,6 +2443,9 @@ class ProductController extends Controller
             // Get business units for dropdown
             $businessUnits = \App\Models\FIN\BusinessUnitModel::where('is_active', 1)->ordered()->get();
             
+            // Check if user can delete products (Taimur role only)
+            $canDeleteProduct = $this->userCanDeleteProducts();
+            
             return view('pages.products.edit', compact(
                 'product',
                 'productTypes',
@@ -2431,7 +2454,8 @@ class ProductController extends Controller
                 'attribute2s',
                 'attribute3s',
                 'attributeLabels',
-                'businessUnits'
+                'businessUnits',
+                'canDeleteProduct'
             ));
         } catch (\Exception $e) {
             Log::error('Error fetching product for edit: ' . $e->getMessage());
@@ -2688,5 +2712,128 @@ class ProductController extends Controller
                 'message' => 'Failed to fetch product history: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Delete a product and its variants (Taimur role only)
+     * Only allowed if the product has not been used in any orders
+     */
+    public function destroy($id)
+    {
+        try {
+            $user = auth()->user();
+            if (!$user) {
+                $message = 'Unauthorized.';
+                return request()->expectsJson()
+                    ? response()->json(['success' => false, 'message' => $message], 401)
+                    : redirect()->back()->with('error', $message);
+            }
+
+            // Check if user has Taimur role (by role name, not ID)
+            $hasTaimurRole = $user->roles()
+                ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+                ->exists();
+
+            if (!$hasTaimurRole) {
+                $message = 'Only Taimur role can delete products.';
+                return request()->expectsJson()
+                    ? response()->json(['success' => false, 'message' => $message], 403)
+                    : redirect()->back()->with('error', $message);
+            }
+
+            $product = ProductModel::with('variants')->findOrFail($id);
+
+            // Check if product is referenced in any order line items
+            $orderLineItemCount = \DB::table('t_crm_prod_order_line_item')
+                ->where('product_id', $product->id)
+                ->count();
+
+            if ($orderLineItemCount > 0) {
+                $message = "Cannot delete \"{$product->title}\" — it has been used in {$orderLineItemCount} order line item(s). You can set its status to \"archived\" instead.";
+                return request()->expectsJson()
+                    ? response()->json(['success' => false, 'message' => $message], 422)
+                    : redirect()->back()->with('error', $message);
+            }
+
+            // Check if product is referenced in warehouse inventory
+            $warehouseCount = \DB::table('t_crm_warehouse_inventory')
+                ->where('product_id', $product->id)
+                ->count();
+
+            if ($warehouseCount > 0) {
+                $message = "Cannot delete \"{$product->title}\" — it has {$warehouseCount} warehouse inventory record(s). Please clear inventory first.";
+                return request()->expectsJson()
+                    ? response()->json(['success' => false, 'message' => $message], 422)
+                    : redirect()->back()->with('error', $message);
+            }
+
+            $productTitle = $product->title;
+            $variantCount = $product->variants->count();
+
+            // Delete in correct order: change history → variants → product
+            \DB::beginTransaction();
+            try {
+                // Delete change history
+                \DB::table('t_crm_prod_product_change_history')
+                    ->where('product_id', $product->id)
+                    ->delete();
+
+                // Delete variants
+                \DB::table('t_crm_prod_product_variant')
+                    ->where('product_id', $product->id)
+                    ->delete();
+
+                // Delete the product itself
+                $product->delete();
+
+                \DB::commit();
+
+                Log::info("Product deleted", [
+                    'product_id' => $id,
+                    'product_title' => $productTitle,
+                    'variants_deleted' => $variantCount,
+                    'deleted_by' => $user->id,
+                    'deleted_by_name' => $user->fullname,
+                ]);
+
+                $message = "Product \"{$productTitle}\" and its {$variantCount} variant(s) have been deleted successfully.";
+                return request()->expectsJson()
+                    ? response()->json(['success' => true, 'message' => $message])
+                    : redirect()->route('products.index')->with('success', $message);
+
+            } catch (\Exception $e) {
+                \DB::rollBack();
+                throw $e;
+            }
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            $message = 'Product not found.';
+            return request()->expectsJson()
+                ? response()->json(['success' => false, 'message' => $message], 404)
+                : redirect()->route('products.index')->with('error', $message);
+        } catch (\Exception $e) {
+            Log::error('Error deleting product: ' . $e->getMessage(), [
+                'product_id' => $id,
+                'user_id' => auth()->id(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            $message = 'Failed to delete product: ' . $e->getMessage();
+            return request()->expectsJson()
+                ? response()->json(['success' => false, 'message' => $message], 500)
+                : redirect()->back()->with('error', $message);
+        }
+    }
+
+    /**
+     * Check if the current user has the Taimur role (helper for views)
+     */
+    private function userCanDeleteProducts(): bool
+    {
+        $user = auth()->user();
+        if (!$user) return false;
+        
+        return $user->roles()
+            ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+            ->exists();
     }
 }

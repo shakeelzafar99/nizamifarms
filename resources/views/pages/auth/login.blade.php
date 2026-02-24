@@ -13,6 +13,16 @@
                 Nizami Farms
             </h3>
         </div>
+        @if(session('message'))
+        <div style="padding: 8px 12px; background-color: #ecfdf5; border: 1px solid #10b981; border-radius: 6px; color: #065f46; font-size: 13px; text-align: center;">
+            {{ session('message') }}
+        </div>
+        @endif
+        @if($errors->any())
+        <div style="padding: 8px 12px; background-color: #fef2f2; border: 1px solid #ef4444; border-radius: 6px; color: #991b1b; font-size: 13px; text-align: center;">
+            {{ $errors->first() }}
+        </div>
+        @endif
         <div class="flex flex-col gap-1">
             <label class="kt-form-label font-normal text-mono">
                 Email
@@ -63,7 +73,7 @@
                class="kt-btn kt-btn-sm kt-btn-light flex items-center justify-center gap-2 w-full"
                download>
                 <i class="ki-filled ki-android text-lg"></i>
-                <span>Download Android App (v6.1.0)</span>
+                <span>Download Android App (v7.3.0)</span>
             </a>
             <p class="text-xs text-muted-foreground mt-2">
                 For riders only

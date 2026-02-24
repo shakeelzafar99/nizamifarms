@@ -1,4 +1,4 @@
-﻿@extends('layouts.app')
+@extends('layouts.app')
 
 @section('title', 'Expense Management')
 
@@ -87,7 +87,7 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="flex items-center justify-between mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">💰 Expense Management</h1>
-            <p class="text-sm text-gray-600 mt-1">Track all expenses and manage settlements</p>
+            <p class="text-sm text-gray-600 mt-1">Track all expenses and manage requests</p>
         </div>
         <button id="newRequestBtn" type="button" role="button"
                 class="px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 hover:text-blue-700 text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2">
@@ -131,11 +131,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 </div>
             </div>
 
-            <!-- Needs Settlement (Real-time) -->
-            <div class="bg-orange-50 border border-orange-300 rounded-lg p-3">
-                <div class="text-xs text-orange-700 uppercase font-medium">⚠️ Needs Settlement</div>
-                <div class="text-lg font-bold text-orange-900 mt-1">Rs. {{ number_format($kpis['needs_settlement'], 2) }}</div>
-                <div class="text-xs text-orange-600 mt-1">{{ $kpis['pending_count'] }} expense(s)</div>
+            <!-- Approved Expenses (Real-time) -->
+            <div class="bg-green-50 border border-green-300 rounded-lg p-3">
+                <div class="text-xs text-green-700 uppercase font-medium">✅ Approved Expenses</div>
+                <div class="text-lg font-bold text-green-900 mt-1">{{ $allExpenses->count() + ($kpis['salary_slips_count'] ?? 0) }}</div>
+                <div class="text-xs text-green-600 mt-1">
+                    @if($dateFrom && $dateTo)
+                        {{ date('M d', strtotime($dateFrom)) }} - {{ date('M d', strtotime($dateTo)) }}
+                    @else
+                        This period
+                    @endif
+                </div>
             </div>
 
             <!-- Expense Fund Balance (Real-time) -->
@@ -219,17 +225,6 @@ document.addEventListener('DOMContentLoaded', function() {
                                 {{ $source->account_name }}
                             </option>
                         @endforeach
-                    </select>
-                </div>
-
-                <!-- Settlement Status -->
-                <div>
-                    <label class="text-xs font-medium text-gray-700 block mb-1">Settlement</label>
-                    <select name="settlement_status" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
-                        <option value="">All Status</option>
-                        <option value="not_required" {{ $settlementStatus == 'not_required' ? 'selected' : '' }}>No Action</option>
-                        <option value="pending" {{ $settlementStatus == 'pending' ? 'selected' : '' }}>Pending</option>
-                        <option value="settled" {{ $settlementStatus == 'settled' ? 'selected' : '' }}>Settled</option>
                     </select>
                 </div>
 
@@ -323,27 +318,18 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     </script>
 
-    <!-- Tabs -->
+    <!-- Expenses Table -->
     <div class="bg-white border border-gray-200 rounded-lg">
-        <!-- Tab Navigation -->
-        <div class="border-b border-gray-200">
-            <nav class="flex space-x-8 px-6" aria-label="Tabs">
-                <button onclick="switchTab('all')" id="tab-all" class="tab-button active border-b-2 border-blue-500 py-4 px-1 text-sm font-medium text-blue-600">
-                    📋 All Expenses ({{ $allExpenses->count() }})
-                </button>
-                <button onclick="switchTab('pending')" id="tab-pending" class="tab-button border-b-2 border-transparent py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
-                    ⚠️ Needs Settlement ({{ $pendingSettlement->count() }})
-                </button>
-                <button onclick="switchTab('history')" id="tab-history" class="tab-button border-b-2 border-transparent py-4 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
-                    ✓ Settlement History ({{ $settlementHistory->count() }})
-                </button>
-            </nav>
+        <!-- Header -->
+        <div class="border-b border-gray-200 px-6 py-4">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-gray-900">📋 All Expenses ({{ $allExpensesForDisplay->count() }})</h3>
+            </div>
         </div>
 
-        <!-- Tab Content -->
+        <!-- Table Content -->
         <div class="p-6">
-            <!-- Tab 1: All Expenses -->
-            <div id="content-all" class="tab-content">
+            <div id="content-all">
                 <div class="overflow-x-auto">
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
@@ -387,31 +373,23 @@ document.addEventListener('DOMContentLoaded', function() {
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                                     @if(isset($expense->type) && $expense->type === 'salary')
-                                        <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ No Action</span>
-                                    @elseif($expense->settlement_status === 'not_required' || $expense->settlement_status === 'not_applicable')
-                                        <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ No Action</span>
-                                    @elseif($expense->settlement_status === 'pending')
-                                        <span class="px-2 py-1 text-xs font-medium bg-orange-100 text-orange-800 rounded">⚠️ Pending</span>
-                                    @elseif($expense->settlement_status === 'settled')
-                                        <span class="px-2 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded">✓ Settled</span>
+                                        <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ {{ ucfirst($expense->status ?? 'Paid') }}</span>
+                                    @else
+                                        <span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded">✅ Approved</span>
                                     @endif
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                                     <div class="flex items-center gap-2">
-                                        @if(isset($expense->type) && $expense->type === 'salary')
+                                        @if(!isset($expense->type) || $expense->type !== 'salary')
+                                            <a href="javascript:void(0)" onclick="openRequestDetailModal({{ $expense->id }})" 
+                                               class="text-blue-600 hover:text-blue-800 text-xs font-medium">
+                                                View
+                                            </a>
+                                        @else
                                             <span class="text-gray-400 text-xs">{{ ucfirst($expense->status) }}</span>
-                                        @elseif($expense->settlement_status === 'pending')
-                                            <button onclick="openSettlementModal({{ is_string($expense->id) ? 0 : $expense->id }})" 
-                                                    class="text-blue-600 hover:text-blue-800 font-medium">
-                                                ⚙️ Settle
-                                            </button>
-                                        @elseif($expense->settlement_status === 'settled')
-                                            <span class="text-gray-400 text-xs">
-                                                {{ isset($expense->settled_at) ? $expense->settled_at->format('M d') : 'N/A' }} by {{ isset($expense->settledBy) ? ($expense->settledBy->name ?? 'System') : 'System' }}
-                                            </span>
                                         @endif
                                         
-                                        {{-- Delete button - only for non-salary expenses and L2 users --}}
+                                        {{-- Delete button - only for non-salary expenses --}}
                                         @if(!isset($expense->type) || $expense->type !== 'salary')
                                             <button onclick="confirmDeleteExpense({{ $expense->id }}, '{{ $expense->request_number }}', {{ $expense->amount }})" 
                                                     class="text-red-500 hover:text-red-700 ml-2" 
@@ -435,146 +413,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 </div>
             </div>
 
-            <!-- Tab 2: Needs Settlement -->
-            <div id="content-pending" class="tab-content hidden">
-                @if($pendingSettlement->count() > 0)
-                <div class="mb-4 flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                        <input type="checkbox" id="selectAll" onclick="toggleSelectAll()" class="rounded">
-                        <label for="selectAll" class="text-sm font-medium text-gray-700">Select All</label>
-                        <span id="selectedCount" class="text-sm text-gray-600"></span>
-                    </div>
-                    <button onclick="bulkSettle()" id="bulkSettleBtn" disabled
-                            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md disabled:opacity-50 disabled:cursor-not-allowed">
-                        ⚙️ Settle Selected
-                    </button>
-                </div>
-                @endif
-
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-orange-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left">
-                                    <input type="checkbox" id="selectAllHeader" onclick="toggleSelectAll()" class="rounded">
-                                </th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Request #</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Date</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Employee</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Category</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Amount</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Paid From</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Days</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            @forelse($pendingSettlement as $expense)
-                            <tr class="hover:bg-gray-50 {{ \Carbon\Carbon::parse($expense->expense_date ?? $expense->created_at)->diffInDays(now()) > 7 ? 'bg-yellow-50' : '' }}">
-                                <td class="px-6 py-4">
-                                    <input type="checkbox" class="expense-checkbox rounded" value="{{ $expense->id }}" onchange="updateBulkButton()">
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
-                                    <a href="javascript:void(0)" onclick="openRequestDetailModal({{ $expense->id }})" class="hover:underline cursor-pointer">
-                                        {{ $expense->request_number }}
-                                    </a>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ ($expense->expense_date ?? $expense->created_at)->format('M d, Y') }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    {{ $expense->requester->fullname ?? 'Unknown' }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->expense_category ?? $expense->category->category_name }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                    Rs. {{ number_format($expense->amount, 2) }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    <span class="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded">
-                                        {{ $expense->paymentSourceAccount->account_name ?? 'Unknown' }}
-                                    </span>
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ \Carbon\Carbon::parse($expense->expense_date ?? $expense->created_at)->diffInDays(now()) }} days
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    <button onclick="openSettlementModal({{ $expense->id }})" 
-                                            class="text-blue-600 hover:text-blue-800 font-medium">
-                                        ⚙️ Settle
-                                    </button>
-                                </td>
-                            </tr>
-                            @empty
-                            <tr>
-                                <td colspan="9" class="px-6 py-12 text-center text-gray-500">
-                                    <div class="text-4xl mb-2">✅</div>
-                                    <p class="font-medium">All clear! No expenses need settlement.</p>
-                                </td>
-                            </tr>
-                            @endforelse
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Tab 3: Settlement History -->
-            <div id="content-history" class="tab-content hidden">
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-purple-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Request #</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Paid On</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Employee</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Amount</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Originally From</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Destination</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Settled On</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">Settled By</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            @forelse($settlementHistory as $expense)
-                            <tr class="hover:bg-gray-50">
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">
-                                    {{ $expense->request_number }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ ($expense->expense_date ?? $expense->created_at)->format('M d, Y') }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    {{ $expense->requester->fullname ?? 'Unknown' }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                    Rs. {{ number_format($expense->amount, 2) }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->paymentSourceAccount->account_name ?? 'N/A' }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->settlementDestinationAccount->account_name ?? 'N/A' }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->settled_at ? $expense->settled_at->format('M d, Y') : 'N/A' }}
-                                </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {{ $expense->settledBy->name ?? 'System' }}
-                                </td>
-                            </tr>
-                            @empty
-                            <tr>
-                                <td colspan="8" class="px-6 py-12 text-center text-gray-500">
-                                    <div class="text-4xl mb-2">📜</div>
-                                    <p>No settlement history yet</p>
-                                </td>
-                            </tr>
-                            @endforelse
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
     </div>
 </div>
@@ -622,11 +460,11 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // Get only the limited categories we want to show (using the model to get approval config)
+                    // Get request categories including khaas_expense (filtered by selected BU via JS)
                     $limitedCategories = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
-                        ->whereIn('category_code', ['expense', 'salary_advance', 'leave'])
+                        ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
                         ->where('is_active', 1)
-                        ->orderByRaw("FIELD(category_code, 'expense', 'salary_advance', 'leave')")
+                        ->orderByRaw("FIELD(category_code, 'expense', 'salary_advance', 'leave', 'khaas_expense')")
                         ->get();
                 @endphp
                 
@@ -666,6 +504,23 @@ document.addEventListener('DOMContentLoaded', function() {
                     </div>
                 </div>
                 @endif
+
+                       <!-- ⭐ Business Unit (moved above Request Type so it filters request types) -->
+                       @if(count($businessUnits ?? []) > 1)
+                       <div id="quick-business-unit-field-top" class="mb-6">
+                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                               <span>💼 Business Unit</span>
+                           </label>
+                           <select name="business_unit_id" id="quick_business_unit" onchange="onBusinessUnitChanged()" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
+                               @foreach($businessUnits ?? [] as $bu)
+                                   <option value="{{ $bu->id }}" {{ $bu->id == ($userDefaultBuId ?? 1) ? 'selected' : '' }} style="color: {{ $bu->color_hex ?? '#374151' }}">
+                                       {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
+                                   </option>
+                               @endforeach
+                           </select>
+                           <p class="text-xs text-gray-500 mt-1">Select which business unit this request belongs to</p>
+                       </div>
+                       @endif
                 
                        <!-- Request Category (Limited) -->
                        <div class="mb-6">
@@ -676,8 +531,13 @@ document.addEventListener('DOMContentLoaded', function() {
                            <select id="quick_category_id" name="category_id" required onchange="handleQuickCategoryChange()" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
                         <option value="">Select Request Type</option>
                         @foreach($limitedCategories as $category)
+                        @php
+                            // Map request types to their BU: khaas_expense → non-NF BUs, others → BU 1 (NF)
+                            $categoryBuType = ($category->category_code === 'khaas_expense') ? 'khaas' : 'nf';
+                        @endphp
                         <option value="{{ $category->id }}" 
                                 data-code="{{ $category->category_code }}"
+                                data-bu-type="{{ $categoryBuType }}"
                                 data-requires-l1="{{ $category->requiresLevel1() ? '1' : '0' }}"
                                 data-requires-l2="{{ $category->requiresLevel2() ? '1' : '0' }}">
                             @if($category->category_code === 'expense')
@@ -686,6 +546,8 @@ document.addEventListener('DOMContentLoaded', function() {
                                 💰 Salary Advance
                             @elseif($category->category_code === 'leave')
                                 🏖️ Leave Request
+                            @elseif($category->category_code === 'khaas_expense')
+                                🌿 Khaas Expense
                             @else
                                 {{ $category->category_name }}
                             @endif
@@ -724,38 +586,26 @@ document.addEventListener('DOMContentLoaded', function() {
                         @php
                             $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
                                 ->orderBy('config_value')
-                                ->pluck('config_value');
+                                ->get(['config_value', 'business_unit_id']);
                         @endphp
                         @foreach($expenseCategories as $cat)
-                            <option value="{{ $cat }}">{{ $cat }}</option>
+                            <option value="{{ $cat->config_value }}" data-business-unit-id="{{ $cat->business_unit_id ?? 1 }}">{{ $cat->config_value }}</option>
                         @endforeach
                         <option value="__ADD_NEW__" style="background-color: #f3f4f6; font-weight: bold; color: #059669;">➕ Add New Category...</option>
                     </select>
                 </div>
 
-                       <!-- ⭐ Business Unit (for Expense Reimbursement) -->
-                       <div id="quick-business-unit-field" style="display: none;" class="mb-6">
-                           <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                               <span>💼 Business Unit</span>
-                           </label>
-                           <select name="business_unit_id" id="quick_business_unit" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
-                               @foreach($businessUnits ?? [] as $bu)
-                                   <option value="{{ $bu->id }}" {{ $bu->id == ($userDefaultBuId ?? 1) ? 'selected' : '' }} style="color: {{ $bu->color_hex ?? '#374151' }}">
-                                       {{ $bu->name }} {{ $bu->short_code ? '(' . $bu->short_code . ')' : '' }}
-                                   </option>
-                               @endforeach
-                           </select>
-                           <p class="text-xs text-gray-500 mt-1">Select which business unit this expense belongs to</p>
-                       </div>
-
-                       <!-- ⭐ Pay From Account (for Expense Reimbursement) -->
+                       <!-- ⭐ Pay From Account (for Expense Reimbursement) - filtered by selected Business Unit -->
                        <div id="quick-pay-from-field" style="display: none;" class="mb-6">
                            <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
                                <span>💳 Pay From Account</span>
                            </label>
                            <select name="payment_source_account_id" id="quick_payment_source" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
                                @foreach($accessibleCompanyAccounts ?? [] as $acc)
-                                   <option value="{{ $acc->id }}" {{ $acc->account_code == 'EXP_FUND' ? 'selected' : '' }}>
+                                   <option value="{{ $acc->id }}"
+                                       data-business-unit-id="{{ $acc->business_unit_id }}"
+                                       data-account-code="{{ $acc->account_code }}"
+                                       {{ $acc->account_code == 'EXP_FUND' ? 'selected' : '' }}>
                                        {{ $acc->account_name }}
                                    </option>
                                @endforeach
@@ -802,16 +652,8 @@ document.addEventListener('DOMContentLoaded', function() {
                            <textarea name="description" id="quick-description-field" rows="4" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base shadow-sm resize-none" placeholder="Provide details about your request"></textarea>
                        </div>
 
-                       <!-- Priority -->
-                       <div class="mb-6">
-                           <label class="block text-base font-semibold text-gray-800 mb-3">Priority</label>
-                           <select name="priority" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
-                        <option value="normal">Normal</option>
-                        <option value="low">Low</option>
-                        <option value="high">High</option>
-                        <option value="urgent">Urgent</option>
-                    </select>
-                </div>
+                       <!-- Priority - hidden, defaults to normal -->
+                       <input type="hidden" name="priority" value="normal">
 
                 <!-- Hidden Fields -->
                 <input type="hidden" name="title" id="quick-hidden-title" value="">
@@ -919,9 +761,6 @@ function handleQuickCategoryChange() {
     // ⭐ Hide expense date field by default
     const expenseDateField = document.getElementById('quick-expense-date-field');
     if (expenseDateField) expenseDateField.style.display = 'none';
-    // ⭐ Hide business unit field by default
-    const businessUnitField = document.getElementById('quick-business-unit-field');
-    if (businessUnitField) businessUnitField.style.display = 'none';
     // ⭐ Hide pay from field by default
     const payFromField = document.getElementById('quick-pay-from-field');
     if (payFromField) payFromField.style.display = 'none';
@@ -937,23 +776,24 @@ function handleQuickCategoryChange() {
         descriptionField.required = false;
         descriptionField.placeholder = 'Optional: Provide additional details about your leave';
         hiddenTitle.value = 'leave';
-    } else if (categoryCode === 'expense') {
+    } else if (categoryCode === 'expense' || categoryCode === 'khaas_expense') {
+        // Both NF expense and Khaas expense show the same fields
         expenseCategoryField.style.display = 'block';
         amountField.style.display = 'block';
         expenseCategorySelect.required = true;
         form.querySelector('[name="amount"]').required = true;
         descriptionField.required = true;
         descriptionField.placeholder = 'Required: Provide details about this expense';
-        hiddenTitle.value = 'expense';
+        hiddenTitle.value = categoryCode === 'khaas_expense' ? 'khaas expense' : 'expense';
         // ⭐ Show expense date field for expenses
         const expenseDateField = document.getElementById('quick-expense-date-field');
         if (expenseDateField) expenseDateField.style.display = 'block';
-        // ⭐ Show business unit field for expenses
-        const businessUnitField = document.getElementById('quick-business-unit-field');
-        if (businessUnitField) businessUnitField.style.display = 'block';
         // ⭐ Show pay from field for expenses
         const payFromField = document.getElementById('quick-pay-from-field');
         if (payFromField) payFromField.style.display = 'block';
+        // ⭐ Filter payment sources and expense types to match the selected BU
+        filterPaymentSourcesByBU();
+        filterExpenseTypesByBU();
     } else if (categoryCode === 'salary_advance') {
         amountField.style.display = 'block';
         form.querySelector('[name="amount"]').required = true;
@@ -973,6 +813,148 @@ function handleQuickCategoryChange() {
     }
     document.getElementById('quick-approval-info').textContent = approvalText;
 }
+
+// ⭐ Filter payment source options based on selected business unit
+// EXP_FUND belongs to NF main (BU 1) and should be the DEFAULT for NF expenses
+function filterPaymentSourcesByBU() {
+    const buSelect = document.getElementById('quick_business_unit');
+    const paymentSelect = document.getElementById('quick_payment_source');
+    if (!buSelect || !paymentSelect) return;
+    
+    const selectedBuId = buSelect.value;
+    const isNfMain = selectedBuId === '1'; // BU 1 = Nizami Farms main
+    const options = paymentSelect.querySelectorAll('option');
+    let firstVisibleOption = null;
+    let hasSelectedVisible = false;
+    
+    options.forEach(option => {
+        const optionBuId = option.dataset.businessUnitId;
+        
+        // Show only accounts matching the selected BU (including EXP_FUND which belongs to BU 1)
+        if (optionBuId === selectedBuId) {
+            option.style.display = '';
+            option.disabled = false;
+            if (!firstVisibleOption) firstVisibleOption = option;
+            if (option.selected) hasSelectedVisible = true;
+        } else {
+            option.style.display = 'none';
+            option.disabled = true;
+            if (option.selected) option.selected = false;
+        }
+    });
+    
+    // If no option is selected (or previously selected one got hidden), auto-select a default
+    if (!hasSelectedVisible && firstVisibleOption) {
+        if (isNfMain) {
+            // ⭐ For NF main (BU 1): PREFER EXP_FUND as the default expense account
+            const expFundOption = Array.from(options).find(o => 
+                o.dataset.accountCode === 'EXP_FUND' && !o.disabled
+            );
+            if (expFundOption) {
+                expFundOption.selected = true;
+            } else {
+                firstVisibleOption.selected = true;
+            }
+        } else {
+            // For non-NF BUs (Khaas etc): select the first available BU-specific account
+            firstVisibleOption.selected = true;
+        }
+    }
+}
+
+// ⭐ Master handler when business unit changes — filters Request Type, Expense Type, and Pay From Account
+function onBusinessUnitChanged() {
+    filterPaymentSourcesByBU();
+    filterRequestTypesByBU();
+    filterExpenseTypesByBU();
+}
+
+// ⭐ Filter Request Type options based on selected business unit
+// NF (BU 1) → expense, salary_advance, leave | Non-NF (Khaas etc.) → khaas_expense
+function filterRequestTypesByBU() {
+    const buSelect = document.getElementById('quick_business_unit');
+    const categorySelect = document.getElementById('quick_category_id');
+    if (!buSelect || !categorySelect) return;
+    
+    const selectedBuId = buSelect.value;
+    const isNF = (selectedBuId === '1');
+    const options = categorySelect.querySelectorAll('option[data-bu-type]');
+    let firstVisibleOption = null;
+    let hasSelectedVisible = false;
+    
+    options.forEach(option => {
+        const buType = option.dataset.buType; // 'nf' or 'khaas'
+        const shouldShow = (isNF && buType === 'nf') || (!isNF && buType === 'khaas');
+        
+        if (shouldShow) {
+            option.style.display = '';
+            option.disabled = false;
+            if (!firstVisibleOption) firstVisibleOption = option;
+            if (option.selected) hasSelectedVisible = true;
+        } else {
+            option.style.display = 'none';
+            option.disabled = true;
+            if (option.selected) option.selected = false;
+        }
+    });
+    
+    // Auto-select first visible option if current selection was hidden
+    if (!hasSelectedVisible && firstVisibleOption) {
+        firstVisibleOption.selected = true;
+    }
+    
+    // Trigger the category change handler to update form fields
+    handleQuickCategoryChange();
+}
+
+// ⭐ Filter Expense Type options based on selected business unit
+function filterExpenseTypesByBU() {
+    const buSelect = document.getElementById('quick_business_unit');
+    const expenseSelect = document.getElementById('quick_expense_category');
+    if (!buSelect || !expenseSelect) return;
+    
+    const selectedBuId = buSelect.value;
+    const options = expenseSelect.querySelectorAll('option');
+    let firstVisibleOption = null;
+    let hasSelectedVisible = false;
+    
+    options.forEach(option => {
+        const optionBuId = option.dataset.businessUnitId;
+        
+        // Skip the placeholder and "Add New" options — always keep them visible
+        if (!option.value || option.value === '__ADD_NEW__') {
+            option.style.display = '';
+            option.disabled = false;
+            return;
+        }
+        
+        // Show only expense types matching the selected BU
+        if (optionBuId === selectedBuId) {
+            option.style.display = '';
+            option.disabled = false;
+            if (!firstVisibleOption) firstVisibleOption = option;
+            if (option.selected) hasSelectedVisible = true;
+        } else {
+            option.style.display = 'none';
+            option.disabled = true;
+            if (option.selected) option.selected = false;
+        }
+    });
+    
+    // Reset to placeholder if current selection was hidden
+    if (!hasSelectedVisible) {
+        expenseSelect.value = '';
+    }
+}
+
+// ⭐ Run BU filters on page load to match default BU selection
+document.addEventListener('DOMContentLoaded', function() {
+    setTimeout(function() {
+        filterPaymentSourcesByBU();
+        filterRequestTypesByBU();
+        filterExpenseTypesByBU();
+    }, 100);
+});
 
 function calculateQuickLeaveDays() {
     const startDate = document.querySelector('#quickRequestForm [name="leave_start_date"]').value;
@@ -1163,355 +1145,9 @@ document.getElementById('quickRequestForm').addEventListener('submit', function(
 </script>
 @endsection
 
-<!-- Settlement Modal (Portalized outside content to avoid clipping) -->
-<div id="settlementModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 overflow-y-auto" style="z-index: 9999;" onclick="closeSettlementModal()">
-    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full my-8" onclick="event.stopPropagation()">
-        <!-- Fixed Header -->
-        <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 rounded-t-lg z-10">
-            <div class="flex justify-between items-center">
-                <h2 class="text-lg font-semibold text-gray-800">⚙️ Settle Expense</h2>
-                <button onclick="closeSettlementModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
-            </div>
-        </div>
-        
-        <!-- Scrollable Content -->
-        <div class="px-6 py-4 max-h-[calc(90vh-180px)] overflow-y-auto">
-            <div id="settlementModalContent">
-                <div class="text-center py-8">
-                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-                    <p class="mt-4 text-gray-600">Loading settlement details...</p>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Fixed Footer for Action Buttons (will be populated by JavaScript) -->
-        <div id="settlementModalFooter" class="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 rounded-b-lg">
-            <!-- Buttons will be injected here by JavaScript -->
-        </div>
-    </div>
-</div>
+{{-- Settlement modal removed — settlement now handled via mobile only --}}
 
 <script>
-// Tab switching
-function switchTab(tabName) {
-    // Hide all content
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.add('hidden');
-    });
-    
-    // Remove active from all buttons
-    document.querySelectorAll('.tab-button').forEach(button => {
-        button.classList.remove('active', 'border-blue-500', 'text-blue-600');
-        button.classList.add('border-transparent', 'text-gray-500');
-    });
-    
-    // Show selected content
-    document.getElementById('content-' + tabName).classList.remove('hidden');
-    
-    // Mark button as active
-    const activeButton = document.getElementById('tab-' + tabName);
-    activeButton.classList.add('active', 'border-blue-500', 'text-blue-600');
-    activeButton.classList.remove('border-transparent', 'text-gray-500');
-}
-
-// Bulk selection
-function toggleSelectAll() {
-    const selectAll = document.getElementById('selectAll').checked || document.getElementById('selectAllHeader').checked;
-    document.querySelectorAll('.expense-checkbox').forEach(checkbox => {
-        checkbox.checked = selectAll;
-    });
-    document.getElementById('selectAll').checked = selectAll;
-    document.getElementById('selectAllHeader').checked = selectAll;
-    updateBulkButton();
-}
-
-function updateBulkButton() {
-    const selected = document.querySelectorAll('.expense-checkbox:checked').length;
-    const btn = document.getElementById('bulkSettleBtn');
-    const countSpan = document.getElementById('selectedCount');
-    
-    if (selected > 0) {
-        btn.disabled = false;
-        countSpan.textContent = `${selected} expense(s) selected`;
-    } else {
-        btn.disabled = true;
-        countSpan.textContent = '';
-    }
-}
-
-// Open settlement modal
-async function openSettlementModal(expenseId) {
-    console.log('Opening settlement modal for expense ID:', expenseId);
-    
-    const modal = document.getElementById('settlementModal');
-    if (!modal) {
-        console.error('Settlement modal element not found!');
-        alert('Error: Modal element not found. Please refresh the page.');
-        return;
-    }
-    
-    // Force remove hidden class and make visible
-    modal.classList.remove('hidden');
-    modal.style.display = 'flex'; // Force display
-    
-    // Prevent body scroll when modal is open
-    document.body.style.overflow = 'hidden';
-    
-    console.log('Modal classes after opening:', modal.className);
-    console.log('Modal display style:', modal.style.display);
-    console.log('Modal computed display:', window.getComputedStyle(modal).display);
-    
-    try {
-        console.log('Fetching settlement details...');
-        const response = await fetch(`/finance/expenses/${expenseId}/settlement-details`);
-        console.log('Response status:', response.status);
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        console.log('Settlement details:', result);
-        
-        if (result.success) {
-            const data = result.data;
-            console.log('Data received:', data);
-            
-            const contentDiv = document.getElementById('settlementModalContent');
-            if (!contentDiv) {
-                console.error('settlementModalContent div not found!');
-                alert('Error: Modal content container not found');
-                return;
-            }
-            
-            console.log('Setting modal content...');
-            contentDiv.innerHTML = `
-                <div class="space-y-4">
-                    <!-- Expense Details -->
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <h4 class="font-semibold text-gray-900 mb-3">Expense Details</h4>
-                        <div class="grid grid-cols-2 gap-3 text-sm">
-                            <div>
-                                <span class="text-gray-600">Request #:</span>
-                                <span class="font-medium ml-2">${data.request_number}</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-600">Date:</span>
-                                <span class="font-medium ml-2">${data.date}</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-600">Employee:</span>
-                                <span class="font-medium ml-2">${data.employee}</span>
-                            </div>
-                            <div>
-                                <span class="text-gray-600">Category:</span>
-                                <span class="font-medium ml-2">${data.category}</span>
-                            </div>
-                            <div class="col-span-2">
-                                <span class="text-gray-600">Amount:</span>
-                                <span class="font-semibold text-lg ml-2">Rs. ${parseFloat(data.amount).toLocaleString('en-PK', {minimumFractionDigits: 2})}</span>
-                            </div>
-                            <div class="col-span-2">
-                                <span class="text-gray-600">Currently Paid From:</span>
-                                <span class="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded ml-2">${data.paid_from}</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Settlement Transaction -->
-                    <div class="bg-blue-50 rounded-lg p-4">
-                        <h4 class="font-semibold text-gray-900 mb-3">Settlement Transaction</h4>
-                        <div class="space-y-3">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Settlement Source</label>
-                                <select id="settlementSource" class="w-full rounded-md border-gray-300 shadow-sm">
-                                    @foreach($settlementSources as $source)
-                                    <option value="{{ $source->id }}" {{ $source->account_code === 'EXP_FUND' ? 'selected' : '' }}>
-                                        {{ $source->account_name }} (Rs. {{ number_format($source->current_balance, 2) }})
-                                    </option>
-                                    @endforeach
-                                </select>
-                            </div>
-                            
-                            <div class="flex items-center justify-center py-2">
-                                <div class="text-2xl">➡️</div>
-                            </div>
-                            
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Settlement Destination</label>
-                                <input type="text" value="${data.destination}" readonly 
-                                       class="w-full rounded-md border-gray-300 bg-gray-100 shadow-sm">
-                                <p class="text-xs text-gray-500 mt-1">💡 Based on employee's recent deposit history</p>
-                            </div>
-
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Notes (Optional)</label>
-                                <textarea id="settlementNotes" rows="2" 
-                                          class="w-full rounded-md border-gray-300 shadow-sm"
-                                          placeholder="Add any notes about this settlement..."></textarea>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Impact Summary -->
-                    <div class="bg-green-50 border border-green-200 rounded-lg p-3">
-                        <p class="text-sm text-green-800">
-                            <strong>ℹ️ This will:</strong>
-                        </p>
-                        <ul class="text-sm text-green-700 mt-2 space-y-1 ml-4">
-                            <li>• Transfer Rs. ${parseFloat(data.amount).toLocaleString('en-PK', {minimumFractionDigits: 2})} to ${data.destination}</li>
-                            <li>• Mark expense as settled in the system</li>
-                            <li>• Update employee's expense tracking automatically</li>
-                            <li>• Create audit trail with your username & timestamp</li>
-                        </ul>
-                    </div>
-                </div>
-            `;
-            
-            // Set footer buttons
-            document.getElementById('settlementModalFooter').innerHTML = `
-                <div class="flex gap-3">
-                    <button onclick="closeSettlementModal()" 
-                            class="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 font-medium">
-                        Cancel
-                    </button>
-                    <button onclick="confirmSettlement(${expenseId})" 
-                            class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium">
-                        ✅ Confirm Settlement
-                    </button>
-                </div>
-            `;
-            
-            console.log('Modal content set successfully. Modal should be visible now.');
-        } else {
-            console.error('Result success was false:', result);
-            alert('Error: ' + (result.message || 'Unknown error'));
-        }
-    } catch (error) {
-        console.error('Error loading settlement details:', error);
-        document.getElementById('settlementModalContent').innerHTML = `
-            <div class="text-center py-8 text-red-600">
-                <p>❌ Error loading expense details.</p>
-                <p class="text-sm mt-2">${error.message}</p>
-            </div>
-        `;
-        
-        // Set footer with close button for error state
-        document.getElementById('settlementModalFooter').innerHTML = `
-            <div class="flex justify-center">
-                <button onclick="closeSettlementModal()" 
-                        class="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-md font-medium">
-                    Close
-                </button>
-            </div>
-        `;
-    }
-}
-
-function closeSettlementModal() {
-    const modal = document.getElementById('settlementModal');
-    modal.classList.add('hidden');
-    modal.style.display = 'none'; // Ensure display is set to none
-    
-    // Reset modal content to loading state
-    document.getElementById('settlementModalContent').innerHTML = `
-        <div class="text-center py-8">
-            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-            <p class="mt-4 text-gray-600">Loading settlement details...</p>
-        </div>
-    `;
-    
-    // Clear footer
-    document.getElementById('settlementModalFooter').innerHTML = '';
-    
-    // Re-enable body scroll
-    document.body.style.overflow = 'auto';
-}
-
-// Confirm settlement
-async function confirmSettlement(expenseId) {
-    const sourceAccountId = document.getElementById('settlementSource').value;
-    const notes = document.getElementById('settlementNotes').value;
-    
-    console.log('Confirming settlement for expense:', expenseId);
-    console.log('Source account:', sourceAccountId);
-    console.log('Notes:', notes);
-    
-    try {
-        const response = await fetch(`/finance/expenses/${expenseId}/settle`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-            },
-            body: JSON.stringify({
-                settlement_source_account_id: sourceAccountId,
-                notes: notes
-            })
-        });
-        
-        console.log('Settlement response status:', response.status);
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Settlement error response:', errorText);
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        console.log('Settlement result:', result);
-        
-        if (result.success) {
-            alert('✅ ' + result.message);
-            location.reload(); // Refresh page to show updated data
-        } else {
-            alert('❌ ' + (result.message || 'Settlement failed'));
-        }
-    } catch (error) {
-        console.error('Error settling expense:', error);
-        alert('❌ Error processing settlement: ' + error.message);
-    }
-}
-
-// Bulk settle
-async function bulkSettle() {
-    const selected = Array.from(document.querySelectorAll('.expense-checkbox:checked')).map(cb => cb.value);
-    
-    if (selected.length === 0) {
-        alert('⚠️ Please select at least one expense to settle');
-        return;
-    }
-    
-    if (!confirm(`Settle ${selected.length} expense(s) from Expense Fund?`)) {
-        return;
-    }
-    
-    try {
-        const response = await fetch('/finance/expenses/bulk-settle', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-            },
-            body: JSON.stringify({
-                expense_ids: selected,
-                notes: 'Bulk settlement'
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            alert(`✅ ${result.message}\n\nSuccess: ${result.details.success_count}\nFailed: ${result.details.fail_count}`);
-            location.reload();
-        } else {
-            alert('❌ ' + result.message);
-        }
-    } catch (error) {
-        console.error('Error in bulk settlement:', error);
-        alert('❌ Error processing bulk settlement. Please try again.');
-    }
-}
 
 // Open pending approvals modal
 function openPendingApprovalsModal() {
@@ -1719,13 +1355,6 @@ function closeRequestDetailModal(shouldReload = false) {
 }
 
 // Ensure all functions are globally accessible
-window.switchTab = switchTab;
-window.toggleSelectAll = toggleSelectAll;
-window.updateBulkButton = updateBulkButton;
-window.openSettlementModal = openSettlementModal;
-window.closeSettlementModal = closeSettlementModal;
-window.confirmSettlement = confirmSettlement;
-window.bulkSettle = bulkSettle;
 window.openPendingApprovalsModal = openPendingApprovalsModal;
 window.closePendingApprovalsModal = closePendingApprovalsModal;
 window.openRequestDetailModal = openRequestDetailModal;
@@ -1735,9 +1364,8 @@ window.openNewRequestModal = openNewRequestModal;
 window.closeNewRequestModal = closeNewRequestModal;
 
 console.log('Expense Management JS loaded. Functions:', {
-    openSettlementModal: typeof window.openSettlementModal,
-    switchTab: typeof window.switchTab,
     openPendingApprovalsModal: typeof window.openPendingApprovalsModal,
+    openRequestDetailModal: typeof window.openRequestDetailModal,
     openNewRequestModal: typeof window.openNewRequestModal
 });
 

@@ -380,7 +380,7 @@ const defaultCustomerColumns = [
     { id: 'location', visible: true, fixed: false },
     { id: 'total_orders', visible: true, fixed: false },
     { id: 'total_spent', visible: true, fixed: false },
-    { id: 'status', visible: true, fixed: false },
+    { id: 'notes', visible: true, fixed: false },
     { id: 'first_order_date', visible: true, fixed: false },
     { id: 'last_order_date', visible: true, fixed: false },
     { id: 'actions', visible: true, fixed: true }
@@ -391,6 +391,25 @@ let currentCustomerColumns = JSON.parse(localStorage.getItem('customerTableColum
 // Clean up any corrupted data on initialization
 currentCustomerColumns = currentCustomerColumns.filter(col => col && col.id && typeof col.id === 'string');
 
+// Migrate old 'status' column to 'notes' for existing users
+currentCustomerColumns = currentCustomerColumns.map(col => {
+    if (col && col.id === 'status') {
+        return { ...col, id: 'notes' };
+    }
+    return col;
+});
+// Ensure 'notes' exists (in case it was missing)
+if (!currentCustomerColumns.find(col => col.id === 'notes')) {
+    const actionsIdx = currentCustomerColumns.findIndex(col => col.id === 'actions');
+    const notesCol = { id: 'notes', visible: true, fixed: false };
+    if (actionsIdx >= 0) {
+        currentCustomerColumns.splice(actionsIdx, 0, notesCol);
+    } else {
+        currentCustomerColumns.push(notesCol);
+    }
+}
+localStorage.setItem('customerTableColumns', JSON.stringify(currentCustomerColumns));
+
 const availableCustomerColumns = {
     'id': { label: 'ID', fixed: true },
     'name': { label: 'Customer', fixed: true },
@@ -398,7 +417,7 @@ const availableCustomerColumns = {
     'location': { label: 'Location', fixed: false },
     'total_orders': { label: 'Orders', fixed: false },
     'total_spent': { label: 'Total Spent', fixed: false },
-    'status': { label: 'Status', fixed: false },
+    'notes': { label: 'Notes', fixed: false },
     'first_order_date': { label: 'First Order', fixed: false },
     'last_order_date': { label: 'Last Order', fixed: false },
     'first_name': { label: 'First Name', fixed: false },
@@ -814,10 +833,7 @@ window.deleteCustomer = function(id) {
 
 window.clearFilters = function() {
     console.log('clearFilters called');
-    document.getElementById('customerSearchInput').value = '';
-    document.querySelector('select[name="city"]').value = '';
-    document.querySelector('select[name="status"]').value = '';
-    // Reload page to clear filters
+    // Reload page to clear all filters
     window.location.href = window.location.pathname;
 };
 
@@ -827,19 +843,24 @@ window.allCustomers = @json($customers->items());
 window.filteredCustomers = [...window.allCustomers];
 
 function clearCustomerFilters() {
-    document.getElementById('customerSearchInput').value = '';
-    document.getElementById('customerCityFilter').value = '';
-    document.getElementById('customerStatusFilter').value = '';
-    
-    // Reset to original data
-    window.filteredCustomers = [...window.allCustomers];
-    renderCustomersTable();
+    // Clear all filters and reload from server (to reset pagination too)
+    window.location.href = window.location.pathname;
+}
+
+function parseSortValue(sortValue) {
+    if (!sortValue) return { sortBy: 'last_order_date', sortDir: 'desc' };
+    const lastUnderscore = sortValue.lastIndexOf('_');
+    return {
+        sortBy: sortValue.substring(0, lastUnderscore),
+        sortDir: sortValue.substring(lastUnderscore + 1)
+    };
 }
 
 function fetchFilteredCustomers() {
     const searchTerm = document.getElementById('customerSearchInput').value.trim();
     const cityFilter = document.getElementById('customerCityFilter').value;
-    const statusFilter = document.getElementById('customerStatusFilter').value;
+    const activityFilter = document.getElementById('customerActivityFilter').value;
+    const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
     // Show loading state
     showCustomerLoadingState();
@@ -848,7 +869,9 @@ function fetchFilteredCustomers() {
     const params = new URLSearchParams();
     if (searchTerm) params.append('search', searchTerm);
     if (cityFilter) params.append('city', cityFilter);
-    if (statusFilter) params.append('status', statusFilter);
+    if (activityFilter) params.append('activity', activityFilter);
+    if (sortBy) params.append('sort_by', sortBy);
+    if (sortDir) params.append('sort_dir', sortDir);
     
     // Make API call
     fetch(`/customers/filter?${params.toString()}`, {
@@ -978,10 +1001,6 @@ function getCustomerCellContent(customer, columnId) {
         case 'total_spent':
             return '<span class="text-sm font-medium text-gray-900">PKR ' + Math.round(customer.total_spent || 0).toLocaleString() + '</span>';
             
-        case 'status':
-            const isActive = customer.is_active;
-            return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ' + (isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800') + '"><div class="w-1.5 h-1.5 ' + (isActive ? 'bg-green-400' : 'bg-red-400') + ' rounded-full mr-1.5"></div>' + (isActive ? 'Active' : 'Inactive') + '</span>';
-            
         case 'first_order_date':
             return customer.first_order_date ? '<span class="text-sm text-gray-600">' + window.formatDateLocal(customer.first_order_date) + '</span>' : '<span class="text-sm text-gray-400">Never</span>';
             
@@ -1058,6 +1077,10 @@ function getCustomerCellContent(customer, columnId) {
             
         case 'actions':
             let actionsHtml = '<div class="flex items-center gap-1" onclick="event.stopPropagation()">';
+            const custPhone = customer.phone_original || customer.phone;
+            if (custPhone) {
+                actionsHtml += '<button onclick="openCustomerWhatsApp(\'' + escapeForJs(customer.first_name + ' ' + customer.last_name) + '\', \'' + escapeForJs(custPhone) + '\')" class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" title="WhatsApp"><svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></button>';
+            }
             actionsHtml += '<button onclick="addCustomerNote(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" title="Add Notes"><i class="ki-filled ki-note text-sm"></i></button>';
             actionsHtml += '<button onclick="createOrderForCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" title="Create Order"><i class="ki-filled ki-plus text-sm"></i></button>';
             actionsHtml += '<button onclick="editCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" title="Edit"><i class="ki-filled ki-pencil text-sm"></i></button>';
@@ -1080,7 +1103,6 @@ function getCustomerColumnWidth(columnId) {
         case 'location': return 'w-32';
         case 'total_orders': return 'w-20';
         case 'total_spent': return 'w-32';
-        case 'status': return 'w-24';
         case 'first_order_date': return 'w-32';
         case 'last_order_date': return 'w-32';
         case 'notes': return 'w-64';
@@ -1121,7 +1143,8 @@ document.addEventListener('DOMContentLoaded', function() {
     
     const searchInput = document.getElementById('customerSearchInput');
     const cityFilter = document.getElementById('customerCityFilter');
-    const statusFilter = document.getElementById('customerStatusFilter');
+    const activityFilter = document.getElementById('customerActivityFilter');
+    const sortFilter = document.getElementById('customerSortFilter');
     
     // Search functionality with debouncing
     searchInput.addEventListener('input', function() {
@@ -1131,8 +1154,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (searchTerm.length > 2) {
                 fetchFilteredCustomers();
             } else if (searchTerm.length === 0) {
-                // Auto-clear when search box is empty
-                clearCustomerFilters();
+                // Reload without search when cleared
+                navigateWithFilters();
             } else {
                 // Reset to current page data if search is too short but not empty
                 window.filteredCustomers = [...window.allCustomers];
@@ -1141,15 +1164,44 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 300);
     });
     
-    // Filter functionality
+    // City filter - navigate with URL params for pagination support
     cityFilter.addEventListener('change', function() {
-        fetchFilteredCustomers();
+        navigateWithFilters();
     });
     
-    statusFilter.addEventListener('change', function() {
-        fetchFilteredCustomers();
+    // Activity filter - navigate with URL params for pagination support
+    activityFilter.addEventListener('change', function() {
+        navigateWithFilters();
+    });
+    
+    // Sort filter - navigate with URL params for pagination support
+    sortFilter.addEventListener('change', function() {
+        navigateWithFilters();
     });
 });
+
+// Navigate to the same page with updated URL params (server-side for proper pagination)
+function navigateWithFilters() {
+    const params = new URLSearchParams();
+    
+    const search = document.getElementById('customerSearchInput').value.trim();
+    const city = document.getElementById('customerCityFilter').value;
+    const activity = document.getElementById('customerActivityFilter').value;
+    const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
+    
+    if (search) params.set('search', search);
+    if (city) params.set('city', city);
+    if (activity) params.set('activity', activity);
+    
+    // Only add sort params if not the default
+    if (sortBy !== 'last_order_date' || sortDir !== 'desc') {
+        params.set('sort_by', sortBy);
+        params.set('sort_dir', sortDir);
+    }
+    
+    const queryString = params.toString();
+    window.location.href = window.location.pathname + (queryString ? '?' + queryString : '');
+}
 
 window.formatDateLocal = function(dateString) {
     if (!dateString) return 'N/A';
@@ -1765,14 +1817,139 @@ window.viewOrderDetails = function(orderId) {
 // ========================================
 let customerWhatsappData = { customerName: '', phone: '' };
 
+// Pinned message storage key
+const PINNED_MSG_KEY = 'customerWhatsappPinnedMessage';
+
 function escapeForJs(text) {
     if (!text) return '';
     return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
 }
 
+function getPinnedMessage() {
+    try {
+        const stored = localStorage.getItem(PINNED_MSG_KEY);
+        if (stored) return JSON.parse(stored);
+    } catch (e) {}
+    return null;
+}
+
+function savePinnedMessage(text, imageUrl, imagePath) {
+    localStorage.setItem(PINNED_MSG_KEY, JSON.stringify({ text, imageUrl: imageUrl || '', imagePath: imagePath || '' }));
+}
+
+function clearPinnedMessage() {
+    const pinned = getPinnedMessage();
+    // Delete image from server if exists
+    if (pinned && pinned.imagePath) {
+        fetch('/customers/delete-promo-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' },
+            body: JSON.stringify({ path: pinned.imagePath })
+        }).catch(() => {});
+    }
+    localStorage.removeItem(PINNED_MSG_KEY);
+}
+
+function updatePinnedUI() {
+    const pinned = getPinnedMessage();
+    const pinnedBanner = document.getElementById('pinnedMessageBanner');
+    const pinnedText = document.getElementById('pinnedMessageText');
+    const pinnedImgPreview = document.getElementById('pinnedImagePreview');
+    const textarea = document.getElementById('customerWhatsappCustomMessage');
+    const pinBtn = document.getElementById('pinMessageBtn');
+    const unpinBtn = document.getElementById('unpinMessageBtn');
+    const imgUploadArea = document.getElementById('promoImageUploadArea');
+    const imgPreviewArea = document.getElementById('promoImagePreviewArea');
+    const imgPreview = document.getElementById('promoImagePreview');
+    
+    if (pinned && pinned.text) {
+        // Show pinned banner
+        pinnedBanner.style.display = 'block';
+        pinnedText.textContent = pinned.text.length > 80 ? pinned.text.substring(0, 80) + '...' : pinned.text;
+        
+        // Pre-fill textarea
+        textarea.value = pinned.text;
+        
+        // Show pinned image in banner
+        if (pinned.imageUrl) {
+            pinnedImgPreview.src = pinned.imageUrl;
+            pinnedImgPreview.style.display = 'block';
+        } else {
+            pinnedImgPreview.style.display = 'none';
+        }
+        
+        // Show/hide buttons
+        pinBtn.style.display = 'none';
+        unpinBtn.style.display = 'flex';
+        
+        // Show image preview if exists
+        if (pinned.imageUrl) {
+            imgUploadArea.style.display = 'none';
+            imgPreviewArea.style.display = 'flex';
+            imgPreview.src = pinned.imageUrl;
+        } else {
+            imgUploadArea.style.display = '';
+            imgPreviewArea.style.display = 'none';
+        }
+    } else {
+        // No pinned message
+        pinnedBanner.style.display = 'none';
+        textarea.value = '';
+        pinBtn.style.display = 'flex';
+        unpinBtn.style.display = 'none';
+        imgUploadArea.style.display = '';
+        imgPreviewArea.style.display = 'none';
+    }
+}
+
+function pinCurrentMessage() {
+    const text = document.getElementById('customerWhatsappCustomMessage').value.trim();
+    if (!text) {
+        alert('Please type a message first before pinning');
+        return;
+    }
+    
+    const pinned = getPinnedMessage();
+    const imageUrl = pinned ? pinned.imageUrl : (document.getElementById('promoImagePreview').src || '');
+    const imagePath = pinned ? pinned.imagePath : '';
+    
+    savePinnedMessage(text, imageUrl, imagePath);
+    updatePinnedUI();
+    
+    // Show success feedback
+    const pinBtn = document.getElementById('pinMessageBtn');
+    const origText = pinBtn.innerHTML;
+    pinBtn.innerHTML = '✅ Pinned!';
+    setTimeout(() => { pinBtn.innerHTML = origText; }, 1500);
+}
+
+function unpinMessage() {
+    if (confirm('Unpin this message? The image will also be removed.')) {
+        clearPinnedMessage();
+        document.getElementById('customerWhatsappCustomMessage').value = '';
+        document.getElementById('promoImageInput').value = '';
+        updatePinnedUI();
+    }
+}
+
+function usePinnedMessage() {
+    const pinned = getPinnedMessage();
+    if (pinned && pinned.text) {
+        document.getElementById('customerWhatsappCustomMessage').value = pinned.text;
+    }
+}
+
 function openCustomerWhatsApp(customerName, phone) {
     customerWhatsappData = { customerName, phone };
     document.getElementById('customerWhatsappRecipient').textContent = 'To: ' + customerName + ' (' + phone + ')';
+    
+    // Reset file input
+    const fileInput = document.getElementById('promoImageInput');
+    if (fileInput) fileInput.value = '';
+    
+    // Update pinned UI (pre-fills textarea if pinned)
+    updatePinnedUI();
+    
     document.getElementById('customerWhatsappModal').style.display = 'block';
 }
 
@@ -1819,7 +1996,7 @@ function openWhatsAppWeb(phone, message = '') {
     }
     
     window.open(url, '_blank');
-    closeCustomerWhatsAppModal();
+    // Don't close modal — user may want to send to more customers
 }
 
 function sendCustomerWhatsAppDefault() {
@@ -1836,6 +2013,97 @@ Nizami Farms Team`;
     
     openWhatsAppWeb(customerWhatsappData.phone, message);
 }
+
+function sendCustomerWhatsAppCustom() {
+    let customMessage = document.getElementById('customerWhatsappCustomMessage').value.trim();
+    if (!customMessage) {
+        alert('Please type a message first');
+        return;
+    }
+    
+    // Append image URL to message if exists
+    const pinned = getPinnedMessage();
+    if (pinned && pinned.imageUrl) {
+        customMessage += '\n\n' + pinned.imageUrl;
+    }
+    
+    openWhatsAppWeb(customerWhatsappData.phone, customMessage);
+}
+
+function handlePromoImageUpload(input) {
+    if (!input.files || !input.files[0]) return;
+    
+    const file = input.files[0];
+    
+    // Validate file size (5MB)
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Image must be less than 5MB');
+        input.value = '';
+        return;
+    }
+    
+    // Show uploading state
+    const uploadArea = document.getElementById('promoImageUploadArea');
+    const origContent = uploadArea.innerHTML;
+    uploadArea.innerHTML = '<div style="text-align: center; padding: 8px; color: #6b7280;"><div style="display: inline-block; width: 20px; height: 20px; border: 2px solid #e5e7eb; border-top: 2px solid #25D366; border-radius: 50%; animation: spin 1s linear infinite;"></div> Uploading...</div>';
+    
+    const formData = new FormData();
+    formData.append('image', file);
+    
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    
+    fetch('/customers/upload-promo-image', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': csrfToken },
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // Update pinned message with image
+            const text = document.getElementById('customerWhatsappCustomMessage').value.trim();
+            const pinned = getPinnedMessage();
+            
+            // Delete old image if replacing
+            if (pinned && pinned.imagePath && pinned.imagePath !== data.path) {
+                fetch('/customers/delete-promo-image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                    body: JSON.stringify({ path: pinned.imagePath })
+                }).catch(() => {});
+            }
+            
+            savePinnedMessage(text || (pinned ? pinned.text : ''), data.url, data.path);
+            updatePinnedUI();
+        } else {
+            alert('Upload failed: ' + (data.message || 'Unknown error'));
+            uploadArea.innerHTML = origContent;
+        }
+    })
+    .catch(error => {
+        console.error('Upload error:', error);
+        alert('Upload failed. Please try again.');
+        uploadArea.innerHTML = origContent;
+    });
+}
+
+function removePromoImage() {
+    const pinned = getPinnedMessage();
+    if (pinned) {
+        // Delete from server
+        if (pinned.imagePath) {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+            fetch('/customers/delete-promo-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                body: JSON.stringify({ path: pinned.imagePath })
+            }).catch(() => {});
+        }
+        savePinnedMessage(pinned.text, '', '');
+    }
+    document.getElementById('promoImageInput').value = '';
+    updatePinnedUI();
+}
 </script>
 
 @section('content')
@@ -1849,19 +2117,22 @@ Nizami Farms Team`;
         </div>
         
         <div class="flex items-center gap-2.5">
-            <div class="flex items-center gap-4 text-sm">
-                <div class="flex items-center gap-2">
+            <div class="flex items-center gap-3 text-sm">
+                <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '30day'])) }}"
+                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ request('activity') === '30day' ? 'bg-green-100 ring-2 ring-green-400 font-semibold' : 'hover:bg-green-50' }}">
                     <div class="w-3 h-3 bg-green-500 rounded-full"></div>
                     <span>{{ $stats['active_30_days'] }} 30-Day Active</span>
-                </div>
-                <div class="flex items-center gap-2">
+                </a>
+                <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '90day'])) }}"
+                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ request('activity') === '90day' ? 'bg-orange-100 ring-2 ring-orange-400 font-semibold' : 'hover:bg-orange-50' }}">
                     <div class="w-3 h-3 bg-orange-500 rounded-full"></div>
                     <span>{{ $stats['active_90_days'] }} 90-Day Active</span>
-                </div>
-                <div class="flex items-center gap-2">
+                </a>
+                <a href="{{ route('customers.index', request()->except(['activity', 'page'])) }}"
+                   class="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all cursor-pointer {{ !request('activity') ? 'bg-blue-100 ring-2 ring-blue-400 font-semibold' : 'hover:bg-blue-50' }}">
                     <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
                     <span>{{ $stats['total_customers'] }} Total</span>
-                </div>
+                </a>
             </div>
         </div>
     </div>
@@ -1873,7 +2144,7 @@ Nizami Farms Team`;
         <div class="bg-white rounded-lg border border-gray-200 p-3 mb-3">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-6">
-                    <div class="flex items-center gap-2">
+                    <a href="{{ route('customers.index', request()->except(['activity', 'page'])) }}" class="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1 transition-all {{ !request('activity') ? 'bg-blue-50 ring-1 ring-blue-300' : 'hover:bg-blue-50' }}">
                         <div class="w-7 h-7 bg-blue-100 rounded-lg flex items-center justify-center">
                             <i class="ki-filled ki-people text-blue-600 text-sm"></i>
                         </div>
@@ -1881,25 +2152,25 @@ Nizami Farms Team`;
                             <span class="text-xs text-gray-500">Total</span>
                             <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['total_customers']) }}</span>
                         </div>
-                    </div>
-                    <div class="flex items-center gap-2">
+                    </a>
+                    <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '30day'])) }}" class="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1 transition-all {{ request('activity') === '30day' ? 'bg-green-50 ring-1 ring-green-300' : 'hover:bg-green-50' }}">
                         <div class="w-7 h-7 bg-green-100 rounded-lg flex items-center justify-center">
                             <i class="ki-filled ki-calendar text-green-600 text-sm"></i>
                         </div>
                         <div>
                             <span class="text-xs text-gray-500">30-Day Active</span>
-                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['active_30_days']) }}</span>
+                            <span class="text-base font-bold text-green-700 ml-1">{{ number_format($stats['active_30_days']) }}</span>
                         </div>
-                    </div>
-                    <div class="flex items-center gap-2">
+                    </a>
+                    <a href="{{ route('customers.index', array_merge(request()->except(['activity', 'page']), ['activity' => '90day'])) }}" class="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1 transition-all {{ request('activity') === '90day' ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-orange-50' }}">
                         <div class="w-7 h-7 bg-orange-100 rounded-lg flex items-center justify-center">
                             <i class="ki-filled ki-timer text-orange-600 text-sm"></i>
                         </div>
                         <div>
                             <span class="text-xs text-gray-500">90-Day Active</span>
-                            <span class="text-base font-bold text-gray-900 ml-1">{{ number_format($stats['active_90_days']) }}</span>
+                            <span class="text-base font-bold text-orange-700 ml-1">{{ number_format($stats['active_90_days']) }}</span>
                         </div>
-                    </div>
+                    </a>
                 </div>
                 <div class="text-xs text-gray-400">
                     {{ now()->format('M d, H:i') }}
@@ -1946,10 +2217,17 @@ Nizami Farms Team`;
                         @endforeach
                     </select>
                     
-                    <select name="status" class="select select-sm w-28 text-xs" id="customerStatusFilter">
-                        <option value="">All Status</option>
-                        <option value="active" {{ request('status') == 'active' ? 'selected' : '' }}>Active</option>
-                        <option value="inactive" {{ request('status') == 'inactive' ? 'selected' : '' }}>Inactive</option>
+                    <select name="activity" class="select select-sm w-36 text-xs" id="customerActivityFilter">
+                        <option value="" {{ !request('activity') ? 'selected' : '' }}>All Customers</option>
+                        <option value="30day" {{ request('activity') == '30day' ? 'selected' : '' }}>30-Day Active</option>
+                        <option value="90day" {{ request('activity') == '90day' ? 'selected' : '' }}>90-Day Active</option>
+                    </select>
+                    
+                    <select name="sort" class="select select-sm w-44 text-xs" id="customerSortFilter">
+                        <option value="last_order_date_desc" {{ (request('sort_by', 'last_order_date') == 'last_order_date' && request('sort_dir', 'desc') == 'desc') ? 'selected' : '' }}>Last Order ↓ Newest</option>
+                        <option value="last_order_date_asc" {{ (request('sort_by') == 'last_order_date' && request('sort_dir') == 'asc') ? 'selected' : '' }}>Last Order ↑ Oldest</option>
+                        <option value="total_spent_desc" {{ (request('sort_by') == 'total_spent' && request('sort_dir', 'desc') == 'desc') ? 'selected' : '' }}>Spent ↓ Highest</option>
+                        <option value="total_spent_asc" {{ (request('sort_by') == 'total_spent' && request('sort_dir') == 'asc') ? 'selected' : '' }}>Spent ↑ Lowest</option>
                     </select>
                     
                     <button type="button" onclick="clearCustomerFilters()" class="kt-btn kt-btn-sm kt-btn-outline text-xs px-3" title="Clear all filters">
@@ -1989,10 +2267,10 @@ Nizami Farms Team`;
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Location</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Orders</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Total Spent</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Status</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Notes</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">First Order</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Last Order</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">Actions</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">Actions</th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200" id="table-body">
@@ -2042,16 +2320,10 @@ Nizami Farms Team`;
                                         </span>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
-                                        @if($customer->is_active)
-                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                <div class="w-1.5 h-1.5 bg-green-400 rounded-full mr-1.5"></div>
-                                                Active
-                                            </span>
+                                        @if($customer->notes)
+                                            <span class="text-sm text-gray-600" title="{{ $customer->notes }}">{{ Str::limit($customer->notes, 30) }}</span>
                                         @else
-                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                                <div class="w-1.5 h-1.5 bg-red-400 rounded-full mr-1.5"></div>
-                                                Inactive
-                                            </span>
+                                            <span class="text-sm text-gray-400">No notes</span>
                                         @endif
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
@@ -2074,6 +2346,13 @@ Nizami Farms Team`;
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
                                         <div class="flex items-center gap-1">
+                                            @if($customer->phone_original || $customer->phone)
+                                                <button onclick="openCustomerWhatsApp('{{ addslashes($customer->first_name . ' ' . $customer->last_name) }}', '{{ addslashes($customer->phone_original ?: $customer->phone) }}')" 
+                                                        class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" 
+                                                        title="WhatsApp">
+                                                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                                                </button>
+                                            @endif
                                             <button onclick="addCustomerNote({{ $customer->id }})" 
                                                     class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" 
                                                     title="Add Notes">
@@ -2170,37 +2449,99 @@ Nizami Farms Team`;
 
 <!-- WhatsApp Modal for Customers -->
 <div id="customerWhatsappModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10200;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 400px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
-        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 480px; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <!-- Header -->
+        <div style="padding: 16px 20px; background: linear-gradient(135deg, #25D366 0%, #128C7E 100%); border-radius: 12px 12px 0 0;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h3 style="font-size: 18px; font-weight: 600; margin: 0;">💬 Send WhatsApp Message</h3>
-                <button onclick="closeCustomerWhatsAppModal()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
+                <h3 style="font-size: 18px; font-weight: 600; margin: 0; color: white;">💬 WhatsApp Message</h3>
+                <button onclick="closeCustomerWhatsAppModal()" style="background: none; border: none; font-size: 24px; color: white; cursor: pointer; line-height: 1;">&times;</button>
             </div>
-            <p id="customerWhatsappRecipient" style="margin: 8px 0 0 0; font-size: 14px; color: #6b7280;"></p>
+            <p id="customerWhatsappRecipient" style="margin: 6px 0 0 0; font-size: 14px; color: rgba(255,255,255,0.85);"></p>
         </div>
+        
         <div style="padding: 20px;">
-            <!-- Default WhatsApp -->
-            <button onclick="sendCustomerWhatsAppDefault()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
-                <span style="font-size: 24px;">💬</span>
+            <!-- Pinned Message Banner -->
+            <div id="pinnedMessageBanner" style="display: none; margin-bottom: 14px; padding: 10px 14px; background: #fefce8; border: 1px solid #fde68a; border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <span style="font-size: 14px;">📌</span>
+                    <span style="font-size: 12px; font-weight: 600; color: #92400e;">PINNED PROMO MESSAGE</span>
+                </div>
+                <p id="pinnedMessageText" style="margin: 0; font-size: 13px; color: #78350f; line-height: 1.4;"></p>
+                <img id="pinnedImagePreview" src="" alt="" style="display: none; margin-top: 8px; max-height: 60px; border-radius: 6px; border: 1px solid #fde68a;">
+            </div>
+        
+            <!-- Quick Actions -->
+            <div style="display: flex; gap: 8px; margin-bottom: 14px;">
+                <button onclick="sendCustomerWhatsAppDefault()" style="flex: 1; padding: 10px 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6';this.style.borderColor='#25D366'" onmouseout="this.style.background='#f9fafb';this.style.borderColor='#e5e7eb'">
+                    <span style="font-size: 18px;">💬</span>
                 <div style="text-align: left;">
-                    <div style="font-weight: 600; color: #111827;">Open WhatsApp</div>
-                    <div style="font-size: 12px; color: #6b7280;">Start chat without pre-filled message</div>
+                        <div style="font-weight: 600; color: #111827; font-size: 13px;">Open Chat</div>
+                        <div style="font-size: 11px; color: #6b7280;">Blank message</div>
                 </div>
             </button>
-            
-            <!-- Welcome/Greeting -->
-            <button onclick="sendCustomerWhatsAppGreeting()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
-                <span style="font-size: 24px;">👋</span>
+                <button onclick="sendCustomerWhatsAppGreeting()" style="flex: 1; padding: 10px 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6';this.style.borderColor='#25D366'" onmouseout="this.style.background='#f9fafb';this.style.borderColor='#e5e7eb'">
+                    <span style="font-size: 18px;">👋</span>
                 <div style="text-align: left;">
-                    <div style="font-weight: 600; color: #111827;">Greeting</div>
-                    <div style="font-size: 12px; color: #6b7280;">Send a friendly hello message</div>
+                        <div style="font-weight: 600; color: #111827; font-size: 13px;">Greeting</div>
+                        <div style="font-size: 11px; color: #6b7280;">Hello message</div>
                 </div>
             </button>
+            </div>
             
-            <!-- Cancel -->
-            <button onclick="closeCustomerWhatsAppModal()" style="width: 100%; padding: 12px 16px; background: #e5e7eb; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151; transition: all 0.2s;" onmouseover="this.style.background='#d1d5db'" onmouseout="this.style.background='#e5e7eb'">
-                Cancel
+            <!-- Divider -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
+                <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+                <span style="font-size: 11px; color: #9ca3af; font-weight: 500;">CUSTOM / PROMO MESSAGE</span>
+                <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+            </div>
+            
+            <!-- Custom Message Textarea -->
+            <div style="margin-bottom: 10px;">
+                <textarea id="customerWhatsappCustomMessage" rows="3" 
+                    style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 13px; resize: vertical; font-family: inherit; outline: none; transition: border-color 0.2s; box-sizing: border-box;"
+                    onfocus="this.style.borderColor='#25D366'" onblur="this.style.borderColor='#d1d5db'"
+                    placeholder="Type your custom or promo message here..."></textarea>
+            </div>
+            
+            <!-- Image Upload Area -->
+            <div id="promoImageUploadArea" style="margin-bottom: 12px;">
+                <label style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px dashed #d1d5db; border-radius: 8px; cursor: pointer; transition: all 0.2s; background: #fafafa;" onmouseover="this.style.borderColor='#25D366';this.style.background='#f0fdf4'" onmouseout="this.style.borderColor='#d1d5db';this.style.background='#fafafa'">
+                    <svg style="width: 20px; height: 20px; color: #9ca3af; flex-shrink: 0;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    <span style="font-size: 13px; color: #6b7280;">Attach promo image (optional) — will be sent as link</span>
+                    <input type="file" id="promoImageInput" accept="image/*" style="display: none;" onchange="handlePromoImageUpload(this)">
+                </label>
+            </div>
+            
+            <!-- Image Preview Area (shown when image uploaded) -->
+            <div id="promoImagePreviewArea" style="display: none; margin-bottom: 12px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; align-items: center; gap: 12px;">
+                <img id="promoImagePreview" src="" alt="Promo" style="height: 60px; max-width: 100px; border-radius: 6px; object-fit: cover; border: 1px solid #e5e7eb;">
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 12px; font-weight: 500; color: #374151;">Promo image attached</div>
+                    <div style="font-size: 11px; color: #6b7280;">Image link will be included in message</div>
+                </div>
+                <button onclick="removePromoImage()" style="padding: 4px 8px; background: none; border: 1px solid #fca5a5; border-radius: 6px; cursor: pointer; color: #dc2626; font-size: 12px; flex-shrink: 0;" title="Remove image">✕</button>
+            </div>
+            
+            <!-- Pin / Send / Cancel -->
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <button onclick="sendCustomerWhatsAppCustom()" style="flex: 1; padding: 11px 16px; background: #25D366; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s;" onmouseover="this.style.background='#128C7E'" onmouseout="this.style.background='#25D366'">
+                    <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                    Send
+                </button>
+                <button id="pinMessageBtn" onclick="pinCurrentMessage()" style="padding: 11px 14px; background: #fefce8; border: 1px solid #fde68a; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; color: #92400e; display: flex; align-items: center; gap: 6px; transition: all 0.2s; white-space: nowrap;" onmouseover="this.style.background='#fef08a'" onmouseout="this.style.background='#fefce8'" title="Pin this message so it stays for all customers">
+                    📌 Pin
+                </button>
+                <button id="unpinMessageBtn" onclick="unpinMessage()" style="display: none; padding: 11px 14px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; color: #dc2626; align-items: center; gap: 6px; transition: all 0.2s; white-space: nowrap;" onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fef2f2'" title="Unpin this message">
+                    📌 Unpin
+                </button>
+                <button onclick="closeCustomerWhatsAppModal()" style="padding: 11px 14px; background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151; font-size: 13px; transition: all 0.2s;" onmouseover="this.style.background='#e5e7eb'" onmouseout="this.style.background='#f3f4f6'">
+                    Close
             </button>
+            </div>
+            
+            <div style="font-size: 11px; color: #9ca3af; text-align: center;">
+                💡 <b>Pin</b> a message to auto-fill it for every customer. Great for promos!
+            </div>
         </div>
     </div>
 </div>

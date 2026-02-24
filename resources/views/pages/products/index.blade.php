@@ -1033,9 +1033,10 @@ const availableColumns = {
     'variants_count': { label: 'Variants', width: 'w-[70px]', order: 11, cssClass: 'col-variants' },
     'total_inventory': { label: 'Inventory', width: 'w-[85px]', order: 12, cssClass: 'col-inventory' },
     'weight_factor': { label: 'Weight Factor', width: 'w-[95px]', order: 13, cssClass: 'col-weight-factor' },
-    'is_lean': { label: 'Lean', width: 'w-[75px]', order: 14, cssClass: 'col-lean' },
-    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 15, cssClass: 'col-sync' },
-    'actions': { label: 'Actions', width: 'w-[105px]', order: 16, fixed: true, cssClass: 'col-actions' }
+    'business_unit': { label: 'Business Unit', width: 'w-[110px]', order: 14, cssClass: 'col-bu' },
+    'is_lean': { label: 'Lean', width: 'w-[75px]', order: 15, cssClass: 'col-lean' },
+    'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 16, cssClass: 'col-sync' },
+    'actions': { label: 'Actions', width: 'w-[105px]', order: 17, fixed: true, cssClass: 'col-actions' }
 };
 
 // Track selected products
@@ -1050,14 +1051,14 @@ let quickEditPricesEnabled = false;
 const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
 let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || 'null');
 
 // Track migration version to only run migrations once for truly new columns
-const COLUMN_MIGRATION_VERSION = 3; // Increment this when adding new columns (v3 = checkbox column)
+const COLUMN_MIGRATION_VERSION = 4; // Increment this when adding new columns (v4 = business_unit column)
 const savedMigrationVersion = parseInt(localStorage.getItem('products_column_migration_version') || '0');
 
 // If no saved preferences exist, use defaults
@@ -1817,6 +1818,17 @@ function getCellContent(columnKey, product) {
             const isDefaultFactor = weightFactor === '1.00';
             return `<span class="${isDefaultFactor ? 'text-gray-500' : 'font-semibold text-blue-600'}">${weightFactor}</span>`;
             
+        case 'business_unit':
+            if (product.business_unit) {
+                const bu = product.business_unit;
+                const buColor = bu.color_hex || '#6b7280';
+                return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium border" 
+                    style="background-color: ${buColor}15; color: ${buColor}; border-color: ${buColor}40;">
+                    ${bu.short_code || bu.name || 'N/A'}
+                </span>`;
+            }
+            return '<span class="text-gray-400 text-sm">—</span>';
+
         case 'is_lean':
             if (product.is_lean === 1 || product.is_lean === '1' || product.is_lean === true) {
                 return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold bg-green-50 text-green-700 border border-green-200">
@@ -3626,6 +3638,12 @@ function renderProductDetails(product) {
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Category Level 3:</span>
                             <span style="color: #111827; font-size: 14px;">${product.attribute_3 || '-'}</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Business Unit:</span>
+                            <span>${product.business_unit ? 
+                                `<span style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background-color: ${(product.business_unit.color_hex || '#6b7280')}15; color: ${product.business_unit.color_hex || '#6b7280'}; border: 1px solid ${(product.business_unit.color_hex || '#6b7280')}40;">${product.business_unit.name || 'N/A'}</span>` : 
+                                '<span style="color: #111827; font-size: 14px;">Nizami Farms (default)</span>'}</span>
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Handle:</span>

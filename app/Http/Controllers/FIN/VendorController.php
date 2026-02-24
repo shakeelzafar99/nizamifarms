@@ -19,7 +19,7 @@ class VendorController extends Controller
      */
     public function index(Request $request)
     {
-        $query = VendorModel::with(['account', 'defaultPaymentSource']);
+        $query = VendorModel::with(['account', 'defaultPaymentSource', 'businessUnit']);
 
         // Search
         if ($request->has('search') && $request->search) {
@@ -29,45 +29,35 @@ class VendorController extends Controller
                   ->orWhere('vendor_email', 'LIKE', "%{$search}%");
         }
 
-        // Filter by status
-        if ($request->has('status')) {
-            if ($request->status === 'active') {
-                $query->where('is_active', 1);
-            } elseif ($request->status === 'inactive') {
-                $query->where('is_active', 0);
+        // Default to active vendors only
+        $query->where('is_active', 1);
+
+        // ⭐ Filter by business unit — defaults to BU 1 (Nizami Farms) unless explicitly set
+        // Use "all" to see all business units, or a specific BU ID
+        $buFilter = $request->input('business_unit_id');
+        if ($buFilter === null && !$request->has('business_unit_id')) {
+            // No filter param at all → default to BU 1 (Nizami Farms) for web views
+            // For API requests, respect the absence (mobile passes its own filter)
+            if (!$request->expectsJson() && !$request->is('api/*')) {
+                $buFilter = '1';
             }
+        }
+        if ($buFilter && $buFilter !== 'all') {
+            $query->where('business_unit_id', $buFilter);
         }
 
         $vendors = $query->orderBy('vendor_name', 'asc')->paginate(20);
 
-        // Calculate total balance for all active vendors
-        $totalBalance = VendorModel::with('account')
-            ->where('is_active', 1)
-            ->get()
+        // Calculate total balance for all active vendors (respect BU filter)
+        $totalBalanceQuery = VendorModel::with('account')
+            ->where('is_active', 1);
+        if ($buFilter && $buFilter !== 'all') {
+            $totalBalanceQuery->where('business_unit_id', $buFilter);
+        }
+        $totalBalance = $totalBalanceQuery->get()
             ->sum(function($vendor) {
                 return $vendor->account ? $vendor->account->current_balance : 0;
             });
-
-        // Get last payment info for each vendor
-        foreach ($vendors as $vendor) {
-            if ($vendor->account) {
-                // Get the last payment transaction for this vendor
-                $lastPayment = LedgerModel::where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
-                    ->where(function($q) use ($vendor) {
-                        $q->where('from_account_id', $vendor->account->id)
-                          ->orWhere('to_account_id', $vendor->account->id);
-                    })
-                    ->orderBy('transaction_date', 'desc')
-                    ->orderBy('created_at', 'desc')
-                    ->first();
-                
-                $vendor->last_payment_date = $lastPayment ? $lastPayment->transaction_date : null;
-                $vendor->last_payment_amount = $lastPayment ? $lastPayment->amount : null;
-            } else {
-                $vendor->last_payment_date = null;
-                $vendor->last_payment_amount = null;
-            }
-        }
 
         // Return JSON for API requests
         if ($request->expectsJson() || $request->is('api/*')) {
@@ -94,6 +84,109 @@ class VendorController extends Controller
         $userDefaultBuId = AccountModel::getUserDefaultBusinessUnitId();
         
         return view('fin.vendor.index', compact('vendors', 'totalBalance', 'businessUnits', 'accessibleCompanyAccounts', 'userDefaultBuId'));
+    }
+
+    /**
+     * Get monthly purchase/payment summary for vendors in a business unit.
+     * Used by Khaas mode mobile screen to show total purchases & payments for a month.
+     *
+     * GET /vendors/monthly-summary?business_unit_id=X&month=YYYY-MM
+     */
+    public function monthlySummary(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            $month = $request->input('month', now()->format('Y-m')); // Default: current month
+
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id is required'], 400);
+            }
+
+            // Parse month into date range
+            $startDate = \Carbon\Carbon::createFromFormat('Y-m', $month)->startOfMonth();
+            $endDate = $startDate->copy()->endOfMonth();
+
+            // Get all active vendors for this BU
+            $vendors = VendorModel::with('account')
+                ->where('is_active', 1)
+                ->where('business_unit_id', $businessUnitId)
+                ->orderBy('vendor_name')
+                ->get();
+
+            $vendorPurchases = [];
+            $vendorPayments = [];
+            $totalPurchases = 0;
+            $totalPayments = 0;
+
+            foreach ($vendors as $vendor) {
+                if (!$vendor->account) continue;
+
+                $purchases = LedgerModel::where('to_account_id', $vendor->account->id)
+                    ->where('transaction_type', LedgerModel::TYPE_VENDOR_PURCHASE)
+                    ->whereBetween('transaction_date', [$startDate, $endDate])
+                    ->sum('amount');
+
+                $payments = LedgerModel::where('to_account_id', $vendor->account->id)
+                    ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                    ->whereBetween('transaction_date', [$startDate, $endDate])
+                    ->sum('amount');
+
+                if ($purchases > 0) {
+                    $vendorPurchases[] = [
+                        'vendor_id' => $vendor->id,
+                        'vendor_name' => $vendor->vendor_name,
+                        'amount' => round($purchases, 2),
+                    ];
+                    $totalPurchases += $purchases;
+                }
+
+                if ($payments > 0) {
+                    $vendorPayments[] = [
+                        'vendor_id' => $vendor->id,
+                        'vendor_name' => $vendor->vendor_name,
+                        'amount' => round($payments, 2),
+                    ];
+                    $totalPayments += $payments;
+                }
+            }
+
+            // Sort by amount descending
+            usort($vendorPurchases, fn($a, $b) => $b['amount'] <=> $a['amount']);
+            usort($vendorPayments, fn($a, $b) => $b['amount'] <=> $a['amount']);
+
+            // ⭐ Get the BU's default expense/fund account balance
+            // Same logic as expenses: for non-NF BUs use getBuDefaultExpenseAccount, for NF use EXP_FUND
+            $fundBalance = null;
+            $fundAccountName = null;
+            if ((int) $businessUnitId !== 1) {
+                $fundAccount = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+            } else {
+                $fundAccount = \App\Models\FIN\ConfigModel::getExpenseFundingAccount()
+                    ?? AccountModel::where('account_code', 'EXP_FUND')->first();
+            }
+            if ($fundAccount) {
+                $fundBalance = round((float) $fundAccount->current_balance, 2);
+                $fundAccountName = $fundAccount->account_name;
+            }
+
+            return response()->json([
+                'success' => true,
+                'month' => $month,
+                'total_purchases' => round($totalPurchases, 2),
+                'total_payments' => round($totalPayments, 2),
+                'vendor_purchases' => $vendorPurchases,
+                'vendor_payments' => $vendorPayments,
+                'fund_balance' => $fundBalance,
+                'fund_account_name' => $fundAccountName,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Error fetching vendor monthly summary: " . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error fetching summary: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -146,6 +239,7 @@ class VendorController extends Controller
                         'amount' => $request->opening_balance,
                         'mode' => null,
                         'approval_status' => LedgerModel::STATUS_APPROVED,
+                        'business_unit_id' => $request->business_unit_id ?? 1, // ⭐ Use selected BU
                         'created_by' => auth()->id()
                     ]);
                 }
@@ -556,6 +650,7 @@ class VendorController extends Controller
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'bill_image' => $billImagePath,
+                'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'created_by' => auth()->id()
             ]);
 
@@ -676,6 +771,7 @@ class VendorController extends Controller
                 'mode' => $mode,
                 'approval_status' => $approvalStatus,
                 'approval_date' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? now() : null,
+                'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'approved_by' => ($approvalStatus === LedgerModel::STATUS_APPROVED) ? auth()->id() : null,
                 'bill_image' => $receiptImagePath, // Store receipt image in bill_image field
                 'created_by' => auth()->id(),
@@ -791,6 +887,7 @@ class VendorController extends Controller
                 'mode' => LedgerModel::MODE_CASH,
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'bill_image' => $billImagePath,
+                'business_unit_id' => $vendor->business_unit_id ?? 1, // ⭐ Use vendor's BU
                 'created_by' => auth()->id(),
                 'comments' => $comments
             ]);

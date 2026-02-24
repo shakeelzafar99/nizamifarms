@@ -392,61 +392,86 @@ class AccountModel extends BaseModel
     /**
      * ⭐ Get company payment accounts accessible to the current user based on their role's BU access
      * 
-     * Company accounts are those with specific account_codes (ONLINE, NF_CASH, EXP_FUND, etc.)
+     * Company accounts are those with account_category = 'cash' or 'bank'
+     * (NOT employee_cash or vendor_payable)
      * and their business_unit_id determines which business unit they belong to.
      * 
-     * @param array $accountCodes Optional specific account codes to filter (e.g., ['ONLINE', 'NF_CASH', 'EXP_FUND'])
      * @return \Illuminate\Database\Eloquent\Collection
      */
-    public static function getAccessibleCompanyAccounts($accountCodes = ['ONLINE', 'NF_CASH', 'EXP_FUND', 'NF_MAIN_TILL'])
+    public static function getAccessibleCompanyAccounts()
     {
         $user = auth()->user();
+        
+        // Company accounts = cash + bank categories (excludes employee_cash, vendor_payable, expense, etc.)
+        $companyCategories = [self::CATEGORY_CASH, self::CATEGORY_BANK];
+        
         if (!$user) {
             // Fallback: return all active company accounts
             return static::where('is_active', 1)
-                ->whereIn('account_code', $accountCodes)
+                ->whereIn('account_category', $companyCategories)
                 ->orderBy('account_name')
                 ->get();
         }
 
         // Get user's primary role for BU access check
-        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
-            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
-            ->where('ur.user_id', $user->id)
-            ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
-            ->first();
+        // ⭐ Resilient: try with BU columns first, fall back if columns don't exist yet
+        try {
+            $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $user->id)
+                ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
+                ->first();
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Columns don't exist yet (migration not run) - return all company accounts
+            \Log::warning('business_unit_access columns missing from t_sys_role - returning all company accounts. Run business_unit_role_access.sql migration.', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+            return static::where('is_active', 1)
+                ->whereIn('account_category', $companyCategories)
+                ->orderBy('account_name')
+                ->get();
+        }
 
         if (!$userRole) {
-            // No role assigned - return empty or default
+            // No role assigned - return only default NF accounts
             return static::where('is_active', 1)
-                ->whereIn('account_code', $accountCodes)
-                ->where('business_unit_id', 1) // Only default NF accounts
+                ->whereIn('account_category', $companyCategories)
+                ->where('business_unit_id', 1)
                 ->orderBy('account_name')
                 ->get();
         }
 
         $query = static::where('is_active', 1)
-            ->whereIn('account_code', $accountCodes);
+            ->whereIn('account_category', $companyCategories);
 
         // Filter by business unit access
-        if ($userRole->business_unit_access === 'all') {
+        $buAccess = $userRole->business_unit_access ?? 'all'; // Default to 'all' if null
+        if ($buAccess === 'all') {
             // Full access - return all company accounts
             // No additional filtering needed
-        } elseif ($userRole->business_unit_access === 'single') {
+        } elseif ($buAccess === 'single') {
             // Single BU access - only accounts for default BU
-            $query->where('business_unit_id', $userRole->default_business_unit_id);
-        } elseif ($userRole->business_unit_access === 'multiple') {
+            $query->where('business_unit_id', $userRole->default_business_unit_id ?? 1);
+        } elseif ($buAccess === 'multiple') {
             // Multiple BU access - get assigned BUs
-            $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
-                ->where('role_id', $userRole->id)
-                ->pluck('business_unit_id')
-                ->toArray();
-            
-            if (!empty($assignedBuIds)) {
-                $query->whereIn('business_unit_id', $assignedBuIds);
-            } else {
-                // Fallback to default BU if no assignments
-                $query->where('business_unit_id', $userRole->default_business_unit_id ?? 1);
+            try {
+                $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
+                    ->where('role_id', $userRole->id)
+                    ->pluck('business_unit_id')
+                    ->toArray();
+                
+                if (!empty($assignedBuIds)) {
+                    $query->whereIn('business_unit_id', $assignedBuIds);
+                } else {
+                    // Fallback to default BU if no assignments
+                    $query->where('business_unit_id', $userRole->default_business_unit_id ?? 1);
+                }
+            } catch (\Illuminate\Database\QueryException $e) {
+                // t_sys_role_business_unit table doesn't exist yet - no filtering
+                \Log::warning('t_sys_role_business_unit table missing - returning all company accounts.', [
+                    'error' => $e->getMessage(),
+                ]);
             }
         } else {
             // Default: only Nizami Farms (BU 1) accounts
@@ -468,13 +493,18 @@ class AccountModel extends BaseModel
             return 1; // Default to Nizami Farms
         }
 
-        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
-            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
-            ->where('ur.user_id', $user->id)
-            ->select('r.default_business_unit_id')
-            ->first();
+        try {
+            $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $user->id)
+                ->select('r.default_business_unit_id')
+                ->first();
 
-        return $userRole->default_business_unit_id ?? 1;
+            return $userRole->default_business_unit_id ?? 1;
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Column doesn't exist yet (migration not run) - default to Nizami Farms
+            return 1;
+        }
     }
 
     /**
@@ -489,31 +519,45 @@ class AccountModel extends BaseModel
             return BusinessUnitModel::where('is_active', 1)->ordered()->get();
         }
 
-        $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
-            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
-            ->where('ur.user_id', $user->id)
-            ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
-            ->first();
+        try {
+            $userRole = \Illuminate\Support\Facades\DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', $user->id)
+                ->select('r.id', 'r.business_unit_access', 'r.default_business_unit_id')
+                ->first();
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Columns don't exist yet (migration not run) - return all active BUs
+            \Log::warning('business_unit_access columns missing from t_sys_role - returning all BUs. Run business_unit_role_access.sql migration.', [
+                'user_id' => $user->id,
+            ]);
+            return BusinessUnitModel::where('is_active', 1)->ordered()->get();
+        }
 
         if (!$userRole) {
             return BusinessUnitModel::where('id', 1)->get(); // Only default
         }
 
-        if ($userRole->business_unit_access === 'all') {
+        $buAccess = $userRole->business_unit_access ?? 'all'; // Default to 'all' if null
+        if ($buAccess === 'all') {
             return BusinessUnitModel::where('is_active', 1)->ordered()->get();
-        } elseif ($userRole->business_unit_access === 'single') {
-            return BusinessUnitModel::where('id', $userRole->default_business_unit_id)->get();
-        } elseif ($userRole->business_unit_access === 'multiple') {
-            $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
-                ->where('role_id', $userRole->id)
-                ->pluck('business_unit_id')
-                ->toArray();
-            
-            if (!empty($assignedBuIds)) {
-                return BusinessUnitModel::whereIn('id', $assignedBuIds)
-                    ->where('is_active', 1)
-                    ->ordered()
-                    ->get();
+        } elseif ($buAccess === 'single') {
+            return BusinessUnitModel::where('id', $userRole->default_business_unit_id ?? 1)->get();
+        } elseif ($buAccess === 'multiple') {
+            try {
+                $assignedBuIds = \Illuminate\Support\Facades\DB::table('t_sys_role_business_unit')
+                    ->where('role_id', $userRole->id)
+                    ->pluck('business_unit_id')
+                    ->toArray();
+                
+                if (!empty($assignedBuIds)) {
+                    return BusinessUnitModel::whereIn('id', $assignedBuIds)
+                        ->where('is_active', 1)
+                        ->ordered()
+                        ->get();
+                }
+            } catch (\Illuminate\Database\QueryException $e) {
+                // t_sys_role_business_unit table doesn't exist - return all
+                return BusinessUnitModel::where('is_active', 1)->ordered()->get();
             }
         }
         

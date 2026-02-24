@@ -17,7 +17,12 @@ class ConfigModel extends BaseModel
     protected $fillable = [
         'config_key',
         'config_value',
-        'description'
+        'description',
+        'business_unit_id',
+    ];
+
+    protected $casts = [
+        'business_unit_id' => 'integer',
     ];
 
     // Config key constants
@@ -26,6 +31,7 @@ class ConfigModel extends BaseModel
     const KEY_ONLINE_BANK_ACCOUNT = 'online_bank_account_id';
     const KEY_SALES_REVENUE_ACCOUNT = 'sales_revenue_account_id';
     const KEY_OPENING_EQUITY_ACCOUNT = 'opening_equity_account_id';
+    const KEY_BU_DEFAULT_EXPENSE_ACCOUNT = 'BU_DEFAULT_EXPENSE_ACCOUNT';
 
     /**
      * Get config value by key
@@ -102,6 +108,69 @@ class ConfigModel extends BaseModel
     {
         $accountId = static::get(self::KEY_OPENING_EQUITY_ACCOUNT);
         return $accountId ? AccountModel::find($accountId) : AccountModel::getByCode('EQUITY_OPENING');
+    }
+
+    /**
+     * Get the default expense account for a business unit.
+     * Looks up BU_DEFAULT_EXPENSE_ACCOUNT in t_fin_config for the given BU.
+     * Falls back to the first active non-employee/non-vendor account for that BU.
+     * 
+     * @param int $businessUnitId
+     * @return \App\Models\FIN\AccountModel|null
+     */
+    public static function getBuDefaultExpenseAccount(int $businessUnitId): ?AccountModel
+    {
+        $cacheKey = "fin_config_bu_default_expense_{$businessUnitId}";
+        
+        $accountId = Cache::remember($cacheKey, 3600, function() use ($businessUnitId) {
+            // Look for configured default
+            $config = static::where('config_key', self::KEY_BU_DEFAULT_EXPENSE_ACCOUNT)
+                ->where('business_unit_id', $businessUnitId)
+                ->first();
+            
+            return $config ? $config->config_value : null;
+        });
+        
+        if ($accountId) {
+            $account = AccountModel::find($accountId);
+            if ($account && $account->is_active) {
+                return $account;
+            }
+        }
+        
+        // Fallback: first active non-employee/non-vendor account for this BU
+        return AccountModel::where('is_active', 1)
+            ->where('business_unit_id', $businessUnitId)
+            ->whereNotIn('account_category', [
+                AccountModel::CATEGORY_EMPLOYEE_CASH,
+                AccountModel::CATEGORY_VENDOR_PAYABLE,
+            ])
+            ->orderBy('account_name')
+            ->first();
+    }
+
+    /**
+     * Set the default expense account for a business unit.
+     * 
+     * @param int $businessUnitId
+     * @param int $accountId
+     * @return void
+     */
+    public static function setBuDefaultExpenseAccount(int $businessUnitId, int $accountId): void
+    {
+        static::updateOrCreate(
+            [
+                'config_key' => self::KEY_BU_DEFAULT_EXPENSE_ACCOUNT,
+                'business_unit_id' => $businessUnitId,
+            ],
+            [
+                'config_value' => (string) $accountId,
+                'description' => "Default expense/fund account for business unit #{$businessUnitId}",
+            ]
+        );
+        
+        // Clear cache
+        Cache::forget("fin_config_bu_default_expense_{$businessUnitId}");
     }
 
     /**

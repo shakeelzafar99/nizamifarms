@@ -302,12 +302,22 @@ class RiderController extends Controller
                     'notes' => $order->note,
                     'order_note' => $order->note,
                     'has_order_note' => !empty($order->note),
-                    // ⭐ Customer notes - customer-level notes (applies to all orders for this customer)
-                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
-                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Customer notes - use primary customer notes if order linked to merged duplicate
+                    'customer_notes' => $order->customer ? (
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ) : null,
+                    'has_customer_notes' => $order->customer && !empty(
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ),
                     'expected_packets' => $order->expected_packets, // Number of packets expected (from manager)
                     'actual_packets' => $order->actual_packets,     // Number of packets delivered (from rider)
                     'delivery_location' => $deliveryLocation,       // GPS coordinates of delivery (if delivered)
+                    'online_message_sent_at' => $order->online_message_sent_at,  // WhatsApp message sent timestamp
+                    'online_message_sent_by' => $order->online_message_sent_by,  // Who sent the message
                     'invoice' => [
                         'image_url' => $invoiceImageUrl,  // URL to download invoice as PNG image
                         'pdf_url' => $invoicePdfUrl,      // URL to download invoice as PDF
@@ -619,9 +629,9 @@ class RiderController extends Controller
             'month' => $monthKey,
             'google_directions' => [
                 'calls' => $googleUsage->call_count ?? 0,
-                'limit' => 4500, // Safe limit (5000 free)
-                'remaining' => 4500 - ($googleUsage->call_count ?? 0),
-                'at_limit' => ($googleUsage->call_count ?? 0) >= 4500,
+                'limit' => 6000,
+                'remaining' => 6000 - ($googleUsage->call_count ?? 0),
+                'at_limit' => ($googleUsage->call_count ?? 0) >= 6000,
             ],
             'openroute_directions' => [
                 'calls' => $openRouteUsage->call_count ?? 0,
@@ -636,7 +646,7 @@ class RiderController extends Controller
      */
     private function getEtaFromGoogleMaps($originLat, $originLng, $destLat, $destLng): ?array
     {
-        // Check monthly usage limit (4500 to stay safely under 5000 free tier)
+        // Check monthly usage limit
         $monthKey = date('Y-m');
         $usage = \DB::table('t_sys_api_usage')
             ->where('api_name', 'google_directions')
@@ -644,7 +654,7 @@ class RiderController extends Controller
             ->first();
         
         $currentCount = $usage->call_count ?? 0;
-        if ($currentCount >= 4500) {
+        if ($currentCount >= 6000) {
             \Log::warning('Google Maps API monthly limit reached', [
                 'month' => $monthKey,
                 'count' => $currentCount,
@@ -688,13 +698,19 @@ class RiderController extends Controller
             $durationText = $route['duration_in_traffic']['text'] ?? $route['duration']['text'];
             $distanceMeters = $route['distance']['value'];
             
-            // Determine traffic status
+            // Determine traffic status (guard against division by zero when duration is 0)
             $traffic = null;
             if (isset($route['duration_in_traffic']) && isset($route['duration'])) {
-                $ratio = $route['duration_in_traffic']['value'] / $route['duration']['value'];
-                if ($ratio > 1.5) $traffic = 'heavy';
-                elseif ($ratio > 1.2) $traffic = 'moderate';
-                else $traffic = 'light';
+                $normalDuration = $route['duration']['value'] ?? 0;
+                if ($normalDuration > 0) {
+                    $ratio = $route['duration_in_traffic']['value'] / $normalDuration;
+                    if ($ratio > 1.5) $traffic = 'heavy';
+                    elseif ($ratio > 1.2) $traffic = 'moderate';
+                    else $traffic = 'light';
+                } else {
+                    // Duration is 0 (origin ≈ destination), default to light traffic
+                    $traffic = 'light';
+                }
             }
             
             return [
@@ -1021,7 +1037,7 @@ class RiderController extends Controller
             ->first();
         
         $currentCount = $usage->call_count ?? 0;
-        if ($currentCount >= 4500) {
+        if ($currentCount >= 6000) {
             \Log::warning('Google Maps API monthly limit reached for multi-stop ETA');
             return null;
         }
@@ -1389,6 +1405,81 @@ class RiderController extends Controller
     }
 
     /**
+     * Mark that the WhatsApp payment reminder message was sent for an online order
+     * This only sets a flag - does NOT affect delivery status, ledger, or settlement flow
+     */
+    public function markOnlineMessageSent(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            
+            $order = \App\Models\CRM\OrderModel::find($id);
+
+            if (!$order) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found',
+                ], 404);
+            }
+
+            // Verify order belongs to this rider
+            if ($order->assigned_rider_user_id != $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You are not authorized to update this order',
+                ], 403);
+            }
+
+            // Order must be delivered
+            if (!in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order must be delivered first',
+                ], 400);
+            }
+
+            // Verify it's an online/bank transfer order
+            $paymentMethod = strtolower($order->payment_method ?? 'cash');
+            $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+            if ($isCash) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This is not an online payment order',
+                ], 400);
+            }
+
+            // Set the message sent flag (simple flag - no ledger/settlement impact)
+            $order->online_message_sent_at = now();
+            $order->online_message_sent_by = $user->id;
+            $order->save();
+
+            \Log::info('Online payment WhatsApp message marked as sent', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'rider_id' => $user->id,
+                'rider_name' => $user->fullname,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Message status updated',
+                'online_message_sent_at' => $order->online_message_sent_at->toIso8601String(),
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to mark online message sent', [
+                'order_id' => $id,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update message status: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Get ledger balance and recent transactions for logged-in rider
      */
     public function getLedger(Request $request)
@@ -1450,6 +1541,30 @@ class RiderController extends Controller
                 return $invoice->amount - ($invoice->settled_amount ?? 0);
             });
 
+            // ⭐ Get loan, advance, and petty cash balances for display in rider mode
+            $loanBalance = 0;
+            $advanceBalance = 0;
+            $pettyCash = $account->petty_cash ?? 0;
+            
+            if ($account->user_id) {
+                // Get total outstanding loan balance
+                $loanBalance = \App\Models\HR\EmployeeLoanModel::where('user_id', $account->user_id)
+                    ->where('loan_status', 'active')
+                    ->sum('outstanding_balance');
+                
+                // Get total pending salary advances (from approved but not settled requests)
+                $advanceBalance = \App\Models\Request\RequestModel::where('requester_user_id', $account->user_id)
+                    ->whereHas('category', function($q) {
+                        $q->where('category_code', 'salary_advance');
+                    })
+                    ->where('status', 'approved')
+                    ->where(function($q) {
+                        $q->whereNull('settlement_status')
+                          ->orWhere('settlement_status', '!=', 'settled');
+                    })
+                    ->sum('amount');
+            }
+
             return response()->json([
                 'success' => true,
                 'account_id' => $account->id,
@@ -1459,8 +1574,14 @@ class RiderController extends Controller
                 'outstanding_invoices' => [
                     'count' => $outstandingInvoices->count(),
                     'total' => $totalOutstanding,
-                    'total_formatted' => 'Rs. ' . number_format($totalOutstanding, 0), // Format to 0 decimals
+                    'total_formatted' => 'Rs. ' . number_format($totalOutstanding, 0),
                 ],
+                'loan_balance' => round($loanBalance, 0),
+                'loan_balance_formatted' => 'Rs. ' . number_format($loanBalance, 0),
+                'advance_balance' => round($advanceBalance, 0),
+                'advance_balance_formatted' => 'Rs. ' . number_format($advanceBalance, 0),
+                'petty_cash' => round($pettyCash, 0),
+                'petty_cash_formatted' => 'Rs. ' . number_format($pettyCash, 0),
                 'recent_transactions' => $recentTransactions,
             ]);
         } catch (\Exception $e) {
@@ -1515,6 +1636,43 @@ class RiderController extends Controller
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get expense categories', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load categories: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get expense categories from config table (for expense request form dropdown)
+     * Same data source as the web expense form
+     * ⭐ Supports business_unit_id filter for Khaas mode
+     */
+    public function getExpenseCategoriesFromConfig(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            
+            $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%');
+            
+            // ⭐ Filter by business unit if provided
+            if ($businessUnitId) {
+                $query->where('business_unit_id', $businessUnitId);
+            }
+            
+            $categories = $query->orderBy('config_value')
+                ->pluck('config_value')
+                ->toArray();
+
+            return response()->json([
+                'success' => true,
+                'categories' => $categories,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get expense categories from config', [
                 'error' => $e->getMessage(),
             ]);
             
@@ -3600,11 +3758,32 @@ class RiderController extends Controller
                 $locationQuery->where('captured_at', '>=', now()->subHours(24));
             }
             
-            $locationTrail = $locationQuery
+            $rawLocationTrail = $locationQuery
                 ->orderBy('captured_at', 'desc')
-                ->limit($isHistory ? 50 : 10) // More points for history
+                ->limit($isHistory ? 200 : 50) // ⭐ Fetch more before filtering
                 ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
-                ->get()
+                ->get();
+            
+            // ⭐ Filter for quality: accuracy <= 50m, deduplicate per second
+            $filteredTrail = $rawLocationTrail->filter(function($loc) {
+                $accuracy = (float)($loc->accuracy ?? 0);
+                return $accuracy > 0 && $accuracy <= 50;
+            });
+            if ($filteredTrail->isEmpty()) {
+                $filteredTrail = $rawLocationTrail->sortBy('accuracy')->take(max(1, intval($rawLocationTrail->count() * 0.3)));
+            }
+            // Deduplicate same-second readings
+            $dedupedTrail = collect();
+            $groupedTrail = $filteredTrail->groupBy(function($loc) {
+                return substr($loc->captured_at, 0, 19);
+            });
+            foreach ($groupedTrail as $ts => $grp) {
+                $dedupedTrail->push($grp->sortBy(function($loc) { return (float)($loc->accuracy ?? 999); })->first());
+            }
+            
+            $locationTrail = $dedupedTrail->sortByDesc('captured_at')
+                ->take($isHistory ? 50 : 10)
+                ->values()
                 ->map(function($loc) {
                     $capturedAt = \Carbon\Carbon::parse($loc->captured_at);
                     return [
@@ -3691,6 +3870,8 @@ class RiderController extends Controller
                     'osh.delivery_latitude as delivery_lat',
                     'osh.delivery_longitude as delivery_lng',
                     'osh.changed_at as delivered_at',
+                    // ⭐ ETA from "Get Times" button
+                    'o.estimated_delivery_at',
                 ])
                 ->orderBy('o.id', 'desc')
                 ->get();
@@ -3736,6 +3917,29 @@ class RiderController extends Controller
                 $paymentMethod = strtolower($order->payment_method ?? 'cash');
                 $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
                 
+                // ⭐ Build ETA display for delivered orders
+                $etaDisplay = null;
+                $etaComparison = null;
+                if ($order->estimated_delivery_at && $isDelivered && $order->delivered_at) {
+                    $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                    $etaDisplay = $estimatedTime->format('h:i A');
+                    $actualTime = \Carbon\Carbon::parse($order->delivered_at);
+                    $diffMinutes = (int) round($actualTime->diffInMinutes($estimatedTime, false));
+                    
+                    $etaComparison = [
+                        'estimated_at_display' => $etaDisplay,
+                        'actual_at_display' => $actualTime->format('h:i A'),
+                        'diff_minutes' => $diffMinutes,
+                        'status' => $diffMinutes >= 0 ? 'early' : 'late',
+                        'status_text' => $diffMinutes >= 0 
+                            ? ($diffMinutes == 0 ? 'On time' : "{$diffMinutes} min early")
+                            : (abs($diffMinutes) . ' min late'),
+                    ];
+                } elseif ($order->estimated_delivery_at && !$isDelivered) {
+                    $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                    $etaDisplay = $estimatedTime->format('h:i A');
+                }
+
                 return [
                     'id' => $order->id,
                     'order_number' => $order->order_number,
@@ -3749,6 +3953,8 @@ class RiderController extends Controller
                     'location' => $location,
                     'location_source' => $locationSource,
                     'delivered_at' => $order->delivered_at,
+                    'estimated_delivery_at_display' => $etaDisplay, // ⭐ ETA time
+                    'eta_comparison' => $etaComparison, // ⭐ ETA vs actual
                     'google_maps_url' => $order->verified_location_url,
                 ];
             });
@@ -3818,12 +4024,12 @@ class RiderController extends Controller
                 $query->where('captured_at', '>=', now()->subHours($hours));
             }
             
-            $locations = $query
+            $rawLocations = $query
                 ->orderBy('captured_at', 'asc') // Oldest first for grouping
                 ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
                 ->get();
             
-            if ($locations->isEmpty()) {
+            if ($rawLocations->isEmpty()) {
                 return response()->json([
                     'success' => true,
                     'locations' => [],
@@ -3831,6 +4037,30 @@ class RiderController extends Controller
                     'grouped_points' => 0,
                 ]);
             }
+            
+            // ⭐ Filter out low-quality GPS readings (accuracy > 50m)
+            $locations = $rawLocations->filter(function($loc) {
+                $accuracy = (float)($loc->accuracy ?? 0);
+                return $accuracy > 0 && $accuracy <= 50;
+            });
+            
+            // If all filtered out, use best 50% by accuracy
+            if ($locations->isEmpty()) {
+                $locations = $rawLocations->sortBy('accuracy')->take(max(1, intval($rawLocations->count() * 0.5)));
+            }
+            
+            // ⭐ Deduplicate same-second readings (keep best accuracy per second)
+            $deduped = collect();
+            $grouped = $locations->groupBy(function($loc) {
+                return substr($loc->captured_at, 0, 19);
+            });
+            foreach ($grouped as $timestamp => $group) {
+                $best = $group->sortBy(function($loc) {
+                    return (float)($loc->accuracy ?? 999);
+                })->first();
+                $deduped->push($best);
+            }
+            $locations = $deduped->sortBy('captured_at')->values();
             
             // Group nearby locations and calculate duration at each spot
             // ~50m threshold (roughly 0.0005 degrees)
@@ -3898,6 +4128,7 @@ class RiderController extends Controller
                 'success' => true,
                 'locations' => $groupedLocations,
                 'total_points' => $locations->count(),
+                'raw_points' => $rawLocations->count(), // ⭐ Total before GPS filtering
                 'grouped_points' => count($groupedLocations),
                 'hours' => $hours,
             ]);
@@ -3987,20 +4218,92 @@ class RiderController extends Controller
             $to = \Carbon\Carbon::parse($toTime);
             
             // Get GPS readings between timestamps
-            $readings = \DB::table('t_ops_rider_location')
+            $rawReadings = \DB::table('t_ops_rider_location')
                 ->where('user_id', $riderId)
                 ->whereBetween('captured_at', [$from, $to])
                 ->orderBy('captured_at')
                 ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
                 ->get();
             
+            if ($rawReadings->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'trail' => [],
+                    'count' => 0,
+                    'raw_count' => 0,
+                    'batch_breaks' => [],
+                    'message' => 'No GPS readings in this time range'
+                ]);
+            }
+            
+            // ⭐ FILTER GPS READINGS for quality (fixes fuzzy/zigzag trails)
+            // Step 1: Filter out very low accuracy readings (accuracy > 50m)
+            $filtered = $rawReadings->filter(function($loc) {
+                $accuracy = (float)($loc->accuracy ?? 0);
+                return $accuracy > 0 && $accuracy <= 50;
+            });
+            
+            // If all readings were filtered out (all low quality), fall back to best available
+            if ($filtered->isEmpty()) {
+                $filtered = $rawReadings->sortBy('accuracy')->take(max(1, intval($rawReadings->count() * 0.5)));
+            }
+            
+            // Step 2: Deduplicate same-second readings (keep best accuracy per second)
+            $deduped = collect();
+            $grouped = $filtered->groupBy(function($loc) {
+                return substr($loc->captured_at, 0, 19); // Group by second (YYYY-MM-DD HH:MM:SS)
+            });
+            foreach ($grouped as $timestamp => $group) {
+                // Keep the reading with best (lowest) accuracy for each second
+                $best = $group->sortBy(function($loc) {
+                    return (float)($loc->accuracy ?? 999);
+                })->first();
+                $deduped->push($best);
+            }
+            $deduped = $deduped->sortBy('captured_at')->values();
+            
+            // Step 3: Filter out impossible speed jumps (>150 km/h between consecutive points)
+            $readings = collect();
+            $prev = null;
+            foreach ($deduped as $loc) {
+                if ($prev === null) {
+                    $readings->push($loc);
+                    $prev = $loc;
+                    continue;
+                }
+                
+                $distance = $this->haversineDistance(
+                    (float)$prev->latitude, (float)$prev->longitude,
+                    (float)$loc->latitude, (float)$loc->longitude
+                );
+                $timeDiff = abs(\Carbon\Carbon::parse($loc->captured_at)->diffInSeconds(\Carbon\Carbon::parse($prev->captured_at)));
+                
+                // Calculate speed: if time diff is 0, allow only if distance < 100m
+                if ($timeDiff > 0) {
+                    $speedKmh = ($distance / 1000) / ($timeDiff / 3600);
+                    if ($speedKmh <= 150) {
+                        $readings->push($loc);
+                        $prev = $loc;
+                    }
+                    // else: skip this point (impossible jump)
+                } else {
+                    // Same timestamp - only allow if very close (<100m)
+                    if ($distance < 100) {
+                        $readings->push($loc);
+                        $prev = $loc;
+                    }
+                }
+            }
+            $readings = $readings->values();
+            
             if ($readings->isEmpty()) {
                 return response()->json([
                     'success' => true,
                     'trail' => [],
                     'count' => 0,
+                    'raw_count' => $rawReadings->count(),
                     'batch_breaks' => [],
-                    'message' => 'No GPS readings in this time range'
+                    'message' => 'All GPS readings were filtered out (low quality)'
                 ]);
             }
             
@@ -4012,7 +4315,8 @@ class RiderController extends Controller
                     'longitude' => (float)$loc->longitude,
                     'accuracy' => $loc->accuracy,
                     'time' => $capturedAt->format('h:i A'),
-                    'timestamp' => $loc->captured_at,
+                    'captured_at' => $loc->captured_at, // ⭐ Use captured_at (matches frontend expectation)
+                    'timestamp' => $loc->captured_at,     // ⭐ Keep for backward compatibility
                     'source' => $loc->source,
                 ];
             })->values();
@@ -4086,6 +4390,7 @@ class RiderController extends Controller
                 'success' => true,
                 'trail' => $trail,
                 'count' => $trail->count(),
+                'raw_count' => $rawReadings->count(), // ⭐ Total before filtering
                 'from_time' => $from->format('h:i A'),
                 'to_time' => $to->format('h:i A'),
                 'batch_breaks' => $batchBreaks,
@@ -4101,6 +4406,343 @@ class RiderController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load trail segment: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ⭐ DELIVERY JOURNEY: Analyze what happened between ride start/last delivery and this delivery.
+     * Returns trail, stops, distance, and timing summary for a delivered order.
+     */
+    public function getDeliveryJourney(Request $request, $orderId)
+    {
+        try {
+            // Get the delivered order with status history
+            $order = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->where('o.id', $orderId)
+                ->select([
+                    'o.id', 'o.order_number', 'o.assigned_rider_user_id',
+                    'o.address_line1', 'o.address_city',
+                    'o.estimated_delivery_at',
+                    'u.fullname as rider_name',
+                ])
+                ->first();
+            
+            if (!$order || !$order->assigned_rider_user_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order not found or no rider assigned'
+                ], 404);
+            }
+            
+            $riderId = $order->assigned_rider_user_id;
+            
+            // Get the delivery timestamp for this order
+            $deliveryEvent = \DB::table('t_crm_order_status_history')
+                ->where('order_id', $orderId)
+                ->where('status_code', 'delivered')
+                ->orderBy('id', 'asc')
+                ->first();
+            
+            if (!$deliveryEvent) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Order has not been delivered yet'
+                ], 400);
+            }
+            
+            $deliveredAt = \Carbon\Carbon::parse($deliveryEvent->changed_at);
+            
+            // Find the previous event: either the previous delivery by this rider, or the ride start
+            // Look for the most recent delivery before this one by the same rider on the same date
+            $prevDelivery = \DB::table('t_crm_order_status_history as osh')
+                ->join('t_crm_prod_order as prev_o', 'prev_o.id', '=', 'osh.order_id')
+                ->where('prev_o.assigned_rider_user_id', $riderId)
+                ->where('osh.status_code', 'delivered')
+                ->where('osh.changed_at', '<', $deliveryEvent->changed_at)
+                ->whereDate('osh.changed_at', $deliveredAt->toDateString())
+                ->where('osh.order_id', '!=', $orderId)
+                ->orderBy('osh.changed_at', 'desc')
+                ->select('osh.changed_at', 'osh.order_id', 'prev_o.order_number')
+                ->first();
+            
+            if ($prevDelivery) {
+                $journeyStartTime = \Carbon\Carbon::parse($prevDelivery->changed_at);
+                $journeyStartLabel = "After delivering #{$prevDelivery->order_number}";
+            } else {
+                // No previous delivery - use ride start (first GPS point of the day or first 'start' source)
+                $firstGps = \DB::table('t_ops_rider_location')
+                    ->where('user_id', $riderId)
+                    ->whereDate('captured_at', $deliveredAt->toDateString())
+                    ->where('captured_at', '<', $deliveryEvent->changed_at)
+                    ->orderBy('captured_at', 'asc')
+                    ->first();
+                
+                if ($firstGps) {
+                    $journeyStartTime = \Carbon\Carbon::parse($firstGps->captured_at);
+                    $journeyStartLabel = "Day start";
+                } else {
+                    // No GPS data before delivery
+                    $journeyStartTime = $deliveredAt->copy()->subMinutes(30);
+                    $journeyStartLabel = "~30 min before delivery (no earlier GPS)";
+                }
+            }
+            
+            $journeyEndTime = $deliveredAt;
+            
+            // ⭐ Get GPS trail between journey start and end (reuse trail filtering logic)
+            $rawReadings = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->whereBetween('captured_at', [$journeyStartTime, $journeyEndTime])
+                ->orderBy('captured_at')
+                ->select('latitude', 'longitude', 'accuracy', 'captured_at', 'source')
+                ->get();
+            
+            if ($rawReadings->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'order_id' => $orderId,
+                    'order_number' => $order->order_number,
+                    'rider_name' => $order->rider_name,
+                    'journey_start' => $journeyStartTime->format('h:i A'),
+                    'journey_end' => $journeyEndTime->format('h:i A'),
+                    'journey_start_label' => $journeyStartLabel,
+                    'total_duration_minutes' => (int) round($journeyStartTime->diffInMinutes($journeyEndTime)),
+                    'trail' => [],
+                    'stops' => [],
+                    'summary' => [
+                        'total_distance_km' => 0,
+                        'moving_time_minutes' => 0,
+                        'stopped_time_minutes' => 0,
+                        'stop_count' => 0,
+                        'avg_speed_kmh' => 0,
+                    ],
+                    'message' => 'No GPS data for this journey segment'
+                ]);
+            }
+            
+            // Step 1: Filter out low accuracy readings
+            $filtered = $rawReadings->filter(function($loc) {
+                $accuracy = (float)($loc->accuracy ?? 0);
+                return $accuracy > 0 && $accuracy <= 50;
+            });
+            
+            if ($filtered->isEmpty()) {
+                $filtered = $rawReadings->sortBy('accuracy')->take(max(1, intval($rawReadings->count() * 0.5)));
+            }
+            
+            // Step 2: Deduplicate same-second readings (keep best accuracy)
+            $deduped = collect();
+            $grouped = $filtered->groupBy(function($loc) {
+                return substr($loc->captured_at, 0, 19);
+            });
+            foreach ($grouped as $timestamp => $group) {
+                $best = $group->sortBy(function($loc) {
+                    return (float)($loc->accuracy ?? 999);
+                })->first();
+                $deduped->push($best);
+            }
+            $deduped = $deduped->sortBy('captured_at')->values();
+            
+            // Step 3: Filter impossible speed jumps (>150 km/h)
+            $readings = collect();
+            $prev = null;
+            foreach ($deduped as $loc) {
+                if ($prev === null) {
+                    $readings->push($loc);
+                    $prev = $loc;
+                    continue;
+                }
+                $distance = $this->haversineDistance(
+                    (float)$prev->latitude, (float)$prev->longitude,
+                    (float)$loc->latitude, (float)$loc->longitude
+                );
+                $timeDiff = abs(\Carbon\Carbon::parse($loc->captured_at)->diffInSeconds(\Carbon\Carbon::parse($prev->captured_at)));
+                if ($timeDiff > 0) {
+                    $speedKmh = ($distance / 1000) / ($timeDiff / 3600);
+                    if ($speedKmh <= 150) {
+                        $readings->push($loc);
+                        $prev = $loc;
+                    }
+                } else if ($distance < 100) {
+                    $readings->push($loc);
+                    $prev = $loc;
+                }
+            }
+            $readings = $readings->values();
+            
+            // ⭐ Detect stops (>3 min within 50m radius)
+            $stops = [];
+            $currentStop = null;
+            $stopThresholdMeters = 50;
+            $stopThresholdSeconds = 180; // 3 minutes
+            
+            for ($i = 0; $i < $readings->count(); $i++) {
+                $point = $readings[$i];
+                
+                if ($currentStop === null) {
+                    // Start a potential stop
+                    $currentStop = [
+                        'start_idx' => $i,
+                        'center_lat' => (float)$point->latitude,
+                        'center_lng' => (float)$point->longitude,
+                        'start_time' => $point->captured_at,
+                        'end_time' => $point->captured_at,
+                        'point_count' => 1,
+                    ];
+                } else {
+                    $dist = $this->haversineDistance(
+                        $currentStop['center_lat'], $currentStop['center_lng'],
+                        (float)$point->latitude, (float)$point->longitude
+                    );
+                    
+                    if ($dist <= $stopThresholdMeters) {
+                        // Still within stop radius
+                        $currentStop['end_time'] = $point->captured_at;
+                        $currentStop['point_count']++;
+                    } else {
+                        // Moved away - check if previous cluster was a stop
+                        $durationSecs = \Carbon\Carbon::parse($currentStop['start_time'])
+                            ->diffInSeconds(\Carbon\Carbon::parse($currentStop['end_time']));
+                        
+                        if ($durationSecs >= $stopThresholdSeconds) {
+                            $durationMins = (int) round($durationSecs / 60);
+                            $stops[] = [
+                                'latitude' => $currentStop['center_lat'],
+                                'longitude' => $currentStop['center_lng'],
+                                'start_time' => \Carbon\Carbon::parse($currentStop['start_time'])->format('h:i A'),
+                                'end_time' => \Carbon\Carbon::parse($currentStop['end_time'])->format('h:i A'),
+                                'duration_minutes' => $durationMins,
+                                'duration_display' => $durationMins >= 60 
+                                    ? floor($durationMins / 60) . 'h ' . ($durationMins % 60) . 'min'
+                                    : $durationMins . ' min',
+                            ];
+                        }
+                        
+                        // Start new potential stop
+                        $currentStop = [
+                            'start_idx' => $i,
+                            'center_lat' => (float)$point->latitude,
+                            'center_lng' => (float)$point->longitude,
+                            'start_time' => $point->captured_at,
+                            'end_time' => $point->captured_at,
+                            'point_count' => 1,
+                        ];
+                    }
+                }
+            }
+            
+            // Check last cluster
+            if ($currentStop) {
+                $durationSecs = \Carbon\Carbon::parse($currentStop['start_time'])
+                    ->diffInSeconds(\Carbon\Carbon::parse($currentStop['end_time']));
+                if ($durationSecs >= $stopThresholdSeconds) {
+                    $durationMins = (int) round($durationSecs / 60);
+                    $stops[] = [
+                        'latitude' => $currentStop['center_lat'],
+                        'longitude' => $currentStop['center_lng'],
+                        'start_time' => \Carbon\Carbon::parse($currentStop['start_time'])->format('h:i A'),
+                        'end_time' => \Carbon\Carbon::parse($currentStop['end_time'])->format('h:i A'),
+                        'duration_minutes' => $durationMins,
+                        'duration_display' => $durationMins >= 60 
+                            ? floor($durationMins / 60) . 'h ' . ($durationMins % 60) . 'min'
+                            : $durationMins . ' min',
+                    ];
+                }
+            }
+            
+            // ⭐ Calculate total distance
+            $totalDistanceMeters = 0;
+            for ($i = 1; $i < $readings->count(); $i++) {
+                $totalDistanceMeters += $this->haversineDistance(
+                    (float)$readings[$i-1]->latitude, (float)$readings[$i-1]->longitude,
+                    (float)$readings[$i]->latitude, (float)$readings[$i]->longitude
+                );
+            }
+            $totalDistanceKm = round($totalDistanceMeters / 1000, 2);
+            
+            // Calculate stopped time
+            $totalStoppedMinutes = collect($stops)->sum('duration_minutes');
+            $totalDurationMinutes = (int) round($journeyStartTime->diffInMinutes($journeyEndTime));
+            $movingTimeMinutes = max(0, $totalDurationMinutes - $totalStoppedMinutes);
+            
+            // Average moving speed
+            $avgSpeedKmh = $movingTimeMinutes > 0 
+                ? round(($totalDistanceKm / ($movingTimeMinutes / 60)), 1) 
+                : 0;
+            
+            // Format trail for response
+            $trail = $readings->map(function($loc) {
+                return [
+                    'latitude' => (float)$loc->latitude,
+                    'longitude' => (float)$loc->longitude,
+                    'time' => \Carbon\Carbon::parse($loc->captured_at)->format('h:i A'),
+                    'captured_at' => $loc->captured_at,
+                ];
+            })->values();
+            
+            // ETA comparison
+            $etaComparison = null;
+            if ($order->estimated_delivery_at) {
+                $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                $diffMinutes = (int) round($deliveredAt->diffInMinutes($estimatedTime, false));
+                $etaComparison = [
+                    'estimated_at_display' => $estimatedTime->format('h:i A'),
+                    'actual_at_display' => $deliveredAt->format('h:i A'),
+                    'diff_minutes' => $diffMinutes,
+                    'status' => $diffMinutes >= 0 ? 'early' : 'late',
+                    'status_text' => $diffMinutes >= 0 
+                        ? ($diffMinutes == 0 ? 'On time' : "{$diffMinutes} min early")
+                        : (abs($diffMinutes) . ' min late'),
+                ];
+            }
+            
+            return response()->json([
+                'success' => true,
+                'order_id' => $orderId,
+                'order_number' => $order->order_number,
+                'rider_name' => $order->rider_name,
+                'address' => trim(implode(', ', array_filter([$order->address_line1, $order->address_city]))),
+                'journey_start' => $journeyStartTime->format('h:i A'),
+                'journey_end' => $journeyEndTime->format('h:i A'),
+                'journey_start_label' => $journeyStartLabel,
+                'eta_comparison' => $etaComparison,
+                'total_duration_minutes' => $totalDurationMinutes,
+                'trail' => $trail,
+                'trail_count' => $trail->count(),
+                'raw_count' => $rawReadings->count(),
+                'stops' => $stops,
+                'summary' => [
+                    'total_distance_km' => $totalDistanceKm,
+                    'total_distance_display' => $totalDistanceKm < 1 
+                        ? round($totalDistanceMeters) . 'm' 
+                        : $totalDistanceKm . ' km',
+                    'moving_time_minutes' => $movingTimeMinutes,
+                    'moving_time_display' => $movingTimeMinutes >= 60 
+                        ? floor($movingTimeMinutes / 60) . 'h ' . ($movingTimeMinutes % 60) . 'min'
+                        : $movingTimeMinutes . ' min',
+                    'stopped_time_minutes' => $totalStoppedMinutes,
+                    'stopped_time_display' => $totalStoppedMinutes >= 60
+                        ? floor($totalStoppedMinutes / 60) . 'h ' . ($totalStoppedMinutes % 60) . 'min'
+                        : $totalStoppedMinutes . ' min',
+                    'stop_count' => count($stops),
+                    'avg_speed_kmh' => $avgSpeedKmh,
+                    'total_duration_display' => $totalDurationMinutes >= 60
+                        ? floor($totalDurationMinutes / 60) . 'h ' . ($totalDurationMinutes % 60) . 'min'
+                        : $totalDurationMinutes . ' min',
+                ],
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to get delivery journey', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load delivery journey: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -4476,6 +5118,7 @@ class RiderController extends Controller
                     'o.customer_id',
                     'o.total_price',
                     'o.payment_method',
+                    'o.estimated_delivery_at', // ⭐ ETA from "Get Times"
                     'osh.changed_at as delivered_at',
                     \DB::raw('DATE(osh.changed_at) as delivery_date'),
                     \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
@@ -4545,6 +5188,28 @@ class RiderController extends Controller
                     ];
                 }
                 
+                // ⭐ Build ETA comparison
+                $etaDisplay = null;
+                $etaComparison = null;
+                if ($order->estimated_delivery_at) {
+                    $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                    $etaDisplay = $estimatedTime->format('h:i A');
+                    
+                    $actualTime = \Carbon\Carbon::parse($order->delivered_at);
+                    $diffMinutes = (int) round($actualTime->diffInMinutes($estimatedTime, false));
+                    
+                    $etaComparison = [
+                        'estimated_at_display' => $etaDisplay,
+                        'actual_at_display' => $actualTime->format('h:i A'),
+                        'diff_minutes' => $diffMinutes,
+                        'status' => $diffMinutes >= 0 ? 'early' : 'late',
+                        'status_text' => $diffMinutes >= 0 
+                            ? ($diffMinutes == 0 ? 'On time' : "{$diffMinutes} min early")
+                            : (abs($diffMinutes) . ' min late'),
+                        'status_emoji' => $diffMinutes >= 0 ? '✅' : '⚠️',
+                    ];
+                }
+                
                 $dateGroups[$dateKey]['orders'][] = [
                     'id' => $order->id,
                     'order_number' => $order->order_number,
@@ -4556,6 +5221,8 @@ class RiderController extends Controller
                     'payment_type' => $isCash ? 'cash' : 'online',
                     'delivered_at' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
                     'delivered_at_raw' => $order->delivered_at, // ⭐ Raw timestamp for trail segment calculation
+                    'estimated_delivery_at_display' => $etaDisplay, // ⭐ ETA time display
+                    'eta_comparison' => $etaComparison, // ⭐ ETA vs actual comparison
                     'location' => $location,
                 ];
             }
@@ -4870,10 +5537,21 @@ class RiderController extends Controller
     public function getRequestCategories(Request $request)
     {
         try {
-            // Get only categories relevant for riders
-            $categories = \App\Models\Request\RequestCategoryModel::whereIn('category_code', ['expense', 'salary_advance', 'leave'])
+            $businessUnitId = $request->input('business_unit_id');
+            
+            // ⭐ In Khaas mode (BU filter provided), only show khaas_expense
+            // In normal mode, show expense, salary_advance, leave
+            if ($businessUnitId && $businessUnitId != 1) {
+                // Khaas mode: only show khaas_expense
+                $categoryCodes = ['khaas_expense'];
+            } else {
+                // Normal store/rider mode
+                $categoryCodes = ['expense', 'salary_advance', 'leave'];
+            }
+            
+            $categories = \App\Models\Request\RequestCategoryModel::whereIn('category_code', $categoryCodes)
                 ->where('is_active', 1)
-                ->orderBy('category_name')
+                ->orderBy('sequence_order')
                 ->get()
                 ->map(function($cat) {
                     return [
@@ -4910,7 +5588,7 @@ class RiderController extends Controller
             $query = \App\Models\Request\RequestModel::with(['category'])
                 ->where('requester_user_id', $user->id)
                 ->whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance', 'leave']);
+                    $q->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense']);
                 })
                 ->orderByDesc('created_at');
 
@@ -5015,9 +5693,9 @@ class RiderController extends Controller
                 }
             }
 
-            // Verify category is allowed for riders
+            // Verify category is allowed (⭐ includes khaas_expense)
             $category = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
-                ->whereIn('category_code', ['expense', 'salary_advance', 'leave'])
+                ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
                 ->findOrFail($validated['category_id']);
 
             DB::beginTransaction();
@@ -5040,6 +5718,8 @@ class RiderController extends Controller
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
+                'payment_source_account_id' => $request->input('payment_source_account_id'), // ⭐ Payment source
+                'business_unit_id' => $request->input('business_unit_id', 1), // ⭐ Business unit
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
@@ -5714,10 +6394,21 @@ class RiderController extends Controller
                 'expense_backdate_days' => $expenseBackdateDays
             ]);
             
+            // ⭐ Get Khaas business unit info for Khaas mode
+            $hasKhaasMode = in_array('access_khaas_mode', $permissions);
+            $khaasBusinessUnit = null;
+            if ($hasKhaasMode) {
+                $khaasBusinessUnit = \App\Models\FIN\BusinessUnitModel::where('code', 'KHAAS')
+                    ->where('is_active', 1)
+                    ->first(['id', 'code', 'name', 'short_code', 'color_hex']);
+            }
+            
             return response()->json([
                 'success' => true,
                 'permissions' => $permissions,
                 'has_store_mode' => in_array('access_store_mode', $permissions),
+                'has_khaas_mode' => $hasKhaasMode, // ⭐ Khaas mode access
+                'khaas_business_unit' => $khaasBusinessUnit, // ⭐ Khaas BU details (id, name, color)
                 'expense_backdate_days' => (int)$expenseBackdateDays // ⭐ Include backdate days
             ]);
             
@@ -5732,7 +6423,8 @@ class RiderController extends Controller
                 'success' => false,
                 'message' => 'Failed to fetch permissions',
                 'permissions' => [],
-                'has_store_mode' => false
+                'has_store_mode' => false,
+                'has_khaas_mode' => false
             ], 500);
         }
     }
@@ -5949,9 +6641,17 @@ class RiderController extends Controller
                     'customer_province' => $order->customer->province ?? '',
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
-                    // ⭐ Customer Notes - for important customer-level information
-                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
-                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Customer Notes - use primary customer notes if order linked to merged duplicate
+                    'customer_notes' => $order->customer ? (
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ) : null,
+                    'has_customer_notes' => $order->customer && !empty(
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ),
                     // ⭐ Order Notes - order-specific notes
                     'order_note' => $order->note ?? null,
                     'has_order_note' => !empty($order->note),
@@ -6042,7 +6742,7 @@ class RiderController extends Controller
             $query = OrderModel::with(['customer' => function($q) {
                     // ⭐ Include 'notes' for customer notes display, 'phone_original' for contact
                     // ⭐ Include verified_location_saved_by and saved_at for showing who saved location
-                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at');
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -6137,6 +6837,18 @@ class RiderController extends Controller
                 // Get preparation summary from pre-fetched data
                 $prepSummary = $prepSummaries[$order->id] ?? null;
                 
+                // ⭐ Safety net: if the order's customer is a merged duplicate, use the primary customer's notes
+                $effectiveCustomerNotes = null;
+                if ($order->customer) {
+                    if ($order->customer->merged_into_customer_id) {
+                        // This order is linked to a merged duplicate - get primary customer's notes
+                        $primaryCustomer = \App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id);
+                        $effectiveCustomerNotes = $primaryCustomer ? ($primaryCustomer->notes ?? null) : null;
+                    } else {
+                        $effectiveCustomerNotes = $order->customer->notes ?? null;
+                    }
+                }
+                
                 return [
                     'id' => $order->id,
                     'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
@@ -6162,9 +6874,9 @@ class RiderController extends Controller
                         $order->address_province
                     ]))),
                     'customer_phone' => $order->address_phone ?? ($order->customer->phone_original ?? null),
-                    // ⭐ Customer Notes - for important customer-level information (e.g., delivery instructions)
-                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
-                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Customer Notes - use primary customer's notes if order is linked to merged duplicate
+                    'customer_notes' => $effectiveCustomerNotes,
+                    'has_customer_notes' => !empty($effectiveCustomerNotes),
                     // ⭐ Order Notes - order-specific notes
                     'order_note' => $order->note ?? null,
                     'has_order_note' => !empty($order->note),
@@ -6511,9 +7223,17 @@ class RiderController extends Controller
                     'customer_province' => $order->customer->province ?? '',
                     'customer_postal_code' => $order->customer->postal_code ?? '',
                     'customer_id' => $order->customer_id,
-                    // ⭐ Customer Notes - for important customer-level information
-                    'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
-                    'has_customer_notes' => $order->customer && !empty($order->customer->notes),
+                    // ⭐ Customer Notes - use primary customer notes if order linked to merged duplicate
+                    'customer_notes' => $order->customer ? (
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ) : null,
+                    'has_customer_notes' => $order->customer && !empty(
+                        $order->customer->merged_into_customer_id
+                            ? (\App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id)?->notes ?? null)
+                            : ($order->customer->notes ?? null)
+                    ),
                     // ⭐ Order Notes - order-specific notes
                     'order_note' => $order->note ?? null,
                     'has_order_note' => !empty($order->note),
@@ -8005,19 +8725,36 @@ class RiderController extends Controller
                 ], 400);
             }
             
-            // Update line items
+            // Update line items + handle inventory deduction/restoration
             $updated = 0;
+            $inventoryDeducted = 0;
+            $inventoryRestored = 0;
             foreach ($lineItemIds as $lineItemId) {
                 $lineItem = $order->lineItems->where('id', $lineItemId)->first();
                 if ($lineItem) {
+                    $oldStatus = $lineItem->preparation_status;
                     $lineItem->preparation_status = $preparationStatus;
                     $lineItem->updated_by = $user->id;
                     $lineItem->save();
                     $updated++;
+
+                    // ⭐ INVENTORY: Deduct when marking as prepared
+                    if ($preparationStatus === 'preparing' && $oldStatus !== 'preparing') {
+                        if ($lineItem->deductInventory()) {
+                            $inventoryDeducted++;
+                        }
+                    }
+                    // ⭐ INVENTORY: Restore when un-marking as prepared
+                    elseif ($preparationStatus === null && $oldStatus === 'preparing') {
+                        if ($lineItem->restoreInventory()) {
+                            $inventoryRestored++;
+                        }
+                    }
                 }
             }
             
-            // Get updated counts
+            // Get updated counts (refresh from DB)
+            $order->load('lineItems');
             $totalItems = $order->lineItems->count();
             $preparingCount = $order->lineItems->where('preparation_status', 'preparing')->count();
             
@@ -8027,6 +8764,8 @@ class RiderController extends Controller
                 'updated_count' => $updated,
                 'preparing_count' => $preparingCount,
                 'total_items' => $totalItems,
+                'inventory_deducted' => $inventoryDeducted,
+                'inventory_restored' => $inventoryRestored,
             ]);
             
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -8067,15 +8806,18 @@ class RiderController extends Controller
                 ], 403);
             }
             
-            // ⭐ Check if user can see ALL payment sources (EXP_FUND, NF_CASH, ONLINE)
-            // Without this permission, user only sees EXP_FUND expenses
-            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources');
-            
             // Get filter parameters
             $month = $request->input('month'); // Format: YYYY-MM
             $category = $request->input('category');
             $settlementStatus = $request->input('settlement_status');
             $paymentSourceFilter = $request->input('payment_source'); // New filter: account_id or 'all'
+            $businessUnitId = $request->input('business_unit_id'); // ⭐ Filter by business unit (for Khaas mode)
+            
+            // ⭐ Check if user can see ALL payment sources (EXP_FUND, NF_CASH, ONLINE)
+            // Without this permission, user only sees EXP_FUND expenses
+            // In Khaas mode: also grant this if user has approve_khaas_transfer (admin)
+            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources')
+                || ($businessUnitId && $user->hasMobilePermission('approve_khaas_transfer'));
             
             \Log::debug('Expense filter params received', [
                 'month' => $month,
@@ -8092,16 +8834,32 @@ class RiderController extends Controller
             $expenseFundAccountId = $expenseFundAccount ? $expenseFundAccount->id : null;
             
             // Build base query for expenses and salary advances
-            $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+            // ⭐ In Khaas mode (BU filter): show 'khaas_expense' (and 'expense' for backwards compat)
+            // Salary advances are employee-level, not business-unit-level
+            $expenseCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
+            
+            $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+                    $q->whereIn('category_code', $expenseCategoryCodes);
                 })
                 ->whereNotNull('ledger_transaction_id')
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'settledBy', 'settlementDestinationAccount']);
             
-            // ⭐ Apply payment source filter based on permission
-            if (!$hasAllPaymentSourcesPermission) {
-                // User can only see EXP_FUND expenses
+            // ⭐ Apply business unit filter (for Khaas mode)
+            if ($businessUnitId) {
+                $expensesQuery->where('business_unit_id', $businessUnitId);
+            }
+            
+            // ⭐ Apply payment source filter based on permission and mode
+            if ($businessUnitId) {
+                // ⭐ BU-specific mode (Khaas): show ALL expenses for this BU regardless of payment source
+                // The business_unit_id filter above already scopes the data correctly
+                // Only apply specific source filter if explicitly requested by user
+                if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
+                    $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
+                }
+            } else if (!$hasAllPaymentSourcesPermission) {
+                // Main mode without permission: user can only see EXP_FUND expenses
                 if ($expenseFundAccountId) {
                     $expensesQuery->where(function($q) use ($expenseFundAccountId) {
                         $q->where('payment_source_account_id', $expenseFundAccountId)
@@ -8109,7 +8867,7 @@ class RiderController extends Controller
                     });
                 }
             } else if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
-                // User has permission and wants to filter by specific source
+                // Main mode with permission: user wants to filter by specific source
                 $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
             }
             // If paymentSourceFilter is 'all' or empty with permission, show all sources
@@ -8186,10 +8944,17 @@ class RiderController extends Controller
             // ⭐ FIX: Only include salary slips if:
             // 1. No category filter OR category is 'salary'
             // 2. AND no payment source filter OR filter is EXP_FUND
+            // 3. AND no business unit filter (salary slips don't have BU concept)
             $includeSalarySlips = (!$category || strtolower($category) === 'salary');
             
             // ⭐ If user filters by a specific non-EXP_FUND source, exclude salary slips
             if ($paymentSourceFilter && $paymentSourceFilter !== 'all' && $paymentSourceFilter != $expenseFundAccountId) {
+                $includeSalarySlips = false;
+            }
+            
+            // ⭐ If filtering by business unit (Khaas mode), exclude salary slips
+            // Salary slips don't belong to a business unit
+            if ($businessUnitId) {
                 $includeSalarySlips = false;
             }
             
@@ -8279,18 +9044,33 @@ class RiderController extends Controller
             $expensesBySourceArray = array_values($expensesBySource);
             usort($expensesBySourceArray, fn($a, $b) => $b['amount'] <=> $a['amount']);
             
-            // Get expense fund balance (reuse $expenseFundAccount from earlier)
-            $expenseFund = $expenseFundAccount;
+            // Get expense fund balance
+            // ⭐ For non-NF BUs (Khaas etc): use the BU's configured default expense account
+            // For NF main (BU 1) or no BU: use standard EXP_FUND
+            if ($businessUnitId && (int) $businessUnitId !== 1) {
+                $expenseFund = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+            } else {
+                $expenseFund = $expenseFundAccount;
+            }
             
             // Get pending approvals (real-time, not filtered by month)
             // Include approvals relationship to check L1/L2 status
-            $pendingApprovals = \App\Models\Request\RequestModel::whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+            // ⭐ In Khaas mode: show 'khaas_expense' (and 'expense' for backwards compat)
+            $pendingCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
+            
+            $pendingApprovalsQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($pendingCategoryCodes) {
+                    $q->whereIn('category_code', $pendingCategoryCodes);
                 })
                 ->where('status', \App\Models\Request\RequestModel::STATUS_PENDING)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'approvals.approver'])
-                ->orderBy('created_at', 'asc')
-                ->get();
+                ->orderBy('created_at', 'asc');
+            
+            // ⭐ Filter pending approvals by business unit (for Khaas mode)
+            if ($businessUnitId) {
+                $pendingApprovalsQuery->where('business_unit_id', $businessUnitId);
+            }
+            
+            $pendingApprovals = $pendingApprovalsQuery->get();
             
             // Transform pending approvals with level information
             $allPendingApprovals = $pendingApprovals->map(function($request) {
@@ -8416,21 +9196,32 @@ class RiderController extends Controller
             }
             
             // Get all unique categories for filter
-            $categoriesFromExpenses = \App\Models\Request\RequestModel::whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance']);
+            // ⭐ Use same category codes as for the main expenses query (includes khaas_expense for Khaas mode)
+            $categoriesFilterQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+                    $q->whereIn('category_code', $expenseCategoryCodes);
                 })
                 ->whereNotNull('ledger_transaction_id')
                 ->where('status', \App\Models\Request\RequestModel::STATUS_APPROVED)
                 ->whereNotNull('expense_category')
-                ->where('expense_category', '!=', '')
-                ->distinct()
-                ->pluck('expense_category');
+                ->where('expense_category', '!=', '');
             
-            $categories = $categoriesFromExpenses
-                ->merge(['Salary', 'Salary Advance'])
-                ->unique()
-                ->sort()
-                ->values();
+            // ⭐ Filter categories by business unit (for Khaas mode)
+            if ($businessUnitId) {
+                $categoriesFilterQuery->where('business_unit_id', $businessUnitId);
+            }
+            
+            $categoriesFromExpenses = $categoriesFilterQuery->distinct()->pluck('expense_category');
+            
+            // ⭐ In Khaas mode: don't add Salary/Salary Advance to categories filter
+            if ($businessUnitId) {
+                $categories = $categoriesFromExpenses->unique()->sort()->values();
+            } else {
+                $categories = $categoriesFromExpenses
+                    ->merge(['Salary', 'Salary Advance'])
+                    ->unique()
+                    ->sort()
+                    ->values();
+            }
             
             // ⭐ Check user's approval rights
             $hasL1Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
@@ -8438,7 +9229,26 @@ class RiderController extends Controller
             
             // ⭐ Get available payment sources for dropdown (if user has permission)
             $availablePaymentSources = [];
-            if ($hasAllPaymentSourcesPermission) {
+            
+            // ⭐ In Khaas mode: show ALL accounts for this BU (excluding employee/vendor accounts)
+            // No EXP_FUND from other BUs — only this BU's own accounts
+            if ($businessUnitId) {
+                $buAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                    ->where('business_unit_id', $businessUnitId)
+                    ->whereNotIn('account_category', [
+                        \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
+                        \App\Models\FIN\AccountModel::CATEGORY_VENDOR_PAYABLE,
+                    ])
+                    ->get();
+                foreach ($buAccounts as $account) {
+                    $availablePaymentSources[] = [
+                        'id' => $account->id,
+                        'code' => $account->account_code,
+                        'name' => $account->account_name,
+                        'balance' => $account->current_balance
+                    ];
+                }
+            } else if ($hasAllPaymentSourcesPermission) {
                 // User can see all sources
                 $nfCashAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
                 $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -8525,7 +9335,10 @@ class RiderController extends Controller
                     'has_all_payment_sources_permission' => $hasAllPaymentSourcesPermission,
                     'available_payment_sources' => $availablePaymentSources,
                     'categories' => $categories,
-                    'current_month' => $month ?: now()->format('Y-m')
+                    'current_month' => $month ?: now()->format('Y-m'),
+                    // ⭐ BU default expense account info (for admin to configure)
+                    'default_expense_account_id' => $expenseFund ? $expenseFund->id : null,
+                    'default_expense_account_name' => $expenseFund ? $expenseFund->account_name : null,
                 ]
             ]);
             
@@ -8562,10 +9375,16 @@ class RiderController extends Controller
             
             // Get month parameter (YYYY-MM format)
             $month = $request->input('month', now()->format('Y-m'));
+            $businessUnitId = $request->input('business_unit_id');
             
-            // Get expense fund account
-            $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
-                ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            // ⭐ For non-NF BUs (Khaas etc): use the BU's configured default account
+            // For NF main (BU 1) or no BU: use standard EXP_FUND
+            if ($businessUnitId && (int) $businessUnitId !== 1) {
+                $expenseFund = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+            } else {
+                $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
+                    ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
+            }
             
             if (!$expenseFund) {
                 return response()->json([
@@ -8633,14 +9452,15 @@ class RiderController extends Controller
 
     /**
      * Get available payment sources for expense creation
-     * Returns different sources based on user's expense_all_payment_sources permission
+     * Returns sources based on user's Business Unit access and expense_all_payment_sources permission
      * - Without permission: Only EXP_FUND
-     * - With permission: EXP_FUND, NF_CASH, ONLINE
+     * - With permission: All company accounts (cash, bank) filtered by user's BU access
      */
     public function getPaymentSources(Request $request)
     {
         try {
             $user = Auth::user();
+            $businessUnitId = $request->input('business_unit_id');
             
             // Check permission to view expenses
             if (!$user->hasMobilePermission('view_expenses')) {
@@ -8651,68 +9471,122 @@ class RiderController extends Controller
             }
             
             // Check if user can see ALL payment sources
-            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources');
+            // In Khaas mode (non-NF BU): also grant this if user has approve_khaas_transfer (admin)
+            $isNonNfBU = $businessUnitId && (int) $businessUnitId !== 1;
+            $hasAllPaymentSourcesPermission = $user->hasMobilePermission('expense_all_payment_sources')
+                || ($isNonNfBU && $user->hasMobilePermission('approve_khaas_transfer'));
             
             $paymentSources = [];
             
-            // Get EXP_FUND account (always available)
+            // Get EXP_FUND account
             $expenseFund = \App\Models\FIN\ConfigModel::getExpenseFundingAccount() 
                 ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
             
-            if ($expenseFund) {
-                $paymentSources[] = [
-                    'id' => $expenseFund->id,
-                    'code' => $expenseFund->account_code,
-                    'name' => $expenseFund->account_name,
-                    'display_name' => 'Exp Fund',
-                    'balance' => (float) $expenseFund->current_balance,
-                    'is_default' => true
-                ];
+            // Company account categories that can be payment sources
+            $companyCategories = [
+                \App\Models\FIN\AccountModel::CATEGORY_CASH,
+                \App\Models\FIN\AccountModel::CATEGORY_BANK,
+            ];
+            
+            // ⭐ Determine if this is a non-NF business unit (Khaas etc.)
+            // BU 1 = Nizami Farms main → should use standard EXP_FUND logic
+            // Other BUs (Khaas etc.) → use BU-specific account logic
+            $isNonNfBusinessUnit = $businessUnitId && (int) $businessUnitId !== 1;
+            
+            if ($isNonNfBusinessUnit) {
+                // ⭐ BU-specific mode (Khaas etc — NOT NF main)
+                // Admin/Taimur (expense_all_payment_sources): show ALL BU accounts
+                // Regular user: show only the configured default account (e.g., NF Food)
+                
+                // Get the configured default account for this BU
+                $defaultBuAccount = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+                $defaultAccountId = $defaultBuAccount ? $defaultBuAccount->id : null;
+                
+                if ($hasAllPaymentSourcesPermission) {
+                    // Admin: show all BU accounts
+                    $buAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                        ->where('business_unit_id', $businessUnitId)
+                        ->whereNotIn('account_category', [
+                            \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
+                            \App\Models\FIN\AccountModel::CATEGORY_VENDOR_PAYABLE,
+                        ])
+                        ->orderBy('account_name')
+                        ->get();
+                } else {
+                    // Regular user: only the configured default account
+                    $buAccounts = $defaultBuAccount ? collect([$defaultBuAccount]) : collect();
+                }
+                
+                foreach ($buAccounts as $account) {
+                    $paymentSources[] = [
+                        'id' => $account->id,
+                        'code' => $account->account_code,
+                        'name' => $account->account_name,
+                        'display_name' => $account->account_name,
+                        'balance' => (float) $account->current_balance,
+                        'business_unit_id' => $account->business_unit_id,
+                        'is_default' => ($account->id === $defaultAccountId)
+                    ];
+                }
+            } else {
+                // ⭐ Standard NF mode (BU 1 or no BU specified)
+                // Default: EXP_FUND — but for Taimur role, default to ONLINE
+                $isTaimurRole = $user->roles()
+                    ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+                    ->exists();
+                
+                // Fetch ONLINE account for Taimur default
+                $onlineAccount = null;
+                if ($isTaimurRole) {
+                    $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')
+                        ->where('is_active', 1)
+                        ->first();
+                }
+                
+                // Determine which account is the default
+                $defaultAccountId = ($isTaimurRole && $onlineAccount) ? $onlineAccount->id : ($expenseFund ? $expenseFund->id : null);
+                
+                if ($expenseFund) {
+                    $paymentSources[] = [
+                        'id' => $expenseFund->id,
+                        'code' => $expenseFund->account_code,
+                        'name' => $expenseFund->account_name,
+                        'display_name' => 'Exp Fund',
+                        'balance' => (float) $expenseFund->current_balance,
+                        'business_unit_id' => $expenseFund->business_unit_id,
+                        'is_default' => ($expenseFund->id === $defaultAccountId)
+                    ];
+                }
+                
+                // Only add other sources if user has permission
+                if ($hasAllPaymentSourcesPermission) {
+                    $accessibleAccounts = \App\Models\FIN\AccountModel::getAccessibleCompanyAccounts();
+                    
+                    foreach ($accessibleAccounts as $account) {
+                        // Skip EXP_FUND since we already added it above
+                        if ($expenseFund && $account->id === $expenseFund->id) {
+                            continue;
+                        }
+                        
+                        $paymentSources[] = [
+                            'id' => $account->id,
+                            'code' => $account->account_code,
+                            'name' => $account->account_name,
+                            'display_name' => $account->account_name,
+                            'balance' => (float) $account->current_balance,
+                            'business_unit_id' => $account->business_unit_id,
+                            'is_default' => ($account->id === $defaultAccountId)
+                        ];
+                    }
+                }
             }
             
-            // Only add other sources if user has permission
-            if ($hasAllPaymentSourcesPermission) {
-                // Get NF_CASH account
-                $nfCashAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
-                if ($nfCashAccount) {
-                    $paymentSources[] = [
-                        'id' => $nfCashAccount->id,
-                        'code' => $nfCashAccount->account_code,
-                        'name' => $nfCashAccount->account_name,
-                        'display_name' => 'NF Cash',
-                        'balance' => (float) $nfCashAccount->current_balance,
-                        'is_default' => false
-                    ];
-                }
-                
-                // Get ONLINE account
-                $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
-                if ($onlineAccount) {
-                    $paymentSources[] = [
-                        'id' => $onlineAccount->id,
-                        'code' => $onlineAccount->account_code,
-                        'name' => $onlineAccount->account_name,
-                        'display_name' => 'Online',
-                        'balance' => (float) $onlineAccount->current_balance,
-                        'is_default' => false
-                    ];
-                }
-                
-                // Get NF Food accounts (any account with code starting with NF_FOOD)
-                $nfFoodAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
-                    ->where('account_code', 'LIKE', 'NF_FOOD%')
-                    ->get();
-                foreach ($nfFoodAccounts as $nfFoodAccount) {
-                    $paymentSources[] = [
-                        'id' => $nfFoodAccount->id,
-                        'code' => $nfFoodAccount->account_code,
-                        'name' => $nfFoodAccount->account_name,
-                        'display_name' => $nfFoodAccount->account_name,
-                        'balance' => (float) $nfFoodAccount->current_balance,
-                        'is_default' => false
-                    ];
-                }
-            }
+            \Log::info('Payment sources returned', [
+                'user_id' => Auth::id(),
+                'count' => count($paymentSources),
+                'has_all_permission' => $hasAllPaymentSourcesPermission,
+                'business_unit_id' => $businessUnitId,
+            ]);
             
             return response()->json([
                 'success' => true,
@@ -8723,12 +9597,76 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Failed to get payment sources', [
                 'user_id' => Auth::id(),
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
             ]);
             
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load payment sources: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Set the default expense account for a business unit.
+     * Only accessible to users with expense_all_payment_sources permission.
+     */
+    public function setBuDefaultExpenseAccount(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user->hasMobilePermission('expense_all_payment_sources') && 
+                !$user->hasMobilePermission('approve_khaas_transfer')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to change this setting'
+                ], 403);
+            }
+            
+            $request->validate([
+                'business_unit_id' => 'required|integer',
+                'account_id' => 'required|integer',
+            ]);
+            
+            $businessUnitId = (int) $request->input('business_unit_id');
+            $accountId = (int) $request->input('account_id');
+            
+            // Verify the account exists, is active, and belongs to this BU
+            $account = \App\Models\FIN\AccountModel::where('id', $accountId)
+                ->where('business_unit_id', $businessUnitId)
+                ->where('is_active', 1)
+                ->first();
+            
+            if (!$account) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Account not found or does not belong to this business unit'
+                ], 400);
+            }
+            
+            \App\Models\FIN\ConfigModel::setBuDefaultExpenseAccount($businessUnitId, $accountId);
+            
+            return response()->json([
+                'success' => true,
+                'message' => "Default expense account set to: {$account->account_name}",
+                'account' => [
+                    'id' => $account->id,
+                    'name' => $account->account_name,
+                    'code' => $account->account_code,
+                    'balance' => (float) $account->current_balance,
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            \Log::error('Failed to set BU default expense account', [
+                'error' => $e->getMessage()
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save setting: ' . $e->getMessage()
             ], 500);
         }
     }
@@ -11261,12 +12199,99 @@ class RiderController extends Controller
                 }
             }
             
+            // ============================================================
+            // ⭐ Online WhatsApp Message Tracking (separate from ledger/settlement)
+            // Shows today's online delivered orders and whether rider sent payment reminder
+            // This does NOT affect any settlement, ledger, or invoice logic
+            // Wrapped in its own try-catch so it NEVER crashes the daily closing
+            // ============================================================
+            $onlineMessageTracking = null;
+            try {
+                $onlinePaymentMethods = ['online', 'Online', 'bank_transfer', 'card', 'online_payment', 'direct_bank_transfer', 'bacs'];
+                
+                // Use status history to find orders delivered today (delivery_date is computed, not a real column)
+                $onlineMessageQuery = \App\Models\CRM\OrderModel::whereIn('order_status', ['delivered', 'completed'])
+                    ->where(function($q) use ($onlinePaymentMethods) {
+                        $q->whereIn('payment_method', $onlinePaymentMethods);
+                    })
+                    ->whereExists(function($q) {
+                        $q->select(\DB::raw(1))
+                          ->from('t_crm_order_status_history as h')
+                          ->whereColumn('h.order_id', 't_crm_prod_order.id')
+                          ->where('h.status_code', 'delivered')
+                          ->whereDate('h.changed_at', today());
+                    })
+                    ->with(['customer']);
+                
+                // Apply rider filter if specific rider selected
+                if ($riderFilter !== 'all') {
+                    // Need to find the user_id from the account_id
+                    $riderAccount = AccountModel::find($riderFilter);
+                    if ($riderAccount && $riderAccount->user_id) {
+                        $onlineMessageQuery->where('assigned_rider_user_id', $riderAccount->user_id);
+                    }
+                }
+                
+                // Note: delivery_date is a computed accessor, not a real column - use id for ordering
+                $onlineMessageOrders = $onlineMessageQuery->orderBy('id', 'desc')->get();
+                
+                // Separate into message sent and pending
+                $messageSentOrders = $onlineMessageOrders->whereNotNull('online_message_sent_at');
+                $messagePendingOrders = $onlineMessageOrders->whereNull('online_message_sent_at');
+                
+                // Group by rider
+                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) {
+                    $riderUser = $riderOrders->first()->assignedRider ?? null;
+                    $riderName = $riderUser ? $riderUser->fullname : 'Unknown';
+                    
+                    return [
+                        'rider_name' => $riderName,
+                        'rider_user_id' => $riderOrders->first()->assigned_rider_user_id,
+                        'message_sent' => $riderOrders->whereNotNull('online_message_sent_at')->map(function($order) {
+                            return [
+                                'id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                                'amount' => round($order->total_price),
+                                'message_sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('H:i') : null,
+                            ];
+                        })->values(),
+                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) {
+                            return [
+                                'id' => $order->id,
+                                'order_number' => $order->order_number,
+                                'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                                'amount' => round($order->total_price),
+                            ];
+                        })->values(),
+                        'sent_count' => $riderOrders->whereNotNull('online_message_sent_at')->count(),
+                        'pending_count' => $riderOrders->whereNull('online_message_sent_at')->count(),
+                        'total_amount' => round($riderOrders->sum('total_price')),
+                    ];
+                })->values();
+                
+                $onlineMessageTracking = [
+                    'total_online_delivered' => $onlineMessageOrders->count(),
+                    'message_sent_count' => $messageSentOrders->count(),
+                    'message_pending_count' => $messagePendingOrders->count(),
+                    'message_sent_amount' => round($messageSentOrders->sum('total_price')),
+                    'message_pending_amount' => round($messagePendingOrders->sum('total_price')),
+                    'by_rider' => $onlineMessageByRider,
+                ];
+            } catch (\Exception $msgEx) {
+                \Log::warning('Online message tracking failed in daily closing (non-critical)', [
+                    'error' => $msgEx->getMessage()
+                ]);
+                $onlineMessageTracking = null;
+            }
+
             return response()->json([
                 'success' => true,
                 'stats' => $stats,
                 'invoices_by_rider' => $invoicesByRider,
                 'invoices_by_date' => $invoicesByDate, // ⭐ New: date-grouped data for settled view
                 'online_summary' => $onlineData, // ⭐ New: online summary
+                'online_message_tracking' => $onlineMessageTracking, // ⭐ WhatsApp message tracking (no ledger impact)
                 'pending_settlements' => $pendingSettlements->map(function($settlement) {
                     return [
                         'id' => $settlement->id,
@@ -11955,7 +12980,7 @@ class RiderController extends Controller
                 if ($order->estimated_delivery_at && $order->delivered_at) {
                     $estimatedTime = \Carbon\Carbon::parse($order->estimated_delivery_at);
                     $actualTime = \Carbon\Carbon::parse($order->delivered_at);
-                    $diffMinutes = $actualTime->diffInMinutes($estimatedTime, false); // negative if late
+                    $diffMinutes = (int) round($actualTime->diffInMinutes($estimatedTime, false)); // negative if late
                     
                     $etaComparison = [
                         'estimated_at' => $order->estimated_delivery_at,

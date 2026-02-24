@@ -201,6 +201,85 @@
                       </a>
                   </div>
                   
+   <!-- 🌿 Khaas Section (permission-based: access_khaas_mode mobile permission) -->
+   @php
+       $hasKhaasAccess = false;
+       if (auth()->check()) {
+           $khaasUser = auth()->user();
+           if (!$khaasUser->relationLoaded('roles')) {
+               $khaasUser->load(['roles.mobilePermissions']);
+           }
+           $hasKhaasAccess = $khaasUser->hasMobilePermission('access_khaas_mode');
+           
+           if ($hasKhaasAccess) {
+               $khaasBusinessUnit = \App\Models\FIN\BusinessUnitModel::where('code', 'KHAAS')->where('is_active', 1)->first();
+               $khaasPendingTransfers = $khaasBusinessUnit 
+                   ? \App\Models\CRM\WarehouseTransferModel::where('business_unit_id', $khaasBusinessUnit->id)->where('status', 'pending')->count() 
+                   : 0;
+           }
+       }
+   @endphp
+   @if($hasKhaasAccess && isset($khaasBusinessUnit) && $khaasBusinessUnit)
+   <div class="kt-menu-item pt-2.25 pb-px">
+       <span class="kt-menu-heading uppercase text-xs font-medium text-amber-600 ps-[10px] pe-[10px]">
+           🌿 Khaas
+       </span>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.dashboard') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-home-2 text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">
+                   Khaas Dashboard
+               </span>
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.products') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-package text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">
+                   Products & Inventory
+               </span>
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.operations') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-element-11 text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700 flex-1">
+                   Operations
+               </span>
+               @if($khaasPendingTransfers > 0)
+               <span class="kt-badge kt-badge-sm font-bold" style="background-color: #f59e0b; color: white; border-radius: 999px; padding: 2px 6px; font-size: 10px;">
+                   {{ $khaasPendingTransfers }}
+               </span>
+               @endif
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.sales-report') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-chart-line-up-2 text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">
+                   Sales Report
+               </span>
+           </div>
+       </a>
+   </div>
+   @endif
+   
    <!-- Finance Section -->
    <div class="kt-menu-item pt-2.25 pb-px">
        <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
@@ -288,6 +367,18 @@
                </span>
                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
                    Overall Ledger
+               </span>
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="/reports">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                   📊
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                   Reports
                </span>
            </div>
        </a>
@@ -564,6 +655,24 @@
                         </a>
                     </div>
                     @endif
+                    
+                    <!-- Logout Section -->
+                    @if(auth()->check())
+                    <div class="kt-menu-item pt-4 pb-2">
+                        <div style="border-top: 1px solid #d1d5db; padding-top: 12px;">
+                            <a href="#" onclick="event.preventDefault(); performLogout();">
+                                <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-red-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                    <span class="kt-menu-icon items-start text-red-500 group-hover:text-red-600 w-[20px]">
+                                        <i class="ki-filled ki-exit-up text-lg"></i>
+                                    </span>
+                                    <span class="kt-menu-title text-sm font-medium text-red-500 group-hover:text-red-600">
+                                        Logout
+                                    </span>
+                                </div>
+                            </a>
+                        </div>
+                    </div>
+                    @endif
                  
                </div>
                <!-- End of Sidebar Menu -->
@@ -571,3 +680,41 @@
        </div>
    </div>
    <!-- End of Sidebar -->
+   
+   @if(auth()->check())
+   <!-- Logout Form (hidden) -->
+   <form id="logout-form" action="/logout" method="GET" style="display: none;">
+       @csrf
+   </form>
+   <script>
+   function performLogout() {
+       if (!confirm('Are you sure you want to logout?')) return;
+       
+       // Clear any cached data in localStorage
+       try {
+           // Remove order table column preferences and other cached settings
+           const keysToKeep = []; // Add any keys that should survive logout
+           const keysToRemove = [];
+           for (let i = 0; i < localStorage.length; i++) {
+               const key = localStorage.key(i);
+               if (!keysToKeep.includes(key)) {
+                   keysToRemove.push(key);
+               }
+           }
+           keysToRemove.forEach(key => localStorage.removeItem(key));
+       } catch(e) {
+           console.warn('Could not clear localStorage:', e);
+       }
+       
+       // Clear any session storage
+       try {
+           sessionStorage.clear();
+       } catch(e) {
+           console.warn('Could not clear sessionStorage:', e);
+       }
+       
+       // Navigate to logout URL which will invalidate session and redirect to login
+       window.location.href = '/logout';
+   }
+   </script>
+   @endif

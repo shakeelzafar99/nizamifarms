@@ -57,6 +57,8 @@ class OrderModel extends BaseModel
         'converted',
         'ledger_transaction_id',
         'delivery_priority', // ⭐ Delivery sequence priority (1=first, 2=second, etc)
+        'online_message_sent_at', // WhatsApp payment reminder sent timestamp
+        'online_message_sent_by', // User ID who sent the WhatsApp message
         'created_by',
         'updated_by'
     ];
@@ -73,7 +75,9 @@ class OrderModel extends BaseModel
         'total_weight' => 'integer',
         'converted' => 'boolean',
         'expected_packets' => 'integer',
-        'actual_packets' => 'integer'
+        'actual_packets' => 'integer',
+        'online_message_sent_at' => 'datetime',
+        'online_message_sent_by' => 'integer'
     ];
 
     // Ensure relationships are included when converting to array/JSON
@@ -437,6 +441,15 @@ class OrderModel extends BaseModel
 
             // Store line items
             if (!empty($lineItems)) {
+                \Log::info('storeOrderFromApi: Preparing to save line items', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number ?? null,
+                    'is_shopify' => $isShopify,
+                    'line_items_count' => count($lineItems),
+                    'is_update' => $existingOrder !== null,
+                    'skus' => array_map(fn($li) => $li['sku'] ?? 'N/A', $lineItems),
+                ]);
+
                 // Delete existing line items if updating
                 if ($existingOrder) {
                     if ($isShopify) {
@@ -454,6 +467,61 @@ class OrderModel extends BaseModel
                         $lineItemModels[] = new \App\Models\CRM\ShopifyOrderLineItemModel($lineItem);
                     }
                     $order->lineItems()->saveMany($lineItemModels);
+                    
+                    // ⚠️ POST-SAVE VERIFICATION: Confirm line items were actually inserted
+                    // This catches silent INSERT failures (e.g., column type overflow, PDO silent mode)
+                    $savedCount = $order->lineItems()->count();
+                    if ($savedCount !== count($lineItems)) {
+                        \Log::error('storeOrderFromApi: LINE ITEMS MISMATCH after save!', [
+                            'order_id' => $order->id,
+                            'order_number' => $order->order_number ?? null,
+                            'expected_count' => count($lineItems),
+                            'actual_saved_count' => $savedCount,
+                            'line_items_data' => array_map(fn($li) => [
+                                'sku' => $li['sku'] ?? null,
+                                'name' => $li['name'] ?? null,
+                                'product_id' => $li['product_id'] ?? null,
+                                'variant_id' => $li['variant_id'] ?? null,
+                            ], $lineItems),
+                        ]);
+                        
+                        // Retry: Try inserting items one at a time using direct DB insert
+                        // This bypasses Eloquent model and may give clearer error messages
+                        if ($savedCount === 0) {
+                            \Log::warning('storeOrderFromApi: Attempting direct DB insert fallback for line items');
+                            $order->lineItems()->delete(); // Clean slate
+                            foreach ($lineItems as $idx => $lineItem) {
+                                try {
+                                    $lineItem['order_id'] = $order->id;
+                                    $lineItem['created_by'] = auth()->check() ? auth()->id() : null;
+                                    $lineItem['created_at'] = now();
+                                    $lineItem['updated_at'] = now();
+                                    // Remove non-column fields
+                                    unset($lineItem['external_line_item_id'], $lineItem['vendor']);
+                                    DB::table('t_crm_shopify_order_line_item')->insert($lineItem);
+                                } catch (\Exception $itemEx) {
+                                    \Log::error('storeOrderFromApi: Direct insert failed for line item', [
+                                        'order_id' => $order->id,
+                                        'item_index' => $idx,
+                                        'sku' => $lineItem['sku'] ?? null,
+                                        'product_id' => $lineItem['product_id'] ?? null,
+                                        'variant_id' => $lineItem['variant_id'] ?? null,
+                                        'error' => $itemEx->getMessage(),
+                                    ]);
+                                }
+                            }
+                            $finalCount = $order->lineItems()->count();
+                            \Log::info('storeOrderFromApi: Direct insert fallback result', [
+                                'order_id' => $order->id,
+                                'final_saved_count' => $finalCount,
+                            ]);
+                        }
+                    } else {
+                        \Log::info('storeOrderFromApi: Line items saved successfully', [
+                            'order_id' => $order->id,
+                            'saved_count' => $savedCount,
+                        ]);
+                    }
                 } else {
                     $lineItemModels = [];
                     foreach ($lineItems as $lineItem) {
@@ -463,7 +531,18 @@ class OrderModel extends BaseModel
                     }
                     $order->lineItems()->saveMany($lineItemModels);
                 }
+            } else if ($isShopify) {
+                \Log::warning('storeOrderFromApi: No line items to save for Shopify order', [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number ?? null,
+                ]);
             }
+
+            // ⭐ INVENTORY NOTE: Inventory is NOT deducted on order creation.
+            // It is deducted later when line items are marked as "preparing"
+            // (via bulkUpdateLineItemStatus or bulkMarkOrdersAsPrepared),
+            // or auto-deducted when the order moves to "out_for_delivery".
+            // This applies to all order sources (webapp, Shopify conversions, etc.).
 
             DB::commit();
             return $order->load(['customer', 'lineItems']);
@@ -711,7 +790,7 @@ class OrderModel extends BaseModel
         return $orderData;
     }
 
-    private static function mapShopifyLineItem(array $item): array
+    private static function mapShopifyLineItem(array $item): ?array
     {
         // Safety check: Skip tip line items (should already be filtered, but just in case)
         // This prevents tip line items from breaking the conversion process
@@ -729,10 +808,13 @@ class OrderModel extends BaseModel
             return null;  // Will be filtered out by array_filter
         }
         
+        // Cast Shopify IDs to string to prevent INT overflow in database
+        // Shopify product/variant IDs can exceed MySQL INT max (4,294,967,295)
+        // e.g., product_id: 8913415962913, variant_id: 49731300819233
         return [
             'external_line_item_id' => (string)$item['id'],
-            'product_id' => $item['product_id'] ?? null,
-            'variant_id' => $item['variant_id'] ?? null,
+            'product_id' => isset($item['product_id']) ? (string)$item['product_id'] : null,
+            'variant_id' => isset($item['variant_id']) ? (string)$item['variant_id'] : null,
             'sku' => $item['sku'] ?? null,
             'name' => $item['name'] ?? null,
             'vendor' => $item['vendor'] ?? null,
@@ -1021,7 +1103,93 @@ class OrderModel extends BaseModel
                     }
                 }
 
-                // 5. If status changed to 'delivered', post invoice to ledger
+                // ⭐ INVENTORY RESTORATION: Restore store inventory on order cancellation
+                // Only restores inventory for line items that actually had inventory deducted
+                // (inventory_deducted = 1). This works for both old orders (backfilled by migration)
+                // and new orders (flagged when marked as prepared).
+                if ($statusCode === 'cancelled') {
+                    try {
+                        if (!$this->relationLoaded('lineItems')) {
+                            $this->load('lineItems');
+                        }
+                        
+                        $restoredCount = 0;
+                        foreach ($this->lineItems as $lineItem) {
+                            if ($lineItem->inventory_deducted) {
+                                if ($lineItem->restoreInventory()) {
+                                    $restoredCount++;
+                                }
+                            }
+                        }
+                        
+                        if ($restoredCount > 0) {
+                            \Log::info('Inventory restored on order cancellation', [
+                                'order_id' => $this->id,
+                                'order_number' => $this->order_number,
+                                'items_restored' => $restoredCount,
+                                'total_items' => $this->lineItems->count(),
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Failed to restore inventory for cancelled order", [
+                            'order_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't block cancellation if inventory restore fails
+                    }
+                }
+
+                // 5. If status changed to 'out_for_delivery' or 'delivered', auto-prepare all
+                // unprepared items and deduct their inventory. Items already marked as prepared
+                // will be skipped (their inventory_deducted flag is already 1).
+                // We include 'delivered' as a safety net in case an order skips out_for_delivery
+                // (e.g. bulk CSV import, direct delivery marking).
+                if (in_array($statusCode, ['out_for_delivery', 'delivered'])) {
+                    try {
+                        if (!$this->relationLoaded('lineItems')) {
+                            $this->load('lineItems');
+                        }
+
+                        $autoPreparedCount = 0;
+                        $autoDeductedCount = 0;
+                        foreach ($this->lineItems as $lineItem) {
+                            // Auto-mark as prepared if not already
+                            if ($lineItem->preparation_status !== 'preparing') {
+                                $lineItem->preparation_status = 'preparing';
+                                $lineItem->save();
+                                $autoPreparedCount++;
+                            }
+
+                            // Deduct inventory if not already deducted
+                            // (covers both newly auto-prepared and any edge case where
+                            //  an item was marked prepared but deduction was missed)
+                            if (!$lineItem->inventory_deducted) {
+                                if ($lineItem->deductInventory()) {
+                                    $autoDeductedCount++;
+                                }
+                            }
+                        }
+
+                        if ($autoPreparedCount > 0 || $autoDeductedCount > 0) {
+                            \Log::info("Auto-prepared items on {$statusCode}", [
+                                'order_id' => $this->id,
+                                'order_number' => $this->order_number,
+                                'status_trigger' => $statusCode,
+                                'items_auto_prepared' => $autoPreparedCount,
+                                'items_auto_deducted' => $autoDeductedCount,
+                                'total_items' => $this->lineItems->count(),
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Failed to auto-prepare items for {$statusCode}", [
+                            'order_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't block status change if auto-prepare fails
+                    }
+                }
+
+                // 6. If status changed to 'delivered', post invoice to ledger
                 if ($statusCode === 'delivered') {
                     try {
                         // Ensure customer relationship is loaded for ledger description

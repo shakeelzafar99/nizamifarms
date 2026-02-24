@@ -27,6 +27,7 @@ class RequestModel extends BaseModel
         'expense_category',
         'expense_date', // ⭐ Backdated expense date
         'payment_source_account_id',
+        'business_unit_id', // ⭐ Business unit for this expense
         'leave_start_date',
         'leave_end_date',
         'leave_type',
@@ -274,8 +275,8 @@ class RequestModel extends BaseModel
                 elseif ($this->category->category_code === 'leave') {
                     $this->createAttendanceRecordsForLeave();
                 }
-                // If it's an expense request, post to ledger
-                elseif ($this->category->category_code === 'expense' && $this->amount > 0) {
+                // If it's an expense request (including khaas_expense), post to ledger
+                elseif (in_array($this->category->category_code, ['expense', 'khaas_expense']) && $this->amount > 0) {
                     try {
                         $ledgerService = new \App\Services\FIN\LedgerPostingService();
                         $result = $ledgerService->postExpenseFromRequest($this);

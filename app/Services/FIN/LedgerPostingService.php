@@ -286,6 +286,7 @@ class LedgerPostingService
                 'approval_status' => LedgerModel::STATUS_APPROVED,
                 'approval_date' => $request->approved_at,
                 'request_id' => $request->id,
+                'business_unit_id' => $request->business_unit_id ?? 1, // ⭐ Use request's BU
                 'created_by' => $request->requester_user_id,
                 'comments' => "Paid from: {$fundingAccount->account_name}"
             ]);

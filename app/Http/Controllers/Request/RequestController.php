@@ -126,6 +126,7 @@ class RequestController extends Controller
             'expense_category' => 'nullable|string|max:255', // For expense requests
             'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
             'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id', // Payment source selection
+            'business_unit_id' => 'nullable|exists:t_fin_business_units,id', // ⭐ Business unit for expense
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
             'leave_type' => 'nullable|string',
@@ -311,6 +312,7 @@ class RequestController extends Controller
                 'expense_category' => $validated['expense_category'] ?? null,
                 'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
+                'business_unit_id' => $validated['business_unit_id'] ?? 1, // ⭐ Business unit (defaults to NF)
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
@@ -334,7 +336,7 @@ class RequestController extends Controller
             // If auto-approved and it's an expense/salary advance, post to ledger
             if ($overallStatus === RequestModel::STATUS_APPROVED) {
                 $categoryCode = $category->category_code;
-                if (in_array($categoryCode, ['expense', 'salary_advance'])) {
+                if (in_array($categoryCode, ['expense', 'khaas_expense', 'salary_advance'])) {
                     try {
                         $ledgerService = app(\App\Services\FIN\LedgerPostingService::class);
                         $ledgerService->postExpenseFromRequest($requestModel);

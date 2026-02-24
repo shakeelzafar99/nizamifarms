@@ -95,6 +95,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}', [\App\Http\Controllers\API\RiderController::class, 'getOrderDetails']);
         Route::post('/orders/{id}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markOrderDelivered']);
         Route::post('/orders/{id}/change-payment-method', [\App\Http\Controllers\API\RiderController::class, 'changePaymentMethod']);
+        Route::post('/orders/{id}/mark-online-message-sent', [\App\Http\Controllers\API\RiderController::class, 'markOnlineMessageSent']);
         
         // Customer verified location
         Route::post('/customers/{customerId}/set-verified-location', [\App\Http\Controllers\API\RiderController::class, 'setCustomerVerifiedLocation']);
@@ -185,6 +186,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/expenses', [\App\Http\Controllers\API\RiderController::class, 'getExpenses']);
     Route::get('/expenses/fund-transfers', [\App\Http\Controllers\API\RiderController::class, 'getFundTransfers']);
     Route::get('/expenses/payment-sources', [\App\Http\Controllers\API\RiderController::class, 'getPaymentSources']);
+    Route::post('/expenses/set-default-account', [\App\Http\Controllers\API\RiderController::class, 'setBuDefaultExpenseAccount']); // ⭐ Set default expense account for a BU
+    Route::get('/expenses/categories', [\App\Http\Controllers\API\RiderController::class, 'getExpenseCategoriesFromConfig']); // Fetch expense types from config
+    Route::post('/expenses/categories', [\App\Http\Controllers\FIN\ExpenseCategoryController::class, 'store']); // Create new expense category (reuses web controller)
     Route::post('/expenses/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveExpense']);
     Route::post('/expenses/{id}/reject', [\App\Http\Controllers\API\RiderController::class, 'rejectExpense']);
     Route::post('/expenses/{id}/settle', [\App\Http\Controllers\API\RiderController::class, 'settleExpense']);
@@ -270,6 +274,9 @@ Route::middleware('auth:sanctum')->group(function () {
         // ⭐ LOCATION TRACKING: Get GPS trail segment between two deliveries
         Route::get('/rider-map/{riderId}/trail-segment', [\App\Http\Controllers\API\RiderController::class, 'getTrailSegment']);
         
+        // ⭐ DELIVERY JOURNEY: Analyze rider journey for a delivered order
+        Route::get('/delivery-journey/{orderId}', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryJourney']);
+        
         // ⭐ LOCATION TRACKING: Get all open orders for map view
         Route::get('/all-open-orders-map', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap']);
         
@@ -296,6 +303,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Vendor Management (Store Mode - uses token auth, but NOT under /rider prefix)
     Route::prefix('vendors')->group(function () {
         Route::get('/', [\App\Http\Controllers\FIN\VendorController::class, 'index']);
+        Route::get('/monthly-summary', [\App\Http\Controllers\FIN\VendorController::class, 'monthlySummary']);
         Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show']);
         Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase']);
         Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment']);
@@ -321,6 +329,13 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // ⭐ Business Units (for dropdowns in mobile/web)
     Route::get('/business-units', [\App\Http\Controllers\FIN\BusinessUnitController::class, 'apiList']);
+
+    // ⭐ Online Receiving Accounts (for dropdowns in approval flow)
+    Route::get('/online-receiving-accounts', function () {
+        $accounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex']);
+        return response()->json(['success' => true, 'data' => $accounts]);
+    });
     
     // ============================
     // Products (Mobile Store Mode)
@@ -332,6 +347,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{id}/history', [\App\Http\Controllers\CRM\ProductController::class, 'getHistory']); // Product change history
         Route::get('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'show']);
         Route::put('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'update']);
+        Route::delete('/{id}', [\App\Http\Controllers\CRM\ProductController::class, 'destroy']);
         Route::post('/', [\App\Http\Controllers\CRM\ProductController::class, 'store']);
         Route::post('/bulk-adjust-prices/preview', [\App\Http\Controllers\CRM\ProductController::class, 'previewBulkAdjustPrices']);
         Route::post('/bulk-adjust-prices', [\App\Http\Controllers\CRM\ProductController::class, 'bulkAdjustPrices']);
@@ -340,6 +356,39 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/attributes/apply', [\App\Http\Controllers\CRM\ProductController::class, 'applyAttributeRules']);
     });
     
+    // ============================
+    // Warehouse Inventory (Khaas Mode)
+    // ============================
+    Route::prefix('warehouse')->group(function () {
+        Route::get('/inventory', [\App\Http\Controllers\CRM\WarehouseController::class, 'getInventory']);
+        Route::post('/stock', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStock']);
+        Route::post('/transfer', [\App\Http\Controllers\CRM\WarehouseController::class, 'initiateTransfer']);
+        Route::get('/transfers/pending', [\App\Http\Controllers\CRM\WarehouseController::class, 'getPendingTransfers']);
+        Route::get('/transfers/history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getTransferHistory']);
+        Route::post('/transfer/{id}/approve', [\App\Http\Controllers\CRM\WarehouseController::class, 'approveTransfer']);
+        Route::post('/transfer/{id}/reject', [\App\Http\Controllers\CRM\WarehouseController::class, 'rejectTransfer']);
+        Route::get('/product-history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getProductHistory']);
+        
+        // ⭐ Batch Production Tracking
+        Route::get('/batch/active', [\App\Http\Controllers\CRM\WarehouseController::class, 'getActiveBatches']);
+        Route::post('/batch/start', [\App\Http\Controllers\CRM\WarehouseController::class, 'startBatch']);
+        Route::post('/batch/{id}/end', [\App\Http\Controllers\CRM\WarehouseController::class, 'endBatch']);
+        Route::post('/batch/{id}/cancel', [\App\Http\Controllers\CRM\WarehouseController::class, 'cancelBatch']);
+        Route::get('/batch/product/{productId}/history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getBatchHistory']);
+        
+        // ⭐ Inventory & Sales Report
+        Route::get('/inventory-report', [\App\Http\Controllers\CRM\WarehouseController::class, 'inventoryReport']);
+        
+        // ⭐ Storage Feature (NF Meat → Khaas Warehouse)
+        Route::get('/storage/inventory', [\App\Http\Controllers\CRM\WarehouseController::class, 'getStorageInventory']);
+        Route::get('/storage/available-products', [\App\Http\Controllers\CRM\WarehouseController::class, 'getAvailableStorageProducts']);
+        Route::post('/storage/config', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStorageConfig']);
+        Route::post('/storage/order', [\App\Http\Controllers\CRM\WarehouseController::class, 'placeStorageOrder']);
+        Route::post('/storage/order/{id}/receive', [\App\Http\Controllers\CRM\WarehouseController::class, 'receiveStorageOrder']);
+        Route::post('/storage/use', [\App\Http\Controllers\CRM\WarehouseController::class, 'useStorageItem']);
+        Route::post('/storage/settings', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStorageSettings']);
+    });
+
     // ============================
     // Customers (Mobile Store Mode)
     // ============================

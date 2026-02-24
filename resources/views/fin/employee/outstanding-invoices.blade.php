@@ -146,6 +146,112 @@
 
     <!-- No separate pending settlements section - they'll be shown inline with invoices -->
 
+    <!-- ⭐ Online WhatsApp Message Tracking Section (Today's deliveries) -->
+    @if(isset($onlineMessageTracking) && $onlineMessageTracking)
+    <div class="mb-4">
+        <div style="background: linear-gradient(to right, #f0fdf4, #dcfce7); border: 2px solid #86efac;" class="rounded-lg shadow-sm overflow-hidden">
+            <!-- Header -->
+            <div style="background: linear-gradient(to right, #059669, #047857);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('online-msg-tracking-body').classList.toggle('hidden')">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg">📱</span>
+                    <h3 class="text-sm font-bold text-white">Online Payment - WhatsApp Messages (Today)</h3>
+                </div>
+                <div class="flex items-center gap-3">
+                    @if($onlineMessageTracking['pending_count'] > 0)
+                    <span class="animate-pulse text-xs bg-red-500 text-white px-2 py-0.5 rounded-full font-bold">{{ $onlineMessageTracking['pending_count'] }} Pending</span>
+                    @endif
+                    @if($onlineMessageTracking['sent_count'] > 0)
+                    <span class="text-xs bg-white text-green-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineMessageTracking['sent_count'] }} Sent</span>
+                    @endif
+                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
+            </div>
+            <!-- Body -->
+            <div id="online-msg-tracking-body" class="{{ $onlineMessageTracking['pending_count'] > 0 ? '' : 'hidden' }}">
+                <!-- Summary Row -->
+                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #bbf7d0;">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Total Online Delivered:</span>
+                        <span class="text-xs font-bold text-gray-900">{{ $onlineMessageTracking['total_count'] }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>
+                        <span class="text-xs font-semibold text-green-700">Sent: {{ $onlineMessageTracking['sent_count'] }} (Rs. {{ number_format($onlineMessageTracking['sent_amount']) }})</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>
+                        <span class="text-xs font-semibold text-red-700">Pending: {{ $onlineMessageTracking['pending_count'] }} (Rs. {{ number_format($onlineMessageTracking['pending_amount']) }})</span>
+                    </div>
+                </div>
+                
+                <!-- Rider Cards -->
+                @foreach($onlineMessageTracking['by_rider'] as $riderIdx => $riderData)
+                <div class="border-b last:border-b-0" style="border-color: #bbf7d0;">
+                    <!-- Rider Header -->
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50 transition-colors" 
+                         onclick="document.getElementById('msg-rider-{{ $riderIdx }}').classList.toggle('hidden')">
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
+                            <span class="text-xs text-gray-500">Rs. {{ number_format($riderData['total_amount']) }}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            @if($riderData['sent_count'] > 0)
+                            <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">✅ {{ $riderData['sent_count'] }} sent</span>
+                            @endif
+                            @if($riderData['pending_count'] > 0)
+                            <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">⏳ {{ $riderData['pending_count'] }} pending</span>
+                            @endif
+                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                    </div>
+                    
+                    <!-- Rider Order Details (collapsed by default, open if has pending) -->
+                    <div id="msg-rider-{{ $riderIdx }}" class="{{ $riderData['pending_count'] > 0 ? '' : 'hidden' }}">
+                        <!-- Pending Messages -->
+                        @if($riderData['pending_count'] > 0)
+                        <div class="px-4 py-1">
+                            <div class="text-xs font-bold text-red-600 mb-1">⏳ Message Pending</div>
+                            @foreach($riderData['message_pending'] as $order)
+                            <div class="flex items-center justify-between py-1 px-3 mb-1 rounded" style="background-color: #fef2f2;">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-xs font-mono font-bold text-gray-700">{{ $order['order_number'] }}</span>
+                                    <span class="text-xs text-gray-600">{{ $order['customer_name'] }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
+                                    <span class="text-xs bg-red-500 text-white px-1.5 py-0.5 rounded font-medium">Not Sent</span>
+                                </div>
+                            </div>
+                            @endforeach
+                        </div>
+                        @endif
+                        
+                        <!-- Sent Messages -->
+                        @if($riderData['sent_count'] > 0)
+                        <div class="px-4 py-1 pb-2">
+                            <div class="text-xs font-bold text-green-600 mb-1">✅ Message Sent</div>
+                            @foreach($riderData['message_sent'] as $order)
+                            <div class="flex items-center justify-between py-1 px-3 mb-1 rounded" style="background-color: #f0fdf4;">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-xs font-mono font-bold text-gray-700">{{ $order['order_number'] }}</span>
+                                    <span class="text-xs text-gray-600">{{ $order['customer_name'] }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
+                                    <span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent {{ $order['sent_at'] }}</span>
+                                </div>
+                            </div>
+                            @endforeach
+                        </div>
+                        @endif
+                    </div>
+                </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+    @endif
+
     <!-- Invoices Section -->
     @if($invoicesByRider->isEmpty())
     <!-- No Invoices State -->

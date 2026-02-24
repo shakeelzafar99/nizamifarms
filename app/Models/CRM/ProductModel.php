@@ -70,6 +70,7 @@ class ProductModel extends BaseModel
         'sync_error',
         'is_active',
         'business_unit_id', // ⭐ FK to t_fin_business_units
+        'current_batch_number', // ⭐ Current/last batch number reference
         'created_by',
         'updated_by'
     ];

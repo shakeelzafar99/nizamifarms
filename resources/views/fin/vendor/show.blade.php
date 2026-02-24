@@ -673,6 +673,10 @@
                             @endphp
                             @foreach($accessibleCompanyAccounts ?? [] as $source)
                                 @php
+                                    // Skip Expense Fund — it's only for expense reimbursements, not vendor payments
+                                    if ($source->account_code === 'EXP_FUND') continue;
+                                    // Only show payment sources matching this vendor's business unit
+                                    if ($source->business_unit_id != ($vendor->business_unit_id ?? 1)) continue;
                                     $isSelected = $vendorDefaultPaymentSourceId == $source->id;
                                     $requiresApproval = $source->account_code === 'ONLINE';
                                 @endphp

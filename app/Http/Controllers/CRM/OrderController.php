@@ -939,10 +939,23 @@ class OrderController extends Controller
                     return "n_" . md5(($item->name ?? '') . '_' . ($item->sku ?? ''));
                 });
                 
+                // ⭐ INVENTORY: Before deleting old items, restore inventory for any that had it deducted.
+                // After creating new items, re-deduct for any that preserved preparation_status='preparing'.
+                // This cleanly handles quantity changes, item removals, and item additions.
+                $oldItemsWithDeduction = $order->lineItems()
+                    ->where('inventory_deducted', 1)
+                    ->get();
+
+                // Step 1: Restore inventory for all old deducted items
+                foreach ($oldItemsWithDeduction as $oldItem) {
+                    $oldItem->restoreInventory();
+                }
+                
                 // Delete existing line items
                 $order->lineItems()->delete();
                 
                 // Create new line items, preserving preparation_status from matching old items
+                // NOTE: inventory_deducted is NOT preserved — it will be re-set by deductInventory() below
                 $lineItemModels = [];
                 foreach ($formattedLineItems as $lineItem) {
                     $lineItem['order_id'] = $order->id;
@@ -958,7 +971,7 @@ class OrderController extends Controller
                     
                     if ($existingLineItems->has($matchKey)) {
                         $oldItem = $existingLineItems->get($matchKey);
-                        // Preserve preparation_status from old item
+                        // Preserve preparation_status from old item (but NOT inventory_deducted)
                         $lineItem['preparation_status'] = $oldItem->preparation_status;
                     }
                     
@@ -966,6 +979,26 @@ class OrderController extends Controller
                 }
                 
                 $order->lineItems()->saveMany($lineItemModels);
+                
+                // Step 2: Re-deduct inventory for new items that have preparation_status='preparing'
+                // This ensures the deducted quantity matches the new item's quantity
+                if ($order->order_status !== 'cancelled') {
+                    $reDeductedCount = 0;
+                    foreach ($lineItemModels as $model) {
+                        if ($model->preparation_status === 'preparing') {
+                            if ($model->deductInventory()) {
+                                $reDeductedCount++;
+                            }
+                        }
+                    }
+                    if ($reDeductedCount > 0) {
+                        \Log::info('Inventory re-deducted after order edit', [
+                            'order_id' => $order->id,
+                            'order_number' => $order->order_number,
+                            'items_re_deducted' => $reDeductedCount,
+                        ]);
+                    }
+                }
             }
             
             // Update discount detail records if provided
@@ -1761,6 +1794,12 @@ class OrderController extends Controller
             unset($lineItemData['order_id']);
             unset($lineItemData['created_at']);
             unset($lineItemData['updated_at']);
+            
+            // ⭐ FIX: Map Shopify external IDs to LOCAL variant_id and product_id
+            // Without this, inventory deduction in storeOrderFromApi fails because
+            // it tries to find ProductVariantModel by Shopify's external ID
+            $lineItemData['variant_id'] = $productVariant->id;
+            $lineItemData['product_id'] = $productVariant->product_id;
             
             // Update with new prices
             $lineItemData['unit_price'] = $newPrice;
@@ -3096,19 +3135,36 @@ class OrderController extends Controller
                 ], 400);
             }
             
-            // Update line items
+            // Update line items + handle inventory deduction/restoration
             $updated = 0;
+            $inventoryDeducted = 0;
+            $inventoryRestored = 0;
             foreach ($lineItemIds as $lineItemId) {
                 $lineItem = $order->lineItems->where('id', $lineItemId)->first();
                 if ($lineItem) {
+                    $oldStatus = $lineItem->preparation_status;
                     $lineItem->preparation_status = $preparationStatus;
                     $lineItem->updated_by = auth()->id();
                     $lineItem->save();
                     $updated++;
+
+                    // ⭐ INVENTORY: Deduct when marking as prepared
+                    if ($preparationStatus === 'preparing' && $oldStatus !== 'preparing') {
+                        if ($lineItem->deductInventory()) {
+                            $inventoryDeducted++;
+                        }
+                    }
+                    // ⭐ INVENTORY: Restore when un-marking as prepared
+                    elseif ($preparationStatus === null && $oldStatus === 'preparing') {
+                        if ($lineItem->restoreInventory()) {
+                            $inventoryRestored++;
+                        }
+                    }
                 }
             }
             
-            // Get updated counts
+            // Get updated counts (refresh from DB)
+            $order->load('lineItems');
             $totalItems = $order->lineItems->count();
             $preparingCount = $order->lineItems->where('preparation_status', 'preparing')->count();
             
@@ -3118,6 +3174,8 @@ class OrderController extends Controller
                 'updated_count' => $updated,
                 'preparing_count' => $preparingCount,
                 'total_items' => $totalItems,
+                'inventory_deducted' => $inventoryDeducted,
+                'inventory_restored' => $inventoryRestored,
             ]);
             
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -3238,13 +3296,29 @@ class OrderController extends Controller
                 }
 
                 $updatedInOrder = 0;
+                $deductedInOrder = 0;
+                $restoredInOrder = 0;
                 foreach ($lineItemsToUpdate as $lineItem) {
+                    $oldStatus = $lineItem->preparation_status;
                     $lineItem->preparation_status = $preparationStatus;
                     if (auth()->id()) {
                         $lineItem->updated_by = auth()->id();
                     }
                     $lineItem->save();
                     $updatedInOrder++;
+
+                    // ⭐ INVENTORY: Deduct when marking as prepared
+                    if ($preparationStatus === 'preparing' && $oldStatus !== 'preparing') {
+                        if ($lineItem->deductInventory()) {
+                            $deductedInOrder++;
+                        }
+                    }
+                    // ⭐ INVENTORY: Restore when un-marking as prepared
+                    elseif ($preparationStatus === null && $oldStatus === 'preparing') {
+                        if ($lineItem->restoreInventory()) {
+                            $restoredInOrder++;
+                        }
+                    }
                 }
                 
                 if ($updatedInOrder > 0) {
@@ -3252,6 +3326,8 @@ class OrderController extends Controller
                         'order_id' => $orderId,
                         'order_number' => $order->order_number,
                         'items_updated' => $updatedInOrder,
+                        'items_inventory_deducted' => $deductedInOrder,
+                        'items_inventory_restored' => $restoredInOrder,
                         'total_items_in_order' => $order->lineItems->count(),
                         'product_ids_filter' => $productIds,
                         'product_name_filter' => $productNameFilter,

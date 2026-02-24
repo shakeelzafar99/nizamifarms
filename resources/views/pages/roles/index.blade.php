@@ -81,7 +81,24 @@
                                 @foreach($roles as $role)
                                 <tr>
                                     <td>{{ $role->id }}</td>
-                                    <td class="font-medium">{{ $role->urole_name }}</td>
+                                    <td class="font-medium">
+                                        {{ $role->urole_name }}
+                                        @php
+                                            $roleMobilePerms = $role->mobilePermissions->pluck('permission_code')->toArray();
+                                            $roleHasStore = in_array('access_store_mode', $roleMobilePerms);
+                                            $roleHasKhaas = in_array('access_khaas_mode', $roleMobilePerms);
+                                        @endphp
+                                        @if($roleHasStore || $roleHasKhaas)
+                                        <div class="flex gap-1 mt-1">
+                                            @if($roleHasStore)
+                                                <span style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#f3e8ff;color:#7c3aed;border:1px solid #c4b5fd;">🏪 Store</span>
+                                            @endif
+                                            @if($roleHasKhaas)
+                                                <span style="display:inline-block;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600;background-color:#fffbeb;color:#d97706;border:1px solid #fcd34d;">🌿 Khaas</span>
+                                            @endif
+                                        </div>
+                                        @endif
+                                    </td>
                                     <td>
                                         <span class="kt-badge kt-badge-sm kt-badge-outline kt-badge-info">
                                             {{ ucwords(str_replace('_', ' ', $role->type)) }}

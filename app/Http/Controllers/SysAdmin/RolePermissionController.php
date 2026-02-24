@@ -110,43 +110,50 @@ class RolePermissionController extends Controller
                 ]);
             }
             
-            // ⭐ Update Business Unit Access settings
+            // ⭐ Update Business Unit Access settings (graceful if columns not yet migrated)
             $businessUnitAccess = $request->input('business_unit_access', 'all');
             $defaultBusinessUnitId = $request->input('default_business_unit_id', 1);
             
-            $role->update([
-                'business_unit_access' => $businessUnitAccess,
-                'default_business_unit_id' => $defaultBusinessUnitId,
-                'updated_by' => auth()->id()
-            ]);
-            
-            // ⭐ Handle assigned business units for 'multiple' access type
-            // First, delete existing assignments
-            DB::table('t_sys_role_business_unit')->where('role_id', $roleId)->delete();
-            
-            if ($businessUnitAccess === 'multiple') {
-                // Insert new assignments
-                $assignedUnits = $request->input('assigned_business_units', []);
-                foreach ($assignedUnits as $buId) {
+            try {
+                $role->update([
+                    'business_unit_access' => $businessUnitAccess,
+                    'default_business_unit_id' => $defaultBusinessUnitId,
+                    'updated_by' => auth()->id()
+                ]);
+                
+                // ⭐ Handle assigned business units for 'multiple' access type
+                // First, delete existing assignments
+                DB::table('t_sys_role_business_unit')->where('role_id', $roleId)->delete();
+                
+                if ($businessUnitAccess === 'multiple') {
+                    // Insert new assignments
+                    $assignedUnits = $request->input('assigned_business_units', []);
+                    foreach ($assignedUnits as $buId) {
+                        DB::table('t_sys_role_business_unit')->insert([
+                            'role_id' => $roleId,
+                            'business_unit_id' => $buId,
+                            'is_default' => ($buId == $defaultBusinessUnitId) ? 1 : 0,
+                            'created_at' => now(),
+                            'updated_at' => now()
+                        ]);
+                    }
+                } elseif ($businessUnitAccess === 'single') {
+                    // For single access, just insert the default BU
                     DB::table('t_sys_role_business_unit')->insert([
                         'role_id' => $roleId,
-                        'business_unit_id' => $buId,
-                        'is_default' => ($buId == $defaultBusinessUnitId) ? 1 : 0,
+                        'business_unit_id' => $defaultBusinessUnitId,
+                        'is_default' => 1,
                         'created_at' => now(),
                         'updated_at' => now()
                     ]);
                 }
-            } elseif ($businessUnitAccess === 'single') {
-                // For single access, just insert the default BU
-                DB::table('t_sys_role_business_unit')->insert([
-                    'role_id' => $roleId,
-                    'business_unit_id' => $defaultBusinessUnitId,
-                    'is_default' => 1,
-                    'created_at' => now(),
-                    'updated_at' => now()
+                // For 'all' access, no entries needed - they have full access
+            } catch (\Illuminate\Database\QueryException $e) {
+                // business_unit_access / default_business_unit_id columns or t_sys_role_business_unit table not yet created
+                \Log::warning('BU access columns/table missing in t_sys_role - skipping BU settings save. Run business_unit_role_access.sql migration.', [
+                    'error' => $e->getMessage()
                 ]);
             }
-            // For 'all' access, no entries needed - they have full access
             
             DB::commit();
 
