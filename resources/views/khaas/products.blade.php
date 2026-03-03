@@ -162,9 +162,11 @@
             <!-- ⭐ Store vs Warehouse Comparison -->
             <div class="px-4 py-3">
                 <div class="grid grid-cols-2 gap-3">
-                    <!-- Store Inventory -->
-                    <div class="bg-blue-50 rounded-lg p-3 text-center">
-                        <div class="text-xs text-blue-600 font-medium mb-1">🏪 Store</div>
+                    <!-- Store Inventory (clickable for transaction log) -->
+                    <div class="bg-blue-50 rounded-lg p-3 text-center cursor-pointer hover:bg-blue-100 transition-colors group"
+                         onclick="openStoreLogModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $storeQty }})"
+                         title="Click to see inventory transaction log">
+                        <div class="text-xs text-blue-600 font-medium mb-1">🏪 Store <span class="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">📋</span></div>
                         <div class="text-xl font-bold text-blue-800">{{ $storeQty }}</div>
                         <div class="text-[10px] text-blue-500">{{ $unit }}</div>
                         @if($pendingQty > 0)
@@ -193,11 +195,15 @@
             <div class="px-4 py-3 border-t border-gray-100 bg-gray-50 flex items-center gap-2">
                 <button onclick="openStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
                     class="flex-1 px-2 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs font-medium rounded-lg hover:bg-gray-100 transition-colors text-center">
-                    📥 Stock In/Adjust
+                    📥 Warehouse
+                </button>
+                <button onclick="openStoreStockModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $storeQty }})"
+                    class="flex-1 px-2 py-1.5 bg-blue-50 border border-blue-300 text-blue-700 text-xs font-medium rounded-lg hover:bg-blue-100 transition-colors text-center">
+                    🏪 Store Adjust
                 </button>
                 <button onclick="openTransferModal({{ $product->id }}, '{{ addslashes($product->title) }}', {{ $firstVariant->id ?? 'null' }}, {{ $warehouseQty }})"
                     class="flex-1 px-2 py-1.5 border text-xs font-medium rounded-lg transition-colors text-center" style="background-color: #fef3c7; color: #92400e; border-color: #fbbf24;" onmouseover="this.style.backgroundColor='#fde68a'" onmouseout="this.style.backgroundColor='#fef3c7'">
-                    🔄 Transfer to Store
+                    🔄 Transfer
                 </button>
             </div>
         </div>
@@ -317,6 +323,102 @@
     </div>
 </div>
 
+<!-- Store Stock Adjust Modal -->
+<div id="storeStockModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeStoreStockModal()">
+    <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe);">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <span class="text-xl">🏪</span>
+                    </div>
+                    <div>
+                        <h3 id="store-stock-modal-title" class="text-lg font-bold text-gray-900">Store Stock Adjust</h3>
+                        <p class="text-xs text-gray-500 mt-0.5">Adjust store inventory levels for this product</p>
+                    </div>
+                </div>
+                <button onclick="closeStoreStockModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <form method="POST" action="{{ route('khaas.store.stock') }}">
+            @csrf
+            <input type="hidden" name="product_id" id="store_stock_product_id">
+            <input type="hidden" name="product_variant_id" id="store_stock_variant_id">
+            <input type="hidden" name="business_unit_id" value="{{ $khaasBU->id }}">
+            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+                <!-- Product Info Card -->
+                <div class="flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
+                    <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-lg font-bold text-blue-700" id="store_stock_product_initial">—</div>
+                    <div class="flex-1">
+                        <div id="store_stock_product_name" class="text-sm font-semibold text-gray-900"></div>
+                        <div id="store_stock_current_qty" class="text-xs text-blue-600 mt-0.5"></div>
+                    </div>
+                </div>
+                <!-- Action Type -->
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-2">Action Type</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="relative flex items-center gap-2 p-2.5 border-2 rounded-xl cursor-pointer transition-all hover:border-blue-300" style="border-color: #3b82f6; background-color: #eff6ff;" id="store_stock_radio_store_stock_in">
+                            <input type="radio" name="change_type" value="store_stock_in" class="sr-only" checked onchange="updateStoreStockRadioStyles()">
+                            <span class="text-lg">📥</span>
+                            <div>
+                                <div class="text-sm font-medium text-gray-900">Stock In</div>
+                                <div class="text-[10px] text-gray-500">Add to store</div>
+                            </div>
+                        </label>
+                        <label class="relative flex items-center gap-2 p-2.5 border-2 border-gray-200 rounded-xl cursor-pointer transition-all hover:border-blue-300" id="store_stock_radio_store_stock_out">
+                            <input type="radio" name="change_type" value="store_stock_out" class="sr-only" onchange="updateStoreStockRadioStyles()">
+                            <span class="text-lg">📤</span>
+                            <div>
+                                <div class="text-sm font-medium text-gray-900">Stock Out</div>
+                                <div class="text-[10px] text-gray-500">Remove from store</div>
+                            </div>
+                        </label>
+                        <label class="relative flex items-center gap-2 p-2.5 border-2 border-gray-200 rounded-xl cursor-pointer transition-all hover:border-blue-300" id="store_stock_radio_store_count">
+                            <input type="radio" name="change_type" value="store_count" class="sr-only" onchange="updateStoreStockRadioStyles()">
+                            <span class="text-lg">📊</span>
+                            <div>
+                                <div class="text-sm font-medium text-gray-900">Count</div>
+                                <div class="text-[10px] text-gray-500">Set exact qty</div>
+                            </div>
+                        </label>
+                        <label class="relative flex items-center gap-2 p-2.5 border-2 border-gray-200 rounded-xl cursor-pointer transition-all hover:border-blue-300" id="store_stock_radio_store_adjustment">
+                            <input type="radio" name="change_type" value="store_adjustment" class="sr-only" onchange="updateStoreStockRadioStyles()">
+                            <span class="text-lg">🔧</span>
+                            <div>
+                                <div class="text-sm font-medium text-gray-900">Adjust</div>
+                                <div class="text-[10px] text-gray-500">Correction</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <!-- Quantity -->
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
+                    <input type="number" name="quantity_change" min="0" required placeholder="Enter quantity..."
+                        class="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors">
+                </div>
+                <!-- Notes -->
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1.5">Notes <span class="font-normal text-gray-400">(optional)</span></label>
+                    <textarea name="notes" rows="2" placeholder="Reason for this store adjustment..."
+                        class="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors resize-none"></textarea>
+                </div>
+            </div>
+            <!-- Footer -->
+            <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-end gap-3">
+                <button type="button" onclick="closeStoreStockModal()" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white rounded-xl shadow-sm transition-colors" style="background-color: #2563eb;" onmouseover="this.style.backgroundColor='#1d4ed8'" onmouseout="this.style.backgroundColor='#2563eb'">
+                    Update Store Stock
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Reject Transfer Modal (for pending approvals) -->
 <div id="productRejectModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeProductRejectModal()">
     <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" onclick="event.stopPropagation()">
@@ -423,6 +525,42 @@
         </form>
     </div>
 </div>
+<!-- Store Inventory Transaction Log Modal -->
+<div id="storeLogModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;" onclick="if(event.target===this)closeStoreLogModal()">
+    <div class="w-full max-w-xl bg-white rounded-2xl shadow-2xl text-left overflow-hidden" onclick="event.stopPropagation()">
+        <!-- Header -->
+        <div class="px-6 py-4 border-b border-gray-100" style="background: linear-gradient(to right, #eff6ff, #e0f2fe);">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <span class="text-xl">📋</span>
+                    </div>
+                    <div>
+                        <h3 id="store-log-title" class="text-lg font-bold text-gray-900">Store Inventory Log</h3>
+                        <p class="text-xs text-gray-500 mt-0.5">
+                            Current balance: <span id="store-log-balance" class="font-bold text-blue-700">—</span> units
+                        </p>
+                    </div>
+                </div>
+                <button onclick="closeStoreLogModal()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Body -->
+        <div class="max-h-[70vh] overflow-y-auto" id="store-log-body">
+            <div class="flex items-center justify-center py-12 text-gray-400">
+                <svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                Loading transactions...
+            </div>
+        </div>
+        <!-- Footer -->
+        <div class="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
+            <p class="text-[10px] text-gray-400">Showing recent transactions that affected store inventory</p>
+            <button onclick="closeStoreLogModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">Close</button>
+        </div>
+    </div>
+</div>
 @endpush
 
 @push('demo1_js')
@@ -480,6 +618,43 @@ function updateStockRadioStyles() {
     });
 }
 
+// === Store Stock Adjust Modal ===
+function openStoreStockModal(productId, productName, variantId, currentQty) {
+    document.getElementById('store_stock_product_id').value = productId;
+    document.getElementById('store_stock_variant_id').value = variantId || '';
+    document.getElementById('store_stock_product_name').textContent = productName;
+    document.getElementById('store_stock_product_initial').textContent = productName.charAt(0).toUpperCase();
+    document.getElementById('store_stock_current_qty').textContent = 'Current store stock: ' + currentQty + ' units';
+    // Reset radio to store_stock_in
+    var storeStockInRadio = document.querySelector('#storeStockModal input[name="change_type"][value="store_stock_in"]');
+    if (storeStockInRadio) storeStockInRadio.checked = true;
+    updateStoreStockRadioStyles();
+    var modal = document.getElementById('storeStockModal');
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+function closeStoreStockModal() {
+    var modal = document.getElementById('storeStockModal');
+    modal.classList.add('hidden');
+    document.body.style.overflow = '';
+}
+function updateStoreStockRadioStyles() {
+    var labels = ['store_stock_in', 'store_stock_out', 'store_count', 'store_adjustment'];
+    labels.forEach(function(val) {
+        var label = document.getElementById('store_stock_radio_' + val);
+        var radio = label ? label.querySelector('input[type="radio"]') : null;
+        if (label && radio) {
+            if (radio.checked) {
+                label.style.borderColor = '#3b82f6';
+                label.style.backgroundColor = '#eff6ff';
+            } else {
+                label.style.borderColor = '#e5e7eb';
+                label.style.backgroundColor = '';
+            }
+        }
+    });
+}
+
 // === Reject Transfer Modal (for pending approvals on products page) ===
 function openProductRejectModal(transferId, productName, quantity) {
     document.getElementById('productRejectModalInfo').textContent = quantity + ' units of "' + productName + '" — stock returns to warehouse';
@@ -492,12 +667,157 @@ function closeProductRejectModal() {
     document.body.style.overflow = '';
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ⭐ Store Inventory Transaction Log
+// ═══════════════════════════════════════════════════════════════
+function openStoreLogModal(productId, productName, currentQty) {
+    document.getElementById('store-log-title').textContent = productName + ' — Store Log';
+    document.getElementById('store-log-balance').textContent = currentQty;
+    document.getElementById('store-log-body').innerHTML =
+        '<div class="flex items-center justify-center py-12 text-gray-400">' +
+        '<svg class="animate-spin w-6 h-6 mr-2" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>' +
+        'Loading transactions...</div>';
+
+    var modal = document.getElementById('storeLogModal');
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+
+    // Fetch transaction log
+    fetch('{{ url("khaas/products") }}/' + productId + '/store-log?limit=15')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.events || data.events.length === 0) {
+                document.getElementById('store-log-body').innerHTML =
+                    '<div class="text-center py-12 text-gray-400">' +
+                    '<div class="text-3xl mb-2">📭</div>' +
+                    '<p class="text-sm">No store inventory transactions found yet.</p></div>';
+                return;
+            }
+            renderStoreLog(data.events, data.current_store_qty);
+        })
+        .catch(function(err) {
+            document.getElementById('store-log-body').innerHTML =
+                '<div class="text-center py-12 text-red-400">' +
+                '<div class="text-3xl mb-2">⚠️</div>' +
+                '<p class="text-sm">Failed to load transactions.</p></div>';
+            console.error('Store log error:', err);
+        });
+}
+
+function closeStoreLogModal() {
+    document.getElementById('storeLogModal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function renderStoreLog(events, currentQty) {
+    var html = '';
+
+    // Current balance header
+    html += '<div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between">';
+    html += '<span class="text-xs font-semibold text-blue-700">Current Store Balance</span>';
+    html += '<span class="text-lg font-bold text-blue-800">' + currentQty + ' units</span>';
+    html += '</div>';
+
+    // Transaction list
+    html += '<div class="divide-y divide-gray-100">';
+
+    for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var isPositive = ev.change > 0;
+
+        // Color classes based on type
+        var bgColor, changeColor, borderColor, iconBg;
+        if (ev.type === 'transfer_in') {
+            bgColor = '';
+            changeColor = 'color: #16a34a;'; // green
+            borderColor = 'border-left: 3px solid #22c55e;';
+            iconBg = 'background-color: #dcfce7;';
+        } else if (ev.type === 'order_deduction') {
+            bgColor = '';
+            changeColor = 'color: #dc2626;'; // red
+            borderColor = 'border-left: 3px solid #ef4444;';
+            iconBg = 'background-color: #fee2e2;';
+        } else if (ev.type === 'cancellation_restore') {
+            bgColor = '';
+            changeColor = 'color: #2563eb;'; // blue
+            borderColor = 'border-left: 3px solid #3b82f6;';
+            iconBg = 'background-color: #dbeafe;';
+        } else if (ev.type === 'store_adjustment') {
+            bgColor = '';
+            changeColor = isPositive ? 'color: #7c3aed;' : 'color: #ea580c;'; // purple for +, orange for -
+            borderColor = isPositive ? 'border-left: 3px solid #8b5cf6;' : 'border-left: 3px solid #f97316;';
+            iconBg = isPositive ? 'background-color: #ede9fe;' : 'background-color: #fff7ed;';
+        } else {
+            bgColor = '';
+            changeColor = isPositive ? 'color: #16a34a;' : 'color: #dc2626;';
+            borderColor = 'border-left: 3px solid #9ca3af;';
+            iconBg = 'background-color: #f3f4f6;';
+        }
+
+        html += '<div class="px-5 py-3 hover:bg-gray-50 transition-colors" style="' + borderColor + '">';
+        html += '<div class="flex items-start gap-3">';
+
+        // Icon
+        html += '<div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style="' + iconBg + '">';
+        html += '<span class="text-sm">' + ev.icon + '</span>';
+        html += '</div>';
+
+        // Main content
+        html += '<div class="flex-1 min-w-0">';
+        html += '<div class="flex items-center justify-between">';
+        html += '<span class="text-sm font-semibold text-gray-900">' + escStoreLog(ev.label) + '</span>';
+        html += '<span class="text-sm font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
+        html += '</div>';
+
+        // Detail line
+        html += '<div class="text-xs text-gray-600 mt-0.5">' + escStoreLog(ev.detail) + '</div>';
+        if (ev.sub_detail) {
+            html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escStoreLog(ev.sub_detail) + '</div>';
+        }
+
+        // Date and balance
+        html += '<div class="flex items-center justify-between mt-1.5">';
+        html += '<span class="text-[10px] text-gray-400" title="' + escStoreLog(ev.date_formatted) + '">' + escStoreLog(ev.date_ago) + ' · ' + escStoreLog(ev.date_formatted) + '</span>';
+        html += '<span class="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">';
+        html += escStoreLog(String(ev.balance_before)) + ' → ' + escStoreLog(String(ev.balance_after));
+        html += '</span>';
+        html += '</div>';
+
+        html += '</div>'; // end main content
+        html += '</div>'; // end flex
+        html += '</div>'; // end row
+    }
+
+    html += '</div>'; // end divide-y
+
+    // Legend
+    html += '<div class="px-5 py-3 bg-gray-50 border-t border-gray-100">';
+    html += '<div class="flex flex-wrap items-center gap-3 text-[10px] text-gray-500">';
+    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#22c55e;border-radius:2px;margin-right:3px;"></span>Transfer In</span>';
+    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:2px;margin-right:3px;"></span>Order Deduction</span>';
+    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:2px;margin-right:3px;"></span>Cancelled Restore</span>';
+    html += '<span><span style="display:inline-block;width:8px;height:8px;background:#8b5cf6;border-radius:2px;margin-right:3px;"></span>Manual Adjust</span>';
+    html += '</div>';
+    html += '</div>';
+
+    document.getElementById('store-log-body').innerHTML = html;
+}
+
+function escStoreLog(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 // Close on Escape key
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         closeStockModal();
+        closeStoreStockModal();
         closeTransferModal();
         closeProductRejectModal();
+        closeStoreLogModal();
     }
 });
 </script>

@@ -440,14 +440,14 @@
                 @foreach($order->lineItems as $item)
                 <tr>
                     <td>
-                        <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
+                        <div class="product-name">{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="display: inline-block; padding: 1px 5px; background: #dcfce7; color: #16a34a; border-radius: 3px; font-size: 9px; font-weight: 700; margin-left: 3px;">FREE</span>@endif</div>
                         @if($item->sku)
                             <div class="product-sku">SKU: {{ trim((string)($item->display_sku ?? $item->sku)) }}</div>
                         @endif
                     </td>
                     <td>{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
-                    <td>Rs.{{ number_format($item->unit_price, 0) }}</td>
-                    <td>Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                    <td>@if($item->is_free)<s style="color:#aaa;">Rs.{{ number_format($item->unit_price, 0) }}</s>@else Rs.{{ number_format($item->unit_price, 0) }}@endif</td>
+                    <td>@if($item->is_free)<span style="color: #16a34a; font-weight: 700;">FREE</span>@else Rs.{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}@endif</td>
                 </tr>
                 @endforeach
             </tbody>
@@ -458,7 +458,7 @@
             <table class="totals-table">
                 <tr>
                     <td class="label">Subtotal:</td>
-                    <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); }), 0) }}</td>
+                    <td class="amount">Rs.{{ number_format($order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); }), 0) }}</td>
                 </tr>
                 @if($order->discount_total && $order->discount_total > 0)
                 <tr>

@@ -212,15 +212,19 @@
                         <div class="px-4 py-1">
                             <div class="text-xs font-bold text-red-600 mb-1">⏳ Message Pending</div>
                             @foreach($riderData['message_pending'] as $order)
-                            <div class="flex items-center justify-between py-1 px-3 mb-1 rounded" style="background-color: #fef2f2;">
-                                <div class="flex items-center gap-3">
+                            <div id="msg-order-{{ $order['id'] }}" class="flex items-center justify-between py-2 px-3 mb-1.5 rounded-lg" style="background-color: #fef2f2;">
+                                <div class="flex items-center gap-3 flex-1 min-w-0">
                                     <span class="text-xs font-mono font-bold text-gray-700">{{ $order['order_number'] }}</span>
-                                    <span class="text-xs text-gray-600">{{ $order['customer_name'] }}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-600 truncate">{{ $order['customer_name'] }}</span>
+                                    @if($order['delivery_time'])<span class="text-xs text-gray-400">{{ $order['delivery_time'] }}</span>@endif
                                     <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($order['amount']) }}</span>
-                                    <span class="text-xs bg-red-500 text-white px-1.5 py-0.5 rounded font-medium">Not Sent</span>
                                 </div>
+                                <button type="button" 
+                                    onclick="sendOnlineWhatsApp({{ $order['id'] }}, '{{ addslashes($order['customer_name']) }}', '{{ $order['customer_phone'] }}', '{{ $order['order_number'] }}', '{{ addslashes($order['rider_name']) }}', '{{ $order['delivery_date'] }}', '{{ $order['delivery_time'] }}')"
+                                    style="background-color: #25D366; min-width: 140px;"
+                                    class="text-sm hover:opacity-90 text-white px-4 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 ml-3 shadow-sm">
+                                    📱 Send WhatsApp
+                                </button>
                             </div>
                             @endforeach
                         </div>
@@ -856,6 +860,57 @@ function toggleDateGroup(date) {
     // Optionally auto-show on page load
     // togglePendingSettlements();
 @endif
+
+function formatPhoneForWhatsApp(phone) {
+    if (!phone) return null;
+    let cleaned = phone.replace(/[^0-9+]/g, '');
+    if (cleaned.startsWith('+92')) return cleaned;
+    if (cleaned.startsWith('92') && cleaned.length >= 12) return '+' + cleaned;
+    if (cleaned.startsWith('0')) return '+92' + cleaned.substring(1);
+    if (cleaned.length === 10) return '+92' + cleaned;
+    return cleaned.startsWith('+') ? cleaned : '+' + cleaned;
+}
+
+function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, riderName, deliveryDate, deliveryTime) {
+    var formatted = formatPhoneForWhatsApp(customerPhone);
+    if (!formatted) {
+        alert('No valid phone number available for this customer.');
+        return;
+    }
+
+    var timeStr = deliveryTime ? ' at ' + deliveryTime : '';
+    var msg = 'Dear ' + customerName + ',\n\n'
+        + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryDate + timeStr + ' by ' + riderName + '.\n\n'
+        + 'Your payment method is Bank Transfer.\n\n'
+        + 'Thank you for choosing Nizami Farms!';
+
+    var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
+    window.open(waUrl, '_blank');
+
+    var csrfToken = document.querySelector('meta[name="csrf-token"]');
+    fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', orderId), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrfToken ? csrfToken.getAttribute('content') : '',
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({})
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+        if (data.success) {
+            var row = document.getElementById('msg-order-' + orderId);
+            if (row) {
+                row.style.backgroundColor = '#f0fdf4';
+                row.querySelector('button').outerHTML = '<span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent ' + (data.sent_at || 'now') + '</span>';
+            }
+        }
+    })
+    .catch(function(err) {
+        console.error('Failed to mark message sent:', err);
+    });
+}
 </script>
 
 <!-- CSS for animations -->

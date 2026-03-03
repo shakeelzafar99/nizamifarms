@@ -898,13 +898,13 @@ $hideUnitPrice = request('hide_unit_price') == '1';
                 @foreach($order->lineItems as $item)
                 <tr>
                     <td>
-                        <div class="product-name">{{ $item->name ?: 'N/A' }}</div>
+                        <div class="product-name">{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="display: inline-block; padding: 1px 6px; background: #dcfce7; color: #16a34a; border-radius: 3px; font-size: 9px; font-weight: 700; margin-left: 4px;">FREE</span>@endif</div>
                     </td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
                     @if(!$hideUnitPrice)
-                    <td class="text-center">Rs {{ number_format($item->unit_price, 0) }}</td>
+                    <td class="text-center">@if($item->is_free)<s style="color:#aaa;">Rs {{ number_format($item->unit_price, 0) }}</s>@else Rs {{ number_format($item->unit_price, 0) }}@endif</td>
                     @endif
-                    <td class="text-right" style="font-weight: 600;">Rs {{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                    <td class="text-right" style="font-weight: 600;">@if($item->is_free)<span style="color: #16a34a; font-weight: 700;">FREE</span>@else Rs {{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}@endif</td>
                 </tr>
                 @endforeach
             </tbody>
@@ -921,7 +921,7 @@ $hideUnitPrice = request('hide_unit_price') == '1';
                 @php
                     $discountBreakdown = $order->getDiscountBreakdown();
                     $totalDiscounts = $discountBreakdown->sum('discount_amount');
-                    $subtotal = $order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); });
+                    $subtotal = $order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); });
                 @endphp
                 
                 @if($totalDiscounts > 0)

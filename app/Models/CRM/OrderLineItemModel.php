@@ -31,6 +31,7 @@ class OrderLineItemModel extends BaseModel
         'line_total',
         'preparation_status',
         'inventory_deducted',
+        'is_free',
         'created_by',
         'updated_by'
     ];

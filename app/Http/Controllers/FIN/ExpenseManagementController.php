@@ -281,9 +281,18 @@ class ExpenseManagementController extends Controller
         // ⭐ Get user's default business unit ID
         $userDefaultBuId = AccountModel::getUserDefaultBusinessUnitId();
         
+        $isTaimurRole = false;
+        if (\Auth::check()) {
+            $isTaimurRole = \DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', \Auth::id())
+                ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+                ->exists();
+        }
+        
         return view('fin.expense.index', compact(
-            'allExpensesForDisplay', // Changed from 'allExpenses' to include salary slips
-            'allExpenses', // Keep original for backward compatibility if needed
+            'allExpensesForDisplay',
+            'allExpenses',
             'pendingSettlement',
             'settlementHistory',
             'kpis',
@@ -298,7 +307,8 @@ class ExpenseManagementController extends Controller
             'settlementStatus',
             'businessUnits',
             'accessibleCompanyAccounts',
-            'userDefaultBuId'
+            'userDefaultBuId',
+            'isTaimurRole'
         ));
     }
     

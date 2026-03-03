@@ -443,7 +443,9 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/transfers/{id}/reject', [\App\Http\Controllers\KhaasController::class, 'rejectTransfer'])->name('transfers.reject');
         Route::post('/warehouse/stock', [\App\Http\Controllers\KhaasController::class, 'updateStock'])->name('warehouse.stock');
         Route::post('/warehouse/transfer', [\App\Http\Controllers\KhaasController::class, 'initiateTransfer'])->name('warehouse.transfer');
+        Route::post('/store/stock', [\App\Http\Controllers\KhaasController::class, 'updateStoreStock'])->name('store.stock');
         Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReport'])->name('sales-report');
+        Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog'])->name('products.store-log');
     });
 
     // Finance & Ledger Routes
@@ -560,6 +562,8 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/company-receive', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordCompanyReceipt'])->name('company-receive');
             Route::post('/{id}/company-payment', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordCompanyPayment'])->name('company-payment');
             Route::post('/{id}/company-transfer', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordCompanyTransfer'])->name('company-transfer');
+            
+            Route::post('/mark-online-message-sent/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'markOnlineMessageSentWeb'])->name('mark-online-message-sent');
         });
 
         // Ledger Routes (Overall Ledger & Transfers)

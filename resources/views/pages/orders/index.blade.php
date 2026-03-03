@@ -2139,11 +2139,12 @@ function viewOrderDetails(orderId) {
                 for (var i = 0; i < items.length; i++) {
                     var it = items[i] || {};
                     var name = (it.name || it.title || 'Item');
+                    var isFreeItem = it.is_free == 1;
                     var qty = parseFloat(it.quantity || 0);
                     var unit = parseFloat((it.unit_price != null ? it.unit_price : (it.price != null ? it.price : 0)));
                     // Use the same calculation logic as the invoice: prefer line_total, fallback to qty * unit_price
-                    var lineTotal = parseFloat(it.line_total || 0);
-                    if (!lineTotal || lineTotal === 0) {
+                    var lineTotal = isFreeItem ? 0 : parseFloat(it.line_total || 0);
+                    if (!isFreeItem && (!lineTotal || lineTotal === 0)) {
                         lineTotal = qty * unit;
                     }
                     if (!isFinite(qty)) qty = 0;
@@ -2158,7 +2159,8 @@ function viewOrderDetails(orderId) {
                         html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align: center;"><input type="checkbox" class="lineItemCheckbox" data-item-id="' + (it.id || '') + '" style="cursor: pointer;"></td>';
                     }
                     
-                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + name + '</td>';
+                    var freeBadge = isFreeItem ? ' <span style="display: inline-block; padding: 2px 6px; background: #dcfce7; color: #16a34a; border-radius: 4px; font-size: 10px; font-weight: 700; margin-left: 6px;">FREE</span>' : '';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + name + freeBadge + '</td>';
                     
                     // Only show status badge for open non-Shopify orders
                     if (showPreparationControls) {
@@ -2171,9 +2173,10 @@ function viewOrderDetails(orderId) {
                         html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align: center;">' + statusBadge + '</td>';
                     }
                     
+                    var lineTotalDisplay = isFreeItem ? '<span style="color: #16a34a; font-weight: 700;">FREE</span>' : formatCurrency(lineTotal, order.currency);
                     html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>' +
-                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + (isFreeItem ? '<s style="color:#9ca3af;">' + formatCurrency(unit, order.currency) + '</s>' : formatCurrency(unit, order.currency)) + '</td>' +
+                        '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + lineTotalDisplay + '</td>' +
                     '</tr>';
                 }
                 html += '</tbody>';
@@ -3425,7 +3428,7 @@ function loadEditForm(order) {
                 <div id="lineItemsContainer" style="padding: 16px;">
                     ${order.line_items && order.line_items.length > 0 ? 
                         order.line_items.map((item, index) => `
-                        <div class="line-item" data-index="${index}" data-product-id="${item.product_id || ''}" data-product-name="${(item.name || item.title || '').replace(/"/g, '&quot;')}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;">
+                        <div class="line-item" data-index="${index}" data-product-id="${item.product_id || ''}" data-product-name="${(item.name || item.title || '').replace(/"/g, '&quot;')}" style="display: grid; grid-template-columns: 3fr 70px 90px 110px auto 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid ${item.is_free ? '#bbf7d0' : '#e5e7eb'}; border-radius: 6px; background-color: ${item.is_free ? '#f0fdf4' : '#f9fafb'};">
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name <span style="margin-left: 8px; font-size: 11px; color: #6b7280; font-weight: normal;">🔒 Locked (delete to change)</span></label>
                                 <input type="text" name="items[${index}][name]" value="${item.name || item.title || ''}" 
@@ -3435,6 +3438,7 @@ function loadEditForm(order) {
                                 <input type="hidden" name="items[${index}][sku]" value="${item.sku || ''}">
                                 <input type="hidden" name="items[${index}][variant_id]" value="${item.variant_id || ''}">
                                 <input type="hidden" name="items[${index}][product_id]" value="${item.product_id || ''}">
+                                <input type="hidden" name="items[${index}][is_free]" value="${item.is_free ? 1 : 0}" class="is-free-input">
                             </div>
                             <div style="position: relative;">
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">
@@ -3457,7 +3461,12 @@ function loadEditForm(order) {
                             </div>
                             <div>
                                 <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
-                                <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">${formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</span>
+                                <span class="line-total" style="display: block; padding: 6px 8px; background-color: ${item.is_free ? '#bbf7d0' : '#e5e7eb'}; border-radius: 4px; font-size: 14px; font-weight: 500;">${item.is_free ? 'FREE' : formatCurrency(item.line_total || ((item.unit_price || item.price || 0) * (item.quantity || 0)), order.currency)}</span>
+                            </div>
+                            <div>
+                                <button type="button" onclick="toggleFreeItem(${index})" class="free-toggle-btn" style="padding: 6px 10px; border: 1px solid ${item.is_free ? '#16a34a' : '#d1d5db'}; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 1.2; background-color: ${item.is_free ? '#16a34a' : '#fff'}; color: ${item.is_free ? '#fff' : '#6b7280'};" title="${item.is_free ? 'Click to remove free status' : 'Click to make this item free'}">
+                                    ${item.is_free ? '✓ FREE' : 'Make Free'}
+                                </button>
                             </div>
                             <div>
                                 <button type="button" onclick="removeLineItem(${index})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
@@ -4018,7 +4027,7 @@ function addLineItem() {
     const newItem = document.createElement('div');
     newItem.className = 'line-item';
     newItem.setAttribute('data-index', lineItemIndex);
-    newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+    newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px auto 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
     
     newItem.innerHTML = `
         <div style="position: relative;">
@@ -4037,6 +4046,7 @@ function addLineItem() {
             <input type="hidden" name="items[${lineItemIndex}][sku]" value="">
             <input type="hidden" name="items[${lineItemIndex}][variant_id]" value="">
             <input type="hidden" name="items[${lineItemIndex}][product_id]" value="">
+            <input type="hidden" name="items[${lineItemIndex}][is_free]" value="0" class="is-free-input">
         </div>
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -4053,6 +4063,11 @@ function addLineItem() {
         <div>
             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
             <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+        </div>
+        <div>
+            <button type="button" onclick="toggleFreeItem(${lineItemIndex})" class="free-toggle-btn" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 1.2; background-color: #fff; color: #6b7280;" title="Click to make this item free">
+                Make Free
+            </button>
         </div>
         <div>
             <button type="button" onclick="removeLineItem(${lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
@@ -4081,18 +4096,67 @@ function removeLineItem(index) {
     }
 }
 
+function toggleFreeItem(index) {
+    const item = document.querySelector(`.line-item[data-index="${index}"]`);
+    if (!item) return;
+    
+    const isFreeInput = item.querySelector('.is-free-input');
+    const isFree = isFreeInput.value === '1';
+    const newFreeState = !isFree;
+    
+    // Update hidden input
+    isFreeInput.value = newFreeState ? '1' : '0';
+    
+    // Update toggle button appearance
+    const toggleBtn = item.querySelector('.free-toggle-btn');
+    if (toggleBtn) {
+        toggleBtn.innerHTML = newFreeState ? '✓ FREE' : 'Make Free';
+        toggleBtn.style.backgroundColor = newFreeState ? '#16a34a' : '#fff';
+        toggleBtn.style.color = newFreeState ? '#fff' : '#6b7280';
+        toggleBtn.style.borderColor = newFreeState ? '#16a34a' : '#d1d5db';
+        toggleBtn.title = newFreeState ? 'Click to remove free status' : 'Click to make this item free';
+    }
+    
+    // Update row styling
+    item.style.borderColor = newFreeState ? '#bbf7d0' : '#e5e7eb';
+    item.style.backgroundColor = newFreeState ? '#f0fdf4' : '#f9fafb';
+    
+    // Update total display
+    const totalSpan = item.querySelector('.line-total');
+    if (totalSpan) {
+        totalSpan.style.backgroundColor = newFreeState ? '#bbf7d0' : '#e5e7eb';
+        if (newFreeState) {
+            totalSpan.textContent = 'FREE';
+        } else {
+            const quantity = parseFloat(item.querySelector(`input[name="items[${index}][quantity]"]`).value) || 0;
+            const price = parseFloat(item.querySelector(`input[name="items[${index}][unit_price]"]`).value) || 0;
+            totalSpan.textContent = formatCurrency(Math.round(quantity * price * 100) / 100, 'PKR');
+        }
+    }
+    
+    // Recalculate subtotal and order total
+    updateSubtotal();
+}
+
 function updateLineTotal(index) {
     const item = document.querySelector(`.line-item[data-index="${index}"]`);
     if (item) {
+        // Check if item is marked as free
+        const isFreeInput = item.querySelector('.is-free-input');
+        const isFree = isFreeInput && isFreeInput.value === '1';
+        
         // Get quantity from input (already adjusted by applyWeightFactorToQuantity if applicable)
         const quantity = parseFloat(item.querySelector(`input[name="items[${index}][quantity]"]`).value) || 0;
         const price = parseFloat(item.querySelector(`input[name="items[${index}][unit_price]"]`).value) || 0;
         
-        // Calculate total with proper precision
-        const total = Math.round(quantity * price * 100) / 100;
-        
         const totalSpan = item.querySelector('.line-total');
-        totalSpan.textContent = formatCurrency(total, 'PKR');
+        if (isFree) {
+            totalSpan.textContent = 'FREE';
+        } else {
+            // Calculate total with proper precision
+            const total = Math.round(quantity * price * 100) / 100;
+            totalSpan.textContent = formatCurrency(total, 'PKR');
+        }
         
         updateSubtotal();
     }
@@ -4195,6 +4259,10 @@ function updateSubtotal() {
     const items = document.querySelectorAll('.line-item');
     
     items.forEach(item => {
+        // Skip free items — they contribute 0 to subtotal
+        const isFreeInput = item.querySelector('.is-free-input');
+        if (isFreeInput && isFreeInput.value === '1') return;
+        
         const index = item.getAttribute('data-index');
         const quantity = parseFloat(item.querySelector(`input[name*="[quantity]"]`).value) || 0;
         const price = parseFloat(item.querySelector(`input[name*="[unit_price]"]`).value) || 0;
@@ -5249,13 +5317,16 @@ function saveOrderChanges(orderId) {
         const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
         const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
         const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
+        const isFreeInput = item.querySelector('.is-free-input');
+        const isFree = isFreeInput && isFreeInput.value === '1';
         
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice,
+                line_total: isFree ? 0 : quantity * unitPrice,
+                is_free: isFree ? 1 : 0,
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId
@@ -5478,13 +5549,16 @@ function saveAndCloseOrder(orderId) {
         const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
         const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
         const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
+        const isFreeInput = item.querySelector('.is-free-input');
+        const isFree = isFreeInput && isFreeInput.value === '1';
         
         if (name && quantity > 0 && unitPrice >= 0) {
             items.push({
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice,
+                line_total: isFree ? 0 : quantity * unitPrice,
+                is_free: isFree ? 1 : 0,
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId
@@ -5711,11 +5785,12 @@ function popoutOrder() {
                             div.className = 'line-item';
                             const idx = Date.now();
                             div.setAttribute('data-index', idx);
-                            div.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+                            div.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px auto 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
                             div.innerHTML = `
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Item Name</label>
                                     <input type="text" name="items[${idx}][name]" placeholder="Product name..." style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                                    <input type="hidden" name="items[${idx}][is_free]" value="0" class="is-free-input">
                                 </div>
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -5728,6 +5803,9 @@ function popoutOrder() {
                                 <div>
                                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
                                     <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+                                </div>
+                                <div>
+                                    <button type="button" onclick="toggleFreeItem(${idx})" class="free-toggle-btn" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 1.2; background-color: #fff; color: #6b7280;" title="Click to make this item free">Make Free</button>
                                 </div>
                                 <div>
                                     <button type="button" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">×</button>
@@ -5778,6 +5856,8 @@ function popoutOrder() {
         newWindow.showSuccessMessage = showSuccessMessage;
         newWindow.updateOrderTotal = updateOrderTotal;
         newWindow.handleQtyTabNavigation = handleQtyTabNavigation;
+        newWindow.toggleFreeItem = toggleFreeItem;
+        try { newWindow.window.toggleFreeItem = toggleFreeItem; } catch (e) {}
         
         // Line item management functions
         newWindow.lineItemIndex = 1000; // Initialize line item index
@@ -5793,6 +5873,8 @@ function popoutOrder() {
             newItem.className = 'line-item';
             newItem.setAttribute('data-index', newWindow.lineItemIndex);
             newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
+            
+            newItem.style.cssText = 'display: grid; grid-template-columns: 3fr 70px 90px 110px auto 32px; gap: 12px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #e5e7eb; border-radius: 6px; background-color: #f9fafb;';
             
             newItem.innerHTML = `
                 <div style="position: relative;">
@@ -5811,6 +5893,7 @@ function popoutOrder() {
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][sku]" value="">
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][variant_id]" value="">
                     <input type="hidden" name="items[${newWindow.lineItemIndex}][product_id]" value="">
+                    <input type="hidden" name="items[${newWindow.lineItemIndex}][is_free]" value="0" class="is-free-input">
                 </div>
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Quantity</label>
@@ -5827,6 +5910,11 @@ function popoutOrder() {
                 <div>
                     <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>
                     <span class="line-total" style="display: block; padding: 6px 8px; background-color: #e5e7eb; border-radius: 4px; font-size: 14px; font-weight: 500;">PKR 0.00</span>
+                </div>
+                <div>
+                    <button type="button" onclick="toggleFreeItem(${newWindow.lineItemIndex})" class="free-toggle-btn" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; line-height: 1.2; background-color: #fff; color: #6b7280;" title="Click to make this item free">
+                        Make Free
+                    </button>
                 </div>
                 <div>
                     <button type="button" onclick="removeLineItem(${newWindow.lineItemIndex})" style="background-color: #ef4444; color: white; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;">
@@ -5886,13 +5974,16 @@ function popoutOrder() {
                 const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
                 const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
                 const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
+                const isFreeInput = item.querySelector('.is-free-input');
+                const isFree = isFreeInput && isFreeInput.value === '1';
                 
                 if (name && quantity > 0 && unitPrice >= 0) {
                     items.push({
                         name: name,
                         quantity: quantity,
                         unit_price: unitPrice,
-                        line_total: quantity * unitPrice,
+                        line_total: isFree ? 0 : quantity * unitPrice,
+                        is_free: isFree ? 1 : 0,
                         sku: sku,
                         variant_id: variantId,
                         product_id: productId
@@ -8970,6 +9061,8 @@ function saveNewOrder() {
         const sku = item.querySelector('input[name*="[sku]"]')?.value || null;
         const variantId = item.querySelector('input[name*="[variant_id]"]')?.value || null;
         const productId = item.querySelector('input[name*="[product_id]"]')?.value || null;
+        const isFreeInput = item.querySelector('.is-free-input');
+        const isFree = isFreeInput && isFreeInput.value === '1';
         
         // Only add items that have a name and valid quantity/price
         if (name && quantity > 0 && unitPrice >= 0) {
@@ -8977,7 +9070,8 @@ function saveNewOrder() {
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
-                line_total: quantity * unitPrice,
+                line_total: isFree ? 0 : quantity * unitPrice,
+                is_free: isFree ? 1 : 0,
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId

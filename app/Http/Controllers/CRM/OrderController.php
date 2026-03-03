@@ -557,6 +557,7 @@ class OrderController extends Controller
                 'items.*.sku' => 'nullable|string',
                 'items.*.variant_id' => 'nullable|string',
                 'items.*.product_id' => 'nullable|string',
+                'items.*.is_free' => 'nullable|boolean',
                 // Multiple discounts support
                 'discounts' => 'nullable|array',
                 'discounts.*.title' => 'required_with:discounts|string|max:255',
@@ -599,8 +600,19 @@ class OrderController extends Controller
             // Always recalculate totals from line items to prevent frontend/backend mismatches
             // ================================================================
             if (isset($validated['items']) && is_array($validated['items']) && !empty($validated['items'])) {
-                // Calculate subtotal from line items
+                // ⭐ Enforce is_free: if item is marked free, force line_total to 0
+                foreach ($validated['items'] as &$itemRef) {
+                    if (!empty($itemRef['is_free'])) {
+                        $itemRef['line_total'] = 0;
+                    }
+                }
+                unset($itemRef);
+                
+                // Calculate subtotal from line items (free items contribute 0)
                 $calculatedSubtotal = collect($validated['items'])->sum(function($item) {
+                    if (!empty($item['is_free'])) {
+                        return 0;
+                    }
                     return floatval($item['line_total'] ?? ($item['quantity'] * $item['unit_price']));
                 });
                 
@@ -915,14 +927,16 @@ class OrderController extends Controller
                         }
                     }
                     
+                    $isFree = !empty($itemData['is_free']);
                     $formattedLineItems[] = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
                         'unit_price' => $unitPrice,
-                        'line_subtotal' => $quantity * $unitPrice,
+                        'line_subtotal' => $isFree ? 0 : $quantity * $unitPrice,
                         'discount_amount' => 0,
                         'tax_amount' => 0,
-                        'line_total' => $quantity * $unitPrice,
+                        'line_total' => $isFree ? 0 : $quantity * $unitPrice,
+                        'is_free' => $isFree ? 1 : 0,
                         'sku' => $sku,
                         'variant_id' => $variantId,
                         'product_id' => $productId,
@@ -980,12 +994,25 @@ class OrderController extends Controller
                 
                 $order->lineItems()->saveMany($lineItemModels);
                 
-                // Step 2: Re-deduct inventory for new items that have preparation_status='preparing'
-                // This ensures the deducted quantity matches the new item's quantity
+                // Step 2: Re-deduct inventory for items that should have it deducted.
+                // - If order is already out_for_delivery/delivered, ALL items should be deducted
+                //   (defensive: covers old orders where preparation_status was never set to 'preparing')
+                // - Otherwise, only deduct items with preparation_status='preparing'
                 if ($order->order_status !== 'cancelled') {
                     $reDeductedCount = 0;
+                    $orderAlreadyPastPrep = in_array($order->order_status, ['out_for_delivery', 'delivered', 'completed']);
+                    
                     foreach ($lineItemModels as $model) {
-                        if ($model->preparation_status === 'preparing') {
+                        if ($orderAlreadyPastPrep) {
+                            // Order is already past preparation stage — ensure all items are prepared & deducted
+                            if ($model->preparation_status !== 'preparing') {
+                                $model->preparation_status = 'preparing';
+                                $model->save();
+                            }
+                            if ($model->deductInventory()) {
+                                $reDeductedCount++;
+                            }
+                        } elseif ($model->preparation_status === 'preparing') {
                             if ($model->deductInventory()) {
                                 $reDeductedCount++;
                             }
@@ -996,6 +1023,8 @@ class OrderController extends Controller
                             'order_id' => $order->id,
                             'order_number' => $order->order_number,
                             'items_re_deducted' => $reDeductedCount,
+                            'order_status' => $order->order_status,
+                            'forced_by_status' => $orderAlreadyPastPrep,
                         ]);
                     }
                 }
@@ -1162,6 +1191,7 @@ class OrderController extends Controller
                 'items.*.sku' => 'nullable|string',
                 'items.*.variant_id' => 'nullable|string',
                 'items.*.product_id' => 'nullable|string',
+                'items.*.is_free' => 'nullable|boolean',
                 // Customer creation fields
                 'customer_phone' => 'nullable|string',
                 'customer_first_name' => 'nullable|string',
@@ -1188,8 +1218,19 @@ class OrderController extends Controller
             // Always recalculate totals from line items to prevent frontend/backend mismatches
             // ================================================================
             if (isset($validated['items']) && is_array($validated['items']) && !empty($validated['items'])) {
-                // Calculate subtotal from line items
+                // ⭐ Enforce is_free: if item is marked free, force line_total to 0
+                foreach ($validated['items'] as &$storeItemRef) {
+                    if (!empty($storeItemRef['is_free'])) {
+                        $storeItemRef['line_total'] = 0;
+                    }
+                }
+                unset($storeItemRef);
+                
+                // Calculate subtotal from line items (free items contribute 0)
                 $calculatedSubtotal = collect($validated['items'])->sum(function($item) {
+                    if (!empty($item['is_free'])) {
+                        return 0;
+                    }
                     return floatval($item['line_total'] ?? ($item['quantity'] * $item['unit_price']));
                 });
                 
@@ -1340,14 +1381,16 @@ class OrderController extends Controller
                         }
                     }
                     
+                    $isFreeStore = !empty($itemData['is_free']);
                     $formattedLineItems[] = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
                         'unit_price' => $unitPrice,
-                        'line_subtotal' => $quantity * $unitPrice,
+                        'line_subtotal' => $isFreeStore ? 0 : $quantity * $unitPrice,
                         'discount_amount' => 0,
                         'tax_amount' => 0,
-                        'line_total' => $quantity * $unitPrice,
+                        'line_total' => $isFreeStore ? 0 : $quantity * $unitPrice,
+                        'is_free' => $isFreeStore ? 1 : 0,
                         'sku' => $sku,
                         'variant_id' => $variantId,
                         'product_id' => $productId,

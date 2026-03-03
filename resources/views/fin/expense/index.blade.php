@@ -40,6 +40,8 @@
 </style>
 
 <script>
+window._isTaimurRole = {{ (!empty($isTaimurRole) && $isTaimurRole) ? 'true' : 'false' }};
+
 // Define openNewRequestModal FIRST before any HTML that uses it
 function openNewRequestModal() {
     const modal = document.getElementById('newRequestModal');
@@ -78,6 +80,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (newRequestBtn) {
         newRequestBtn.addEventListener('click', openNewRequestModal);
         console.log('[NewRequest] Click handler attached');
+    }
+    // Auto-open new request modal if ?auto_new=1 is in URL (shortcut from sidebar)
+    if (new URLSearchParams(window.location.search).get('auto_new') === '1') {
+        setTimeout(function() { openNewRequestModal(); }, 300);
+        window.history.replaceState({}, '', window.location.pathname);
     }
 });
 </script>
@@ -600,12 +607,13 @@ document.addEventListener('DOMContentLoaded', function() {
                            <label class="block text-base font-semibold text-gray-800 mb-3 flex items-center gap-2">
                                <span>💳 Pay From Account</span>
                            </label>
+                           @php $defaultPayFromCode = (!empty($isTaimurRole) && $isTaimurRole) ? 'ONLINE' : 'EXP_FUND'; @endphp
                            <select name="payment_source_account_id" id="quick_payment_source" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm">
                                @foreach($accessibleCompanyAccounts ?? [] as $acc)
                                    <option value="{{ $acc->id }}"
                                        data-business-unit-id="{{ $acc->business_unit_id }}"
                                        data-account-code="{{ $acc->account_code }}"
-                                       {{ $acc->account_code == 'EXP_FUND' ? 'selected' : '' }}>
+                                       {{ $acc->account_code == $defaultPayFromCode ? 'selected' : '' }}>
                                        {{ $acc->account_name }}
                                    </option>
                                @endforeach
@@ -845,18 +853,22 @@ function filterPaymentSourcesByBU() {
     
     // If no option is selected (or previously selected one got hidden), auto-select a default
     if (!hasSelectedVisible && firstVisibleOption) {
+        var preferredCode = window._isTaimurRole ? 'ONLINE' : 'EXP_FUND';
         if (isNfMain) {
-            // ⭐ For NF main (BU 1): PREFER EXP_FUND as the default expense account
-            const expFundOption = Array.from(options).find(o => 
-                o.dataset.accountCode === 'EXP_FUND' && !o.disabled
+            var preferredOption = Array.from(options).find(o => 
+                o.dataset.accountCode === preferredCode && !o.disabled
             );
-            if (expFundOption) {
-                expFundOption.selected = true;
+            if (!preferredOption) {
+                preferredOption = Array.from(options).find(o => 
+                    o.dataset.accountCode === 'EXP_FUND' && !o.disabled
+                );
+            }
+            if (preferredOption) {
+                preferredOption.selected = true;
             } else {
                 firstVisibleOption.selected = true;
             }
         } else {
-            // For non-NF BUs (Khaas etc): select the first available BU-specific account
             firstVisibleOption.selected = true;
         }
     }

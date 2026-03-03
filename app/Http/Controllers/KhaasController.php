@@ -684,6 +684,102 @@ class KhaasController extends Controller
     }
 
     /**
+     * Adjust store inventory manually (stock in / stock out / count / adjustment)
+     * This modifies the product variant's inventory_quantity (store-side inventory)
+     */
+    public function updateStoreStock(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'Access denied'], 403);
+        }
+
+        $request->validate([
+            'product_id' => 'required|integer|exists:t_crm_prod_product,id',
+            'product_variant_id' => 'nullable|integer',
+            'business_unit_id' => 'required|integer',
+            'quantity_change' => 'required|integer',
+            'change_type' => 'required|in:store_stock_in,store_stock_out,store_count,store_adjustment',
+            'notes' => 'nullable|string|max:500',
+        ]);
+
+        $productId = $request->input('product_id');
+        $variantId = $request->input('product_variant_id');
+        $businessUnitId = $request->input('business_unit_id');
+        $quantityChange = $request->input('quantity_change');
+        $changeType = $request->input('change_type');
+        $notes = $request->input('notes');
+
+        // Normalize quantity sign based on action
+        if ($changeType === 'store_stock_out' && $quantityChange > 0) {
+            $quantityChange = -$quantityChange;
+        }
+        if ($changeType === 'store_stock_in' && $quantityChange < 0) {
+            $quantityChange = abs($quantityChange);
+        }
+
+        DB::beginTransaction();
+        try {
+            $product = ProductModel::with('variants')->findOrFail($productId);
+
+            // Resolve variant (use first variant if not specified)
+            $variant = null;
+            if ($variantId) {
+                $variant = $product->variants->where('id', $variantId)->first();
+            }
+            if (!$variant) {
+                $variant = $product->variants->first();
+            }
+            if (!$variant) {
+                DB::rollBack();
+                return back()->with('error', 'No product variant found for this product.');
+            }
+
+            $before = (int) $variant->inventory_quantity;
+
+            if ($changeType === 'store_count') {
+                // Set to exact quantity
+                $variant->inventory_quantity = $quantityChange;
+                $actualChange = $quantityChange - $before;
+            } else {
+                // Stock in / stock out / adjustment
+                if ($changeType === 'store_stock_out' && ($before + $quantityChange) < 0) {
+                    DB::rollBack();
+                    return back()->with('error', "Insufficient store stock. Current: {$before}, Requested: " . abs($quantityChange));
+                }
+                $variant->inventory_quantity = $before + $quantityChange;
+                $actualChange = $quantityChange;
+            }
+
+            $variant->save();
+
+            // Sync product.total_inventory from sum of all variants
+            $product->total_inventory = $product->variants()->sum('inventory_quantity');
+            $product->save();
+
+            // Log the adjustment
+            \App\Models\CRM\StoreInventoryAdjustmentModel::create([
+                'product_id' => $productId,
+                'product_variant_id' => $variant->id,
+                'business_unit_id' => $businessUnitId,
+                'change_type' => $changeType,
+                'quantity_before' => $before,
+                'quantity_change' => $actualChange,
+                'quantity_after' => (int) $variant->inventory_quantity,
+                'notes' => $notes ?? ('Manual store ' . str_replace('store_', '', $changeType)),
+                'created_by' => auth()->id(),
+                'created_at' => now(),
+            ]);
+
+            DB::commit();
+            return back()->with('success', 'Store inventory updated successfully. (' . $before . ' → ' . $variant->inventory_quantity . ')');
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to update store stock: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return back()->with('error', 'Failed to update store stock: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Khaas Sales Report - detailed sales breakdown by product with month filter
      */
     public function salesReport(Request $request)
@@ -818,5 +914,233 @@ class KhaasController extends Controller
             DB::rollBack();
             return back()->with('error', 'Failed to initiate transfer: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * GET /khaas/products/{productId}/store-log
+     * Returns the last N transactions that changed the store (shop) inventory for a product.
+     * Combines: approved transfers IN + order line item deductions OUT + cancellation restores IN.
+     * Computes a running balance so the user can trace how the current count was reached.
+     */
+    public function getStoreInventoryLog(Request $request, $productId)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        $product = ProductModel::with('variants')->find($productId);
+        if (!$product || $product->business_unit_id !== $khaasBU->id) {
+            return response()->json(['success' => false, 'message' => 'Product not found'], 404);
+        }
+
+        $limit = (int) ($request->get('limit', 15));
+        $variantIds = $product->variants->pluck('id')->toArray();
+
+        // Current store qty
+        $currentStoreQty = $product->variants->sum('inventory_quantity') ?: ($product->total_inventory ?? 0);
+
+        $events = collect();
+
+        // ─── 1) Approved transfers TO store (INFLOW) ───
+        $transfers = WarehouseTransferModel::where('product_id', $productId)
+            ->where('status', 'approved')
+            ->where('to_location', 'store')
+            ->with('approver:id,fullname')
+            ->with('requester:id,fullname')
+            ->orderBy('approved_at', 'desc')
+            ->limit($limit * 2) // fetch more to have enough after merge
+            ->get();
+
+        foreach ($transfers as $t) {
+            $events->push([
+                'date' => $t->approved_at ?? $t->updated_at ?? $t->created_at,
+                'type' => 'transfer_in',
+                'label' => 'Transfer to Store',
+                'change' => +$t->quantity,
+                'quantity' => $t->quantity,
+                'detail' => 'Approved by ' . ($t->approver->fullname ?? 'System'),
+                'sub_detail' => 'Requested by ' . ($t->requester->fullname ?? 'N/A'),
+                'reference' => 'Transfer #' . $t->id,
+                'icon' => '📥',
+                'color' => 'green',
+            ]);
+        }
+
+        // ─── 2) Order line item deductions (OUTFLOW) — inventory_deducted = 1 ───
+        // These are items where inventory was deducted from the store (mark prepared / out for delivery)
+        if (!empty($variantIds)) {
+            $deductedItems = DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->whereIn('li.variant_id', $variantIds)
+                ->where('li.inventory_deducted', 1)
+                ->where('o.order_status', '!=', 'cancelled') // active orders only
+                ->select([
+                    'li.id as line_item_id',
+                    'li.order_id',
+                    'li.quantity',
+                    'li.name',
+                    'li.updated_at',
+                    'o.order_number',
+                    'o.order_status',
+                    'o.name as customer_name',
+                ])
+                ->orderBy('li.updated_at', 'desc')
+                ->limit($limit * 2)
+                ->get();
+
+            foreach ($deductedItems as $item) {
+                $events->push([
+                    'date' => $item->updated_at,
+                    'type' => 'order_deduction',
+                    'label' => 'Order Deduction',
+                    'change' => -$item->quantity,
+                    'quantity' => $item->quantity,
+                    'detail' => 'Order #' . ($item->order_number ?? $item->order_id),
+                    'sub_detail' => $item->customer_name ? ('Customer: ' . $item->customer_name) : ('Status: ' . $item->order_status),
+                    'reference' => 'Order #' . ($item->order_number ?? $item->order_id),
+                    'icon' => '📦',
+                    'color' => 'red',
+                ]);
+            }
+        }
+
+        // ─── 3) Cancelled orders that HAD inventory deducted (shows BOTH deduction + restoration) ───
+        // When an order is cancelled after being prepared/out_for_delivery:
+        //   - restoreInventory() sets inventory_deducted = 0
+        //   - But the deduction DID happen earlier, so we need to show BOTH events
+        // We use order status history to get accurate timestamps for each event.
+        if (!empty($variantIds)) {
+            $cancelledItems = DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->whereIn('li.variant_id', $variantIds)
+                ->where('li.inventory_deducted', 0)
+                ->where('o.order_status', 'cancelled')
+                // Only items that were prepared (inventory was once deducted then restored)
+                ->where('li.preparation_status', 'preparing')
+                ->select([
+                    'li.id as line_item_id',
+                    'li.order_id',
+                    'li.quantity',
+                    'li.name',
+                    'o.updated_at as order_updated_at',
+                    'o.order_number',
+                    'o.name as customer_name',
+                ])
+                ->orderBy('o.updated_at', 'desc')
+                ->limit($limit)
+                ->get();
+
+            if ($cancelledItems->isNotEmpty()) {
+                // Batch-fetch status history for all cancelled orders (for accurate timestamps)
+                $cancelledOrderIds = $cancelledItems->pluck('order_id')->unique()->toArray();
+                $statusHistory = DB::table('t_crm_order_status_history')
+                    ->whereIn('order_id', $cancelledOrderIds)
+                    ->whereIn('status_code', ['out_for_delivery', 'cancelled'])
+                    ->get()
+                    ->groupBy('order_id');
+
+                foreach ($cancelledItems as $item) {
+                    $history = $statusHistory->get($item->order_id, collect());
+                    $ofdRecord = $history->where('status_code', 'out_for_delivery')->sortByDesc('changed_at')->first();
+                    $cancelRecord = $history->where('status_code', 'cancelled')->sortByDesc('changed_at')->first();
+
+                    $deductionDate = $ofdRecord->changed_at ?? $item->order_updated_at;
+                    $cancellationDate = $cancelRecord->changed_at ?? $item->order_updated_at;
+
+                    // Event A: The deduction that happened when the order was prepared/sent out
+                    $events->push([
+                        'date' => $deductionDate,
+                        'type' => 'order_deduction',
+                        'label' => 'Order Deduction',
+                        'change' => -$item->quantity,
+                        'quantity' => $item->quantity,
+                        'detail' => 'Order #' . ($item->order_number ?? $item->order_id),
+                        'sub_detail' => ($item->customer_name ? ('Customer: ' . $item->customer_name) : '') . ' · Later cancelled',
+                        'reference' => 'Order #' . ($item->order_number ?? $item->order_id),
+                        'icon' => '📦',
+                        'color' => 'red',
+                    ]);
+
+                    // Event B: The restoration when the order was cancelled
+                    $events->push([
+                        'date' => $cancellationDate,
+                        'type' => 'cancellation_restore',
+                        'label' => 'Cancelled → Restored',
+                        'change' => +$item->quantity,
+                        'quantity' => $item->quantity,
+                        'detail' => 'Order #' . ($item->order_number ?? $item->order_id) . ' cancelled',
+                        'sub_detail' => $item->customer_name ? ('Customer: ' . $item->customer_name) : '',
+                        'reference' => 'Order #' . ($item->order_number ?? $item->order_id),
+                        'icon' => '🔄',
+                        'color' => 'blue',
+                    ]);
+                }
+            }
+        }
+
+        // ─── 4) Manual store inventory adjustments ───
+        $storeAdjustments = \App\Models\CRM\StoreInventoryAdjustmentModel::where('product_id', $productId)
+            ->where('business_unit_id', $khaasBU->id)
+            ->with('creator:id,fullname')
+            ->orderBy('created_at', 'desc')
+            ->limit($limit)
+            ->get();
+
+        foreach ($storeAdjustments as $adj) {
+            $typeLabel = match($adj->change_type) {
+                'store_stock_in' => 'Store Stock In',
+                'store_stock_out' => 'Store Stock Out',
+                'store_count' => 'Store Count Set',
+                'store_adjustment' => 'Store Adjustment',
+                default => 'Store Adjustment',
+            };
+            $isPositive = $adj->quantity_change > 0;
+
+            $events->push([
+                'date' => $adj->created_at,
+                'type' => 'store_adjustment',
+                'label' => $typeLabel,
+                'change' => $adj->quantity_change,
+                'quantity' => abs($adj->quantity_change),
+                'detail' => 'By ' . ($adj->creator->fullname ?? 'User #' . $adj->created_by),
+                'sub_detail' => $adj->notes ? ('📝 ' . $adj->notes) : ($adj->quantity_before . ' → ' . $adj->quantity_after),
+                'reference' => 'Adjustment #' . $adj->id,
+                'icon' => $isPositive ? '🏪' : '🏪',
+                'color' => $isPositive ? 'purple' : 'orange',
+            ]);
+        }
+
+        // ─── Sort by date (newest first) and take the limit ───
+        $events = $events->sortByDesc('date')->take($limit)->values();
+
+        // ─── Compute running balance (walk backward from current qty) ───
+        $runningBalance = $currentStoreQty;
+        $eventsWithBalance = [];
+
+        foreach ($events as $event) {
+            $event['balance_after'] = $runningBalance;
+            $runningBalance = $runningBalance - $event['change']; // reverse the effect
+            $event['balance_before'] = $runningBalance;
+            $event['date_formatted'] = $event['date']
+                ? \Carbon\Carbon::parse($event['date'])->format('M d, h:i A')
+                : 'Unknown';
+            $event['date_ago'] = $event['date']
+                ? \Carbon\Carbon::parse($event['date'])->diffForHumans()
+                : '';
+            $eventsWithBalance[] = $event;
+        }
+
+        return response()->json([
+            'success' => true,
+            'product_name' => $product->title,
+            'current_store_qty' => $currentStoreQty,
+            'events' => $eventsWithBalance,
+            'events_count' => count($eventsWithBalance),
+        ]);
     }
 }

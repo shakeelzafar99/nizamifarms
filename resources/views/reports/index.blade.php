@@ -419,14 +419,14 @@
     <div class="mb-6 flex items-center justify-between">
         <div>
             <h1 class="text-3xl font-bold text-gray-900">📊 Reports</h1>
-            <p class="text-gray-600 mt-2">Monthly & daily financial summaries</p>
+            <p class="text-gray-600 mt-2">Monthly & daily audit financial summaries</p>
         </div>
     </div>
 
     <!-- Tab Bar -->
     <div class="tab-bar">
         <button class="tab-btn active" id="tabMonthly" onclick="switchTab('monthly')">📅 Monthly Summary</button>
-        <button class="tab-btn" id="tabDaily" onclick="switchTab('daily')">📋 Daily Report</button>
+        <button class="tab-btn" id="tabDaily" onclick="switchTab('daily')">📋 Daily Audit</button>
     </div>
 
     <!-- Content Area -->

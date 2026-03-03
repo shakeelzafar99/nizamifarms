@@ -387,6 +387,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/storage/order/{id}/receive', [\App\Http\Controllers\CRM\WarehouseController::class, 'receiveStorageOrder']);
         Route::post('/storage/use', [\App\Http\Controllers\CRM\WarehouseController::class, 'useStorageItem']);
         Route::post('/storage/settings', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStorageSettings']);
+        
+        Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog']);
     });
 
     // ============================

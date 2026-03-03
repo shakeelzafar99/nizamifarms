@@ -2418,11 +2418,19 @@ class EmployeeCashController extends Controller
                 return null;
             }
             
+            // Pre-fetch delivery timestamps from status history
+            $orderIds = $orders->pluck('id')->all();
+            $deliveryHistory = \DB::table('t_crm_order_status_history')
+                ->whereIn('order_id', $orderIds)
+                ->where('status_code', 'delivered')
+                ->get()
+                ->keyBy('order_id');
+            
             $messageSent = $orders->whereNotNull('online_message_sent_at');
             $messagePending = $orders->whereNull('online_message_sent_at');
             
             // Group by rider
-            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) {
+            $byRider = $orders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory) {
                 $rider = $riderOrders->first()->assignedRider;
                 $riderName = $rider ? $rider->fullname : 'Unknown Rider';
                 
@@ -2440,11 +2448,25 @@ class EmployeeCashController extends Controller
                             'sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('h:i A') : null,
                         ];
                     })->values(),
-                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) {
+                    'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory) {
+                        $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
+                            ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
+                        $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
+                        $riderUser = $order->assignedRider;
+                        $riderFullName = $riderUser ? $riderUser->fullname : 'your rider';
+                        
+                        $deliveryRecord = $deliveryHistory->get($order->id);
+                        $deliveryDate = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('M d, Y') : ($order->delivery_date ?? now()->format('M d, Y'));
+                        $deliveryTime = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('h:i A') : '';
+                        
                         return [
+                            'id' => $order->id,
                             'order_number' => $order->order_number,
-                            'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''))
-                                ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                            'customer_name' => $customerName,
+                            'customer_phone' => $customerPhone,
+                            'rider_name' => $riderFullName,
+                            'delivery_date' => $deliveryDate,
+                            'delivery_time' => $deliveryTime,
                             'amount' => round($order->total_price),
                         ];
                     })->values(),
@@ -2463,6 +2485,53 @@ class EmployeeCashController extends Controller
         } catch (\Exception $e) {
             \Log::error('fetchOnlineMessageTracking error: ' . $e->getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Mark that the WhatsApp delivery confirmation message was sent for an online order
+     * Called from the daily closing page by the manager
+     */
+    public function markOnlineMessageSentWeb(Request $request, $orderId)
+    {
+        try {
+            $order = \App\Models\CRM\OrderModel::find($orderId);
+
+            if (!$order) {
+                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+            }
+
+            if (!in_array($order->order_status, ['delivered', 'completed'])) {
+                return response()->json(['success' => false, 'message' => 'Order must be delivered first'], 400);
+            }
+
+            $paymentMethod = strtolower($order->payment_method ?? 'cash');
+            if (in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod'])) {
+                return response()->json(['success' => false, 'message' => 'This is not an online payment order'], 400);
+            }
+
+            $order->online_message_sent_at = now();
+            $order->online_message_sent_by = \Auth::id();
+            $order->save();
+
+            \Log::info('Online message marked as sent from daily closing', [
+                'order_id' => $order->id,
+                'order_number' => $order->order_number,
+                'marked_by' => \Auth::id(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Message status updated',
+                'sent_at' => $order->online_message_sent_at->format('h:i A'),
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to mark online message sent from web', [
+                'order_id' => $orderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
         }
     }
 

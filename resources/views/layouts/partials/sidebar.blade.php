@@ -47,11 +47,17 @@
                   <!-- Get User Role -->
                   @php
                       $userRole = null;
+                      $isTaimurRole = false;
                       if (auth()->check()) {
                           $userRole = \DB::table('t_sys_user_role as ur')
                               ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
                               ->where('ur.user_id', auth()->id())
                               ->value('r.type');
+                          $isTaimurRole = \DB::table('t_sys_user_role as ur')
+                              ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                              ->where('ur.user_id', auth()->id())
+                              ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+                              ->exists();
                       }
                   @endphp
                   
@@ -141,6 +147,20 @@
                           </div>
                       </a>
                   </div>
+                  @if($isTaimurRole)
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/finance/expenses?auto_new=1">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-blue-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-blue-600 group-hover:text-blue-700 w-[20px]">
+                                  <i class="ki-filled ki-plus-squared text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-semibold text-blue-600 group-hover:text-blue-700">
+                                  Add Expense
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/orders/open-quantities">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">

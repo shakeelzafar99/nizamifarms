@@ -2326,10 +2326,11 @@ function viewOrderDetails(orderId) {
                 for (var i = 0; i < items.length; i++) {
                     var it = items[i] || {};
                     var name = (it.name || it.title || 'Item');
+                    var isFreeItem = it.is_free == 1;
                     var qty = parseFloat(it.quantity || 0);
                     var unit = parseFloat((it.unit_price != null ? it.unit_price : (it.price != null ? it.price : 0)));
-                    var lineTotal = parseFloat(it.line_total || 0);
-                    if (!lineTotal || lineTotal === 0) {
+                    var lineTotal = isFreeItem ? 0 : parseFloat(it.line_total || 0);
+                    if (!isFreeItem && (!lineTotal || lineTotal === 0)) {
                         lineTotal = qty * unit;
                     }
                     if (!isFinite(qty)) qty = 0;
@@ -2337,11 +2338,13 @@ function viewOrderDetails(orderId) {
                     if (!isFinite(lineTotal)) lineTotal = 0;
                     itemsSubtotal += lineTotal;
                     
+                    var freeBadge = isFreeItem ? ' <span style="display: inline-block; padding: 2px 6px; background: #dcfce7; color: #16a34a; border-radius: 4px; font-size: 10px; font-weight: 700; margin-left: 4px;">FREE</span>' : '';
+                    var lineTotalDisplay = isFreeItem ? '<span style="color: #16a34a; font-weight: 700;">FREE</span>' : formatCurrency(lineTotal, order.currency);
                     html += '<tr>';
-                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + escapeHtml(name) + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6;">' + escapeHtml(name) + freeBadge + '</td>';
                     html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + '</td>';
-                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + formatCurrency(unit, order.currency) + '</td>';
-                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + formatCurrency(lineTotal, order.currency) + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + (isFreeItem ? '<s style="color:#9ca3af;">' + formatCurrency(unit, order.currency) + '</s>' : formatCurrency(unit, order.currency)) + '</td>';
+                    html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + lineTotalDisplay + '</td>';
                     html += '</tr>';
                 }
                 html += '</tbody>';

@@ -371,10 +371,10 @@
             <tbody>
                 @foreach($order->lineItems as $item)
                 <tr>
-                    <td>{{ $item->name ?: 'N/A' }}</td>
+                    <td>{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="font-size: 9px; font-weight: 700; color: #16a34a;">[FREE]</span>@endif</td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
-                    <td class="text-center">Rs&nbsp;{{ number_format($item->unit_price, 0) }}</td>
-                    <td class="text-right">Rs&nbsp;{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}</td>
+                    <td class="text-center">@if($item->is_free)<s style="color:#aaa;">Rs&nbsp;{{ number_format($item->unit_price, 0) }}</s>@else Rs&nbsp;{{ number_format($item->unit_price, 0) }}@endif</td>
+                    <td class="text-right">@if($item->is_free)<span style="color: #16a34a; font-weight: 700;">FREE</span>@else Rs&nbsp;{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}@endif</td>
                 </tr>
                 @endforeach
             </tbody>
@@ -384,7 +384,7 @@
         @php
             $discountBreakdown = $order->getDiscountBreakdown();
             $totalDiscounts = $discountBreakdown->sum('discount_amount');
-            $subtotal = $order->lineItems->sum(function($item) { return $item->line_total ?: ($item->quantity * $item->unit_price); });
+            $subtotal = $order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); });
         @endphp
         <div class="totals-wrapper">
             <div class="totals">

@@ -197,8 +197,9 @@ class RiderController extends Controller
                     'unit_price' => $item->unit_price,
                     'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
                     'total' => $item->line_total,
-                    'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                    'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                     'preparation_status' => $item->preparation_status,
+                    'is_free' => (bool) $item->is_free,
                 ];
             });
             
@@ -629,9 +630,9 @@ class RiderController extends Controller
             'month' => $monthKey,
             'google_directions' => [
                 'calls' => $googleUsage->call_count ?? 0,
-                'limit' => 6000,
-                'remaining' => 6000 - ($googleUsage->call_count ?? 0),
-                'at_limit' => ($googleUsage->call_count ?? 0) >= 6000,
+                'limit' => 10000,
+                'remaining' => 10000 - ($googleUsage->call_count ?? 0),
+                'at_limit' => ($googleUsage->call_count ?? 0) >= 10000,
             ],
             'openroute_directions' => [
                 'calls' => $openRouteUsage->call_count ?? 0,
@@ -654,7 +655,7 @@ class RiderController extends Controller
             ->first();
         
         $currentCount = $usage->call_count ?? 0;
-        if ($currentCount >= 6000) {
+        if ($currentCount >= 10000) {
             \Log::warning('Google Maps API monthly limit reached', [
                 'month' => $monthKey,
                 'count' => $currentCount,
@@ -1037,7 +1038,7 @@ class RiderController extends Controller
             ->first();
         
         $currentCount = $usage->call_count ?? 0;
-        if ($currentCount >= 6000) {
+        if ($currentCount >= 10000) {
             \Log::warning('Google Maps API monthly limit reached for multi-stop ETA');
             return null;
         }
@@ -1420,14 +1421,6 @@ class RiderController extends Controller
                     'success' => false,
                     'message' => 'Order not found',
                 ], 404);
-            }
-
-            // Verify order belongs to this rider
-            if ($order->assigned_rider_user_id != $user->id) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You are not authorized to update this order',
-                ], 403);
             }
 
             // Order must be delivered
@@ -6675,8 +6668,9 @@ class RiderController extends Controller
                             'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
                             'line_total' => $item->line_total, // Add line_total for invoice calculations
                             'total' => $item->line_total,
-                            'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                            'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                             'preparation_status' => $item->preparation_status,
+                            'is_free' => (bool) $item->is_free,
                         ];
                     }),
                     'shipping_total' => $order->shipping_total ?? 0,
@@ -6749,7 +6743,7 @@ class RiderController extends Controller
                 }])
                 ->with(['lineItems' => function($q) {
                     // Load essential line item fields for marking prepared
-                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status');
+                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free');
                 }])
                 ->with(['discounts']) // ⭐ Load discounts for invoice view
                 ->where(function($q) {
@@ -6774,8 +6768,20 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('order_id');
             
+            // ❄️ Detect orders containing Khaas (non-default BU) products in single query
+            $orderIds = $orders->pluck('id');
+            $khaasOrderIds = collect();
+            if ($orderIds->isNotEmpty()) {
+                $khaasOrderIds = \DB::table('t_crm_prod_order_line_item')
+                    ->join('t_crm_prod_product', 't_crm_prod_order_line_item.product_id', '=', 't_crm_prod_product.id')
+                    ->whereIn('t_crm_prod_order_line_item.order_id', $orderIds)
+                    ->where('t_crm_prod_product.business_unit_id', '!=', 1)
+                    ->distinct()
+                    ->pluck('t_crm_prod_order_line_item.order_id');
+            }
+            
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -6891,6 +6897,7 @@ class RiderController extends Controller
                     ],
                     'has_verified_location' => $hasVerifiedLocation,
                     'verified_location' => $verifiedLocation,
+                    'has_khaas_item' => $khaasOrderIds->contains($order->id), // ❄️ Khaas product indicator
                     // ⭐ Customer location data for route map
                     'customer' => $order->customer ? [
                         'latitude' => $order->customer->latitude,
@@ -6922,6 +6929,7 @@ class RiderController extends Controller
                             'unit_price_formatted' => $item->unit_price ? 'Rs. ' . number_format($item->unit_price, 0) : null,
                             'line_total' => (float) $item->line_total,
                             'preparation_status' => $item->preparation_status,
+                            'is_free' => (bool) $item->is_free,
                         ];
                     })->values()->toArray(),
                 ];
@@ -7239,6 +7247,14 @@ class RiderController extends Controller
                     'has_order_note' => !empty($order->note),
                     'has_verified_location' => $hasVerifiedLocation,
                     'verified_location' => $verifiedLocation,
+                    'has_khaas_item' => (function() use ($order) { // ❄️ Khaas product indicator
+                        $productIds = $order->lineItems->pluck('product_id')->filter()->unique()->values();
+                        if ($productIds->isEmpty()) return false;
+                        return \DB::table('t_crm_prod_product')
+                            ->whereIn('id', $productIds)
+                            ->where('business_unit_id', '!=', 1)
+                            ->exists();
+                    })(),
                     'items_count' => $order->lineItems->count(),
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
@@ -7253,8 +7269,9 @@ class RiderController extends Controller
                             'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
                             'line_total' => $item->line_total,
                             'total' => $item->line_total,
-                            'total_formatted' => 'Rs. ' . number_format($item->line_total, 0),
+                            'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                             'preparation_status' => $item->preparation_status,
+                            'is_free' => (bool) $item->is_free,
                         ];
                     }),
                     'shipping_total' => $order->shipping_total ?? 0,
@@ -10052,14 +10069,41 @@ class RiderController extends Controller
                 ], 403);
             }
             
+            $businessUnitId = $request->input('business_unit_id');
+            $isNonNfBU = $businessUnitId && (int) $businessUnitId !== 1;
+            
+            // For non-NF BU (Khaas), check if user is admin or limited
+            $isKhaasAdmin = false;
+            if ($isNonNfBU) {
+                $isKhaasAdmin = $user->hasMobilePermission('expense_all_payment_sources')
+                    || $user->hasMobilePermission('approve_khaas_transfer');
+            }
+            
             // Build query for active accounts
             $query = \App\Models\FIN\AccountModel::where('is_active', 1);
             
-            // Show both company accounts (cash, bank) and employee accounts
-            $query->where(function($q) {
-                $q->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
-                  ->orWhereIn('account_category', [\App\Models\FIN\AccountModel::CATEGORY_CASH, \App\Models\FIN\AccountModel::CATEGORY_BANK]);
-            });
+            if ($isNonNfBU) {
+                // Khaas mode: only company accounts (cash/bank) for this BU
+                $query->where('business_unit_id', (int) $businessUnitId);
+                $query->whereIn('account_category', [
+                    \App\Models\FIN\AccountModel::CATEGORY_CASH,
+                    \App\Models\FIN\AccountModel::CATEGORY_BANK,
+                ]);
+                
+                // Limited users: only the configured default account
+                if (!$isKhaasAdmin) {
+                    $defaultBuAccount = \App\Models\FIN\ConfigModel::getBuDefaultExpenseAccount((int) $businessUnitId);
+                    if ($defaultBuAccount) {
+                        $query->where('id', $defaultBuAccount->id);
+                    }
+                }
+            } else {
+                // Standard NF mode: show company + employee accounts
+                $query->where(function($q) {
+                    $q->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
+                      ->orWhereIn('account_category', [\App\Models\FIN\AccountModel::CATEGORY_CASH, \App\Models\FIN\AccountModel::CATEGORY_BANK]);
+                });
+            }
             
             // Load user relationship for employee accounts
             $query->with('user');
@@ -12239,8 +12283,19 @@ class RiderController extends Controller
                 $messageSentOrders = $onlineMessageOrders->whereNotNull('online_message_sent_at');
                 $messagePendingOrders = $onlineMessageOrders->whereNull('online_message_sent_at');
                 
+                // Pre-fetch delivery timestamps for pending orders
+                $pendingOrderIds = $messagePendingOrders->pluck('id')->all();
+                $deliveryHistory = [];
+                if (!empty($pendingOrderIds)) {
+                    $deliveryHistory = \DB::table('t_crm_order_status_history')
+                        ->whereIn('order_id', $pendingOrderIds)
+                        ->where('status_code', 'delivered')
+                        ->get()
+                        ->keyBy('order_id');
+                }
+                
                 // Group by rider
-                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) {
+                $onlineMessageByRider = $onlineMessageOrders->groupBy('assigned_rider_user_id')->map(function($riderOrders) use ($deliveryHistory) {
                     $riderUser = $riderOrders->first()->assignedRider ?? null;
                     $riderName = $riderUser ? $riderUser->fullname : 'Unknown';
                     
@@ -12256,11 +12311,24 @@ class RiderController extends Controller
                                 'message_sent_at' => $order->online_message_sent_at ? $order->online_message_sent_at->format('H:i') : null,
                             ];
                         })->values(),
-                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) {
+                        'message_pending' => $riderOrders->whereNull('online_message_sent_at')->map(function($order) use ($deliveryHistory) {
+                            $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A');
+                            $customerPhone = $order->address_phone ?: ($order->customer ? ($order->customer->phone_original ?? $order->customer->phone ?? '') : '');
+                            $orderRider = $order->assignedRider;
+                            $riderFullName = $orderRider ? $orderRider->fullname : 'your rider';
+                            
+                            $deliveryRecord = $deliveryHistory->get($order->id);
+                            $deliveryDate = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('M d, Y') : ($order->delivery_date ?? now()->format('M d, Y'));
+                            $deliveryTime = $deliveryRecord ? \Carbon\Carbon::parse($deliveryRecord->changed_at)->format('h:i A') : '';
+                            
                             return [
                                 'id' => $order->id,
                                 'order_number' => $order->order_number,
-                                'customer_name' => trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: ($order->customer ? trim($order->customer->first_name . ' ' . $order->customer->last_name) : 'N/A'),
+                                'customer_name' => $customerName,
+                                'customer_phone' => $customerPhone,
+                                'rider_name' => $riderFullName,
+                                'delivery_date' => $deliveryDate,
+                                'delivery_time' => $deliveryTime,
                                 'amount' => round($order->total_price),
                             ];
                         })->values(),
@@ -12815,7 +12883,7 @@ class RiderController extends Controller
             // ⭐ Batch fetch line items for all orders (avoid N+1 queries)
             $lineItems = \DB::table('t_crm_prod_order_line_item')
                 ->whereIn('order_id', $orderIds)
-                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total'])
+                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'is_free'])
                 ->get()
                 ->groupBy('order_id');
             
@@ -12972,6 +13040,7 @@ class RiderController extends Controller
                         'quantity' => (int)$item->quantity,
                         'unit_price' => (float)$item->unit_price,
                         'line_total' => (float)$item->line_total,
+                        'is_free' => (bool) $item->is_free,
                     ];
                 })->values()->toArray();
                 
@@ -13138,7 +13207,7 @@ class RiderController extends Controller
             // ⭐ Batch fetch line items for all orders (avoid N+1 queries)
             $lineItems = \DB::table('t_crm_prod_order_line_item')
                 ->whereIn('order_id', $orderIds)
-                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total'])
+                ->select(['order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'is_free'])
                 ->get()
                 ->groupBy('order_id');
             
@@ -13178,6 +13247,7 @@ class RiderController extends Controller
                         'quantity' => (int)$item->quantity,
                         'unit_price' => (float)$item->unit_price,
                         'line_total' => (float)$item->line_total,
+                        'is_free' => (bool) $item->is_free,
                     ];
                 })->values()->toArray();
                 
