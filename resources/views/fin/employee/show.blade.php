@@ -45,7 +45,7 @@
                     This Month
                 </button>
                 <button onclick="applyQuickFilter('all')" 
-                        class="quick-filter-btn active px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition">
+                        class="quick-filter-btn {{ !$hasExplicitFilter ? 'active bg-blue-600 text-white' : 'border-gray-300' }} px-3 py-1.5 text-sm rounded-md hover:bg-blue-700 transition">
                     All Time
                 </button>
             </div>
@@ -114,7 +114,7 @@
                      onclick="filterTransactions('all')" 
                      data-filter-type="all">
                     <div class="text-xs text-gray-500 uppercase font-medium">💰 Current Balance</div>
-                    <div class="text-2xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-2">
+                    <div id="mainOnlineBalance" class="text-2xl font-bold {{ $summary['current_balance'] > 0 ? 'text-green-600' : ($summary['current_balance'] < 0 ? 'text-red-600' : 'text-gray-900') }} mt-2">
                         Rs. {{ number_format($summary['current_balance'], 2) }}
                     </div>
                     <div class="text-xs text-gray-500 mt-1">Online Bank Balance</div>
@@ -125,9 +125,9 @@
                      onclick="openOnlineApprovalsModal()" 
                      data-filter-type="pending">
                     <div class="text-xs text-yellow-700 uppercase font-medium">⏳ Online Approvals Pending</div>
-                    <div class="text-2xl font-bold text-yellow-900 mt-2">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
+                    <div id="mainPendingAmount" class="text-2xl font-bold text-yellow-900 mt-2">Rs. {{ number_format($summary['total_pending'] ?? 0, 2) }}</div>
                     <div class="text-xs text-yellow-600 mt-1">
-                        {{ count($summary['pending_approvals'] ?? []) }} invoice(s) awaiting approval
+                        <span id="mainApprovalCount">{{ count($summary['pending_approvals'] ?? []) }}</span> invoice(s) awaiting approval
                     </div>
                 </div>
             </div>
@@ -484,7 +484,12 @@
             <div class="flex justify-between items-center mb-3">
                 <h2 class="text-lg font-medium text-gray-900">Transaction History</h2>
                 <div class="text-sm text-gray-500">
-                    Total: {{ $ledger->total() }} transaction(s)
+                    Total: {{ $totalInWindow }} transaction(s)
+                    @if($dateNavigation)
+                        <span class="text-xs text-gray-400 ml-1">
+                            ({{ \Carbon\Carbon::parse($windowStart)->format('M j') }} – {{ \Carbon\Carbon::parse($windowEnd)->format('M j, Y') }})
+                        </span>
+                    @endif
                 </div>
             </div>
             
@@ -824,10 +829,38 @@
         </div>
     </div>
 
-    <!-- Pagination -->
-    @if($ledger->hasPages())
-        <div class="mt-4">
-            {{ $ledger->links() }}
+    <!-- Date Navigation -->
+    @if($dateNavigation)
+        <div class="mt-4 flex items-center justify-between bg-white border border-gray-200 rounded-lg px-4 py-3">
+            <div>
+                @if($dateNavigation['has_prev'])
+                    <a href="{{ url()->current() }}?date_end={{ $dateNavigation['prev_end'] }}" 
+                       class="inline-flex items-center px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition">
+                        ← Previous {{ $dateNavigation['days_per_page'] }} Days
+                    </a>
+                @else
+                    <span class="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-400 bg-gray-50 border border-gray-200 rounded-md cursor-not-allowed">
+                        ← Previous {{ $dateNavigation['days_per_page'] }} Days
+                    </span>
+                @endif
+            </div>
+            <div class="text-sm font-medium text-gray-700">
+                {{ \Carbon\Carbon::parse($dateNavigation['window_start'])->format('M j, Y') }}
+                &nbsp;–&nbsp;
+                {{ \Carbon\Carbon::parse($dateNavigation['window_end'])->format('M j, Y') }}
+            </div>
+            <div>
+                @if($dateNavigation['has_next'])
+                    <a href="{{ url()->current() }}?date_end={{ $dateNavigation['next_end'] }}" 
+                       class="inline-flex items-center px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition">
+                        Next {{ $dateNavigation['days_per_page'] }} Days →
+                    </a>
+                @else
+                    <span class="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-400 bg-gray-50 border border-gray-200 rounded-md cursor-not-allowed">
+                        Next {{ $dateNavigation['days_per_page'] }} Days →
+                    </span>
+                @endif
+            </div>
         </div>
     @endif
 </div>
@@ -1028,6 +1061,12 @@
                     <p style="font-size: 14px; color: #92400e; margin: 4px 0 0 0;">
                         <span id="approvalCount">{{ count($summary['pending_approvals'] ?? []) }}</span> invoice(s) awaiting approval
                     </p>
+                </div>
+                <div style="text-align: right; margin-right: 16px;">
+                    <div style="font-size: 11px; color: #92400e; text-transform: uppercase; letter-spacing: 0.5px;">Online Balance</div>
+                    <div id="modalOnlineBalance" style="font-size: 22px; font-weight: 700; color: #065f46; margin-top: 2px;">
+                        Rs. {{ number_format($account->current_balance, 2) }}
+                    </div>
                 </div>
             </div>
             <button onclick="closeOnlineApprovalsModal()" style="width: 32px; height: 32px; border-radius: 50%; background: #fef3c7; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #78350f; transition: all 0.2s;" onmouseover="this.style.background='#fde68a'" onmouseout="this.style.background='#fef3c7'">
@@ -3414,7 +3453,10 @@ function approveOnlineInvoice(ledgerId) {
         return;
     }
     
-    // Submit approval
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ Approving...';
+    
     fetch(`/finance/ledger/${ledgerId}/approve`, {
         method: 'POST',
         headers: {
@@ -3426,15 +3468,34 @@ function approveOnlineInvoice(ledgerId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Invoice approved successfully!');
-            location.reload(); // Reload to update the list
+            // Remove the approved card from the modal
+            const card = btn.closest('[style*="background: #fffbeb"]');
+            if (card) {
+                card.style.transition = 'all 0.3s ease';
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(100px)';
+                setTimeout(() => card.remove(), 300);
+            }
+            
+            // Update balance displays
+            updateOnlineBalance(data.new_balance);
+            
+            // Update approval count
+            updateApprovalCount(-1);
+            
+            // Show success in a less intrusive way
+            showApprovalToast('✅ ' + data.message);
         } else {
             alert('Error: ' + (data.message || 'Failed to approve invoice'));
+            btn.disabled = false;
+            btn.textContent = '✅ Approve';
         }
     })
     .catch(error => {
         console.error('Error:', error);
         alert('An error occurred while approving the invoice');
+        btn.disabled = false;
+        btn.textContent = '✅ Approve';
     });
 }
 
@@ -3445,7 +3506,10 @@ function rejectOnlineInvoice(ledgerId) {
         return;
     }
     
-    // Submit rejection
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ Rejecting...';
+    
     fetch(`/finance/ledger/${ledgerId}/reject`, {
         method: 'POST',
         headers: {
@@ -3459,16 +3523,102 @@ function rejectOnlineInvoice(ledgerId) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Invoice rejected successfully!');
-            location.reload(); // Reload to update the list
+            const card = btn.closest('[style*="background: #fffbeb"]');
+            if (card) {
+                card.style.transition = 'all 0.3s ease';
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(-100px)';
+                setTimeout(() => card.remove(), 300);
+            }
+            
+            updateOnlineBalance(data.new_balance);
+            updateApprovalCount(-1);
+            showApprovalToast('❌ ' + data.message);
         } else {
             alert('Error: ' + (data.message || 'Failed to reject invoice'));
+            btn.disabled = false;
+            btn.textContent = '❌ Reject';
         }
     })
     .catch(error => {
         console.error('Error:', error);
         alert('An error occurred while rejecting the invoice');
+        btn.disabled = false;
+        btn.textContent = '❌ Reject';
     });
+}
+
+function updateOnlineBalance(newBalance) {
+    if (newBalance === null || newBalance === undefined) return;
+    const formatted = 'Rs. ' + parseFloat(newBalance).toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    
+    // Update modal balance
+    const modalBalance = document.getElementById('modalOnlineBalance');
+    if (modalBalance) {
+        modalBalance.textContent = formatted;
+        modalBalance.style.transition = 'color 0.3s ease';
+        modalBalance.style.color = '#059669';
+        setTimeout(() => { modalBalance.style.color = '#065f46'; }, 1500);
+    }
+    
+    // Update main page current balance card
+    const mainBalanceEl = document.getElementById('mainOnlineBalance');
+    if (mainBalanceEl) {
+        mainBalanceEl.textContent = formatted;
+    }
+}
+
+function updateApprovalCount(delta) {
+    // Update modal count
+    const countEl = document.getElementById('approvalCount');
+    // Update main page count
+    const mainCountEl = document.getElementById('mainApprovalCount');
+    
+    if (countEl) {
+        const current = parseInt(countEl.textContent) || 0;
+        const newCount = Math.max(0, current + delta);
+        countEl.textContent = newCount;
+        if (mainCountEl) mainCountEl.textContent = newCount;
+        
+        // Recalculate pending total from remaining cards
+        const remainingCards = document.querySelectorAll('#onlineApprovalsModal [style*="background: #fffbeb"]');
+        let pendingTotal = 0;
+        remainingCards.forEach(card => {
+            const amountText = card.querySelector('[style*="font-size: 20px"]');
+            if (amountText) {
+                const num = parseFloat(amountText.textContent.replace(/[^0-9.-]/g, ''));
+                if (!isNaN(num)) pendingTotal += num;
+            }
+        });
+        const mainPendingEl = document.getElementById('mainPendingAmount');
+        if (mainPendingEl) {
+            mainPendingEl.textContent = 'Rs. ' + pendingTotal.toLocaleString('en-PK', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        
+        if (newCount === 0) {
+            const contentDiv = document.querySelector('#onlineApprovalsModal [style*="overflow-y: auto"]');
+            if (contentDiv) {
+                contentDiv.innerHTML = '<div style="text-align: center; padding: 40px; color: #92400e;"><div style="font-size: 48px; margin-bottom: 16px;">✅</div><div style="font-size: 16px; font-weight: 500;">All approvals processed!</div><div style="font-size: 14px; margin-top: 8px;">Online balance has been updated</div></div>';
+            }
+            if (mainPendingEl) mainPendingEl.textContent = 'Rs. 0.00';
+        }
+    }
+}
+
+function showApprovalToast(message) {
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#065f46;color:white;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;z-index:999999;box-shadow:0 4px 12px rgba(0,0,0,0.15);transition:all 0.3s ease;opacity:0;transform:translateY(10px);';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+    });
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
 }
 
 // ===== REQUEST MODAL =====

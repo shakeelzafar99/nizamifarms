@@ -805,7 +805,7 @@ class WarehouseController extends Controller
     {
         try {
             $request->validate([
-                'quantity_produced' => 'required|integer|min:0',
+                'quantity_produced' => 'nullable|integer|min:0',
                 'notes' => 'nullable|string|max:500',
             ]);
 
@@ -815,7 +815,8 @@ class WarehouseController extends Controller
                 return response()->json(['success' => false, 'message' => 'Batch is not in progress'], 400);
             }
 
-            $quantityProduced = (int) $request->input('quantity_produced');
+            $rawQty = $request->input('quantity_produced');
+            $quantityProduced = ($rawQty !== null && $rawQty !== '') ? (int) $rawQty : 0;
 
             DB::beginTransaction();
 
@@ -861,8 +862,36 @@ class WarehouseController extends Controller
                     'current_batch_number' => $batch->batch_number,
                 ]);
             } catch (\Exception $e) {
-                // Non-critical — column may not exist yet
                 \Log::info('Could not update current_batch_number on product', ['error' => $e->getMessage()]);
+            }
+
+            // 5. Update production demand items linked to this batch
+            try {
+                DB::table('t_crm_khaas_production_demand_item')
+                    ->where('batch_id', $batch->id)
+                    ->whereIn('status', ['in_progress', 'accepted', 'pending'])
+                    ->update(['status' => 'completed', 'updated_at' => now()]);
+
+                // Check if all items in parent demands are completed → mark demand completed
+                $demandIds = DB::table('t_crm_khaas_production_demand_item')
+                    ->where('batch_id', $batch->id)
+                    ->pluck('demand_id')
+                    ->unique();
+
+                foreach ($demandIds as $dId) {
+                    $pendingCount = DB::table('t_crm_khaas_production_demand_item')
+                        ->where('demand_id', $dId)
+                        ->whereNotIn('status', ['completed', 'cancelled'])
+                        ->count();
+                    if ($pendingCount === 0) {
+                        DB::table('t_crm_khaas_production_demand')
+                            ->where('id', $dId)
+                            ->whereNotIn('status', ['completed', 'cancelled'])
+                            ->update(['status' => 'completed', 'completed_at' => now(), 'updated_at' => now()]);
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::info('Non-critical: demand item status update after batch end', ['error' => $e->getMessage()]);
             }
 
             DB::commit();
@@ -990,6 +1019,41 @@ class WarehouseController extends Controller
     // ======================================================
 
     /**
+     * Lightweight badge counts for Khaas tab indicators.
+     */
+    public function getKhaasBadges(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false], 400);
+            }
+
+            // Meat tab: orders delivered but not yet received into storage
+            $pendingReceive = DB::table('t_crm_khaas_storage_order as so')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'so.order_id')
+                ->where('so.khaas_business_unit_id', $businessUnitId)
+                ->whereNotIn('so.status', ['received', 'cancelled'])
+                ->whereIn('o.order_status', ['delivered', 'completed'])
+                ->count();
+
+            // Inventory tab: demand plans with status 'submitted' (not yet accepted)
+            $pendingDemand = DB::table('t_crm_khaas_production_demand')
+                ->where('business_unit_id', $businessUnitId)
+                ->where('status', 'submitted')
+                ->count();
+
+            return response()->json([
+                'success' => true,
+                'pending_receive' => $pendingReceive,
+                'pending_demand' => $pendingDemand,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'pending_receive' => 0, 'pending_demand' => 0]);
+        }
+    }
+
+    /**
      * Get storage config (which NF products are configured for storage)
      * + current storage inventory levels
      */
@@ -1077,8 +1141,35 @@ class WarehouseController extends Controller
                 }
             }
 
+            // Get processing quantities — supports old (single storage_product_id) and new (multi-recipe) demand items
+            $inProgressItems = DB::table('t_crm_khaas_production_demand_item as di')
+                ->join('t_crm_khaas_production_demand as d', 'd.id', '=', 'di.demand_id')
+                ->where('d.business_unit_id', $businessUnitId)
+                ->whereIn('di.status', ['in_progress', 'accepted'])
+                ->where('di.storage_deducted', 1)
+                ->select('di.khaas_product_id', 'di.quantity_kg', 'di.storage_product_id', 'di.storage_deducted_qty')
+                ->get();
+
+            $processingQtys = [];
+            foreach ($inProgressItems as $pItem) {
+                if ($pItem->storage_product_id) {
+                    $pid = $pItem->storage_product_id;
+                    $processingQtys[$pid] = ($processingQtys[$pid] ?? 0) + (float)$pItem->storage_deducted_qty;
+                } else {
+                    $recipes = DB::table('t_crm_khaas_product_recipe')
+                        ->where('khaas_product_id', $pItem->khaas_product_id)
+                        ->where('is_active', 1)
+                        ->get();
+                    foreach ($recipes as $recipe) {
+                        $pid = $recipe->storage_product_id;
+                        $deductQty = round((float)$pItem->quantity_kg * (float)$recipe->ratio_kg, 3);
+                        $processingQtys[$pid] = ($processingQtys[$pid] ?? 0) + $deductQty;
+                    }
+                }
+            }
+
             // Build result
-            $products = $configuredProducts->map(function($p) use ($inventoryByKey, $inventoryByProduct, $defaultVariantPrices) {
+            $products = $configuredProducts->map(function($p) use ($inventoryByKey, $inventoryByProduct, $defaultVariantPrices, $processingQtys) {
                 $key = $p->source_product_id . '_' . ($p->source_variant_id ?: '0');
                 // ⭐ Exact match first, then fallback to product-only match
                 $inv = $inventoryByKey[$key] ?? ($inventoryByProduct[$p->source_product_id] ?? null);
@@ -1114,6 +1205,7 @@ class WarehouseController extends Controller
                     'quantity_on_hand' => $inv ? (float)$inv->quantity_on_hand : 0,
                     'total_received' => $inv ? (float)$inv->total_received : 0,
                     'total_used' => $inv ? (float)$inv->total_used : 0,
+                    'processing_qty' => (float)($processingQtys[$p->source_product_id] ?? 0),
                     'last_received_at' => $inv ? $inv->last_received_at : null,
                     'last_used_at' => $inv ? $inv->last_used_at : null,
                 ];
@@ -1793,6 +1885,154 @@ class WarehouseController extends Controller
     }
 
     /**
+     * Adjust storage item: add or remove stock manually
+     */
+    public function adjustStorageItem(Request $request)
+    {
+        try {
+            $request->validate([
+                'business_unit_id' => 'required|integer',
+                'product_id' => 'required|integer',
+                'type' => 'required|in:add,remove',
+                'quantity' => 'required|numeric|min:0.001',
+            ]);
+
+            $businessUnitId = $request->input('business_unit_id');
+            $productId = $request->input('product_id');
+            $variantId = $request->input('variant_id');
+            $type = $request->input('type');
+            $quantity = round((float) $request->input('quantity'), 3);
+            $notes = $request->input('notes') ?: ($type === 'add' ? 'Manual stock addition' : 'Manual stock removal');
+
+            $configRow = DB::table('t_crm_khaas_storage_config')
+                ->where('source_product_id', $productId)
+                ->where('khaas_business_unit_id', $businessUnitId)
+                ->where('is_active', 1)
+                ->first();
+            $resolvedVariantId = $configRow?->source_variant_id ?: $variantId;
+
+            DB::beginTransaction();
+
+            $inventoryId = DB::table('t_crm_khaas_storage_inventory')
+                ->updateOrInsert(
+                    ['source_product_id' => $productId, 'khaas_business_unit_id' => $businessUnitId],
+                    ['source_variant_id' => $resolvedVariantId, 'created_at' => DB::raw('COALESCE(created_at, NOW())')]
+                );
+
+            $inventory = DB::table('t_crm_khaas_storage_inventory')
+                ->where('source_product_id', $productId)
+                ->where('khaas_business_unit_id', $businessUnitId)
+                ->first();
+
+            $qtyBefore = (float) $inventory->quantity_on_hand;
+            $change = $type === 'add' ? $quantity : -$quantity;
+
+            if ($type === 'remove' && $qtyBefore < $quantity) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => "Only {$qtyBefore} available"], 400);
+            }
+
+            $qtyAfter = round($qtyBefore + $change, 3);
+
+            $updates = ['quantity_on_hand' => max(0, $qtyAfter)];
+            if ($type === 'add') {
+                $updates['total_received'] = DB::raw("total_received + {$quantity}");
+            } else {
+                $updates['total_used'] = DB::raw("total_used + {$quantity}");
+            }
+
+            DB::table('t_crm_khaas_storage_inventory')
+                ->where('id', $inventory->id)
+                ->update($updates);
+
+            DB::table('t_crm_khaas_storage_log')->insert([
+                'storage_inventory_id' => $inventory->id,
+                'source_product_id' => $productId,
+                'khaas_business_unit_id' => $businessUnitId,
+                'change_type' => 'adjustment',
+                'quantity_before' => $qtyBefore,
+                'quantity_change' => $change,
+                'quantity_after' => max(0, $qtyAfter),
+                'notes' => $notes,
+                'created_by' => auth()->id(),
+                'created_at' => now(),
+            ]);
+
+            DB::commit();
+
+            $label = $type === 'add' ? "Added {$quantity}" : "Removed {$quantity}";
+            return response()->json([
+                'success' => true,
+                'message' => "{$label} — now: {$qtyAfter}",
+                'quantity_remaining' => $qtyAfter,
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to adjust storage item', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get monthly breakdown of storage movements for a product
+     */
+    public function getStorageMonthlyBreakdown(Request $request, $productId)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            $logs = DB::table('t_crm_khaas_storage_log')
+                ->where('source_product_id', $productId)
+                ->where('khaas_business_unit_id', $businessUnitId)
+                ->where('created_at', '>=', now()->subMonths(6)->startOfMonth())
+                ->orderBy('created_at', 'desc')
+                ->select('id', 'change_type', 'quantity_before', 'quantity_change', 'quantity_after', 'notes', 'created_at')
+                ->get();
+
+            $months = [];
+            foreach ($logs as $log) {
+                $monthKey = date('Y-m', strtotime($log->created_at));
+                $monthLabel = date('M Y', strtotime($log->created_at));
+                if (!isset($months[$monthKey])) {
+                    $months[$monthKey] = [
+                        'month_key' => $monthKey,
+                        'month_label' => $monthLabel,
+                        'received' => 0,
+                        'used' => 0,
+                        'adjustments' => 0,
+                        'events' => [],
+                    ];
+                }
+                $qty = abs((float) $log->quantity_change);
+                if ($log->change_type === 'received') {
+                    $months[$monthKey]['received'] += $qty;
+                } elseif ($log->change_type === 'used') {
+                    $months[$monthKey]['used'] += $qty;
+                } elseif ($log->change_type === 'adjustment') {
+                    $months[$monthKey]['adjustments'] += (float) $log->quantity_change;
+                }
+                $months[$monthKey]['events'][] = [
+                    'type' => $log->change_type,
+                    'change' => round((float) $log->quantity_change, 3),
+                    'after' => round((float) $log->quantity_after, 3),
+                    'notes' => $log->notes,
+                    'date' => date('d M, H:i', strtotime($log->created_at)),
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'months' => array_values($months),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * Update storage customer phone (Admin only)
      */
     public function updateStorageSettings(Request $request)
@@ -1910,11 +2150,11 @@ class WarehouseController extends Controller
             }
             $endDate = $startDate->copy()->endOfMonth();
 
-            // ─── 1. Get all active products for this BU ───
+            // ─── 1. Get all active products for this BU (including price) ───
             $products = ProductModel::where('business_unit_id', $businessUnitId)
                 ->where('is_active', 1)
                 ->orderBy('title')
-                ->get(['id', 'title', 'featured_image', 'total_inventory', 'product_type']);
+                ->get(['id', 'title', 'featured_image', 'total_inventory', 'product_type', 'price_min', 'price_max']);
 
             if ($products->isEmpty()) {
                 return response()->json([
@@ -1923,15 +2163,40 @@ class WarehouseController extends Controller
                     'products' => [],
                     'totals' => [
                         'produced' => 0,
-                        'transferred' => 0,
-                        'sold' => 0,
+                        'warehouse_stock' => 0,
+                        'shop_stock' => 0,
+                        'inventory_value' => 0,
                     ],
                 ]);
             }
 
             $productIds = $products->pluck('id')->toArray();
 
-            // ─── 2. Production: Completed batches in the month ───
+            // ─── 2. Selling price per product (prefer first variant price, fallback to price_min) ───
+            $priceByProduct = [];
+            try {
+                $variantPrices = DB::table('t_crm_prod_product_variant')
+                    ->whereIn('product_id', $productIds)
+                    ->where('price', '>', 0)
+                    ->select('product_id', DB::raw('MIN(price) as variant_price'))
+                    ->groupBy('product_id')
+                    ->get();
+                foreach ($variantPrices as $vp) {
+                    if ($vp->variant_price > 0) {
+                        $priceByProduct[(int) $vp->product_id] = round((float) $vp->variant_price, 2);
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Inventory report: failed to fetch variant prices', ['error' => $e->getMessage()]);
+            }
+            foreach ($products as $p) {
+                $pid = (int) $p->id;
+                if (!isset($priceByProduct[$pid]) && $p->price_min > 0) {
+                    $priceByProduct[$pid] = round((float) $p->price_min, 2);
+                }
+            }
+
+            // ─── 3. Production: Completed batches in the month ───
             $producedByProduct = [];
             try {
                 $batchRows = ProductBatchModel::where('business_unit_id', $businessUnitId)
@@ -1950,7 +2215,7 @@ class WarehouseController extends Controller
                 \Log::warning('Inventory report: failed to fetch batch production', ['error' => $e->getMessage()]);
             }
 
-            // ─── 3. Warehouse stock-in (includes batch auto-stock-in + manual) ───
+            // ─── 4. Warehouse stock-in / out / adjustments ───
             $stockInByProduct = [];
             $stockOutByProduct = [];
             $adjustmentsByProduct = [];
@@ -1982,7 +2247,6 @@ class WarehouseController extends Controller
                             $adjustmentsByProduct[$pid] = ($adjustmentsByProduct[$pid] ?? 0) + $val;
                             break;
                         case 'transfer':
-                            // Transfer deductions from warehouse are tracked separately below
                             break;
                     }
                 }
@@ -1990,7 +2254,7 @@ class WarehouseController extends Controller
                 \Log::warning('Inventory report: failed to fetch warehouse logs', ['error' => $e->getMessage()]);
             }
 
-            // ─── 4. Approved transfers to shop in the month ───
+            // ─── 5. Approved transfers to shop in the month ───
             $transferredByProduct = [];
             try {
                 $transferRows = WarehouseTransferModel::where('business_unit_id', $businessUnitId)
@@ -2010,8 +2274,7 @@ class WarehouseController extends Controller
                 \Log::warning('Inventory report: failed to fetch transfers', ['error' => $e->getMessage()]);
             }
 
-            // ─── 5. Sales: order line items for products in this BU ───
-            // Excludes cancelled orders and internal storage orders (external_source='khaas_storage')
+            // ─── 6. Sales ───
             $soldByProduct = [];
             $salesAmountByProduct = [];
             try {
@@ -2040,7 +2303,7 @@ class WarehouseController extends Controller
                 \Log::warning('Inventory report: failed to fetch sales', ['error' => $e->getMessage()]);
             }
 
-            // ─── 6. Current warehouse quantities ───
+            // ─── 7. Current warehouse quantities ───
             $warehouseQtyByProduct = [];
             try {
                 $whRows = WarehouseInventoryModel::where('business_unit_id', $businessUnitId)
@@ -2057,16 +2320,82 @@ class WarehouseController extends Controller
                 \Log::warning('Inventory report: failed to fetch warehouse qtys', ['error' => $e->getMessage()]);
             }
 
-            // ─── 7. Build per-product response ───
+            // ─── 8. Daily breakdown: production demand + warehouse-in per product per day ───
+            $dailyByProduct = []; // [product_id => [date => {plan, warehouse_in}]]
+            try {
+                // Production demand items grouped by product + demand_date
+                $demandRows = DB::table('t_crm_khaas_production_demand_item as di')
+                    ->join('t_crm_khaas_production_demand as d', 'd.id', '=', 'di.demand_id')
+                    ->where('d.business_unit_id', $businessUnitId)
+                    ->whereIn('di.khaas_product_id', $productIds)
+                    ->whereBetween('d.demand_date', [$startDate->toDateString(), $endDate->toDateString()])
+                    ->whereNotIn('d.status', ['cancelled'])
+                    ->select(
+                        'di.khaas_product_id as product_id',
+                        'd.demand_date',
+                        DB::raw('SUM(di.quantity_kg) as plan_qty')
+                    )
+                    ->groupBy('di.khaas_product_id', 'd.demand_date')
+                    ->get();
+
+                foreach ($demandRows as $row) {
+                    $pid = (int) $row->product_id;
+                    $date = $row->demand_date;
+                    if (!isset($dailyByProduct[$pid])) $dailyByProduct[$pid] = [];
+                    if (!isset($dailyByProduct[$pid][$date])) $dailyByProduct[$pid][$date] = ['plan' => 0, 'warehouse_in' => 0];
+                    $dailyByProduct[$pid][$date]['plan'] += round((float) $row->plan_qty, 3);
+                }
+
+                // Warehouse stock-in grouped by product + date
+                $stockInDaily = WarehouseInventoryLogModel::where('business_unit_id', $businessUnitId)
+                    ->whereIn('product_id', $productIds)
+                    ->where('change_type', 'stock_in')
+                    ->whereBetween('created_at', [$startDate, $endDate])
+                    ->select(
+                        'product_id',
+                        DB::raw('DATE(created_at) as log_date'),
+                        DB::raw('SUM(quantity_change) as total_in')
+                    )
+                    ->groupBy('product_id', DB::raw('DATE(created_at)'))
+                    ->get();
+
+                foreach ($stockInDaily as $row) {
+                    $pid = (int) $row->product_id;
+                    $date = $row->log_date;
+                    if (!isset($dailyByProduct[$pid])) $dailyByProduct[$pid] = [];
+                    if (!isset($dailyByProduct[$pid][$date])) $dailyByProduct[$pid][$date] = ['plan' => 0, 'warehouse_in' => 0];
+                    $dailyByProduct[$pid][$date]['warehouse_in'] += (int) $row->total_in;
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Inventory report: failed to fetch daily breakdown', ['error' => $e->getMessage()]);
+            }
+
+            // ─── 9. Compute total planned weight from demand data ───
+            $totalPlannedWeight = 0;
+            foreach ($dailyByProduct as $pid => $dates) {
+                foreach ($dates as $date => $vals) {
+                    $totalPlannedWeight += $vals['plan'];
+                }
+            }
+
+            // ─── 10. Build per-product response ───
             $totalProduced = 0;
             $totalTransferred = 0;
             $totalSold = 0;
             $totalSalesAmount = 0;
+            $totalInventoryValue = 0;
+            $totalWarehouseStock = 0;
+            $totalShopStock = 0;
+            $totalWarehouseValue = 0;
+            $totalShopValue = 0;
 
             $productData = $products->map(function ($product) use (
                 $producedByProduct, $stockInByProduct, $stockOutByProduct, $adjustmentsByProduct,
                 $transferredByProduct, $soldByProduct, $salesAmountByProduct, $warehouseQtyByProduct,
-                &$totalProduced, &$totalTransferred, &$totalSold, &$totalSalesAmount
+                $priceByProduct, $dailyByProduct,
+                &$totalProduced, &$totalTransferred, &$totalSold, &$totalSalesAmount,
+                &$totalInventoryValue, &$totalWarehouseStock, &$totalShopStock,
+                &$totalWarehouseValue, &$totalShopValue
             ) {
                 $pid = (int) $product->id;
 
@@ -2079,17 +2408,41 @@ class WarehouseController extends Controller
                 $salesAmount = $salesAmountByProduct[$pid] ?? 0;
                 $warehouseQty = $warehouseQtyByProduct[$pid] ?? 0;
                 $shopQty = (int) ($product->total_inventory ?? 0);
+                $sellingPrice = $priceByProduct[$pid] ?? 0;
+                $totalQty = $warehouseQty + $shopQty;
+                $inventoryValue = round($totalQty * $sellingPrice, 2);
+                $whValue = round($warehouseQty * $sellingPrice, 2);
+                $shValue = round($shopQty * $sellingPrice, 2);
 
                 $totalProduced += $produced;
                 $totalTransferred += $transferred;
                 $totalSold += $sold;
                 $totalSalesAmount += $salesAmount;
+                $totalInventoryValue += $inventoryValue;
+                $totalWarehouseStock += $warehouseQty;
+                $totalShopStock += $shopQty;
+                $totalWarehouseValue += $whValue;
+                $totalShopValue += $shValue;
+
+                // Build sorted daily breakdown for this product
+                $daily = [];
+                if (isset($dailyByProduct[$pid])) {
+                    foreach ($dailyByProduct[$pid] as $date => $vals) {
+                        $daily[] = [
+                            'date' => $date,
+                            'plan' => $vals['plan'],
+                            'warehouse_in' => $vals['warehouse_in'],
+                        ];
+                    }
+                    usort($daily, fn($a, $b) => strcmp($a['date'], $b['date']));
+                }
 
                 return [
                     'product_id' => $pid,
                     'product_name' => $product->title ?? 'Unknown',
                     'product_type' => $product->product_type,
                     'image' => $product->featured_image,
+                    'selling_price' => $sellingPrice,
                     'produced' => $produced,
                     'stock_in' => $stockIn,
                     'stock_out' => $stockOut,
@@ -2099,6 +2452,8 @@ class WarehouseController extends Controller
                     'sales_amount' => $salesAmount,
                     'current_warehouse_qty' => $warehouseQty,
                     'current_shop_qty' => $shopQty,
+                    'inventory_value' => $inventoryValue,
+                    'daily_breakdown' => $daily,
                 ];
             })->values()->toArray();
 
@@ -2109,9 +2464,15 @@ class WarehouseController extends Controller
                 'products' => $productData,
                 'totals' => [
                     'produced' => $totalProduced,
+                    'planned_weight' => round($totalPlannedWeight, 2),
                     'transferred' => $totalTransferred,
                     'sold' => $totalSold,
                     'sales_amount' => round($totalSalesAmount, 2),
+                    'warehouse_stock' => $totalWarehouseStock,
+                    'shop_stock' => $totalShopStock,
+                    'warehouse_value' => round($totalWarehouseValue, 2),
+                    'shop_value' => round($totalShopValue, 2),
+                    'inventory_value' => round($totalInventoryValue, 2),
                 ],
             ]);
 
@@ -2121,6 +2482,933 @@ class WarehouseController extends Controller
                 'success' => false,
                 'message' => 'Failed to generate report: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Daily inventory report: for a given month, returns day-by-day totals
+     * with per-product breakdown available when expanding a day.
+     * GET /warehouse/inventory-report/daily?business_unit_id=X&month=YYYY-MM
+     */
+    public function dailyInventoryReport(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            $monthStr = $request->input('month', now()->format('Y-m'));
+
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            try {
+                $startDate = \Carbon\Carbon::createFromFormat('Y-m', $monthStr)->startOfMonth();
+            } catch (\Exception $e) {
+                return response()->json(['success' => false, 'message' => 'Invalid month format. Use YYYY-MM'], 400);
+            }
+            $endDate = $startDate->copy()->endOfMonth();
+
+            $productIds = ProductModel::where('business_unit_id', $businessUnitId)
+                ->where('is_active', 1)
+                ->pluck('id')
+                ->toArray();
+
+            if (empty($productIds)) {
+                return response()->json(['success' => true, 'month' => $monthStr, 'days' => []]);
+            }
+
+            $productNames = ProductModel::whereIn('id', $productIds)->pluck('title', 'id')->toArray();
+
+            // Production demand by date and product
+            $demandByDateProduct = [];
+            $demandStatusByDate = [];
+            try {
+                $demandRows = DB::table('t_crm_khaas_production_demand_item as di')
+                    ->join('t_crm_khaas_production_demand as d', 'd.id', '=', 'di.demand_id')
+                    ->where('d.business_unit_id', $businessUnitId)
+                    ->whereIn('di.khaas_product_id', $productIds)
+                    ->whereBetween('d.demand_date', [$startDate->toDateString(), $endDate->toDateString()])
+                    ->whereNotIn('d.status', ['cancelled'])
+                    ->select(
+                        'di.khaas_product_id as product_id',
+                        'd.demand_date',
+                        'd.status as demand_status',
+                        DB::raw('SUM(di.quantity_kg) as plan_qty')
+                    )
+                    ->groupBy('di.khaas_product_id', 'd.demand_date', 'd.status')
+                    ->get();
+
+                foreach ($demandRows as $row) {
+                    $date = $row->demand_date;
+                    $pid = (int) $row->product_id;
+                    if (!isset($demandByDateProduct[$date])) $demandByDateProduct[$date] = [];
+                    $demandByDateProduct[$date][$pid] = ($demandByDateProduct[$date][$pid] ?? 0) + round((float) $row->plan_qty, 3);
+                    $demandStatusByDate[$date] = $row->demand_status;
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Daily report: failed to fetch demand', ['error' => $e->getMessage()]);
+            }
+
+            // Warehouse stock-in by date and product
+            $warehouseInByDateProduct = [];
+            try {
+                $stockInRows = WarehouseInventoryLogModel::where('business_unit_id', $businessUnitId)
+                    ->whereIn('product_id', $productIds)
+                    ->where('change_type', 'stock_in')
+                    ->whereBetween('created_at', [$startDate, $endDate])
+                    ->select(
+                        'product_id',
+                        DB::raw('DATE(created_at) as log_date'),
+                        DB::raw('SUM(quantity_change) as total_in')
+                    )
+                    ->groupBy('product_id', DB::raw('DATE(created_at)'))
+                    ->get();
+
+                foreach ($stockInRows as $row) {
+                    $date = $row->log_date;
+                    $pid = (int) $row->product_id;
+                    if (!isset($warehouseInByDateProduct[$date])) $warehouseInByDateProduct[$date] = [];
+                    $warehouseInByDateProduct[$date][$pid] = ($warehouseInByDateProduct[$date][$pid] ?? 0) + (int) $row->total_in;
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Daily report: failed to fetch warehouse-in', ['error' => $e->getMessage()]);
+            }
+
+            // Merge all dates and build response
+            $allDates = array_unique(array_merge(
+                array_keys($demandByDateProduct),
+                array_keys($warehouseInByDateProduct)
+            ));
+            sort($allDates);
+
+            $days = [];
+            foreach ($allDates as $date) {
+                $demandProducts = $demandByDateProduct[$date] ?? [];
+                $warehouseProducts = $warehouseInByDateProduct[$date] ?? [];
+                $allPids = array_unique(array_merge(array_keys($demandProducts), array_keys($warehouseProducts)));
+                sort($allPids);
+
+                $totalPlan = 0;
+                $totalWarehouseIn = 0;
+                $products = [];
+
+                foreach ($allPids as $pid) {
+                    $plan = $demandProducts[$pid] ?? 0;
+                    $whIn = $warehouseProducts[$pid] ?? 0;
+                    $totalPlan += $plan;
+                    $totalWarehouseIn += $whIn;
+
+                    $products[] = [
+                        'product_id' => $pid,
+                        'product_name' => $productNames[$pid] ?? 'Unknown',
+                        'plan_qty' => $plan,
+                        'warehouse_in' => $whIn,
+                        'diff' => round($whIn - $plan, 3),
+                    ];
+                }
+
+                $days[] = [
+                    'date' => $date,
+                    'demand_status' => $demandStatusByDate[$date] ?? null,
+                    'total_plan' => round($totalPlan, 3),
+                    'total_warehouse_in' => $totalWarehouseIn,
+                    'total_diff' => round($totalWarehouseIn - $totalPlan, 3),
+                    'products' => $products,
+                ];
+            }
+
+            // Reverse so newest date first
+            $days = array_reverse($days);
+
+            return response()->json([
+                'success' => true,
+                'month' => $monthStr,
+                'business_unit_id' => (int) $businessUnitId,
+                'days' => $days,
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to generate daily inventory report', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to generate report: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // ================================================================
+    // PRODUCTION DEMAND & RECIPE MAPPING
+    // ================================================================
+
+    /**
+     * Get product recipe mappings (raw material → finished product)
+     */
+    public function getProductRecipes(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            // Inventory-linked recipes
+            $invRecipes = DB::table('t_crm_khaas_product_recipe as r')
+                ->join('t_crm_prod_product as kp', 'kp.id', '=', 'r.khaas_product_id')
+                ->join('t_crm_prod_product as sp', 'sp.id', '=', 'r.storage_product_id')
+                ->where('kp.business_unit_id', $businessUnitId)
+                ->where('r.is_active', 1)
+                ->where('kp.is_active', 1)
+                ->whereNotNull('r.storage_product_id')
+                ->select(
+                    'r.id as recipe_id',
+                    'r.khaas_product_id',
+                    'kp.title as khaas_product_name',
+                    'r.storage_product_id',
+                    'r.storage_variant_id',
+                    'r.custom_material_id',
+                    'sp.title as storage_product_name',
+                    'r.ratio_kg',
+                    DB::raw('0 as is_custom')
+                )
+                ->orderBy('kp.title')
+                ->orderBy('sp.title')
+                ->get();
+
+            // Custom material recipes (gracefully handle if migration not run yet)
+            try {
+                $customRecipes = DB::table('t_crm_khaas_product_recipe as r')
+                    ->join('t_crm_prod_product as kp', 'kp.id', '=', 'r.khaas_product_id')
+                    ->join('t_crm_khaas_custom_material as cm', 'cm.id', '=', 'r.custom_material_id')
+                    ->where('kp.business_unit_id', $businessUnitId)
+                    ->where('r.is_active', 1)
+                    ->where('kp.is_active', 1)
+                    ->whereNotNull('r.custom_material_id')
+                    ->select(
+                        'r.id as recipe_id',
+                        'r.khaas_product_id',
+                        'kp.title as khaas_product_name',
+                        DB::raw('NULL as storage_product_id'),
+                        DB::raw('NULL as storage_variant_id'),
+                        'r.custom_material_id',
+                        DB::raw('CONCAT(cm.name, " (", cm.unit, ")") as storage_product_name'),
+                        'r.ratio_kg',
+                        DB::raw('1 as is_custom')
+                    )
+                    ->orderBy('kp.title')
+                    ->orderBy('cm.name')
+                    ->get();
+            } catch (\Exception $e) {
+                $customRecipes = collect();
+            }
+
+            $recipes = $invRecipes->concat($customRecipes);
+
+            $grouped = $recipes->groupBy('khaas_product_id')->map(function($items) {
+                $first = $items->first();
+                return [
+                    'khaas_product_id' => $first->khaas_product_id,
+                    'khaas_product_name' => $first->khaas_product_name,
+                    'materials' => $items->map(function($r) {
+                        return [
+                            'recipe_id' => $r->recipe_id,
+                            'storage_product_id' => $r->storage_product_id,
+                            'storage_product_name' => $r->storage_product_name,
+                            'storage_variant_id' => $r->storage_variant_id,
+                            'custom_material_id' => $r->custom_material_id,
+                            'is_custom' => (bool) $r->is_custom,
+                            'ratio_kg' => (float) $r->ratio_kg,
+                        ];
+                    })->values(),
+                ];
+            })->values();
+
+            return response()->json(['success' => true, 'recipes' => $grouped]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get recipes', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load recipes'], 500);
+        }
+    }
+
+    /**
+     * Save a recipe mapping (khaas product → storage raw material OR custom material)
+     */
+    public function saveProductRecipe(Request $request)
+    {
+        try {
+            $khaasProductId = $request->input('khaas_product_id');
+            $storageProductId = $request->input('storage_product_id');
+            $customMaterialId = $request->input('custom_material_id');
+
+            if (!$khaasProductId) {
+                return response()->json(['success' => false, 'message' => 'khaas_product_id is required'], 400);
+            }
+            if (!$storageProductId && !$customMaterialId) {
+                return response()->json(['success' => false, 'message' => 'storage_product_id or custom_material_id is required'], 400);
+            }
+
+            if ($customMaterialId) {
+                DB::table('t_crm_khaas_product_recipe')->updateOrInsert(
+                    [
+                        'khaas_product_id' => $khaasProductId,
+                        'custom_material_id' => $customMaterialId,
+                    ],
+                    [
+                        'storage_product_id' => null,
+                        'storage_variant_id' => null,
+                        'ratio_kg' => 1.000,
+                        'is_active' => 1,
+                        'updated_at' => now(),
+                        'created_at' => DB::raw('COALESCE(created_at, NOW())'),
+                    ]
+                );
+            } else {
+                DB::table('t_crm_khaas_product_recipe')->updateOrInsert(
+                    [
+                        'khaas_product_id' => $khaasProductId,
+                        'storage_product_id' => $storageProductId,
+                    ],
+                    [
+                        'custom_material_id' => null,
+                        'storage_variant_id' => $request->input('storage_variant_id'),
+                        'ratio_kg' => 1.000,
+                        'is_active' => 1,
+                        'updated_at' => now(),
+                        'created_at' => DB::raw('COALESCE(created_at, NOW())'),
+                    ]
+                );
+            }
+
+            return response()->json(['success' => true, 'message' => 'Recipe mapping saved']);
+        } catch (\Exception $e) {
+            \Log::error('Failed to save recipe', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to save: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Create or get a custom material (not tracked in inventory)
+     */
+    public function saveCustomMaterial(Request $request)
+    {
+        try {
+            $request->validate([
+                'business_unit_id' => 'required|integer',
+                'name' => 'required|string|max:255',
+                'unit' => 'nullable|string|max:50',
+            ]);
+
+            $name = trim($request->input('name'));
+            $unit = trim($request->input('unit', 'kg'));
+            $buId = $request->input('business_unit_id');
+
+            $existing = DB::table('t_crm_khaas_custom_material')
+                ->where('name', $name)
+                ->where('business_unit_id', $buId)
+                ->first();
+
+            if ($existing) {
+                if (!$existing->is_active) {
+                    DB::table('t_crm_khaas_custom_material')
+                        ->where('id', $existing->id)
+                        ->update(['is_active' => 1, 'updated_at' => now()]);
+                }
+                return response()->json([
+                    'success' => true,
+                    'material' => ['id' => $existing->id, 'name' => $existing->name, 'unit' => $existing->unit],
+                ]);
+            }
+
+            $id = DB::table('t_crm_khaas_custom_material')->insertGetId([
+                'name' => $name,
+                'unit' => $unit,
+                'business_unit_id' => $buId,
+                'is_active' => 1,
+                'created_by' => auth()->id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'material' => ['id' => $id, 'name' => $name, 'unit' => $unit],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to save custom material', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * List custom materials for a business unit
+     */
+    public function getCustomMaterials(Request $request)
+    {
+        try {
+            $buId = $request->input('business_unit_id');
+            $materials = DB::table('t_crm_khaas_custom_material')
+                ->where('business_unit_id', $buId)
+                ->where('is_active', 1)
+                ->orderBy('name')
+                ->get(['id', 'name', 'unit']);
+
+            return response()->json(['success' => true, 'materials' => $materials]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Delete a recipe mapping
+     */
+    public function deleteProductRecipe(Request $request)
+    {
+        try {
+            $recipeId = $request->input('recipe_id');
+            DB::table('t_crm_khaas_product_recipe')->where('id', $recipeId)->update(['is_active' => 0]);
+            return response()->json(['success' => true, 'message' => 'Mapping removed']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to remove'], 500);
+        }
+    }
+
+    /**
+     * Get ALL active Khaas products for demand creation, with recipe info where available
+     */
+    public function getDemandProducts(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            // All active Khaas products
+            $allProducts = DB::table('t_crm_prod_product')
+                ->where('business_unit_id', $businessUnitId)
+                ->where('is_active', 1)
+                ->where('status', 'active')
+                ->select('id', 'title')
+                ->orderBy('title')
+                ->get();
+
+            // Inventory-linked recipes
+            $invRecipes = DB::table('t_crm_khaas_product_recipe as r')
+                ->join('t_crm_prod_product as sp', 'sp.id', '=', 'r.storage_product_id')
+                ->leftJoin('t_crm_khaas_storage_inventory as inv', function($j) use ($businessUnitId) {
+                    $j->on('inv.source_product_id', '=', 'r.storage_product_id')
+                      ->where('inv.khaas_business_unit_id', '=', $businessUnitId);
+                })
+                ->where('r.is_active', 1)
+                ->whereNotNull('r.storage_product_id')
+                ->select(
+                    'r.khaas_product_id',
+                    'r.storage_product_id',
+                    'sp.title as raw_material_name',
+                    'r.storage_variant_id',
+                    'r.ratio_kg',
+                    DB::raw('COALESCE(inv.quantity_on_hand, 0) as raw_material_available'),
+                    DB::raw('0 as is_custom')
+                )
+                ->get()
+                ->groupBy('khaas_product_id');
+
+            // Custom material recipes (gracefully handle if migration not run yet)
+            try {
+                $customRecipes = DB::table('t_crm_khaas_product_recipe as r')
+                    ->join('t_crm_khaas_custom_material as cm', 'cm.id', '=', 'r.custom_material_id')
+                    ->where('r.is_active', 1)
+                    ->whereNotNull('r.custom_material_id')
+                    ->select(
+                        'r.khaas_product_id',
+                        DB::raw('NULL as storage_product_id'),
+                        DB::raw('CONCAT(cm.name, " (", cm.unit, ")") as raw_material_name'),
+                        DB::raw('NULL as storage_variant_id'),
+                        'r.ratio_kg',
+                        DB::raw('0 as raw_material_available'),
+                        DB::raw('1 as is_custom')
+                    )
+                    ->get()
+                    ->groupBy('khaas_product_id');
+            } catch (\Exception $e) {
+                $customRecipes = collect();
+            }
+
+            $products = $allProducts->map(function($p) use ($invRecipes, $customRecipes) {
+                $pid = $p->id;
+                $materials = [];
+
+                foreach (($invRecipes[$pid] ?? collect()) as $r) {
+                    $materials[] = [
+                        'storage_product_id' => $r->storage_product_id,
+                        'raw_material_name' => $r->raw_material_name,
+                        'storage_variant_id' => $r->storage_variant_id,
+                        'ratio_kg' => (float) $r->ratio_kg,
+                        'raw_material_available' => round((float) $r->raw_material_available, 3),
+                        'is_custom' => false,
+                    ];
+                }
+                foreach (($customRecipes[$pid] ?? collect()) as $r) {
+                    $materials[] = [
+                        'storage_product_id' => null,
+                        'raw_material_name' => $r->raw_material_name,
+                        'storage_variant_id' => null,
+                        'ratio_kg' => (float) $r->ratio_kg,
+                        'raw_material_available' => 0,
+                        'is_custom' => true,
+                    ];
+                }
+
+                $invMaterials = array_filter($materials, fn($m) => !$m['is_custom']);
+                return [
+                    'khaas_product_id' => $pid,
+                    'product_name' => $p->title,
+                    'raw_materials' => array_values($materials),
+                    'raw_material_name' => empty($materials) ? 'Unlinked' : implode(' + ', array_column($materials, 'raw_material_name')),
+                    'raw_material_available' => empty($invMaterials) ? 0 : round(min(array_column($invMaterials, 'raw_material_available')), 3),
+                    'has_recipe' => !empty($materials),
+                ];
+            })->values();
+
+            return response()->json(['success' => true, 'products' => $products]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get demand products', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load products'], 500);
+        }
+    }
+
+    /**
+     * Get current/recent demands
+     */
+    public function getDemands(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            $demands = DB::table('t_crm_khaas_production_demand as d')
+                ->leftJoin('t_sys_user as cu', 'cu.id', '=', 'd.created_by')
+                ->leftJoin('t_sys_user as au', 'au.id', '=', 'd.accepted_by')
+                ->where('d.business_unit_id', $businessUnitId)
+                ->whereNotIn('d.status', ['completed', 'cancelled'])
+                ->select(
+                    'd.*',
+                    'cu.fullname as created_by_name',
+                    'au.fullname as accepted_by_name'
+                )
+                ->orderByDesc('d.demand_date')
+                ->orderByDesc('d.created_at')
+                ->limit(20)
+                ->get();
+
+            // Load items for each demand
+            $demandIds = $demands->pluck('id')->toArray();
+            $items = DB::table('t_crm_khaas_production_demand_item as di')
+                ->join('t_crm_prod_product as kp', 'kp.id', '=', 'di.khaas_product_id')
+                ->leftJoin('t_crm_prod_product as sp', 'sp.id', '=', 'di.storage_product_id')
+                ->whereIn('di.demand_id', $demandIds)
+                ->select(
+                    'di.*',
+                    'kp.title as product_name',
+                    'sp.title as raw_material_name'
+                )
+                ->orderBy('kp.title')
+                ->get()
+                ->groupBy('demand_id');
+
+            // Pre-load recipe mappings for raw material names
+            $allKhaasIds = $items->flatten(1)->pluck('khaas_product_id')->unique()->toArray();
+            $recipeMap = [];
+            if (!empty($allKhaasIds)) {
+                $recipeRows = DB::table('t_crm_khaas_product_recipe as r')
+                    ->join('t_crm_prod_product as sp', 'sp.id', '=', 'r.storage_product_id')
+                    ->whereIn('r.khaas_product_id', $allKhaasIds)
+                    ->where('r.is_active', 1)
+                    ->select('r.khaas_product_id', 'sp.title as storage_product_name')
+                    ->get();
+                foreach ($recipeRows as $rr) {
+                    $recipeMap[$rr->khaas_product_id][] = $rr->storage_product_name;
+                }
+            }
+
+            $result = $demands->map(function($d) use ($items, $recipeMap) {
+                $demandItems = $items->get($d->id, collect())->map(function($i) use ($recipeMap) {
+                    $materialNames = $recipeMap[$i->khaas_product_id] ?? [];
+                    $rawMaterialName = $i->raw_material_name ?: implode(' + ', $materialNames);
+                    return [
+                        'id' => $i->id,
+                        'khaas_product_id' => $i->khaas_product_id,
+                        'product_name' => $i->product_name,
+                        'quantity_kg' => (float) $i->quantity_kg,
+                        'raw_material_name' => $rawMaterialName,
+                        'raw_materials' => $materialNames,
+                        'storage_deducted' => (bool) $i->storage_deducted,
+                        'storage_deducted_qty' => $i->storage_deducted_qty ? (float) $i->storage_deducted_qty : null,
+                        'batch_id' => $i->batch_id,
+                        'status' => $i->status,
+                    ];
+                });
+
+                return [
+                    'id' => $d->id,
+                    'demand_date' => $d->demand_date,
+                    'status' => $d->status,
+                    'notes' => $d->notes,
+                    'created_by_name' => $d->created_by_name,
+                    'accepted_by_name' => $d->accepted_by_name,
+                    'accepted_at' => $d->accepted_at,
+                    'completed_at' => $d->completed_at,
+                    'created_at' => $d->created_at,
+                    'items' => $demandItems->values(),
+                    'total_kg' => $demandItems->sum('quantity_kg'),
+                ];
+            });
+
+            return response()->json(['success' => true, 'demands' => $result]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get demands', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load demands'], 500);
+        }
+    }
+
+    /**
+     * Get completed/cancelled demand history
+     */
+    public function getDemandHistory(Request $request)
+    {
+        try {
+            $businessUnitId = $request->input('business_unit_id');
+            if (!$businessUnitId) {
+                return response()->json(['success' => false, 'message' => 'business_unit_id required'], 400);
+            }
+
+            $demands = DB::table('t_crm_khaas_production_demand as d')
+                ->leftJoin('t_sys_user as cu', 'cu.id', '=', 'd.created_by')
+                ->leftJoin('t_sys_user as au', 'au.id', '=', 'd.accepted_by')
+                ->where('d.business_unit_id', $businessUnitId)
+                ->whereIn('d.status', ['completed', 'cancelled'])
+                ->select('d.*', 'cu.fullname as created_by_name', 'au.fullname as accepted_by_name')
+                ->orderByDesc('d.completed_at')
+                ->orderByDesc('d.demand_date')
+                ->limit(30)
+                ->get();
+
+            $demandIds = $demands->pluck('id')->toArray();
+            $items = DB::table('t_crm_khaas_production_demand_item as di')
+                ->join('t_crm_prod_product as kp', 'kp.id', '=', 'di.khaas_product_id')
+                ->leftJoin('t_crm_prod_product as sp', 'sp.id', '=', 'di.storage_product_id')
+                ->whereIn('di.demand_id', $demandIds)
+                ->select('di.*', 'kp.title as product_name', 'sp.title as raw_material_name')
+                ->orderBy('kp.title')
+                ->get()
+                ->groupBy('demand_id');
+
+            $allKhaasIds = $items->flatten(1)->pluck('khaas_product_id')->unique()->toArray();
+            $recipeMap = [];
+            if (!empty($allKhaasIds)) {
+                $recipeRows = DB::table('t_crm_khaas_product_recipe as r')
+                    ->join('t_crm_prod_product as sp', 'sp.id', '=', 'r.storage_product_id')
+                    ->whereIn('r.khaas_product_id', $allKhaasIds)
+                    ->where('r.is_active', 1)
+                    ->select('r.khaas_product_id', 'sp.title as storage_product_name')
+                    ->get();
+                foreach ($recipeRows as $rr) {
+                    $recipeMap[$rr->khaas_product_id][] = $rr->storage_product_name;
+                }
+            }
+
+            $result = $demands->map(function($d) use ($items, $recipeMap) {
+                $demandItems = $items->get($d->id, collect())->map(function($i) use ($recipeMap) {
+                    $materialNames = $recipeMap[$i->khaas_product_id] ?? [];
+                    $rawMaterialName = $i->raw_material_name ?: implode(' + ', $materialNames);
+                    return [
+                        'id' => $i->id,
+                        'product_name' => $i->product_name,
+                        'quantity_kg' => (float) $i->quantity_kg,
+                        'raw_material_name' => $rawMaterialName,
+                        'raw_materials' => $materialNames,
+                        'storage_deducted_qty' => $i->storage_deducted_qty ? (float) $i->storage_deducted_qty : null,
+                        'status' => $i->status,
+                    ];
+                });
+                return [
+                    'id' => $d->id,
+                    'demand_date' => $d->demand_date,
+                    'status' => $d->status,
+                    'created_by_name' => $d->created_by_name,
+                    'accepted_by_name' => $d->accepted_by_name,
+                    'completed_at' => $d->completed_at,
+                    'items' => $demandItems->values(),
+                    'total_kg' => $demandItems->sum('quantity_kg'),
+                ];
+            });
+
+            return response()->json(['success' => true, 'demands' => $result]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => 'Failed to load history'], 500);
+        }
+    }
+
+    /**
+     * Create a new production demand (Taimur/admin only)
+     */
+    public function createDemand(Request $request)
+    {
+        try {
+            $request->validate([
+                'business_unit_id' => 'required|integer',
+                'demand_date' => 'required|date',
+                'items' => 'required|array|min:1',
+                'items.*.khaas_product_id' => 'required|integer',
+                'items.*.quantity_kg' => 'required|numeric|min:0.001',
+                'notes' => 'nullable|string|max:500',
+            ]);
+
+            $businessUnitId = $request->input('business_unit_id');
+            $demandDate = $request->input('demand_date');
+
+            DB::beginTransaction();
+
+            $demandId = DB::table('t_crm_khaas_production_demand')->insertGetId([
+                'business_unit_id' => $businessUnitId,
+                'demand_date' => $demandDate,
+                'status' => 'submitted',
+                'notes' => $request->input('notes'),
+                'created_by' => auth()->id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            foreach ($request->input('items') as $item) {
+                DB::table('t_crm_khaas_production_demand_item')->insert([
+                    'demand_id' => $demandId,
+                    'khaas_product_id' => $item['khaas_product_id'],
+                    'quantity_kg' => $item['quantity_kg'],
+                    'storage_product_id' => null,
+                    'storage_variant_id' => null,
+                    'status' => 'pending',
+                    'notes' => $item['notes'] ?? null,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Production demand created for ' . date('M d', strtotime($demandDate)),
+                'demand_id' => $demandId,
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to create demand', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to create demand: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Accept a demand: deducts storage inventory + auto-starts batches
+     */
+    public function acceptDemand(Request $request, $demandId)
+    {
+        try {
+            $demand = DB::table('t_crm_khaas_production_demand')->where('id', $demandId)->first();
+            if (!$demand) {
+                return response()->json(['success' => false, 'message' => 'Demand not found'], 404);
+            }
+            if (!in_array($demand->status, ['submitted', 'accepted'])) {
+                return response()->json(['success' => false, 'message' => 'Demand cannot be accepted in current status'], 400);
+            }
+
+            $businessUnitId = $demand->business_unit_id;
+            $items = DB::table('t_crm_khaas_production_demand_item')
+                ->where('demand_id', $demandId)
+                ->where('status', 'pending')
+                ->get();
+
+            if ($items->isEmpty()) {
+                return response()->json(['success' => false, 'message' => 'No pending items to process'], 400);
+            }
+
+            // Check storage availability — each raw material gets the full demand qty * its ratio
+            // Custom materials (no storage_product_id) are skipped
+            $shortages = [];
+            $storageNeeds = [];
+            foreach ($items as $item) {
+                $recipes = DB::table('t_crm_khaas_product_recipe')
+                    ->where('khaas_product_id', $item->khaas_product_id)
+                    ->where('is_active', 1)
+                    ->whereNotNull('storage_product_id')
+                    ->get();
+                if ($recipes->isEmpty()) continue;
+
+                foreach ($recipes as $recipe) {
+                    $key = $recipe->storage_product_id . '-' . ($recipe->storage_variant_id ?: '0');
+                    if (!isset($storageNeeds[$key])) {
+                        $storageNeeds[$key] = [
+                            'product_id' => $recipe->storage_product_id,
+                            'variant_id' => $recipe->storage_variant_id,
+                            'needed' => 0,
+                        ];
+                    }
+                    $storageNeeds[$key]['needed'] += $item->quantity_kg * (float) $recipe->ratio_kg;
+                }
+            }
+
+            foreach ($storageNeeds as $need) {
+                $inv = DB::table('t_crm_khaas_storage_inventory')
+                    ->where('source_product_id', $need['product_id'])
+                    ->where('khaas_business_unit_id', $businessUnitId)
+                    ->first();
+
+                $available = $inv ? (float) $inv->quantity_on_hand : 0;
+                if ($available < $need['needed']) {
+                    $productName = DB::table('t_crm_prod_product')->where('id', $need['product_id'])->value('title');
+                    $shortages[] = "{$productName}: need " . round($need['needed'], 2) . "kg, have " . round($available, 2) . "kg";
+                }
+            }
+
+            if (!empty($shortages)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Insufficient raw materials',
+                    'shortages' => $shortages,
+                ], 400);
+            }
+
+            DB::beginTransaction();
+
+            // Process each item: deduct inventory-linked raw materials (skip custom materials)
+            foreach ($items as $item) {
+                $recipes = DB::table('t_crm_khaas_product_recipe')
+                    ->where('khaas_product_id', $item->khaas_product_id)
+                    ->where('is_active', 1)
+                    ->whereNotNull('storage_product_id')
+                    ->get();
+
+                $totalDeducted = 0;
+
+                foreach ($recipes as $recipe) {
+                    $deductQty = round($item->quantity_kg * (float) $recipe->ratio_kg, 3);
+
+                    $inv = DB::table('t_crm_khaas_storage_inventory')
+                        ->where('source_product_id', $recipe->storage_product_id)
+                        ->where('khaas_business_unit_id', $businessUnitId)
+                        ->first();
+
+                    if ($inv) {
+                        $qtyBefore = (float) $inv->quantity_on_hand;
+                        $qtyAfter = $qtyBefore - $deductQty;
+
+                        DB::table('t_crm_khaas_storage_inventory')
+                            ->where('id', $inv->id)
+                            ->update([
+                                'quantity_on_hand' => max(0, $qtyAfter),
+                                'total_used' => DB::raw("total_used + {$deductQty}"),
+                                'last_used_at' => now(),
+                            ]);
+
+                        DB::table('t_crm_khaas_storage_log')->insert([
+                            'storage_inventory_id' => $inv->id,
+                            'source_product_id' => $recipe->storage_product_id,
+                            'khaas_business_unit_id' => $businessUnitId,
+                            'change_type' => 'used',
+                            'quantity_before' => $qtyBefore,
+                            'quantity_change' => -$deductQty,
+                            'quantity_after' => max(0, $qtyAfter),
+                            'notes' => 'Production demand #' . $demandId . ' for ' . date('M d', strtotime($demand->demand_date)),
+                            'created_by' => auth()->id(),
+                            'created_at' => now(),
+                        ]);
+
+                        $totalDeducted += $deductQty;
+                    }
+                }
+
+                // Auto-start batch for this product
+                $existingBatch = \App\Models\CRM\ProductBatchModel::getActiveBatch($item->khaas_product_id, $businessUnitId);
+                $batchId = null;
+                if (!$existingBatch) {
+                    $batchNumber = \App\Models\CRM\ProductBatchModel::generateBatchNumber($item->khaas_product_id, $businessUnitId);
+                    $batch = \App\Models\CRM\ProductBatchModel::create([
+                        'product_id' => $item->khaas_product_id,
+                        'product_variant_id' => \App\Models\CRM\ProductModel::find($item->khaas_product_id)?->variants?->first()?->id,
+                        'business_unit_id' => $businessUnitId,
+                        'batch_number' => $batchNumber,
+                        'status' => \App\Models\CRM\ProductBatchModel::STATUS_IN_PROGRESS,
+                        'started_at' => now(),
+                        'notes_start' => 'Auto-started from demand #' . $demandId . ' (' . round($item->quantity_kg, 2) . 'kg)',
+                        'started_by' => auth()->id(),
+                    ]);
+                    $batchId = $batch->id;
+                } else {
+                    $batchId = $existingBatch->id;
+                }
+
+                // Update demand item
+                DB::table('t_crm_khaas_production_demand_item')
+                    ->where('id', $item->id)
+                    ->update([
+                        'status' => 'in_progress',
+                        'storage_deducted' => 1,
+                        'storage_deducted_qty' => $totalDeducted,
+                        'batch_id' => $batchId,
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            // Update demand status
+            DB::table('t_crm_khaas_production_demand')
+                ->where('id', $demandId)
+                ->update([
+                    'status' => 'in_progress',
+                    'accepted_by' => auth()->id(),
+                    'accepted_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Demand accepted. Raw materials deducted and batches started.',
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error('Failed to accept demand', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json(['success' => false, 'message' => 'Failed to accept demand: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Cancel a demand
+     */
+    public function cancelDemand(Request $request, $demandId)
+    {
+        try {
+            $demand = DB::table('t_crm_khaas_production_demand')->where('id', $demandId)->first();
+            if (!$demand) {
+                return response()->json(['success' => false, 'message' => 'Demand not found'], 404);
+            }
+
+            if (in_array($demand->status, ['completed', 'cancelled'])) {
+                return response()->json(['success' => false, 'message' => 'Cannot cancel a ' . $demand->status . ' demand'], 400);
+            }
+
+            DB::table('t_crm_khaas_production_demand')
+                ->where('id', $demandId)
+                ->update(['status' => 'cancelled', 'updated_at' => now()]);
+
+            DB::table('t_crm_khaas_production_demand_item')
+                ->where('demand_id', $demandId)
+                ->where('status', 'pending')
+                ->update(['status' => 'cancelled', 'updated_at' => now()]);
+
+            return response()->json(['success' => true, 'message' => 'Demand cancelled']);
+        } catch (\Exception $e) {
+            \Log::error('Failed to cancel demand', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to cancel demand'], 500);
         }
     }
 }

@@ -5,7 +5,7 @@
     
     <!-- Compact Header & Filters in One Row -->
     <div class="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg shadow-lg p-4 mb-4">
-        <form method="GET" action="{{ route('fin.employee.all-outstanding-invoices') }}" class="flex flex-wrap items-center gap-3">
+        <form id="filter-form" method="GET" action="{{ route('fin.employee.all-outstanding-invoices') }}" class="flex flex-wrap items-center gap-3">
             <div class="flex-shrink-0">
                 <h1 class="text-lg font-bold text-white">📊 Invoice Tracker</h1>
             </div>
@@ -248,6 +248,130 @@
                             @endforeach
                         </div>
                         @endif
+                    </div>
+                </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+    @endif
+
+    <!-- ⛽ Petrol Requests (Meter-based + Manual) -->
+    @if(isset($pendingPetrolRequests) && $pendingPetrolRequests)
+    <div class="mb-4">
+        <div style="background: linear-gradient(to right, #fff7ed, #ffedd5); border: 2px solid #fdba74;" class="rounded-lg shadow-sm overflow-hidden">
+            <!-- Header -->
+            <div style="background: linear-gradient(to right, #ea580c, #c2410c);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('petrol-requests-body').classList.toggle('hidden')">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg">⛽</span>
+                    <h3 class="text-sm font-bold text-white">Petrol Requests</h3>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="animate-pulse text-xs bg-white text-orange-700 px-2 py-0.5 rounded-full font-bold">{{ $pendingPetrolRequests['total_count'] }} Pending</span>
+                    <span class="text-xs bg-orange-900 bg-opacity-30 text-white px-2 py-0.5 rounded-full font-bold">Rs. {{ number_format($pendingPetrolRequests['total_amount']) }}</span>
+                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
+            </div>
+            <!-- Body (auto-expanded since these are pending) -->
+            <div id="petrol-requests-body">
+                <!-- Summary Row -->
+                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #fdba74;">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Total Requests:</span>
+                        <span class="text-xs font-bold text-gray-900">{{ $pendingPetrolRequests['total_count'] }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Total Amount:</span>
+                        <span class="text-xs font-bold text-orange-700">Rs. {{ number_format($pendingPetrolRequests['total_amount'], 2) }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-gray-600">Riders:</span>
+                        <span class="text-xs font-bold text-gray-900">{{ count($pendingPetrolRequests['by_rider']) }}</span>
+                    </div>
+                </div>
+                
+                <!-- Rider Groups -->
+                @foreach($pendingPetrolRequests['by_rider'] as $riderIdx => $riderData)
+                <div class="border-b last:border-b-0" style="border-color: #fdba74;">
+                    <!-- Rider Header -->
+                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-orange-50 transition-colors" 
+                         onclick="document.getElementById('petrol-rider-{{ $riderIdx }}').classList.toggle('hidden')">
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
+                            <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-bold text-orange-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
+                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                    </div>
+                    
+                    <!-- Rider Request Details (expanded by default) -->
+                    <div id="petrol-rider-{{ $riderIdx }}">
+                        @foreach($riderData['requests'] as $petrolReq)
+                        <div id="petrol-req-{{ $petrolReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #fff7ed; border: 1px solid #fed7aa;">
+                            <div class="px-4 py-3">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-xs font-mono font-bold text-orange-800">{{ $petrolReq['request_number'] }}</span>
+                                        <span class="text-xs text-gray-500">{{ $petrolReq['expense_date'] }}</span>
+                                        @if(($petrolReq['source'] ?? 'meter') === 'manual')
+                                        <span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-semibold">Manual</span>
+                                        @else
+                                        <span class="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-semibold">Meter</span>
+                                        @endif
+                                    </div>
+                                    <span class="text-sm font-bold text-orange-800">Rs. {{ number_format($petrolReq['amount'], 2) }}</span>
+                                </div>
+                                @if(($petrolReq['source'] ?? 'meter') === 'meter')
+                                <div class="flex items-center gap-4 mb-2">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs text-gray-500">Distance:</span>
+                                        <span class="text-xs font-bold text-gray-800">{{ $petrolReq['meter_distance'] }} km</span>
+                                    </div>
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs text-gray-500">Rate:</span>
+                                        <span class="text-xs font-bold text-gray-800">Rs. {{ $petrolReq['petrol_rate'] }}/km</span>
+                                    </div>
+                                </div>
+                                @endif
+                                @if($petrolReq['notes'])
+                                <div class="text-xs text-gray-500 mb-2 italic">{{ $petrolReq['notes'] }}</div>
+                                @endif
+                                @if(!empty($petrolReq['attachment_url']))
+                                <div class="mb-2">
+                                    <a href="{{ $petrolReq['attachment_url'] }}" target="_blank" class="inline-block">
+                                        <img src="{{ $petrolReq['attachment_url'] }}" alt="Receipt" class="h-20 w-auto rounded border border-orange-200 hover:opacity-80 transition-opacity cursor-pointer" />
+                                    </a>
+                                </div>
+                                @endif
+                                <div class="flex items-center gap-2 mt-2">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="text-xs text-gray-500">Pay from:</span>
+                                        <select id="petrol-pay-src-{{ $petrolReq['id'] }}" 
+                                            style="color: #1f2937; background-color: white; border: 1px solid #d1d5db;"
+                                            class="text-xs px-2 py-1 rounded-md focus:outline-none focus:ring-1 focus:ring-orange-400">
+                                            @foreach($petrolPaymentAccounts as $acc)
+                                            <option value="{{ $acc->id }}" {{ $acc->account_code === 'NF_CASH' ? 'selected' : '' }}>{{ $acc->account_name }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <button type="button" 
+                                        onclick="approvePetrolRequest({{ $petrolReq['id'] }}, {{ $petrolReq['requires_level_1'] ? '1' : '2' }})"
+                                        style="background-color: #16a34a;"
+                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
+                                        ✅ Approve
+                                    </button>
+                                    <button type="button" 
+                                        onclick="rejectPetrolRequest({{ $petrolReq['id'] }}, {{ $petrolReq['requires_level_1'] ? '1' : '2' }})"
+                                        style="background-color: #dc2626;"
+                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
+                                        ❌ Reject
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        @endforeach
                     </div>
                 </div>
                 @endforeach
@@ -828,7 +952,7 @@
 <script>
 function filterByStatus(status) {
     document.getElementById('status-filter').value = status;
-    document.querySelector('form').submit();
+    document.getElementById('filter-form').submit();
 }
 
 function togglePendingSettlements() {
@@ -909,6 +1033,96 @@ function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, r
     })
     .catch(function(err) {
         console.error('Failed to mark message sent:', err);
+    });
+}
+
+function approvePetrolRequest(requestId, level) {
+    if (!confirm('Approve this petrol request?')) return;
+    
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Approving...';
+    
+    // Read the selected payment source for this request
+    var paymentSourceSelect = document.getElementById('petrol-pay-src-' + requestId);
+    var paymentSourceAccountId = paymentSourceSelect ? paymentSourceSelect.value : null;
+    
+    var payload = { level: level, comments: 'Approved from daily closing' };
+    if (paymentSourceAccountId) {
+        payload.payment_source_account_id = parseInt(paymentSourceAccountId);
+    }
+    
+    fetch('/requests/' + requestId + '/approve', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+        if (data.success) {
+            var row = document.getElementById('petrol-req-' + requestId);
+            if (row) {
+                row.style.transition = 'all 0.3s ease';
+                row.style.backgroundColor = '#f0fdf4';
+                row.style.borderColor = '#86efac';
+                row.innerHTML = '<div class="px-4 py-3 flex items-center justify-between"><span class="text-xs font-bold text-green-700">✅ Approved</span><span class="text-xs text-gray-400">' + (data.request_status || '') + '</span></div>';
+            }
+        } else {
+            alert(data.message || 'Failed to approve');
+            btn.disabled = false;
+            btn.textContent = '✅ Approve';
+        }
+    })
+    .catch(function(err) {
+        console.error('Petrol approve error:', err);
+        alert('Error approving petrol request');
+        btn.disabled = false;
+        btn.textContent = '✅ Approve';
+    });
+}
+
+function rejectPetrolRequest(requestId, level) {
+    var reason = prompt('Reason for rejecting this petrol request:');
+    if (!reason) return;
+    
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Rejecting...';
+    
+    fetch('/requests/' + requestId + '/reject', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ level: level, comments: reason })
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+        if (data.success) {
+            var row = document.getElementById('petrol-req-' + requestId);
+            if (row) {
+                row.style.transition = 'all 0.3s ease';
+                row.style.backgroundColor = '#fef2f2';
+                row.style.borderColor = '#fca5a5';
+                row.innerHTML = '<div class="px-4 py-3 flex items-center justify-between"><span class="text-xs font-bold text-red-700">❌ Rejected</span><span class="text-xs text-gray-400">' + reason + '</span></div>';
+            }
+        } else {
+            alert(data.message || 'Failed to reject');
+            btn.disabled = false;
+            btn.textContent = '❌ Reject';
+        }
+    })
+    .catch(function(err) {
+        console.error('Petrol reject error:', err);
+        alert('Error rejecting petrol request');
+        btn.disabled = false;
+        btn.textContent = '❌ Reject';
     });
 }
 </script>

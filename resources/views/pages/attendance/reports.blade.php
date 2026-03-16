@@ -195,15 +195,14 @@
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Absent</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">On Leave</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Late Days</th>
-            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Total Late Mins</th>
-            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">OT Days</th>
-            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Total OT Mins</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Late (mins)</th>
+            <th class="px-4 py-3 text-center text-xs font-medium text-purple-500 uppercase">Leaves (Year)</th>
             <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody id="reportBody" class="bg-white divide-y divide-gray-200">
           <tr>
-            <td colspan="10" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
+            <td colspan="9" class="px-4 py-8 text-center text-gray-500 text-sm">Loading report...</td>
           </tr>
         </tbody>
       </table>
@@ -417,8 +416,7 @@ function renderReportTable(data) {
         <td class="px-4 py-3 text-sm text-center ${emp.leave_days > 0 ? 'text-blue-600 font-semibold' : 'text-gray-400'}">${emp.leave_days || 0}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${emp.late_days}</td>
         <td class="px-4 py-3 text-sm text-center ${totalLateMins > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${totalLateMins > 0 ? totalLateMins + 'm' : '-'}</td>
-        <td class="px-4 py-3 text-sm text-center ${emp.overtime_days > 0 ? 'text-green-600 font-semibold' : 'text-gray-400'}">${emp.overtime_days}</td>
-        <td class="px-4 py-3 text-sm text-center ${totalOTMins > 0 ? 'text-green-600 font-semibold' : 'text-gray-400'}">${totalOTMins > 0 ? totalOTMins + 'm' : '-'}</td>
+        <td class="px-4 py-3 text-sm text-center ${(emp.leaves_taken_year || 0) > 0 ? 'text-purple-600 font-semibold' : 'text-gray-400'}">${(emp.leaves_taken_year || 0) > 0 ? emp.leaves_taken_year + 'd' : '-'}</td>
         <td class="px-4 py-3 text-sm text-center">
           <button 
             onclick="showDailyDetails(${emp.user_id})"

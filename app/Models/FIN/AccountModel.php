@@ -46,6 +46,7 @@ class AccountModel extends BaseModel
         'current_balance',
         'petty_cash',
         'is_active',
+        'is_private',
         'business_unit_id', // ⭐ FK to t_fin_business_units
         'created_by',
         'updated_by'
@@ -55,7 +56,8 @@ class AccountModel extends BaseModel
         'opening_balance' => 'decimal:2',
         'current_balance' => 'decimal:2',
         'petty_cash' => 'decimal:2',
-        'is_active' => 'boolean'
+        'is_active' => 'boolean',
+        'is_private' => 'boolean'
     ];
 
     // Account type constants
@@ -142,6 +144,17 @@ class AccountModel extends BaseModel
     {
         return $query->where('account_category', self::CATEGORY_VENDOR_PAYABLE)
                      ->where('is_active', 1);
+    }
+
+    public function scopeVisibleTo($query, $user)
+    {
+        $isTaimur = $user && $user->roles()
+            ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+            ->exists();
+        if (!$isTaimur) {
+            $query->where('is_private', 0);
+        }
+        return $query;
     }
 
     /**

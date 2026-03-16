@@ -1862,6 +1862,9 @@ function updatePinnedUI() {
     const imgPreviewArea = document.getElementById('promoImagePreviewArea');
     const imgPreview = document.getElementById('promoImagePreview');
     
+    // Only treat imageUrl as valid if it actually points to a storage path
+    var hasValidImage = pinned && pinned.imageUrl && pinned.imageUrl.indexOf('/storage/') !== -1;
+    
     if (pinned && pinned.text) {
         // Show pinned banner
         pinnedBanner.style.display = 'block';
@@ -1871,7 +1874,7 @@ function updatePinnedUI() {
         textarea.value = pinned.text;
         
         // Show pinned image in banner
-        if (pinned.imageUrl) {
+        if (hasValidImage) {
             pinnedImgPreview.src = pinned.imageUrl;
             pinnedImgPreview.style.display = 'block';
         } else {
@@ -1883,7 +1886,7 @@ function updatePinnedUI() {
         unpinBtn.style.display = 'flex';
         
         // Show image preview if exists
-        if (pinned.imageUrl) {
+        if (hasValidImage) {
             imgUploadArea.style.display = 'none';
             imgPreviewArea.style.display = 'flex';
             imgPreview.src = pinned.imageUrl;
@@ -1910,7 +1913,8 @@ function pinCurrentMessage() {
     }
     
     const pinned = getPinnedMessage();
-    const imageUrl = pinned ? pinned.imageUrl : (document.getElementById('promoImagePreview').src || '');
+    var rawSrc = pinned ? pinned.imageUrl : (document.getElementById('promoImagePreview').getAttribute('src') || '');
+    var imageUrl = (rawSrc && rawSrc.indexOf('/storage/') !== -1) ? rawSrc : '';
     const imagePath = pinned ? pinned.imagePath : '';
     
     savePinnedMessage(text, imageUrl, imagePath);
@@ -1983,24 +1987,37 @@ function formatPhoneForWhatsApp(phone) {
     return '92' + cleaned;
 }
 
-function openWhatsAppWeb(phone, message = '') {
-    const formattedPhone = formatPhoneForWhatsApp(phone);
+var _whatsappWindow = null;
+function openWhatsAppWeb(phone, message) {
+    var formattedPhone = formatPhoneForWhatsApp(phone);
     if (!formattedPhone) {
         alert('Invalid phone number');
         return;
     }
     
-    let url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
+    var url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
     if (message) {
         url += '&text=' + encodeURIComponent(message);
     }
     
-    window.open(url, '_blank');
-    // Don't close modal — user may want to send to more customers
+    // Try to reuse existing WhatsApp window by navigating it
+    if (_whatsappWindow && !_whatsappWindow.closed) {
+        try {
+            _whatsappWindow.location.href = url;
+            _whatsappWindow.focus();
+            return;
+        } catch(e) {
+            // location assignment blocked - fall through to window.open
+        }
+    }
+    
+    _whatsappWindow = window.open(url, 'whatsapp_web');
+    if (_whatsappWindow) _whatsappWindow.focus();
 }
 
 function sendCustomerWhatsAppDefault() {
     openWhatsAppWeb(customerWhatsappData.phone);
+    closeCustomerWhatsAppModal();
 }
 
 function sendCustomerWhatsAppGreeting() {
@@ -2012,22 +2029,25 @@ Best regards,
 Nizami Farms Team`;
     
     openWhatsAppWeb(customerWhatsappData.phone, message);
+    closeCustomerWhatsAppModal();
 }
 
 function sendCustomerWhatsAppCustom() {
-    let customMessage = document.getElementById('customerWhatsappCustomMessage').value.trim();
+    var customMessage = document.getElementById('customerWhatsappCustomMessage').value.trim();
     if (!customMessage) {
         alert('Please type a message first');
         return;
     }
     
-    // Append image URL to message if exists
-    const pinned = getPinnedMessage();
-    if (pinned && pinned.imageUrl) {
-        customMessage += '\n\n' + pinned.imageUrl;
+    // Only append image URL if it's a valid storage image (not a page URL)
+    var pinned = getPinnedMessage();
+    if (pinned && pinned.imageUrl && pinned.imageUrl.indexOf('/storage/') !== -1) {
+        var imgUrl = pinned.imageUrl.replace('://app.nizamifarms.com', '://www.nizamifarms.com');
+        customMessage += '\n\n' + imgUrl;
     }
     
     openWhatsAppWeb(customerWhatsappData.phone, customMessage);
+    closeCustomerWhatsAppModal();
 }
 
 function handlePromoImageUpload(input) {

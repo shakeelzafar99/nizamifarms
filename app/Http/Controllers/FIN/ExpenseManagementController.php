@@ -44,6 +44,7 @@ class ExpenseManagementController extends Controller
         $category = $request->input('category');
         $paymentSource = $request->input('payment_source');
         $settlementStatus = $request->input('settlement_status');
+        $employeeFilter = $request->input('employee');
         
         // Build base query for all expenses AND salary advances (both have settlement tracking)
         $expensesQuery = RequestModel::whereHas('category', function($q) {
@@ -90,6 +91,12 @@ class ExpenseManagementController extends Controller
         
         if ($settlementStatus) {
             $expensesQuery->where('settlement_status', $settlementStatus);
+        }
+        
+        if ($employeeFilter) {
+            $expensesQuery->whereHas('requester', function($q) use ($employeeFilter) {
+                $q->where('fullname', $employeeFilter);
+            });
         }
         
         $allExpenses = $expensesQuery->orderBy('created_at', 'desc')->get();
@@ -188,9 +195,10 @@ class ExpenseManagementController extends Controller
             ->sort()
             ->values();
         
-        // Get payment sources for filter
+        // Get payment sources for filter — hide private for non-Taimur
         $paymentSources = AccountModel::whereIn('account_type', ['asset'])
             ->where('is_active', 1)
+            ->visibleTo(auth()->user())
             ->orderBy('account_name')
             ->get();
         
@@ -209,15 +217,12 @@ class ExpenseManagementController extends Controller
             ->orderBy('created_at', 'asc')
             ->get();
         
-        // Calculate top 10 expense categories
+        // Calculate expense categories with user breakdown (matches mobile format)
         $expensesByCategory = [];
+        $expensesByCategoryUser = [];
         
-        // Group regular expenses by category
         foreach ($allExpenses as $expense) {
-            // Determine category - use category name or expense_category, prioritize expense_category
             $category = $expense->expense_category;
-            
-            // If expense_category is empty, check if it's a salary advance
             if (empty($category) && $expense->category && $expense->category->category_code === 'salary_advance') {
                 $category = 'Salary Advance';
             } elseif (empty($category)) {
@@ -228,34 +233,66 @@ class ExpenseManagementController extends Controller
                 $expensesByCategory[$category] = 0;
             }
             $expensesByCategory[$category] += $expense->amount;
+            
+            $userName = $expense->requester ? $expense->requester->fullname : 'Unknown';
+            if (!isset($expensesByCategoryUser[$category])) {
+                $expensesByCategoryUser[$category] = [];
+            }
+            if (!isset($expensesByCategoryUser[$category][$userName])) {
+                $expensesByCategoryUser[$category][$userName] = 0;
+            }
+            $expensesByCategoryUser[$category][$userName] += $expense->amount;
         }
         
-        // Add salary payments to the mix
         if ($totalSalaryExpenses > 0) {
             if (!isset($expensesByCategory['Salary'])) {
                 $expensesByCategory['Salary'] = 0;
             }
             $expensesByCategory['Salary'] += $totalSalaryExpenses;
+            
+            if (!isset($expensesByCategoryUser['Salary'])) {
+                $expensesByCategoryUser['Salary'] = [];
+            }
+            foreach ($salarySlips as $slip) {
+                $empName = $slip->employee ? $slip->employee->fullname : 'Unknown';
+                if (!isset($expensesByCategoryUser['Salary'][$empName])) {
+                    $expensesByCategoryUser['Salary'][$empName] = 0;
+                }
+                $expensesByCategoryUser['Salary'][$empName] += $slip->net_salary;
+            }
         }
         
-        // Sort by amount descending
         arsort($expensesByCategory);
         
         $topCategories = [];
         $othersTotal = 0;
+        $othersUsers = [];
         $count = 0;
         
         foreach ($expensesByCategory as $cat => $amount) {
-            if ($count < 10 && $cat !== 'Uncategorized') { // Don't show Uncategorized in top 10
-                $topCategories[$cat] = $amount;
+            if ($count < 15 && $cat !== 'Uncategorized') {
+                $usersInCat = $expensesByCategoryUser[$cat] ?? [];
+                arsort($usersInCat);
+                $topCategories[$cat] = [
+                    'total' => $amount,
+                    'users' => $usersInCat
+                ];
                 $count++;
             } else {
                 $othersTotal += $amount;
+                foreach (($expensesByCategoryUser[$cat] ?? []) as $uName => $uAmount) {
+                    if (!isset($othersUsers[$uName])) $othersUsers[$uName] = 0;
+                    $othersUsers[$uName] += $uAmount;
+                }
             }
         }
         
         if ($othersTotal > 0) {
-            $topCategories['Other Expenses'] = $othersTotal;
+            arsort($othersUsers);
+            $topCategories['Other Expenses'] = [
+                'total' => $othersTotal,
+                'users' => $othersUsers
+            ];
         }
         
         $kpis = [
@@ -290,6 +327,11 @@ class ExpenseManagementController extends Controller
                 ->exists();
         }
         
+        // Filter out private accounts for non-Taimur
+        if (!$isTaimurRole) {
+            $accessibleCompanyAccounts = $accessibleCompanyAccounts->filter(fn($a) => !$a->is_private);
+        }
+        
         return view('fin.expense.index', compact(
             'allExpensesForDisplay',
             'allExpenses',
@@ -305,6 +347,7 @@ class ExpenseManagementController extends Controller
             'category',
             'paymentSource',
             'settlementStatus',
+            'employeeFilter',
             'businessUnits',
             'accessibleCompanyAccounts',
             'userDefaultBuId',

@@ -17,19 +17,20 @@ class AccountController extends Controller
      */
     public function index()
     {
-        // Get all accounts grouped by account_type
-        $accounts = AccountModel::orderBy('account_type')
-                                ->orderBy('account_name')
-                                ->get()
-                                ->groupBy('account_type');
+        // Get all accounts grouped by account_type — hide private for non-Taimur
+        $accountQuery = AccountModel::visibleTo(auth()->user())
+                                ->orderBy('account_type')
+                                ->orderBy('account_name');
+        $accounts = $accountQuery->get()->groupBy('account_type');
 
-        // Calculate totals by type
+        // Calculate totals by type (respecting visibility)
+        $visibleBase = AccountModel::visibleTo(auth()->user());
         $summary = [
-            'total_accounts' => AccountModel::count(),
-            'active_accounts' => AccountModel::where('is_active', 1)->count(),
-            'total_assets' => AccountModel::where('account_type', 'asset')->sum('current_balance'),
-            'total_liabilities' => AccountModel::where('account_type', 'liability')->sum('current_balance'),
-            'total_expenses' => AccountModel::where('account_type', 'expense')->sum('current_balance'),
+            'total_accounts' => (clone $visibleBase)->count(),
+            'active_accounts' => (clone $visibleBase)->where('is_active', 1)->count(),
+            'total_assets' => (clone $visibleBase)->where('account_type', 'asset')->sum('current_balance'),
+            'total_liabilities' => (clone $visibleBase)->where('account_type', 'liability')->sum('current_balance'),
+            'total_expenses' => (clone $visibleBase)->where('account_type', 'expense')->sum('current_balance'),
         ];
 
         return view('fin.account.index', compact('accounts', 'summary'));
@@ -204,7 +205,17 @@ class AccountController extends Controller
         // Get business units for dropdown
         $businessUnits = BusinessUnitModel::where('is_active', 1)->ordered()->get();
 
-        return view('fin.account.edit', compact('account', 'accountTypes', 'businessUnits'));
+        // Check if current user is Taimur (for private account toggle)
+        $isTaimurRole = false;
+        if (auth()->check()) {
+            $isTaimurRole = \DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', auth()->id())
+                ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+                ->exists();
+        }
+
+        return view('fin.account.edit', compact('account', 'accountTypes', 'businessUnits', 'isTaimurRole'));
     }
 
     /**
@@ -220,11 +231,12 @@ class AccountController extends Controller
             'account_category' => 'required|string|max:100',
             'description' => 'nullable|string|max:1000',
             'is_active' => 'nullable|boolean',
+            'is_private' => 'nullable|boolean',
             'business_unit_id' => 'nullable|exists:t_fin_business_units,id'
         ]);
 
         try {
-            $account->update([
+            $updateData = [
                 'account_name' => $request->account_name,
                 'account_code' => strtoupper($request->account_code),
                 'account_category' => $request->account_category,
@@ -232,7 +244,19 @@ class AccountController extends Controller
                 'is_active' => $request->is_active ?? $account->is_active,
                 'business_unit_id' => $request->business_unit_id ?? $account->business_unit_id ?? 1,
                 'updated_by' => auth()->id()
-            ]);
+            ];
+
+            // Only Taimur can toggle is_private
+            $isTaimurRole = \DB::table('t_sys_user_role as ur')
+                ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+                ->where('ur.user_id', auth()->id())
+                ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+                ->exists();
+            if ($isTaimurRole) {
+                $updateData['is_private'] = $request->has('is_private') ? 1 : 0;
+            }
+
+            $account->update($updateData);
 
             return redirect()->route('fin.accounts.show', $account->id)
                            ->with('success', 'Account updated successfully!');

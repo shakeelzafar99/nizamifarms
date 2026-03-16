@@ -147,20 +147,7 @@
                           </div>
                       </a>
                   </div>
-                  @if($isTaimurRole)
-                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
-                      <a href="/finance/expenses?auto_new=1">
-                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-blue-50 rounded-md transition-colors duration-200 group" tabindex="0">
-                              <span class="kt-menu-icon items-start text-blue-600 group-hover:text-blue-700 w-[20px]">
-                                  <i class="ki-filled ki-plus-squared text-lg"></i>
-                              </span>
-                              <span class="kt-menu-title text-sm font-semibold text-blue-600 group-hover:text-blue-700">
-                                  Add Expense
-                              </span>
-                          </div>
-                      </a>
-                  </div>
-                  @endif
+                  {{-- Add Expense shortcut removed (only available via mobile) --}}
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/orders/open-quantities">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
@@ -242,7 +229,7 @@
    @if($hasKhaasAccess && isset($khaasBusinessUnit) && $khaasBusinessUnit)
    <div class="kt-menu-item pt-2.25 pb-px">
        <span class="kt-menu-heading uppercase text-xs font-medium text-amber-600 ps-[10px] pe-[10px]">
-           🌿 Khaas
+           🌿 {{ $khaasBusinessUnit->name }}
        </span>
    </div>
    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -252,7 +239,7 @@
                    <i class="ki-filled ki-home-2 text-lg"></i>
                </span>
                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">
-                   Khaas Dashboard
+                   {{ $khaasBusinessUnit->name }} Dashboard
                </span>
            </div>
        </a>
@@ -266,6 +253,58 @@
                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">
                    Products & Inventory
                </span>
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.meat-order') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-delivery text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700 flex-1">
+                   Meat Order
+               </span>
+               @php
+                   $khaasPendingReceive = $khaasBusinessUnit
+                       ? \DB::table('t_crm_khaas_storage_order as so')
+                           ->join('t_crm_prod_order as o', 'o.id', '=', 'so.order_id')
+                           ->where('so.khaas_business_unit_id', $khaasBusinessUnit->id)
+                           ->whereNotIn('so.status', ['received', 'cancelled'])
+                           ->whereIn('o.order_status', ['delivered', 'completed'])
+                           ->count()
+                       : 0;
+               @endphp
+               @if($khaasPendingReceive > 0)
+               <span class="kt-badge kt-badge-sm font-bold" style="background-color: #EF4444; color: white; border-radius: 999px; padding: 2px 6px; font-size: 10px;">
+                   {{ $khaasPendingReceive }}
+               </span>
+               @endif
+           </div>
+       </a>
+   </div>
+   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+       <a href="{{ route('khaas.inventory') }}">
+           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+               <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]">
+                   <i class="ki-filled ki-box text-lg"></i>
+               </span>
+               <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700 flex-1">
+                   Planning
+               </span>
+               @php
+                   $khaasPendingDemand = $khaasBusinessUnit
+                       ? \DB::table('t_crm_khaas_production_demand')
+                           ->where('business_unit_id', $khaasBusinessUnit->id)
+                           ->where('status', 'submitted')
+                           ->count()
+                       : 0;
+               @endphp
+               @if($khaasPendingDemand > 0)
+               <span class="kt-badge kt-badge-sm font-bold" style="background-color: #F59E0B; color: white; border-radius: 999px; padding: 2px 6px; font-size: 10px;">
+                   {{ $khaasPendingDemand }}
+               </span>
+               @endif
            </div>
        </a>
    </div>

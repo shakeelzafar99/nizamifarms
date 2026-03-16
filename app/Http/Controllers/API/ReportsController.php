@@ -31,7 +31,9 @@ class ReportsController extends Controller
             $invoiceData = DB::selectOne("
                 SELECT 
                     COALESCE(SUM(o.total_price), 0) as total,
-                    COUNT(DISTINCT o.id) as count
+                    COUNT(DISTINCT o.id) as count,
+                    COALESCE(SUM(CASE WHEN o.tip_amount > 0 THEN o.tip_amount ELSE 0 END), 0) as tips_total,
+                    COUNT(DISTINCT CASE WHEN o.tip_amount > 0 THEN o.id END) as tips_count
                 FROM t_crm_prod_order o
                 INNER JOIN (
                     SELECT order_id, MIN(changed_at) as delivered_at 
@@ -88,6 +90,8 @@ class ReportsController extends Controller
                     'month_name' => $monthName,
                     'invoices' => $invoices,
                     'invoice_count' => (int) ($invoiceData->count ?? 0),
+                    'tips' => round($invoiceData->tips_total ?? 0, 2),
+                    'tips_count' => (int) ($invoiceData->tips_count ?? 0),
                     'expenses' => $expenses,
                     'expense_count' => (int) ($expenseData->count ?? 0),
                     'vendor_purchases' => $vendorPurchases,
@@ -161,6 +165,46 @@ class ReportsController extends Controller
                 $invoicesByDate[$date]['total'] += $inv->amount;
                 $invoiceTotal += $inv->amount;
                 $invoiceCount++;
+            }
+            
+            // Get tips from delivered invoices (only orders with tip_amount > 0)
+            $tipsRaw = DB::select("
+                SELECT 
+                    DATE(h.delivered_at) as delivery_date,
+                    o.order_number,
+                    o.tip_amount,
+                    o.total_price,
+                    COALESCE(NULLIF(TRIM(o.name), ''), CONCAT(c.first_name, ' ', c.last_name)) as customer_name,
+                    r.fullname as rider_name
+                FROM t_crm_prod_order o
+                INNER JOIN (
+                    SELECT order_id, MIN(changed_at) as delivered_at 
+                    FROM t_crm_order_status_history 
+                    WHERE status_code = 'delivered' 
+                    GROUP BY order_id
+                ) h ON o.id = h.order_id
+                LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                LEFT JOIN t_sys_user r ON o.assigned_rider_user_id = r.id
+                WHERE h.delivered_at >= ? AND h.delivered_at <= ?
+                AND (o.external_source IS NULL OR o.external_source != 'shopify')
+                AND o.tip_amount > 0
+                ORDER BY h.delivered_at DESC
+            ", [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')]);
+            
+            $tipsTotal = 0;
+            $tipsCount = 0;
+            $tipsItems = [];
+            foreach ($tipsRaw as $tip) {
+                $tipsItems[] = [
+                    'order_number' => $tip->order_number,
+                    'customer_name' => $tip->customer_name ?? 'Unknown',
+                    'tip_amount' => round($tip->tip_amount, 2),
+                    'order_total' => round($tip->total_price, 2),
+                    'rider_name' => $tip->rider_name ?? 'Unassigned',
+                    'delivery_date' => $tip->delivery_date,
+                ];
+                $tipsTotal += $tip->tip_amount;
+                $tipsCount++;
             }
             
             // Get expenses grouped by transaction date with user and category
@@ -299,12 +343,16 @@ class ReportsController extends Controller
                 'success' => true,
                 'data' => [
                     'month_name' => $startDate->format('F Y'),
-                    // Note: Assets are capital expenditure, not deducted from operating profit
                     'profit' => round($invoiceTotal - $expenseTotal - $purchaseTotal, 2),
                     'invoices' => [
                         'total' => round($invoiceTotal, 2),
                         'count' => $invoiceCount,
                         'by_date' => array_values($invoicesByDate),
+                    ],
+                    'tips' => [
+                        'total' => round($tipsTotal, 2),
+                        'count' => $tipsCount,
+                        'items' => $tipsItems,
                     ],
                     'expenses' => [
                         'total' => round($expenseTotal, 2),

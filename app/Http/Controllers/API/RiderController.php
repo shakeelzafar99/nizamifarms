@@ -844,15 +844,27 @@ class RiderController extends Controller
             // Get rider's current location (most recent heartbeat)
             $riderLocation = \DB::table('t_ops_rider_location')
                 ->where('user_id', $riderId)
-                ->where('captured_at', '>=', now()->subMinutes(30)) // Within last 30 min
+                ->where('captured_at', '>=', now()->subMinutes(30))
                 ->orderBy('captured_at', 'desc')
                 ->first();
             
+            $usedShopLocation = false;
             if (!$riderLocation) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No recent GPS location for rider. Rider needs to be active.'
-                ], 400);
+                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
+                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
+
+                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                    ], 400);
+                }
+
+                $riderLocation = (object) [
+                    'latitude' => $baseLocation->latitude,
+                    'longitude' => $baseLocation->longitude,
+                ];
+                $usedShopLocation = true;
             }
             
             // ⭐ Check if frontend passed explicit order sequence (fixes debounce timing issue)
@@ -911,8 +923,10 @@ class RiderController extends Controller
                 'lng' => (float)$riderLocation->longitude,
             ];
             
+            $unverifiedOrders = [];
+            $noLocationOrders = [];
+
             foreach ($orders as $order) {
-                // Get order location (verified > geocoded)
                 $lat = $order->latitude ?: $order->geocoded_latitude;
                 $lng = $order->longitude ?: $order->geocoded_longitude;
                 
@@ -922,6 +936,11 @@ class RiderController extends Controller
                         'lng' => (float)$lng,
                     ];
                     $ordersWithLocation[] = $order;
+                    if (!$order->latitude || !$order->longitude) {
+                        $unverifiedOrders[] = $order->order_number;
+                    }
+                } else {
+                    $noLocationOrders[] = $order->order_number;
                 }
             }
             
@@ -932,7 +951,6 @@ class RiderController extends Controller
                 ], 400);
             }
             
-            // ⭐ Call Google Maps Directions API with waypoints (1 API call)
             $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
             
             if (!$etaResult) {
@@ -986,7 +1004,7 @@ class RiderController extends Controller
                 'total_duration_minutes' => round($cumulativeMinutes),
             ]);
             
-            return response()->json([
+            $response = [
                 'success' => true,
                 'message' => 'ETAs calculated for ' . count($updatedOrders) . ' orders',
                 'rider' => [
@@ -995,13 +1013,21 @@ class RiderController extends Controller
                     'current_location' => [
                         'latitude' => (float)$riderLocation->latitude,
                         'longitude' => (float)$riderLocation->longitude,
-                        'captured_at' => $riderLocation->captured_at,
+                        'captured_at' => $riderLocation->captured_at ?? null,
                     ],
                 ],
                 'calculated_at' => $calculatedAt->toIso8601String(),
                 'stop_time_minutes' => $stopTimeMinutes,
                 'orders' => $updatedOrders,
-            ]);
+                'unverified_orders' => $unverifiedOrders,
+                'no_location_orders' => $noLocationOrders,
+            ];
+
+            if ($usedShopLocation) {
+                $response['gps_warning'] = "⚠️ Rider GPS not active — ETAs calculated from shop location. Ask {$rider->fullname} to turn on GPS for accurate times.";
+            }
+
+            return response()->json($response);
             
         } catch (\Exception $e) {
             \Log::error('Failed to calculate delivery ETAs', [
@@ -1122,6 +1148,306 @@ class RiderController extends Controller
             return null;
         }
     }
+
+    /**
+     * Optimize delivery route using Google Directions API (optimize:true).
+     * Returns suggested order sequence + per-leg ETAs without saving to DB (preview only).
+     */
+    public function optimizeRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $rider = \DB::table('t_sys_user')->where('id', $riderId)->where('is_active', 1)->select('id', 'fullname')->first();
+            if (!$rider) {
+                return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
+            }
+
+            $riderLocation = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->where('captured_at', '>=', now()->subMinutes(30))
+                ->orderBy('captured_at', 'desc')
+                ->first();
+
+            $usedShopLocation = false;
+            if (!$riderLocation) {
+                // Fall back to shop/office location
+                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
+                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
+
+                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "⚠️ Rider GPS not active — please ask {$rider->fullname} to turn on GPS. Shop location also not configured.",
+                    ], 400);
+                }
+
+                $riderLocation = (object) [
+                    'latitude' => $baseLocation->latitude,
+                    'longitude' => $baseLocation->longitude,
+                ];
+                $usedShopLocation = true;
+            }
+
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('o.assigned_rider_user_id', $riderId)
+                ->where('o.order_status', 'out_for_delivery')
+                ->select([
+                    'o.id', 'o.order_number', 'o.delivery_priority',
+                    'c.latitude', 'c.longitude', 'c.geocoded_latitude', 'c.geocoded_longitude',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    \DB::raw('CONCAT(COALESCE(c.address1, ""), ", ", COALESCE(c.city, "")) as address_short'),
+                ])
+                ->orderByRaw('COALESCE(o.delivery_priority, 999) ASC, o.id ASC')
+                ->get();
+
+            if ($orders->isEmpty()) {
+                return response()->json(['success' => false, 'message' => 'No out_for_delivery orders found'], 400);
+            }
+
+            $waypoints = [['lat' => (float)$riderLocation->latitude, 'lng' => (float)$riderLocation->longitude]];
+            $ordersWithLocation = [];
+            $unverifiedOrders = [];
+            $noLocationOrders = [];
+
+            foreach ($orders as $order) {
+                $lat = $order->latitude ?: $order->geocoded_latitude;
+                $lng = $order->longitude ?: $order->geocoded_longitude;
+                if ($lat && $lng) {
+                    $waypoints[] = ['lat' => (float)$lat, 'lng' => (float)$lng];
+                    $ordersWithLocation[] = $order;
+                    if (!$order->latitude || !$order->longitude) {
+                        $unverifiedOrders[] = $order->order_number;
+                    }
+                } else {
+                    $noLocationOrders[] = $order->order_number;
+                }
+            }
+
+            if (count($ordersWithLocation) === 0) {
+                return response()->json(['success' => false, 'message' => 'No orders have GPS coordinates'], 400);
+            }
+
+            $result = $this->getOptimizedRouteFromGoogle($waypoints);
+
+            if (!$result) {
+                return response()->json(['success' => false, 'message' => 'Failed to optimize route (API error or limit reached)'], 500);
+            }
+
+            $stopTimeMinutes = 10;
+            $now = now();
+            $cumulativeMinutes = 0;
+            $optimizedSequence = [];
+            $waypointOrder = $result['waypoint_order'];
+
+            foreach ($waypointOrder as $priority => $originalIndex) {
+                $order = $ordersWithLocation[$originalIndex];
+                $legDuration = $result['legs'][$priority] ?? 0;
+                $cumulativeMinutes += $legDuration;
+                $estimatedAt = $now->copy()->addMinutes(round($cumulativeMinutes));
+
+                $optimizedSequence[] = [
+                    'order_id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_name' => trim($order->customer_name),
+                    'address_short' => trim($order->address_short),
+                    'priority' => $priority + 1,
+                    'travel_minutes' => round($legDuration),
+                    'cumulative_minutes' => round($cumulativeMinutes),
+                    'estimated_at' => $estimatedAt->format('h:i A'),
+                ];
+
+                $cumulativeMinutes += $stopTimeMinutes;
+            }
+
+            // Flag orders with unusually long travel times (likely wrong GPS)
+            $farOrders = [];
+            foreach ($optimizedSequence as $item) {
+                if ($item['travel_minutes'] > 60) {
+                    $farOrders[] = "{$item['order_number']} ({$item['customer_name']}) — {$item['travel_minutes']} min away";
+                }
+            }
+
+            $response = [
+                'success' => true,
+                'optimized_sequence' => $optimizedSequence,
+                'total_time_minutes' => round($cumulativeMinutes - $stopTimeMinutes),
+                'total_distance_km' => $result['total_distance_km'] ?? null,
+                'orders_count' => count($optimizedSequence),
+                'unverified_orders' => $unverifiedOrders,
+                'no_location_orders' => $noLocationOrders,
+            ];
+
+            if ($usedShopLocation) {
+                $response['gps_warning'] = "⚠️ Rider GPS not active — route optimized from shop location. Ask {$rider->fullname} to turn on GPS for accurate results.";
+            }
+
+            if (!empty($farOrders)) {
+                $response['far_orders_warning'] = $farOrders;
+            }
+
+            return response()->json($response);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to optimize route', ['rider_id' => $riderId, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to optimize route: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Nearest-neighbor route optimization using Google Directions.
+     * 
+     * Strategy: Starting from rider/shop, always go to the nearest unvisited
+     * customer next. Uses Google Directions for real road travel times per leg.
+     * Simple, predictable, and optimal for typical city delivery routes.
+     * 
+     * Falls back to haversine straight-line if Google API fails.
+     */
+    private function getOptimizedRouteFromGoogle(array $waypoints): ?array
+    {
+        if (count($waypoints) < 3) {
+            $directResult = $this->getMultiStopEtaFromGoogle($waypoints);
+            if (!$directResult) return null;
+            return [
+                'waypoint_order' => [0],
+                'legs' => $directResult['legs'],
+                'total_duration' => $directResult['total_duration'],
+                'total_distance_km' => null,
+            ];
+        }
+
+        $apiKey = env('GOOGLE_MAPS_DIRECTIONS_API_KEY');
+        if (empty($apiKey)) return null;
+
+        $monthKey = date('Y-m');
+        $usage = \DB::table('t_sys_api_usage')
+            ->where('api_name', 'google_directions')
+            ->where('month_key', $monthKey)
+            ->first();
+
+        if (($usage->call_count ?? 0) >= 10000) {
+            \Log::warning('Google Maps API monthly limit reached for route optimization');
+            return null;
+        }
+
+        try {
+            // Build the nearest-neighbor sequence using haversine first (fast)
+            $orderCount = count($waypoints) - 1; // exclude rider at index 0
+            $visited = [];
+            $sequence = []; // indices into $waypoints (1-based, orders only)
+            $currentLat = $waypoints[0]['lat'];
+            $currentLng = $waypoints[0]['lng'];
+
+            for ($step = 0; $step < $orderCount; $step++) {
+                $nearestIdx = null;
+                $nearestDist = PHP_FLOAT_MAX;
+
+                for ($i = 1; $i < count($waypoints); $i++) {
+                    if (in_array($i, $visited)) continue;
+                    $dist = $this->haversineDistance($currentLat, $currentLng, $waypoints[$i]['lat'], $waypoints[$i]['lng']);
+                    if ($dist < $nearestDist) {
+                        $nearestDist = $dist;
+                        $nearestIdx = $i;
+                    }
+                }
+
+                if ($nearestIdx === null) break;
+                $visited[] = $nearestIdx;
+                $sequence[] = $nearestIdx;
+                $currentLat = $waypoints[$nearestIdx]['lat'];
+                $currentLng = $waypoints[$nearestIdx]['lng'];
+            }
+
+            // Build the ordered route: rider → sequence of orders
+            $orderedWaypoints = [$waypoints[0]];
+            foreach ($sequence as $idx) {
+                $orderedWaypoints[] = $waypoints[$idx];
+            }
+
+            // Get actual road travel times from Google Directions for this sequence
+            $origin = $orderedWaypoints[0]['lat'] . ',' . $orderedWaypoints[0]['lng'];
+            $lastIdx = count($orderedWaypoints) - 1;
+            $destination = $orderedWaypoints[$lastIdx]['lat'] . ',' . $orderedWaypoints[$lastIdx]['lng'];
+
+            $intermediateCoords = [];
+            for ($i = 1; $i < $lastIdx; $i++) {
+                $intermediateCoords[] = $orderedWaypoints[$i]['lat'] . ',' . $orderedWaypoints[$i]['lng'];
+            }
+
+            $client = new \GuzzleHttp\Client(['timeout' => 15]);
+            $queryParams = [
+                'origin' => $origin,
+                'destination' => $destination,
+                'mode' => 'driving',
+                'departure_time' => 'now',
+                'key' => $apiKey,
+            ];
+
+            if (!empty($intermediateCoords)) {
+                // No optimize:true — we already determined the order via nearest-neighbor
+                $queryParams['waypoints'] = implode('|', $intermediateCoords);
+            }
+
+            $response = $client->get('https://maps.googleapis.com/maps/api/directions/json', ['query' => $queryParams]);
+            $data = json_decode($response->getBody()->getContents(), true);
+            $this->incrementApiUsage('google_directions');
+
+            $legs = [];
+            $totalDuration = 0;
+            $totalDistanceMeters = 0;
+
+            if ($data['status'] === 'OK' && !empty($data['routes'])) {
+                $route = $data['routes'][0];
+                foreach ($route['legs'] as $leg) {
+                    $durationSeconds = $leg['duration_in_traffic']['value'] ?? $leg['duration']['value'];
+                    $durationMinutes = round($durationSeconds / 60);
+                    $legs[] = $durationMinutes;
+                    $totalDuration += $durationMinutes;
+                    $totalDistanceMeters += $leg['distance']['value'] ?? 0;
+                }
+            } else {
+                // Fallback: estimate using haversine at ~30 km/h
+                \Log::warning('Google Directions failed for ordered route, using haversine fallback', ['status' => $data['status'] ?? 'unknown']);
+                for ($i = 0; $i < count($orderedWaypoints) - 1; $i++) {
+                    $distMeters = $this->haversineDistance(
+                        $orderedWaypoints[$i]['lat'], $orderedWaypoints[$i]['lng'],
+                        $orderedWaypoints[$i+1]['lat'], $orderedWaypoints[$i+1]['lng']
+                    );
+                    $minutes = round(($distMeters / 1000 / 30) * 60);
+                    $legs[] = max(1, $minutes);
+                    $totalDuration += $legs[count($legs) - 1];
+                    $totalDistanceMeters += $distMeters;
+                }
+            }
+
+            // Map sequence back to 0-based order indices
+            $waypointOrder = array_map(fn($idx) => $idx - 1, $sequence);
+
+            \Log::info('Optimized route (nearest-neighbor)', [
+                'waypoint_order' => $waypointOrder,
+                'legs' => $legs,
+                'total_minutes' => $totalDuration,
+                'total_distance_km' => round($totalDistanceMeters / 1000, 1),
+            ]);
+
+            return [
+                'waypoint_order' => $waypointOrder,
+                'legs' => $legs,
+                'total_duration' => $totalDuration,
+                'total_distance_km' => round($totalDistanceMeters / 1000, 1),
+            ];
+
+        } catch (\Exception $e) {
+            \Log::error('Route optimization failed', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
 
     /**
      * Quick verify location from address (for Store Mode)
@@ -1652,8 +1978,16 @@ class RiderController extends Controller
             $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%');
             
             // ⭐ Filter by business unit if provided
+            // NF categories (BU 1) may have business_unit_id = NULL in config
             if ($businessUnitId) {
-                $query->where('business_unit_id', $businessUnitId);
+                if ($businessUnitId == 1) {
+                    $query->where(function($q) {
+                        $q->where('business_unit_id', 1)
+                          ->orWhereNull('business_unit_id');
+                    });
+                } else {
+                    $query->where('business_unit_id', $businessUnitId);
+                }
             }
             
             $categories = $query->orderBy('config_value')
@@ -2117,6 +2451,8 @@ class RiderController extends Controller
                     'checkin_longitude' => $attendance->checkin_longitude ?? null,
                     'checkin_distance_from_base' => $attendance->checkin_distance_from_base ?? null,
                     'is_remote_checkin' => $attendance->is_remote_checkin ?? 0,
+                    'meter_start' => $attendance->meter_start ? (int) $attendance->meter_start : null,
+                    'meter_end' => $attendance->meter_end ? (int) $attendance->meter_end : null,
                 ] : null,
                 'assigned_location' => $assignedLocation ? [
                     'name' => $assignedLocation->location_name,
@@ -2345,6 +2681,173 @@ class RiderController extends Controller
         \Storage::disk('public')->put($path, file_get_contents($file));
         
         return $path;
+    }
+
+    /**
+     * Get petrol rate groups with assigned users
+     */
+    public function getPetrolRate(Request $request)
+    {
+        try {
+            $groups = DB::table('t_fin_petrol_rate_group')
+                ->where('is_active', 1)
+                ->orderBy('name')
+                ->get();
+
+            // Build groups with user details
+            $rateGroups = [];
+            foreach ($groups as $group) {
+                $users = [];
+                if (!empty($group->user_ids)) {
+                    $ids = array_map('trim', explode(',', $group->user_ids));
+                    $ids = array_filter($ids);
+                    $users = DB::table('t_sys_user')
+                        ->whereIn('id', $ids)
+                        ->select('id', 'fullname')
+                        ->get()
+                        ->map(fn($u) => ['id' => $u->id, 'name' => $u->fullname])
+                        ->values()
+                        ->toArray();
+                }
+                $rateGroups[] = [
+                    'id' => $group->id,
+                    'name' => $group->name,
+                    'rate' => (float) $group->rate,
+                    'user_ids' => $group->user_ids ?: '',
+                    'users' => $users,
+                ];
+            }
+
+            // Get all visible active users for the picker
+            $allRiders = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->where('u.is_active', 1)
+                ->where(function($q) {
+                    $q->whereNull('av.is_visible')
+                      ->orWhere('av.is_visible', 1);
+                })
+                ->select('u.id', 'u.fullname')
+                ->orderBy('u.fullname')
+                ->get()
+                ->map(fn($u) => ['id' => $u->id, 'name' => $u->fullname])
+                ->values();
+
+            // Legacy: return first group's rate for backward compat
+            $primaryRate = count($rateGroups) > 0 ? $rateGroups[0]['rate'] : 10;
+            $allUserIds = collect($rateGroups)->pluck('user_ids')->filter()->implode(',');
+
+            return response()->json([
+                'success' => true,
+                'petrol_rate' => $primaryRate,
+                'allowed_user_ids' => $allUserIds,
+                'rate_groups' => $rateGroups,
+                'all_riders' => $allRiders,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Save petrol rate groups - admin only
+     */
+    public function setPetrolRate(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user->hasMobilePermission('view_store_attendance')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $validated = $request->validate([
+                'groups' => 'required|array|min:1',
+                'groups.*.id' => 'nullable|integer',
+                'groups.*.name' => 'required|string|max:100',
+                'groups.*.rate' => 'required|numeric|min:0.01|max:999',
+                'groups.*.user_ids' => 'nullable|string',
+            ]);
+
+            // Validate no user appears in multiple groups
+            $allAssignedIds = [];
+            foreach ($validated['groups'] as $group) {
+                if (!empty($group['user_ids'])) {
+                    $ids = array_map('trim', explode(',', $group['user_ids']));
+                    $ids = array_filter($ids);
+                    foreach ($ids as $id) {
+                        if (in_array($id, $allAssignedIds)) {
+                            $userName = DB::table('t_sys_user')->where('id', $id)->value('fullname') ?: "User #$id";
+                            return response()->json([
+                                'success' => false,
+                                'message' => "$userName is assigned to multiple rate groups. Each user can only be in one group."
+                            ], 422);
+                        }
+                        $allAssignedIds[] = $id;
+                    }
+                }
+            }
+
+            DB::beginTransaction();
+
+            // Get existing group IDs
+            $existingIds = DB::table('t_fin_petrol_rate_group')->where('is_active', 1)->pluck('id')->toArray();
+            $incomingIds = array_filter(array_column($validated['groups'], 'id'));
+
+            // Soft-delete groups that are no longer in the list
+            $toDelete = array_diff($existingIds, $incomingIds);
+            if (!empty($toDelete)) {
+                DB::table('t_fin_petrol_rate_group')
+                    ->whereIn('id', $toDelete)
+                    ->update(['is_active' => 0, 'updated_at' => now()]);
+            }
+
+            // Upsert groups
+            foreach ($validated['groups'] as $groupData) {
+                if (!empty($groupData['id'])) {
+                    DB::table('t_fin_petrol_rate_group')
+                        ->where('id', $groupData['id'])
+                        ->update([
+                            'name' => $groupData['name'],
+                            'rate' => $groupData['rate'],
+                            'user_ids' => $groupData['user_ids'] ?? null,
+                            'is_active' => 1,
+                            'updated_at' => now(),
+                        ]);
+                } else {
+                    DB::table('t_fin_petrol_rate_group')->insert([
+                        'name' => $groupData['name'],
+                        'rate' => $groupData['rate'],
+                        'user_ids' => $groupData['user_ids'] ?? null,
+                        'is_active' => 1,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            // Keep legacy config keys in sync with first group for any code that still reads them
+            $firstGroup = $validated['groups'][0] ?? null;
+            if ($firstGroup) {
+                \App\Models\FIN\ConfigModel::set('PETROL_RATE_PER_KM', (string) $firstGroup['rate'], 'Petrol rate (synced from rate groups)');
+                \App\Models\FIN\ConfigModel::set('PETROL_AUTO_CALC_USER_IDS', implode(',', $allAssignedIds), 'Petrol user IDs (synced from rate groups)');
+            }
+
+            DB::commit();
+
+            \Log::info('Petrol rate groups updated', [
+                'groups_count' => count($validated['groups']),
+                'updated_by' => $user->id,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Petrol rate groups saved successfully',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
     }
 
     /**
@@ -5364,6 +5867,21 @@ class RiderController extends Controller
                         }
                         // else: status remains 'absent' (no login and not on leave)
                         
+                        $meterStart = $record->meter_start ? (float)$record->meter_start : null;
+                        $meterEnd = $record->meter_end ? (float)$record->meter_end : null;
+                        $meterDistance = null;
+                        $meterWarning = null;
+                        if ($meterStart !== null && $meterEnd !== null) {
+                            if ($meterEnd < $meterStart) {
+                                $meterWarning = 'End reading (' . number_format($meterEnd) . ') is less than start (' . number_format($meterStart) . '). Please check your readings.';
+                            } else {
+                                $meterDistance = round($meterEnd - $meterStart, 1);
+                                if ($meterDistance > 1000) {
+                                    $meterWarning = 'Distance ' . number_format($meterDistance) . ' km seems unusually high. Please verify readings.';
+                                }
+                            }
+                        }
+
                         $history[] = [
                             'id' => $record->id,
                             'date' => $record->attendance_date,
@@ -5377,6 +5895,10 @@ class RiderController extends Controller
                             'notes' => $record->notes,
                             'picture_start' => $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null,
                             'picture_end' => $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null,
+                            'meter_start' => $meterStart,
+                            'meter_end' => $meterEnd,
+                            'meter_distance' => $meterDistance,
+                            'meter_warning' => $meterWarning,
                             'checkin_latitude' => $record->checkin_latitude ?? null,
                             'checkin_longitude' => $record->checkin_longitude ?? null,
                             'checkin_distance_from_base' => $record->checkin_distance_from_base ?? null,
@@ -5507,12 +6029,60 @@ class RiderController extends Controller
                 ]);
             }
 
+            // Approved leaves taken for the current year
+            $currentYear = date('Y');
+            $yearLeaveDays = 0;
+            $yearLeaveRequests = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
+                ->where('status', 'approved')
+                ->whereHas('category', fn($q) => $q->where('category_code', 'leave'))
+                ->where('leave_start_date', '>=', "{$currentYear}-01-01")
+                ->where('leave_end_date', '<=', "{$currentYear}-12-31")
+                ->get();
+
+            foreach ($yearLeaveRequests as $lr) {
+                if ($lr->leave_start_date && $lr->leave_end_date) {
+                    $yearLeaveDays += \Carbon\Carbon::parse($lr->leave_start_date)
+                        ->diffInDays(\Carbon\Carbon::parse($lr->leave_end_date)) + 1;
+                }
+            }
+            $summary['leaves_taken_year'] = $yearLeaveDays;
+            $summary['leaves_year'] = (int) $currentYear;
+
+            // Fetch petrol rate for this user from their assigned rate group
+            $petrolRate = null;
+            $userRateGroup = DB::table('t_fin_petrol_rate_group')
+                ->where('is_active', 1)
+                ->get()
+                ->first(function ($group) use ($user) {
+                    if (empty($group->user_ids)) return false;
+                    $ids = array_map('trim', explode(',', $group->user_ids));
+                    return in_array((string) $user->id, $ids);
+                });
+
+            if ($userRateGroup) {
+                $petrolRate = (float) $userRateGroup->rate;
+            }
+
+            // Fetch existing petrol requests for this user in this month
+            $petrolRequests = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'expense')
+                ->where('r.requester_user_id', $user->id)
+                ->where('r.expense_category', 'Petrol')
+                ->whereNotNull('r.attendance_id')
+                ->whereBetween('r.expense_date', [$startDate, $endDate])
+                ->select('r.id', 'r.attendance_id', 'r.expense_date', 'r.amount', 'r.status', 'r.meter_distance', 'r.petrol_rate')
+                ->get()
+                ->keyBy('attendance_id');
+
             return response()->json([
                 'success' => true,
                 'month' => $month,
                 'month_formatted' => date('F Y', strtotime($month)),
                 'summary' => $summary,
                 'history' => $history,
+                'petrol_rate' => $petrolRate,
+                'petrol_requests' => $petrolRequests,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get monthly attendance', [
@@ -5578,7 +6148,7 @@ class RiderController extends Controller
             $user = Auth::user();
             $status = $request->input('status', 'all'); // all, pending, approved, rejected
 
-            $query = \App\Models\Request\RequestModel::with(['category'])
+            $query = \App\Models\Request\RequestModel::with(['category', 'approvals.approver'])
                 ->where('requester_user_id', $user->id)
                 ->whereHas('category', function($q) {
                     $q->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense']);
@@ -5590,6 +6160,18 @@ class RiderController extends Controller
             }
 
             $requests = $query->limit(100)->get()->map(function($req) {
+                $approverName = null;
+                if ($req->status === 'approved' || $req->status === 'rejected') {
+                    $lastApproval = $req->approvals
+                        ->sortByDesc('updated_at')
+                        ->first(function ($a) use ($req) {
+                            return $a->status === $req->status;
+                        });
+                    if ($lastApproval && $lastApproval->approver) {
+                        $approverName = $lastApproval->approver->fullname;
+                    }
+                }
+
                 return [
                     'id' => $req->id,
                     'request_number' => $req->request_number,
@@ -5610,6 +6192,7 @@ class RiderController extends Controller
                     'status' => $req->status,
                     'status_label' => ucfirst($req->status),
                     'priority' => $req->priority,
+                    'approved_by' => $approverName,
                     'created_at' => $req->created_at->format('Y-m-d H:i:s'),
                     'created_at_formatted' => $req->created_at->format('M d, Y h:i A'),
                 ];
@@ -5651,11 +6234,45 @@ class RiderController extends Controller
                 'description' => 'nullable|string',
                 'amount' => 'nullable|numeric|min:0',
                 'expense_category' => 'nullable|string|max:255',
-                'expense_date' => 'nullable|date', // ⭐ For backdated expense entries
+                'expense_date' => 'nullable|date',
+                'meter_distance' => 'nullable|numeric|min:0',
+                'petrol_rate' => 'nullable|numeric|min:0',
+                'attendance_id' => 'nullable|integer',
                 'leave_start_date' => 'nullable|date',
                 'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
                 'leave_type' => 'nullable|string',
+                'attachment_image' => 'nullable|image|max:5120',
             ]);
+
+            // Duplicate check for petrol requests: one per attendance day
+            if ($request->filled('attendance_id') && ($request->input('expense_category') === 'Petrol')) {
+                if ($request->filled('expense_date')) {
+                    $petrolDate = \Carbon\Carbon::parse($validated['expense_date'])->startOfDay();
+                    $fiveDaysAgo = \Carbon\Carbon::today()->subDays(5);
+                    if ($petrolDate->lt($fiveDaysAgo)) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Petrol requests from meter reading can only be raised for the last 5 days.'
+                        ], 422);
+                    }
+                }
+
+                $existingPetrol = DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', 'expense')
+                    ->where('r.requester_user_id', $user->id)
+                    ->where('r.expense_category', 'Petrol')
+                    ->where('r.attendance_id', $request->input('attendance_id'))
+                    ->whereNotIn('r.status', ['cancelled', 'rejected'])
+                    ->exists();
+
+                if ($existingPetrol) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'A petrol request has already been submitted for this day.'
+                    ], 422);
+                }
+            }
 
             // ⭐ Validate expense_date is within allowed backdate range
             if ($request->filled('expense_date')) {
@@ -5686,6 +6303,28 @@ class RiderController extends Controller
                 }
             }
 
+            // Prevent duplicate leave requests for overlapping dates
+            if ($request->filled('leave_start_date') && $request->filled('leave_end_date')) {
+                $overlapping = DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', 'leave')
+                    ->where('r.requester_user_id', $user->id)
+                    ->whereNotIn('r.status', ['cancelled', 'rejected'])
+                    ->where('r.leave_start_date', '<=', $validated['leave_end_date'])
+                    ->where('r.leave_end_date', '>=', $validated['leave_start_date'])
+                    ->select('r.leave_start_date', 'r.leave_end_date', 'r.request_number')
+                    ->first();
+
+                if ($overlapping) {
+                    $existingStart = \Carbon\Carbon::parse($overlapping->leave_start_date)->format('M d');
+                    $existingEnd = \Carbon\Carbon::parse($overlapping->leave_end_date)->format('M d');
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Leave already raised for {$existingStart} - {$existingEnd} ({$overlapping->request_number}). Cannot create overlapping leave request."
+                    ], 422);
+                }
+            }
+
             // Verify category is allowed (⭐ includes khaas_expense)
             $category = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
                 ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
@@ -5701,22 +6340,69 @@ class RiderController extends Controller
                 $leaveDays = $end->diffInDays($start) + 1;
             }
 
-            // Create request - SAME AS WEBAPP
+            // Server-side payment source validation: non-EXP_FUND requires permission
+            $paymentSourceAccountId = $request->input('payment_source_account_id');
+            if ($paymentSourceAccountId) {
+                $sourceAccount = \App\Models\FIN\AccountModel::find($paymentSourceAccountId);
+                if ($sourceAccount && $sourceAccount->account_code !== 'EXP_FUND') {
+                    $buId = $request->input('business_unit_id');
+                    $canUseAllSources = $user->hasMobilePermission('expense_all_payment_sources')
+                        || ($buId && $user->hasMobilePermission('approve_khaas_transfer'));
+                    if (!$canUseAllSources) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'You do not have permission to create expenses from this payment source. Only Expense Fund is allowed.'
+                        ], 403);
+                    }
+                }
+                // Block private accounts for non-Taimur
+                if ($sourceAccount && $sourceAccount->is_private) {
+                    $isTaimurRole = $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
+                    if (!$isTaimurRole) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'This payment source is not available.'
+                        ], 403);
+                    }
+                }
+            }
+            if (!$paymentSourceAccountId && isset($validated['attendance_id']) && ($validated['expense_category'] ?? null) === 'Petrol') {
+                $expFundAccount = \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->where('is_active', 1)->first();
+                if ($expFundAccount) {
+                    $paymentSourceAccountId = $expFundAccount->id;
+                }
+            }
+
+            // Store attachment image if provided (e.g. fuel bill photo)
+            $attachments = null;
+            if ($request->hasFile('attachment_image')) {
+                $file = $request->file('attachment_image');
+                $date = now();
+                $filename = "req_{$user->id}_{$date->format('Ymd_His')}.jpg";
+                $path = "requests/attachments/{$date->format('Y')}/{$date->format('m')}/{$filename}";
+                \Storage::disk('public')->put($path, file_get_contents($file));
+                $attachments = [$path];
+            }
+
             $newRequest = \App\Models\Request\RequestModel::create([
-                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(), // Use model method like webapp
+                'request_number' => \App\Models\Request\RequestModel::generateRequestNumber(),
                 'category_id' => $category->id,
                 'requester_user_id' => $user->id,
                 'title' => $validated['title'],
                 'description' => $validated['description'] ?? null,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
-                'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
-                'payment_source_account_id' => $request->input('payment_source_account_id'), // ⭐ Payment source
-                'business_unit_id' => $request->input('business_unit_id', 1), // ⭐ Business unit
+                'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
+                'meter_distance' => $validated['meter_distance'] ?? null,
+                'petrol_rate' => $validated['petrol_rate'] ?? null,
+                'attendance_id' => $validated['attendance_id'] ?? null,
+                'payment_source_account_id' => $paymentSourceAccountId,
+                'business_unit_id' => $request->input('business_unit_id', 1),
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
                 'leave_days' => $leaveDays,
+                'attachments' => $attachments,
                 'status' => \App\Models\Request\RequestModel::STATUS_PENDING,
                 'priority' => 'normal',
                 'requires_level_1' => $category->requiresLevel1(),
@@ -7131,6 +7817,7 @@ class RiderController extends Controller
                         ? \App\Services\LocationService::formatDistance($distanceInfo['distance_meters'])
                         : null,
                 ] : null,
+                'route_lock' => $this->getRouteLockInfo($riderId),
             ];
             
         } catch (\Exception $e) {
@@ -7140,6 +7827,23 @@ class RiderController extends Controller
             ]);
             return null;
         }
+    }
+
+    private function getRouteLockInfo($riderId)
+    {
+        $lock = \DB::table('t_crm_route_lock as rl')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
+            ->where('rl.rider_id', $riderId)
+            ->select('rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
+            ->first();
+
+        if (!$lock) return null;
+
+        return [
+            'locked_by' => $lock->locked_by,
+            'locked_by_name' => $lock->locked_by_name,
+            'locked_at' => $lock->locked_at,
+        ];
     }
 
     /**
@@ -8867,27 +9571,11 @@ class RiderController extends Controller
                 $expensesQuery->where('business_unit_id', $businessUnitId);
             }
             
-            // ⭐ Apply payment source filter based on permission and mode
-            if ($businessUnitId) {
-                // ⭐ BU-specific mode (Khaas): show ALL expenses for this BU regardless of payment source
-                // The business_unit_id filter above already scopes the data correctly
-                // Only apply specific source filter if explicitly requested by user
-                if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
-                    $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
-                }
-            } else if (!$hasAllPaymentSourcesPermission) {
-                // Main mode without permission: user can only see EXP_FUND expenses
-                if ($expenseFundAccountId) {
-                    $expensesQuery->where(function($q) use ($expenseFundAccountId) {
-                        $q->where('payment_source_account_id', $expenseFundAccountId)
-                          ->orWhereNull('payment_source_account_id'); // Old records default to EXP_FUND
-                    });
-                }
-            } else if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
-                // Main mode with permission: user wants to filter by specific source
+            // ⭐ Apply payment source filter — all users can VIEW all payment source expenses
+            // Permission only controls which sources they can CREATE from (handled in getPaymentSources)
+            if ($paymentSourceFilter && $paymentSourceFilter !== 'all') {
                 $expensesQuery->where('payment_source_account_id', $paymentSourceFilter);
             }
-            // If paymentSourceFilter is 'all' or empty with permission, show all sources
             
             // Apply date filter only if month is provided AND is valid format
             if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
@@ -9244,14 +9932,14 @@ class RiderController extends Controller
             $hasL1Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 1);
             $hasL2Rights = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2);
             
-            // ⭐ Get available payment sources for dropdown (if user has permission)
+            // ⭐ Get available payment sources for filter dropdown — all users can see all sources for filtering
             $availablePaymentSources = [];
             
-            // ⭐ In Khaas mode: show ALL accounts for this BU (excluding employee/vendor accounts)
-            // No EXP_FUND from other BUs — only this BU's own accounts
             if ($businessUnitId) {
+                // BU-specific mode: show ALL accounts for this BU (excluding employee/vendor)
                 $buAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
                     ->where('business_unit_id', $businessUnitId)
+                    ->where('is_private', 0)
                     ->whereNotIn('account_category', [
                         \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
                         \App\Models\FIN\AccountModel::CATEGORY_VENDOR_PAYABLE,
@@ -9265,10 +9953,13 @@ class RiderController extends Controller
                         'balance' => $account->current_balance
                     ];
                 }
-            } else if ($hasAllPaymentSourcesPermission) {
-                // User can see all sources
+            } else {
+                // NF mode: always show all company payment sources for filtering
                 $nfCashAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
                 $onlineAccount = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+                
+                // Check Taimur role for private account visibility
+                $isTaimurRole = $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
                 
                 if ($expenseFund) {
                     $availablePaymentSources[] = [
@@ -9278,7 +9969,7 @@ class RiderController extends Controller
                         'balance' => $expenseFund->current_balance
                     ];
                 }
-                if ($nfCashAccount) {
+                if ($nfCashAccount && !$nfCashAccount->is_private) {
                     $availablePaymentSources[] = [
                         'id' => $nfCashAccount->id,
                         'code' => $nfCashAccount->account_code,
@@ -9286,7 +9977,7 @@ class RiderController extends Controller
                         'balance' => $nfCashAccount->current_balance
                     ];
                 }
-                if ($onlineAccount) {
+                if ($onlineAccount && !$onlineAccount->is_private) {
                     $availablePaymentSources[] = [
                         'id' => $onlineAccount->id,
                         'code' => $onlineAccount->account_code,
@@ -9295,9 +9986,10 @@ class RiderController extends Controller
                     ];
                 }
                 
-                // Add NF Food accounts (any account with code starting with NF_FOOD)
+                // Add NF Food accounts
                 $nfFoodAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
                     ->where('account_code', 'LIKE', 'NF_FOOD%')
+                    ->where('is_private', 0)
                     ->get();
                 foreach ($nfFoodAccounts as $nfFoodAccount) {
                     $availablePaymentSources[] = [
@@ -9307,15 +9999,24 @@ class RiderController extends Controller
                         'balance' => $nfFoodAccount->current_balance
                     ];
                 }
-            } else {
-                // User can only use EXP_FUND
-                if ($expenseFund) {
-                    $availablePaymentSources[] = [
-                        'id' => $expenseFund->id,
-                        'code' => $expenseFund->account_code,
-                        'name' => $expenseFund->account_name,
-                        'balance' => $expenseFund->current_balance
-                    ];
+                
+                // Include private accounts only for Taimur
+                if ($isTaimurRole) {
+                    $privateAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+                        ->where('is_private', 1)
+                        ->whereIn('account_category', [
+                            \App\Models\FIN\AccountModel::CATEGORY_CASH,
+                            \App\Models\FIN\AccountModel::CATEGORY_BANK,
+                        ])
+                        ->get();
+                    foreach ($privateAccounts as $pa) {
+                        $availablePaymentSources[] = [
+                            'id' => $pa->id,
+                            'code' => $pa->account_code,
+                            'name' => $pa->account_name,
+                            'balance' => $pa->current_balance
+                        ];
+                    }
                 }
             }
             
@@ -9520,9 +10221,10 @@ class RiderController extends Controller
                 $defaultAccountId = $defaultBuAccount ? $defaultBuAccount->id : null;
                 
                 if ($hasAllPaymentSourcesPermission) {
-                    // Admin: show all BU accounts
+                    // Admin: show all BU accounts (excluding private for non-Taimur)
                     $buAccounts = \App\Models\FIN\AccountModel::where('is_active', 1)
                         ->where('business_unit_id', $businessUnitId)
+                        ->visibleTo($user)
                         ->whereNotIn('account_category', [
                             \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
                             \App\Models\FIN\AccountModel::CATEGORY_VENDOR_PAYABLE,
@@ -9582,6 +10284,10 @@ class RiderController extends Controller
                     foreach ($accessibleAccounts as $account) {
                         // Skip EXP_FUND since we already added it above
                         if ($expenseFund && $account->id === $expenseFund->id) {
+                            continue;
+                        }
+                        // Skip private accounts for non-Taimur
+                        if ($account->is_private && !$isTaimurRole) {
                             continue;
                         }
                         
@@ -10079,8 +10785,9 @@ class RiderController extends Controller
                     || $user->hasMobilePermission('approve_khaas_transfer');
             }
             
-            // Build query for active accounts
-            $query = \App\Models\FIN\AccountModel::where('is_active', 1);
+            // Build query for active accounts — filter private accounts for non-Taimur
+            $query = \App\Models\FIN\AccountModel::where('is_active', 1)
+                ->visibleTo($user);
             
             if ($isNonNfBU) {
                 // Khaas mode: only company accounts (cash/bank) for this BU
@@ -10434,18 +11141,45 @@ class RiderController extends Controller
                 }
             }
             
-            // Add previous meter info to each employee
+            // Batch fetch leaves_taken_year for users who are on leave today
+            $currentYear = date('Y');
+            $leaveUserIds = array_column(
+                array_filter($formattedData, fn($e) => $e['leave_request_id']),
+                'user_id'
+            );
+            $yearLeavesByUser = [];
+            if (!empty($leaveUserIds)) {
+                $yearLeaves = DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', 'leave')
+                    ->where('r.status', 'approved')
+                    ->whereIn('r.requester_user_id', $leaveUserIds)
+                    ->where('r.leave_start_date', '>=', "{$currentYear}-01-01")
+                    ->where('r.leave_end_date', '<=', "{$currentYear}-12-31")
+                    ->select('r.requester_user_id', 'r.leave_start_date', 'r.leave_end_date')
+                    ->get();
+                foreach ($yearLeaves as $yl) {
+                    $days = \Carbon\Carbon::parse($yl->leave_start_date)
+                        ->diffInDays(\Carbon\Carbon::parse($yl->leave_end_date)) + 1;
+                    $yearLeavesByUser[$yl->requester_user_id] = 
+                        ($yearLeavesByUser[$yl->requester_user_id] ?? 0) + $days;
+                }
+            }
+
+            // Add previous meter info and leaves_taken_year to each employee
             foreach ($formattedData as &$employee) {
                 $prev = $previousMeterEnds[$employee['user_id']] ?? null;
                 $employee['prev_meter_end'] = $prev ? $prev['meter_end'] : null;
                 $employee['prev_meter_date'] = $prev ? $prev['date'] : null;
                 
-                // Calculate meter gap if both values exist
                 $employee['meter_gap'] = null;
                 if ($prev && $employee['meter_start']) {
                     $gap = (int)$employee['meter_start'] - (int)$prev['meter_end'];
-                    $employee['meter_gap'] = $gap; // Can be 0, positive, or negative
+                    $employee['meter_gap'] = $gap;
                 }
+
+                $employee['leaves_taken_year'] = $yearLeavesByUser[$employee['user_id']] ?? 0;
+                $employee['leaves_year'] = (int) $currentYear;
             }
             unset($employee);
             
@@ -11029,8 +11763,26 @@ class RiderController extends Controller
                 ->get();
             
             $monthlyData = [];
+            $shiftService = new \App\Services\ShiftResolutionService();
+            $lookupDate = date('Y-m-d');
             
             foreach ($users as $user) {
+                // Resolve shift using ShiftResolutionService (same as web) for accurate shift times
+                try {
+                    $shiftData = $shiftService->getUserShift($user->user_id, $lookupDate);
+                    $resolvedShiftStart = $shiftData['shift_start'];
+                    $resolvedShiftEnd = $shiftData['shift_end'];
+                    $resolvedShiftName = $shiftData['shift_name'];
+                } catch (\Exception $e) {
+                    $resolvedShiftStart = $user->shift_start;
+                    $resolvedShiftEnd = $user->shift_end;
+                    $resolvedShiftName = $user->shift_start . ' - ' . $user->shift_end;
+                }
+
+                // Normalize to HH:MM:SS for consistent SQL/PHP comparisons
+                $shiftStartFull = strlen($resolvedShiftStart) <= 5 ? $resolvedShiftStart . ':00' : $resolvedShiftStart;
+                $shiftEndFull = strlen($resolvedShiftEnd) <= 5 ? $resolvedShiftEnd . ':00' : $resolvedShiftEnd;
+
                 // Get attendance records for this user in the month
                 $attendance = DB::table('t_ops_attendance')
                     ->where('user_id', $user->user_id)
@@ -11066,38 +11818,46 @@ class RiderController extends Controller
                 // Calculate stats
                 $presentDays = $attendance->filter(fn($a) => $a->login_time)->count();
                 $totalHours = 0;
-                $lateDays = 0;
-                $lateMinutes = 0;
                 $overtimeDays = 0;
                 $overtimeMinutes = 0;
                 
-                $shiftStart = \Carbon\Carbon::parse($user->shift_start);
-                $shiftEnd = \Carbon\Carbon::parse($user->shift_end);
-                
                 foreach ($attendance as $record) {
                     if ($record->login_time && $record->logout_time) {
-                        $login = \Carbon\Carbon::parse($record->login_time);
-                        $logout = \Carbon\Carbon::parse($record->logout_time);
-                        $totalHours += $logout->diffInHours($login, true);
+                        $loginTs = strtotime($record->attendance_date . ' ' . $record->login_time);
+                        $logoutTs = strtotime($record->attendance_date . ' ' . $record->logout_time);
+                        $totalHours += ($logoutTs - $loginTs) / 3600;
                         
-                        if ($login->gt($shiftStart)) {
-                            $lateDays++;
-                            $lateMinutes += $login->diffInMinutes($shiftStart);
-                        }
-                        
-                        if ($logout->gt($shiftEnd)) {
+                        $shiftEndTs = strtotime($record->attendance_date . ' ' . $shiftEndFull);
+                        if ($logoutTs > $shiftEndTs) {
                             $overtimeDays++;
-                            $overtimeMinutes += $logout->diffInMinutes($shiftEnd);
+                            $overtimeMinutes += round(($logoutTs - $shiftEndTs) / 60);
                         }
                     }
                 }
                 
+                // Use SQL with TIME() cast for reliable late calculation
+                $lateStats = DB::selectOne("
+                    SELECT 
+                        COALESCE(SUM(CASE WHEN TIME(login_time) > TIME(?) THEN 1 ELSE 0 END), 0) as late_days,
+                        COALESCE(SUM(CASE WHEN TIME(login_time) > TIME(?) THEN 
+                            TIMESTAMPDIFF(MINUTE, 
+                                CONCAT(attendance_date, ' ', ?),
+                                CONCAT(attendance_date, ' ', login_time)
+                            ) ELSE 0 END), 0) as late_minutes
+                    FROM t_ops_attendance
+                    WHERE user_id = ?
+                    AND attendance_date BETWEEN ? AND ?
+                    AND login_time IS NOT NULL
+                    AND login_time != ''
+                ", [$shiftStartFull, $shiftStartFull, $shiftStartFull, $user->user_id, $startDate, $endDate]);
+                
+                $lateDays = (int) ($lateStats->late_days ?? 0);
+                $lateMinutes = (int) ($lateStats->late_minutes ?? 0);
+                
                 // Calculate working days using ShiftResolutionService (same as web app)
-                $shiftService = new \App\Services\ShiftResolutionService();
                 try {
                     $workingDays = $shiftService->calculateWorkingDays($user->user_id, $startDate, $endDate);
                 } catch (\Exception $e) {
-                    // Fallback to simple weekday calculation
                     $workingDays = \Carbon\Carbon::parse($startDate)->diffInDaysFiltered(function(\Carbon\Carbon $date) use ($endDate) {
                         return $date->isWeekday() && $date->lte(\Carbon\Carbon::parse($endDate));
                     }, \Carbon\Carbon::parse($endDate));
@@ -11105,11 +11865,28 @@ class RiderController extends Controller
                 
                 $absentDays = max(0, $workingDays - $presentDays - $leaveDays);
                 
+                // Approved leaves for current year
+                $currentYear = date('Y');
+                $yearLeaveDays = 0;
+                $yearLeaves = DB::table('t_req_master as r')
+                    ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                    ->where('c.category_code', 'leave')
+                    ->where('r.requester_user_id', $user->user_id)
+                    ->where('r.status', 'approved')
+                    ->where('r.leave_start_date', '>=', "{$currentYear}-01-01")
+                    ->where('r.leave_end_date', '<=', "{$currentYear}-12-31")
+                    ->select('r.leave_start_date', 'r.leave_end_date')
+                    ->get();
+                foreach ($yearLeaves as $yl) {
+                    $yearLeaveDays += \Carbon\Carbon::parse($yl->leave_start_date)
+                        ->diffInDays(\Carbon\Carbon::parse($yl->leave_end_date)) + 1;
+                }
+
                 $monthlyData[] = [
                     'user_id' => $user->user_id,
                     'fullname' => $user->fullname,
                     'role_name' => $user->role_name,
-                    'shift_name' => $user->shift_start . ' - ' . $user->shift_end,
+                    'shift_name' => $resolvedShiftName,
                     'present_days' => $presentDays,
                     'absent_days' => max(0, $absentDays),
                     'leave_days' => $leaveDays,
@@ -11120,6 +11897,8 @@ class RiderController extends Controller
                     'total_hours' => round($totalHours, 1),
                     'working_days' => $workingDays,
                     'attendance_percentage' => $workingDays > 0 ? round(($presentDays / $workingDays) * 100, 1) : 0,
+                    'leaves_taken_year' => $yearLeaveDays,
+                    'leaves_year' => (int) $currentYear,
                 ];
             }
             
@@ -11334,35 +12113,74 @@ class RiderController extends Controller
                 ], 404);
             }
             
+            // Block access to private accounts for non-Taimur users
+            if ($account->is_private) {
+                $isTaimurRole = $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
+                if (!$isTaimurRole) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Account not found'
+                    ], 404);
+                }
+            }
+            
             // Get filter parameters
             $period = $request->input('period', 'all_time'); // today, this_week, this_month, all_time
+            $daysPerPage = 30;
             
-            // Build ledger query - INCLUDE BOTH APPROVED AND PENDING
-            $ledgerQuery = \App\Models\FIN\LedgerModel::where(function($q) use ($accountId) {
+            // Build base query - INCLUDE APPROVED AND ALL PENDING LEVELS
+            $baseQuery = \App\Models\FIN\LedgerModel::where(function($q) use ($accountId) {
                 $q->where('from_account_id', $accountId)
                   ->orWhere('to_account_id', $accountId);
             })
             ->whereIn('approval_status', [
                 \App\Models\FIN\LedgerModel::STATUS_APPROVED,
-                \App\Models\FIN\LedgerModel::STATUS_PENDING
+                \App\Models\FIN\LedgerModel::STATUS_PENDING,
+                \App\Models\FIN\LedgerModel::STATUS_PENDING_L1,
+                \App\Models\FIN\LedgerModel::STATUS_PENDING_L2,
             ]);
             
-            // Apply period filter
-            if ($period === 'today') {
-                $ledgerQuery->whereDate('transaction_date', today());
-            } elseif ($period === 'this_week') {
-                $ledgerQuery->whereBetween('transaction_date', [now()->startOfWeek(), now()->endOfWeek()]);
-            } elseif ($period === 'this_month') {
-                $ledgerQuery->whereBetween('transaction_date', [now()->startOfMonth(), now()->endOfMonth()]);
+            // Determine date window based on period or date_end
+            $useDateWindow = ($period === 'all_time');
+            
+            if ($useDateWindow) {
+                $dateEndStr = $request->input('date_end');
+                $dateEnd = $dateEndStr ? \Carbon\Carbon::parse($dateEndStr) : \Carbon\Carbon::today();
+                $dateStart = $dateEnd->copy()->subDays($daysPerPage - 1);
+                $windowStart = $dateStart->format('Y-m-d');
+                $windowEnd = $dateEnd->format('Y-m-d');
+                
+                $ledgerQuery = (clone $baseQuery)
+                    ->whereBetween('transaction_date', [$windowStart, $windowEnd]);
+            } else {
+                $ledgerQuery = clone $baseQuery;
+                if ($period === 'today') {
+                    $ledgerQuery->whereDate('transaction_date', today());
+                } elseif ($period === 'this_week') {
+                    $ledgerQuery->whereBetween('transaction_date', [now()->startOfWeek(), now()->endOfWeek()]);
+                } elseif ($period === 'this_month') {
+                    $ledgerQuery->whereBetween('transaction_date', [now()->startOfMonth(), now()->endOfMonth()]);
+                }
             }
             
-            // Get transactions
+            // Get transactions for the window
             $transactions = $ledgerQuery
                 ->with(['fromAccount', 'toAccount'])
                 ->orderBy('transaction_date', 'desc')
                 ->orderBy('id', 'desc')
-                ->limit(100)
                 ->get();
+            
+            // Check if older records exist (for "Load Earlier" button)
+            $hasMore = false;
+            $nextDateEnd = null;
+            if ($useDateWindow) {
+                $hasMore = (clone $baseQuery)
+                    ->where('transaction_date', '<', $windowStart)
+                    ->exists();
+                if ($hasMore) {
+                    $nextDateEnd = \Carbon\Carbon::parse($windowStart)->subDay()->format('Y-m-d');
+                }
+            }
             
             // Group transactions by date and calculate running balance
             $groupedTransactions = [];
@@ -11396,6 +12214,7 @@ class RiderController extends Controller
                 $formattedTxn = [
                     'id' => $txn->id,
                     'date' => $txn->transaction_date,
+                    'created_at' => $txn->created_at ? $txn->created_at->toIso8601String() : null,
                     'type' => $txn->transaction_type,
                     'description' => $txn->description,
                     'amount' => $txn->amount,
@@ -11488,6 +12307,12 @@ class RiderController extends Controller
                 ],
                 'grouped_transactions' => $groupedTransactions,
                 'company_accounts' => $companyAccounts,
+                'pagination' => [
+                    'has_more' => $hasMore,
+                    'next_date_end' => $nextDateEnd,
+                    'window_start' => $useDateWindow ? $windowStart : null,
+                    'window_end' => $useDateWindow ? $windowEnd : null,
+                ],
             ]);
             
         } catch (\Exception $e) {
@@ -11582,11 +12407,23 @@ class RiderController extends Controller
             $startDate = $request->input('start_date', now()->startOfMonth()->format('Y-m-d'));
             $endDate = $request->input('end_date', now()->endOfMonth()->format('Y-m-d'));
             
+            // Check if user is Taimur (for private account filtering)
+            $isTaimurRole = $user->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
+            
             // Calculate KPIs (same logic as web app)
             $kpis = $this->calculateOverallLedgerKPIs($startDate, $endDate);
             
             // Get recent transactions (limited to 50 for mobile)
             $query = \App\Models\FIN\LedgerModel::with(['fromAccount', 'toAccount', 'order']);
+            
+            // Exclude transactions involving private accounts for non-Taimur
+            if (!$isTaimurRole) {
+                $privateAccountIds = \App\Models\FIN\AccountModel::where('is_private', 1)->pluck('id')->toArray();
+                if (!empty($privateAccountIds)) {
+                    $query->whereNotIn('from_account_id', $privateAccountIds)
+                          ->whereNotIn('to_account_id', $privateAccountIds);
+                }
+            }
             
             // Filter by date range
             if ($startDate && $endDate) {
@@ -12067,6 +12904,61 @@ class RiderController extends Controller
                 'short_cash_amount' => $shortCashAmount
             ];
             
+            // === Pending Petrol Requests for Daily Closing (auto + manual) ===
+            $pendingPetrolQuery = RequestModel::where('status', 'pending')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->where('expense_category', 'Petrol')
+                ->with(['requester']);
+
+            if ($dateFrom) {
+                $pendingPetrolQuery->where('expense_date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $pendingPetrolQuery->where('expense_date', '<=', $dateTo);
+            }
+
+            $pendingPetrolRequests = $pendingPetrolQuery->orderBy('expense_date', 'desc')->get();
+
+            $base = request()->getSchemeAndHttpHost();
+            $petrolRequestsData = $pendingPetrolRequests->map(function($req) use ($base) {
+                $attachmentUrl = null;
+                if ($req->attachments && is_array($req->attachments) && count($req->attachments) > 0) {
+                    $attachmentUrl = rtrim($base, '/') . '/public-storage/' . ltrim($req->attachments[0], '/');
+                }
+                return [
+                    'id' => $req->id,
+                    'request_number' => $req->request_number,
+                    'rider_name' => $req->requester ? $req->requester->fullname : 'Unknown',
+                    'requester_user_id' => $req->requester_user_id,
+                    'expense_date' => $req->expense_date ? $req->expense_date->format('Y-m-d') : null,
+                    'expense_date_formatted' => $req->expense_date ? $req->expense_date->format('D, M d') : null,
+                    'meter_distance' => (float) $req->meter_distance,
+                    'petrol_rate' => (float) $req->petrol_rate,
+                    'amount' => (float) $req->amount,
+                    'status' => $req->status,
+                    'description' => $req->description,
+                    'source' => $req->attendance_id ? 'meter' : 'manual',
+                    'attachment_url' => $attachmentUrl,
+                    'created_at' => $req->created_at ? $req->created_at->format('Y-m-d H:i:s') : null,
+                ];
+            })->values();
+
+            $stats['petrol_requests_count'] = $petrolRequestsData->count();
+            $stats['petrol_requests_amount'] = $petrolRequestsData->sum('amount');
+
+            // Payment source accounts for petrol approval dropdown
+            $petrolPaymentAccounts = [];
+            if ($petrolRequestsData->count() > 0) {
+                $petrolPaymentAccounts = AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
+                    ->where('is_active', 1)
+                    ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
+                    ->select('id', 'account_code', 'account_name')
+                    ->get()
+                    ->map(fn($a) => ['id' => $a->id, 'code' => $a->account_code, 'name' => $a->account_name]);
+            }
+
             // Get all riders for filter dropdown
             $allRiders = AccountModel::where('account_category', AccountModel::CATEGORY_EMPLOYEE_CASH)
                 ->where('is_active', 1)
@@ -12360,6 +13252,8 @@ class RiderController extends Controller
                 'invoices_by_date' => $invoicesByDate, // ⭐ New: date-grouped data for settled view
                 'online_summary' => $onlineData, // ⭐ New: online summary
                 'online_message_tracking' => $onlineMessageTracking, // ⭐ WhatsApp message tracking (no ledger impact)
+                'petrol_requests' => $petrolRequestsData,
+                'petrol_payment_accounts' => $petrolPaymentAccounts,
                 'pending_settlements' => $pendingSettlements->map(function($settlement) {
                     return [
                         'id' => $settlement->id,
@@ -12733,6 +13627,22 @@ class RiderController extends Controller
             
             $riderId = $validated['rider_id'];
             $priorities = $validated['priorities'];
+
+            // Check route lock
+            $lock = \DB::table('t_crm_route_lock as rl')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'rl.locked_by')
+                ->where('rl.rider_id', $riderId)
+                ->select('rl.locked_by', 'u.fullname as locked_by_name', 'rl.locked_at')
+                ->first();
+
+            if ($lock && $lock->locked_by != $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Route is locked by {$lock->locked_by_name}. Unlock it first before making changes.",
+                    'route_locked' => true,
+                    'locked_by_name' => $lock->locked_by_name,
+                ], 423);
+            }
             $updatedCount = 0;
             
             \DB::beginTransaction();
@@ -12784,6 +13694,73 @@ class RiderController extends Controller
     }
     
     /**
+     * Lock route for a rider — prevents other users from changing delivery order
+     */
+    public function lockRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $existing = \DB::table('t_crm_route_lock')->where('rider_id', $riderId)->first();
+            if ($existing) {
+                if ($existing->locked_by == $user->id) {
+                    return response()->json(['success' => true, 'message' => 'Route already locked by you']);
+                }
+                $lockerName = \DB::table('t_sys_user')->where('id', $existing->locked_by)->value('fullname');
+                return response()->json([
+                    'success' => false,
+                    'message' => "Route is already locked by {$lockerName}",
+                    'locked_by_name' => $lockerName,
+                ], 409);
+            }
+
+            \DB::table('t_crm_route_lock')->insert([
+                'rider_id' => $riderId,
+                'locked_by' => $user->id,
+                'locked_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Route locked',
+                'route_lock' => [
+                    'locked_by' => $user->id,
+                    'locked_by_name' => $user->fullname,
+                    'locked_at' => now()->toIso8601String(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Route lock error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to lock route'], 500);
+        }
+    }
+
+    /**
+     * Unlock route for a rider
+     */
+    public function unlockRoute(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user->hasMobilePermission('view_open_orders')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            \DB::table('t_crm_route_lock')->where('rider_id', $riderId)->delete();
+
+            return response()->json(['success' => true, 'message' => 'Route unlocked']);
+        } catch (\Exception $e) {
+            \Log::error('Route unlock error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to unlock route'], 500);
+        }
+    }
+
+    /**
      * ⭐ Clear delivery priority when order status changes or rider is reassigned
      * This should be called from OrderModel when status/rider changes
      */
@@ -12793,6 +13770,638 @@ class RiderController extends Controller
             OrderModel::where('id', $orderId)->update(['delivery_priority' => null]);
         } catch (\Exception $e) {
             \Log::warning('Failed to clear delivery priority for order ' . $orderId . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * ⭐ Get WhatsApp message templates (stored in t_fin_config)
+     */
+    public function getWhatsappTemplates(Request $request)
+    {
+        try {
+            $templates = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'WHATSAPP_TEMPLATE_%')
+                ->get()
+                ->mapWithKeys(function ($item) {
+                    $key = str_replace('WHATSAPP_TEMPLATE_', '', $item->config_key);
+                    return [strtolower($key) => $item->config_value];
+                });
+
+            $defaults = [
+                'location_request' => 'Dear Customer, Can you please share your google location pin',
+            ];
+
+            foreach ($defaults as $key => $defaultValue) {
+                if (!$templates->has($key)) {
+                    $templates[$key] = $defaultValue;
+                }
+            }
+
+            return response()->json(['success' => true, 'templates' => $templates]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * ⭐ Save/update a WhatsApp message template
+     */
+    public function saveWhatsappTemplate(Request $request)
+    {
+        try {
+            $request->validate([
+                'template_key' => 'required|string|max:100',
+                'template_value' => 'required|string|max:2000',
+            ]);
+
+            $configKey = 'WHATSAPP_TEMPLATE_' . strtoupper($request->input('template_key'));
+
+            \App\Models\FIN\ConfigModel::updateOrCreate(
+                ['config_key' => $configKey],
+                [
+                    'config_value' => $request->input('template_value'),
+                    'description' => 'WhatsApp message template: ' . $request->input('template_key'),
+                ]
+            );
+
+            \Illuminate\Support\Facades\Cache::forget("fin_config_{$configKey}");
+
+            return response()->json(['success' => true, 'message' => 'Template saved successfully']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =========================================================================
+    // CAMPAIGN MANAGEMENT
+    // =========================================================================
+
+    /**
+     * List all campaigns (active first, then ended)
+     */
+    public function getCampaigns(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaigns = DB::table('t_crm_campaigns')
+                ->select(
+                    't_crm_campaigns.*',
+                    DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'pending') as pending_count"),
+                    DB::raw("(SELECT COUNT(*) FROM t_crm_campaign_customers WHERE campaign_id = t_crm_campaigns.id AND status = 'skipped') as skipped_count")
+                )
+                ->orderByRaw("FIELD(status, 'active', 'ended')")
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            return response()->json(['success' => true, 'campaigns' => $campaigns]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Create a new campaign and populate its customer list from filters
+     */
+    public function createCampaign(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'message_template' => 'nullable|string|max:2000',
+                'filters' => 'required|array',
+                'tracking_type' => 'nullable|string|in:general,products',
+                'tracked_product_ids' => 'nullable|array',
+                'tracking_window_days' => 'nullable|integer|min:1|max:365',
+            ]);
+
+            $filters = $request->input('filters', []);
+
+            $query = \App\Models\CRM\CustomerModel::query()
+                ->whereNull('merged_into_customer_id');
+
+            if (!empty($filters['search'])) {
+                $s = $filters['search'];
+                $query->where(function ($q) use ($s) {
+                    $q->where('first_name', 'LIKE', "%{$s}%")
+                      ->orWhere('last_name', 'LIKE', "%{$s}%")
+                      ->orWhere('phone', 'LIKE', "%{$s}%")
+                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
+                      ->orWhere('company', 'LIKE', "%{$s}%")
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
+                });
+            }
+            if (!empty($filters['city'])) {
+                $query->where('city', $filters['city']);
+            }
+            if (!empty($filters['activity'])) {
+                if ($filters['activity'] === '30day') {
+                    $query->where('last_order_date', '>=', now()->subDays(30));
+                } elseif ($filters['activity'] === '90day') {
+                    $query->where('last_order_date', '>=', now()->subDays(90));
+                }
+            }
+            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
+                $query->where('total_spent', '>=', (float) $filters['min_spend']);
+            }
+            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
+                $query->where('total_spent', '<=', (float) $filters['max_spend']);
+            }
+
+            $sortBy = $filters['sort_by'] ?? 'last_order_date';
+            $sortDir = $filters['sort_dir'] ?? 'desc';
+            if (!in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) $sortBy = 'last_order_date';
+            if (!in_array($sortDir, ['asc', 'desc'])) $sortDir = 'desc';
+            $query->orderBy($sortBy, $sortDir);
+
+            $customerIds = $query->pluck('id')->toArray();
+
+            $campaignId = DB::table('t_crm_campaigns')->insertGetId([
+                'name' => $request->input('name'),
+                'status' => 'active',
+                'filters_json' => json_encode($filters),
+                'message_template' => $request->input('message_template', ''),
+                'tracking_type' => $request->input('tracking_type', 'general'),
+                'tracked_product_ids' => $request->input('tracked_product_ids') ? json_encode($request->input('tracked_product_ids')) : null,
+                'tracking_window_days' => $request->input('tracking_window_days', 30),
+                'total_customers' => count($customerIds),
+                'sent_count' => 0,
+                'created_by' => $user->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            if (!empty($customerIds)) {
+                $rows = array_map(function ($cId) use ($campaignId) {
+                    return [
+                        'campaign_id' => $campaignId,
+                        'customer_id' => $cId,
+                        'status' => 'pending',
+                        'created_at' => now(),
+                    ];
+                }, $customerIds);
+
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    DB::table('t_crm_campaign_customers')->insert($chunk);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'campaign_id' => $campaignId,
+                'total_customers' => count($customerIds),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Preview: count matching customers for given filters (before creating)
+     */
+    public function previewCampaign(Request $request)
+    {
+        try {
+            $filters = $request->input('filters', []);
+
+            $query = \App\Models\CRM\CustomerModel::query()
+                ->whereNull('merged_into_customer_id');
+
+            if (!empty($filters['search'])) {
+                $s = $filters['search'];
+                $query->where(function ($q) use ($s) {
+                    $q->where('first_name', 'LIKE', "%{$s}%")
+                      ->orWhere('last_name', 'LIKE', "%{$s}%")
+                      ->orWhere('phone', 'LIKE', "%{$s}%")
+                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
+                      ->orWhere('company', 'LIKE', "%{$s}%")
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
+                });
+            }
+            if (!empty($filters['city'])) {
+                $query->where('city', $filters['city']);
+            }
+            if (!empty($filters['activity'])) {
+                if ($filters['activity'] === '30day') {
+                    $query->where('last_order_date', '>=', now()->subDays(30));
+                } elseif ($filters['activity'] === '90day') {
+                    $query->where('last_order_date', '>=', now()->subDays(90));
+                }
+            }
+            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
+                $query->where('total_spent', '>=', (float) $filters['min_spend']);
+            }
+            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
+                $query->where('total_spent', '<=', (float) $filters['max_spend']);
+            }
+
+            $count = $query->count();
+            return response()->json(['success' => true, 'count' => $count]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get campaign detail with customer list
+     */
+    public function getCampaignDetail(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+
+            $statusFilter = $request->get('status', 'pending');
+
+            $customersQuery = DB::table('t_crm_campaign_customers as cc')
+                ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
+                ->where('cc.campaign_id', $id)
+                ->select(
+                    'cc.id as campaign_customer_id',
+                    'cc.customer_id',
+                    'cc.status as campaign_status',
+                    'cc.sent_at',
+                    'cc.sent_by',
+                    'c.first_name',
+                    'c.last_name',
+                    'c.phone',
+                    'c.phone_normalized',
+                    'c.city',
+                    'c.total_orders',
+                    'c.total_spent',
+                    'c.last_order_date'
+                );
+
+            if ($statusFilter !== 'all') {
+                $customersQuery->where('cc.status', $statusFilter);
+            }
+
+            $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'sent', 'skipped')");
+
+            $sortBy = json_decode($campaign->filters_json, true)['sort_by'] ?? 'last_order_date';
+            $sortDir = json_decode($campaign->filters_json, true)['sort_dir'] ?? 'desc';
+            if (in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) {
+                $customersQuery->orderBy("c.{$sortBy}", $sortDir);
+            }
+
+            $customers = $customersQuery->get();
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                ")
+                ->first();
+
+            return response()->json([
+                'success' => true,
+                'campaign' => $campaign,
+                'customers' => $customers,
+                'counts' => $counts,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Mark a campaign customer as sent
+     */
+    public function markCampaignCustomerSent(Request $request, $campaignId, $customerId)
+    {
+        try {
+            $user = Auth::user();
+
+            $updated = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $campaignId)
+                ->where('customer_id', $customerId)
+                ->where('status', 'pending')
+                ->update([
+                    'status' => 'sent',
+                    'sent_at' => now(),
+                    'sent_by' => $user->id,
+                ]);
+
+            if ($updated) {
+                DB::table('t_crm_campaigns')
+                    ->where('id', $campaignId)
+                    ->increment('sent_count');
+            }
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $campaignId)
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                ")
+                ->first();
+
+            return response()->json(['success' => true, 'counts' => $counts]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Mark a campaign customer as skipped
+     */
+    public function markCampaignCustomerSkipped(Request $request, $campaignId, $customerId)
+    {
+        try {
+            DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $campaignId)
+                ->where('customer_id', $customerId)
+                ->where('status', 'pending')
+                ->update(['status' => 'skipped']);
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $campaignId)
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                ")
+                ->first();
+
+            return response()->json(['success' => true, 'counts' => $counts]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Refresh campaign: re-run filters and add NEW customers not already in the list
+     */
+    public function refreshCampaign(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found or ended'], 404);
+            }
+
+            $filters = json_decode($campaign->filters_json, true) ?: [];
+
+            $query = \App\Models\CRM\CustomerModel::query()
+                ->whereNull('merged_into_customer_id');
+
+            if (!empty($filters['search'])) {
+                $s = $filters['search'];
+                $query->where(function ($q) use ($s) {
+                    $q->where('first_name', 'LIKE', "%{$s}%")
+                      ->orWhere('last_name', 'LIKE', "%{$s}%")
+                      ->orWhere('phone', 'LIKE', "%{$s}%")
+                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
+                      ->orWhere('company', 'LIKE', "%{$s}%")
+                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
+                });
+            }
+            if (!empty($filters['city'])) {
+                $query->where('city', $filters['city']);
+            }
+            if (!empty($filters['activity'])) {
+                if ($filters['activity'] === '30day') {
+                    $query->where('last_order_date', '>=', now()->subDays(30));
+                } elseif ($filters['activity'] === '90day') {
+                    $query->where('last_order_date', '>=', now()->subDays(90));
+                }
+            }
+            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
+                $query->where('total_spent', '>=', (float) $filters['min_spend']);
+            }
+            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
+                $query->where('total_spent', '<=', (float) $filters['max_spend']);
+            }
+
+            $allMatchingIds = $query->pluck('id')->toArray();
+
+            $existingIds = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->pluck('customer_id')
+                ->toArray();
+
+            $newIds = array_diff($allMatchingIds, $existingIds);
+
+            if (!empty($newIds)) {
+                $rows = array_map(function ($cId) use ($id) {
+                    return [
+                        'campaign_id' => $id,
+                        'customer_id' => $cId,
+                        'status' => 'pending',
+                        'created_at' => now(),
+                    ];
+                }, array_values($newIds));
+
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    DB::table('t_crm_campaign_customers')->insert($chunk);
+                }
+            }
+
+            $newTotal = DB::table('t_crm_campaign_customers')->where('campaign_id', $id)->count();
+            DB::table('t_crm_campaigns')->where('id', $id)->update([
+                'total_customers' => $newTotal,
+                'updated_at' => now(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'new_customers_added' => count($newIds),
+                'total_customers' => $newTotal,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * End a campaign
+     */
+    public function endCampaign(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            DB::table('t_crm_campaigns')
+                ->where('id', $id)
+                ->update([
+                    'status' => 'ended',
+                    'ended_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+            return response()->json(['success' => true, 'message' => 'Campaign ended']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get campaign conversion stats
+     */
+    public function getCampaignStats(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+
+            $trackingDays = $campaign->tracking_window_days ?: 30;
+            $trackingType = $campaign->tracking_type ?: 'general';
+            $trackedProducts = $campaign->tracked_product_ids ? json_decode($campaign->tracked_product_ids, true) : [];
+
+            $sentCustomers = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->where('status', 'sent')
+                ->get();
+
+            $totalSent = $sentCustomers->count();
+            $customersWhoOrdered = 0;
+            $totalOrders = 0;
+            $totalRevenue = 0;
+            $customerDetails = [];
+            $productBreakdown = [];
+
+            foreach ($sentCustomers as $cc) {
+                $ordersQuery = DB::table('t_crm_prod_order')
+                    ->where('customer_id', $cc->customer_id)
+                    ->where('order_date', '>', $cc->sent_at)
+                    ->where('order_date', '<=', Carbon::parse($cc->sent_at)->addDays($trackingDays))
+                    ->whereIn('order_status', ['delivered', 'completed']);
+
+                if ($trackingType === 'products' && !empty($trackedProducts)) {
+                    $ordersQuery->whereExists(function ($q) use ($trackedProducts) {
+                        $q->select(DB::raw(1))
+                          ->from('t_crm_prod_order_line_item')
+                          ->whereColumn('t_crm_prod_order_line_item.order_id', 't_crm_prod_order.id')
+                          ->whereIn('t_crm_prod_order_line_item.product_id', $trackedProducts);
+                    });
+                }
+
+                $orders = $ordersQuery->get();
+                $orderCount = $orders->count();
+                $revenue = $orders->sum('total_price');
+
+                if ($orderCount > 0) {
+                    $customersWhoOrdered++;
+                    $totalOrders += $orderCount;
+                    $totalRevenue += $revenue;
+                }
+
+                $customer = DB::table('t_crm_prod_customer')
+                    ->where('id', $cc->customer_id)
+                    ->select('first_name', 'last_name', 'phone_normalized')
+                    ->first();
+
+                $customerDetails[] = [
+                    'customer_id' => $cc->customer_id,
+                    'name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Unknown',
+                    'phone' => $customer->phone_normalized ?? '',
+                    'sent_at' => $cc->sent_at,
+                    'ordered' => $orderCount > 0,
+                    'order_count' => $orderCount,
+                    'revenue' => $revenue,
+                ];
+
+                if ($trackingType === 'products' && !empty($trackedProducts) && $orderCount > 0) {
+                    $orderIds = $orders->pluck('id')->toArray();
+                    if (!empty($orderIds)) {
+                        $lineItems = DB::table('t_crm_prod_order_line_item as li')
+                            ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                            ->whereIn('li.order_id', $orderIds)
+                            ->whereIn('li.product_id', $trackedProducts)
+                            ->select('li.product_id', 'p.title as product_name', DB::raw('SUM(li.quantity) as total_qty'), DB::raw('SUM(li.price * li.quantity) as total_value'))
+                            ->groupBy('li.product_id', 'p.title')
+                            ->get();
+
+                        foreach ($lineItems as $item) {
+                            $key = $item->product_id;
+                            if (!isset($productBreakdown[$key])) {
+                                $productBreakdown[$key] = [
+                                    'product_id' => $item->product_id,
+                                    'product_name' => $item->product_name,
+                                    'total_qty' => 0,
+                                    'total_value' => 0,
+                                ];
+                            }
+                            $productBreakdown[$key]['total_qty'] += $item->total_qty;
+                            $productBreakdown[$key]['total_value'] += $item->total_value;
+                        }
+                    }
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'stats' => [
+                    'total_sent' => $totalSent,
+                    'customers_who_ordered' => $customersWhoOrdered,
+                    'conversion_rate' => $totalSent > 0 ? round(($customersWhoOrdered / $totalSent) * 100, 1) : 0,
+                    'total_orders' => $totalOrders,
+                    'total_revenue' => round($totalRevenue, 2),
+                    'tracking_type' => $trackingType,
+                    'tracking_window_days' => $trackingDays,
+                    'product_breakdown' => array_values($productBreakdown),
+                    'customer_details' => $customerDetails,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get available cities for campaign filter dropdown
+     */
+    public function getCampaignCities(Request $request)
+    {
+        try {
+            $cities = DB::table('t_crm_prod_customer')
+                ->whereNull('merged_into_customer_id')
+                ->whereNotNull('city')
+                ->where('city', '!=', '')
+                ->select('city', DB::raw('COUNT(*) as count'))
+                ->groupBy('city')
+                ->orderBy('count', 'desc')
+                ->limit(50)
+                ->get();
+
+            return response()->json(['success' => true, 'cities' => $cities]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
     

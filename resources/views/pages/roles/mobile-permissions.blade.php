@@ -130,6 +130,30 @@
                             'color' => 'indigo',
                             'description' => null
                         ],
+                        'store_mode_khaas' => [
+                            'title' => '🌿 Store Mode - Khaas/Food Inventory',
+                            'icon' => '🌿',
+                            'color' => 'green',
+                            'description' => 'Controls visibility of Khaas/Food Store Inventory in Store Mode sidebar'
+                        ],
+                        'store_mode_attendance' => [
+                            'title' => '⏰ Store Mode - Attendance',
+                            'icon' => '⏰',
+                            'color' => 'blue',
+                            'description' => 'Controls visibility of attendance features in Store Mode'
+                        ],
+                        'store_mode_reports' => [
+                            'title' => '📊 Store Mode - Reports',
+                            'icon' => '📊',
+                            'color' => 'indigo',
+                            'description' => 'Controls visibility of Monthly Summary and Daily Transaction Reports in Store Mode sidebar'
+                        ],
+                        'store_mode_campaigns' => [
+                            'title' => '📢 Store Mode - Campaigns',
+                            'icon' => '📢',
+                            'color' => 'purple',
+                            'description' => 'Controls visibility of Campaigns in Store Mode sidebar'
+                        ],
                         'store_mode_future' => [
                             'title' => '🚀 Store Mode - Future Features',
                             'icon' => '⏳',

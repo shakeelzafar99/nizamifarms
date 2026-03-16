@@ -411,6 +411,162 @@
         animation: spin 0.8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    
+    /* Tips Card */
+    .tips-card {
+        background: white;
+        border: 1px solid #E5E7EB;
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .tips-card:hover {
+        border-color: #F59E0B;
+        box-shadow: 0 4px 12px rgba(245,158,11,0.1);
+    }
+    .tips-card-left { display: flex; align-items: center; gap: 10px; }
+    .tips-card-icon { font-size: 22px; }
+    .tips-card-title { font-size: 15px; font-weight: 700; color: #1F2937; }
+    .tips-card-count { font-size: 11px; color: #6B7280; margin-top: 2px; }
+    .tips-card-amount { font-size: 16px; font-weight: 700; color: #F59E0B; }
+    
+    /* Tips Modal */
+    .modal-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+        animation: fadeIn 0.2s;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .modal-box {
+        background: white;
+        border-radius: 16px;
+        width: 90%;
+        max-width: 600px;
+        max-height: 80vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        animation: slideUp 0.25s;
+    }
+    @keyframes slideUp { from { transform: translateY(30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .modal-header {
+        padding: 18px 20px;
+        border-bottom: 1px solid #E5E7EB;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .modal-title { font-size: 17px; font-weight: 700; color: #1F2937; }
+    .modal-close {
+        width: 32px; height: 32px;
+        border: none; background: #F3F4F6;
+        border-radius: 8px; font-size: 18px;
+        cursor: pointer; color: #6B7280;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .modal-close:hover { background: #E5E7EB; }
+    .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+        padding: 12px 20px;
+        border-top: 1px solid #E5E7EB;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 700;
+        color: #F59E0B;
+    }
+    .tip-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        padding: 10px 0;
+        border-bottom: 1px solid #F3F4F6;
+    }
+    .tip-row:last-child { border-bottom: none; }
+    .tip-row-left { flex: 1; padding-right: 12px; }
+    .tip-order { font-size: 13px; font-weight: 600; color: #1F2937; }
+    .tip-customer { font-size: 11px; color: #6B7280; margin-top: 2px; }
+    .tip-rider { font-size: 11px; color: #10B981; margin-top: 1px; }
+    .tip-date-info { font-size: 10px; color: #9CA3AF; margin-top: 1px; }
+    .tip-row-right { text-align: right; }
+    .tip-amount { font-size: 14px; font-weight: 700; color: #F59E0B; }
+    .tip-order-total { font-size: 11px; color: #6B7280; }
+    
+    /* View Toggle inside month details */
+    .view-toggle-bar {
+        display: flex;
+        gap: 4px;
+        background: #F3F4F6;
+        border-radius: 8px;
+        padding: 3px;
+        margin-bottom: 16px;
+    }
+    .view-toggle-btn {
+        flex: 1;
+        padding: 8px 14px;
+        border: none;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        background: transparent;
+        color: #6B7280;
+        transition: all 0.2s;
+    }
+    .view-toggle-btn.active {
+        background: white;
+        color: #10B981;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    .view-toggle-btn:hover:not(.active) { color: #374151; }
+    
+    /* Daily breakdown inside month detail */
+    .daily-breakdown-card {
+        background: white;
+        border: 1px solid #E5E7EB;
+        border-radius: 12px;
+        margin-bottom: 10px;
+        overflow: hidden;
+    }
+    .daily-breakdown-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        background: #F9FAFB;
+        cursor: pointer;
+        user-select: none;
+    }
+    .daily-breakdown-header:hover { background: #F3F4F6; }
+    .daily-breakdown-date { font-size: 14px; font-weight: 700; color: #1F2937; }
+    .daily-breakdown-total { font-size: 14px; font-weight: 700; color: #1F2937; }
+    .daily-breakdown-pills {
+        display: flex;
+        padding: 6px 12px 10px;
+        gap: 6px;
+    }
+    .daily-pill {
+        flex: 1;
+        text-align: center;
+        padding: 6px 4px;
+        border-radius: 8px;
+    }
+    .daily-pill-label { font-size: 10px; font-weight: 600; color: #374151; }
+    .daily-pill-value { font-size: 12px; font-weight: 700; color: #1F2937; }
+    .daily-pill-count { font-size: 10px; color: #6B7280; }
+    .daily-breakdown-details {
+        border-top: 1px solid #E5E7EB;
+        padding: 12px 16px;
+    }
 </style>
 @endpush
 
@@ -448,6 +604,9 @@
     let loadingDay = null;
     let daysLoaded = 30;
     let hasMoreDays = true;
+    let monthDetailView = 'daily'; // 'daily' (default) or 'category'
+    let expandedDailyDays = {};
+    let showTipsModal = false;
     
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     
@@ -547,6 +706,11 @@
                             <div class="month-summary-label">Assets</div>
                             <div class="month-summary-value val-purple">${formatCurrency(item.asset_purchases)}</div>
                         </div>` : ''}
+                        ${item.tips > 0 ? `
+                        <div class="month-summary-item">
+                            <div class="month-summary-label">Tips</div>
+                            <div class="month-summary-value" style="color:#F59E0B">${formatCurrency(item.tips)}</div>
+                        </div>` : ''}
                     </div>
                     <div class="tap-hint">Click for details →</div>
                 </div>`;
@@ -558,6 +722,8 @@
         selectedMonth = monthKey;
         expandedSections = {};
         expandedDates = {};
+        expandedDailyDays = {};
+        monthDetailView = 'daily';
         document.getElementById('contentArea').innerHTML = '<div class="loading-container"><div class="spinner"></div><p style="margin-top:12px">Loading details...</p></div>';
         try {
             const data = await apiGet(`/reports/api/month-details?month=${monthKey}`);
@@ -581,6 +747,225 @@
                 <span class="profit-badge-large ${profitClass}">Profit: ${formatCurrency(d.profit)}</span>
             </div>
         `;
+        
+        // Tips Card (clickable to open modal)
+        if (d.tips && d.tips.total > 0) {
+            html += `
+                <div class="tips-card" onclick="openTipsModal()">
+                    <div class="tips-card-left">
+                        <span class="tips-card-icon">💵</span>
+                        <div>
+                            <div class="tips-card-title">Tips Collected</div>
+                            <div class="tips-card-count">${d.tips.count} order${d.tips.count !== 1 ? 's' : ''} with tips</div>
+                        </div>
+                    </div>
+                    <div class="tips-card-amount">${formatCurrency(d.tips.total)}</div>
+                </div>
+            `;
+        }
+        
+        // View Toggle
+        html += `
+            <div class="view-toggle-bar">
+                <button class="view-toggle-btn ${monthDetailView === 'daily' ? 'active' : ''}" onclick="switchMonthView('daily')">📅 Daily Breakdown</button>
+                <button class="view-toggle-btn ${monthDetailView === 'category' ? 'active' : ''}" onclick="switchMonthView('category')">📂 By Category</button>
+            </div>
+        `;
+        
+        if (monthDetailView === 'daily') {
+            html += renderDailyBreakdownView(d);
+        } else {
+            html += renderCategoryView(d);
+        }
+        
+        document.getElementById('contentArea').innerHTML = html;
+        
+        // Render tips modal if open
+        if (showTipsModal) {
+            renderTipsModal(d.tips);
+        }
+    }
+    
+    function switchMonthView(view) {
+        monthDetailView = view;
+        renderMonthDetails();
+    }
+    
+    // Build daily breakdown from category-grouped data
+    function buildDailyBreakdown(d) {
+        const dayMap = {};
+        
+        // Merge invoices by date
+        (d.invoices?.by_date || []).forEach(dd => {
+            if (!dayMap[dd.date]) dayMap[dd.date] = { invoices: { total: 0, items: [] }, expenses: { total: 0, items: [] }, purchases: { total: 0, items: [] }, assets: { total: 0, items: [] } };
+            dayMap[dd.date].invoices = { total: dd.total, items: dd.items };
+        });
+        
+        // Merge expenses by date
+        (d.expenses?.by_date || []).forEach(dd => {
+            if (!dayMap[dd.date]) dayMap[dd.date] = { invoices: { total: 0, items: [] }, expenses: { total: 0, items: [] }, purchases: { total: 0, items: [] }, assets: { total: 0, items: [] } };
+            dayMap[dd.date].expenses = { total: dd.total, items: dd.items };
+        });
+        
+        // Merge vendor purchases by date
+        (d.vendor_purchases?.by_date || []).forEach(dd => {
+            if (!dayMap[dd.date]) dayMap[dd.date] = { invoices: { total: 0, items: [] }, expenses: { total: 0, items: [] }, purchases: { total: 0, items: [] }, assets: { total: 0, items: [] } };
+            dayMap[dd.date].purchases = { total: dd.total, items: dd.items };
+        });
+        
+        // Merge asset purchases by date
+        (d.asset_purchases?.by_date || []).forEach(dd => {
+            if (!dayMap[dd.date]) dayMap[dd.date] = { invoices: { total: 0, items: [] }, expenses: { total: 0, items: [] }, purchases: { total: 0, items: [] }, assets: { total: 0, items: [] } };
+            dayMap[dd.date].assets = { total: dd.total, items: dd.items };
+        });
+        
+        // Sort dates descending
+        const sortedDates = Object.keys(dayMap).sort((a, b) => b.localeCompare(a));
+        return sortedDates.map(date => ({
+            date,
+            ...dayMap[date],
+            profit: (dayMap[date].invoices.total || 0) - (dayMap[date].expenses.total || 0) - (dayMap[date].purchases.total || 0),
+        }));
+    }
+    
+    function renderDailyBreakdownView(d) {
+        const days = buildDailyBreakdown(d);
+        if (days.length === 0) return '<div class="no-data-text">No data for this month</div>';
+        
+        let html = '';
+        days.forEach(day => {
+            const isExpanded = expandedDailyDays[day.date];
+            const invCount = day.invoices.items?.length || 0;
+            const expCount = day.expenses.items?.length || 0;
+            const purCount = day.purchases.items?.length || 0;
+            const astCount = day.assets.items?.length || 0;
+            
+            html += `
+                <div class="daily-breakdown-card">
+                    <div class="daily-breakdown-header" onclick="toggleDailyDay('${day.date}')">
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span class="daily-breakdown-date">${formatShortDate(day.date)}</span>
+                            <span style="font-size:11px;color:#6B7280">${new Date(day.date + 'T00:00:00').toLocaleDateString('en-US', {weekday:'short'})}</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:10px">
+                            <span class="daily-breakdown-total" style="color:${day.profit >= 0 ? '#059669' : '#DC2626'}">${day.profit >= 0 ? '📈' : '📉'} ${formatCurrency(day.profit)}</span>
+                            <span class="expand-icon">${isExpanded ? '▼' : '▶'}</span>
+                        </div>
+                    </div>
+                    <div class="daily-breakdown-pills">
+                        <div class="daily-pill" style="background:#DBEAFE">
+                            <div class="daily-pill-label">📦 Invoices</div>
+                            <div class="daily-pill-value">${formatCurrency(day.invoices.total)}</div>
+                            <div class="daily-pill-count">${invCount}</div>
+                        </div>
+                        <div class="daily-pill" style="background:#FEE2E2">
+                            <div class="daily-pill-label">💰 Expenses</div>
+                            <div class="daily-pill-value">${formatCurrency(day.expenses.total)}</div>
+                            <div class="daily-pill-count">${expCount}</div>
+                        </div>
+                        <div class="daily-pill" style="background:#FEF3C7">
+                            <div class="daily-pill-label">🏭 Purchases</div>
+                            <div class="daily-pill-value">${formatCurrency(day.purchases.total)}</div>
+                            <div class="daily-pill-count">${purCount}</div>
+                        </div>
+                        ${astCount > 0 ? `
+                        <div class="daily-pill" style="background:#E0E7FF">
+                            <div class="daily-pill-label">📦 Assets</div>
+                            <div class="daily-pill-value">${formatCurrency(day.assets.total)}</div>
+                            <div class="daily-pill-count">${astCount}</div>
+                        </div>` : ''}
+                    </div>`;
+            
+            if (isExpanded) {
+                html += `<div class="daily-breakdown-details">`;
+                
+                // Invoices for this day
+                if (invCount > 0) {
+                    html += `<div class="day-detail-section">
+                        <div class="day-detail-section-title">📦 Invoices (${invCount})</div>`;
+                    day.invoices.items.forEach(item => {
+                        html += `
+                            <div class="day-detail-item">
+                                <div class="day-detail-item-left">
+                                    <div class="day-detail-item-title">${escapeHtml(item.order_number)}</div>
+                                    <div class="day-detail-item-sub">${escapeHtml(item.customer_name)}</div>
+                                </div>
+                                <div class="day-detail-item-amount">${formatCurrency(item.amount)}</div>
+                            </div>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                // Expenses for this day
+                if (expCount > 0) {
+                    html += `<div class="day-detail-section">
+                        <div class="day-detail-section-title">💰 Expenses (${expCount})</div>`;
+                    day.expenses.items.forEach(item => {
+                        html += `
+                            <div class="day-detail-item">
+                                <div class="day-detail-item-left">
+                                    <div class="day-detail-item-title">${escapeHtml(item.category || 'Expense')}</div>
+                                    <div class="day-detail-item-sub">By: ${escapeHtml(item.user)}</div>
+                                </div>
+                                <div class="day-detail-item-amount">${formatCurrency(item.amount)}</div>
+                            </div>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                // Purchases for this day
+                if (purCount > 0) {
+                    html += `<div class="day-detail-section">
+                        <div class="day-detail-section-title">🏭 Vendor Purchases (${purCount})</div>`;
+                    day.purchases.items.forEach(item => {
+                        html += `
+                            <div class="day-detail-item">
+                                <div class="day-detail-item-left">
+                                    <div class="day-detail-item-title">${escapeHtml(item.vendor_name || 'Vendor')}</div>
+                                    <div class="day-detail-item-sub">By: ${escapeHtml(item.user)}</div>
+                                </div>
+                                <div class="day-detail-item-amount">${formatCurrency(item.amount)}</div>
+                            </div>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                // Assets for this day
+                if (astCount > 0) {
+                    html += `<div class="day-detail-section">
+                        <div class="day-detail-section-title">📦 Asset Purchases (${astCount})</div>`;
+                    day.assets.items.forEach(item => {
+                        html += `
+                            <div class="day-detail-item">
+                                <div class="day-detail-item-left">
+                                    <div class="day-detail-item-title">${escapeHtml(item.asset_name || 'Asset')}</div>
+                                    <div class="day-detail-item-sub">${escapeHtml(item.business_unit)} • By: ${escapeHtml(item.user)}</div>
+                                </div>
+                                <div class="day-detail-item-amount">${formatCurrency(item.amount)}</div>
+                            </div>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                if (invCount + expCount + purCount + astCount === 0) {
+                    html += '<div class="no-data-text">No transactions</div>';
+                }
+                
+                html += `</div>`;
+            }
+            
+            html += `</div>`;
+        });
+        return html;
+    }
+    
+    function toggleDailyDay(date) {
+        expandedDailyDays[date] = !expandedDailyDays[date];
+        renderMonthDetails();
+    }
+    
+    function renderCategoryView(d) {
+        let html = '';
         
         // Invoices Section
         html += renderSection('invoices', '📦 Delivered Invoices', d.invoices, '#DBEAFE', '#EFF6FF', (item) => `
@@ -620,7 +1005,58 @@
             });
         }
         
-        document.getElementById('contentArea').innerHTML = html;
+        return html;
+    }
+    
+    // Tips Modal
+    function openTipsModal() {
+        showTipsModal = true;
+        renderTipsModal(monthDetails?.tips);
+    }
+    
+    function closeTipsModal() {
+        showTipsModal = false;
+        const el = document.getElementById('tipsModalOverlay');
+        if (el) el.remove();
+    }
+    
+    function renderTipsModal(tips) {
+        // Remove existing modal
+        const existing = document.getElementById('tipsModalOverlay');
+        if (existing) existing.remove();
+        
+        if (!tips || !tips.items?.length) return;
+        
+        let rows = '';
+        tips.items.forEach(item => {
+            rows += `
+                <div class="tip-row">
+                    <div class="tip-row-left">
+                        <div class="tip-order">${escapeHtml(item.order_number)}</div>
+                        <div class="tip-customer">${escapeHtml(item.customer_name)}</div>
+                        <div class="tip-rider">🏍 ${escapeHtml(item.rider_name)}</div>
+                        <div class="tip-date-info">${formatShortDate(item.delivery_date)}</div>
+                    </div>
+                    <div class="tip-row-right">
+                        <div class="tip-amount">${formatCurrency(item.tip_amount)}</div>
+                        <div class="tip-order-total">Order: ${formatCurrency(item.order_total)}</div>
+                    </div>
+                </div>`;
+        });
+        
+        const modalHtml = `
+            <div class="modal-overlay" id="tipsModalOverlay" onclick="if(event.target===this)closeTipsModal()">
+                <div class="modal-box">
+                    <div class="modal-header">
+                        <span class="modal-title">💵 Tips Details</span>
+                        <button class="modal-close" onclick="closeTipsModal()">✕</button>
+                    </div>
+                    <div class="modal-body">${rows}</div>
+                    <div class="modal-footer">Total Tips: ${formatCurrency(tips.total)} from ${tips.count} orders</div>
+                </div>
+            </div>`;
+        
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
     }
     
     function renderSection(key, title, sectionData, headerBg, dateBg, renderItemContent) {

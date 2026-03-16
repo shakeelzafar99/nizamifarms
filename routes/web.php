@@ -97,6 +97,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/dashboard/customer-dormancy-list', [DashboardController::class, 'getCustomerDormancyList']);
     Route::get('/dashboard/customer-list', [DashboardController::class, 'getCustomerList']);
     Route::get('/dashboard/month-customer-stats', [DashboardController::class, 'getMonthCustomerStats']);
+    Route::get('/dashboard/frozen-sales', [DashboardController::class, 'getFrozenSales']);
     
     // Log viewer routes
     Route::get('/logs', [LogController::class, 'index']);
@@ -182,6 +183,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/locations/available-users', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'getAvailableUsers'])->name('attendance.locations.available-users');
     Route::post('/attendance/locations/{id}/assign-users', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'assignUsers'])->name('attendance.locations.assign-users');
     Route::delete('/attendance/locations/assignments/{id}', [\App\Http\Controllers\CRM\CompanyLocationsController::class, 'removeUserAssignment'])->name('attendance.locations.remove-assignment');
+
+    // Fuel Rate Groups Management
+    Route::get('/attendance/fuel-rate-groups', [\App\Http\Controllers\CRM\AttendanceController::class, 'getFuelRateGroups'])->name('attendance.fuel-rate-groups');
+    Route::post('/attendance/fuel-rate-groups', [\App\Http\Controllers\CRM\AttendanceController::class, 'saveFuelRateGroups'])->name('attendance.fuel-rate-groups.save');
 
     // Shift Management
     Route::get('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'index'])->name('shifts.index');
@@ -445,7 +450,22 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/warehouse/transfer', [\App\Http\Controllers\KhaasController::class, 'initiateTransfer'])->name('warehouse.transfer');
         Route::post('/store/stock', [\App\Http\Controllers\KhaasController::class, 'updateStoreStock'])->name('store.stock');
         Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReport'])->name('sales-report');
+        Route::get('/sales-report/daily-ajax', [\App\Http\Controllers\KhaasController::class, 'salesReportDailyWeb'])->name('sales-report.daily-ajax');
+        Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown'])->name('sales-report.product-daily');
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog'])->name('products.store-log');
+
+        // Meat Order & Inventory views
+        Route::get('/meat-order', [\App\Http\Controllers\KhaasController::class, 'meatOrder'])->name('meat-order');
+        Route::post('/meat-order/place', [\App\Http\Controllers\KhaasController::class, 'placeStorageOrder'])->name('meat-order.place');
+        Route::post('/meat-order/{id}/receive', [\App\Http\Controllers\KhaasController::class, 'receiveStorageOrder'])->name('meat-order.receive');
+        Route::get('/inventory', [\App\Http\Controllers\KhaasController::class, 'inventory'])->name('inventory');
+        Route::post('/inventory/demand/create', [\App\Http\Controllers\KhaasController::class, 'createDemand'])->name('inventory.demand.create');
+        Route::post('/inventory/demand/{id}/accept', [\App\Http\Controllers\KhaasController::class, 'acceptDemand'])->name('inventory.demand.accept');
+        Route::post('/inventory/demand/{id}/cancel', [\App\Http\Controllers\KhaasController::class, 'cancelDemand'])->name('inventory.demand.cancel');
+        Route::post('/inventory/recipe/save', [\App\Http\Controllers\KhaasController::class, 'saveRecipe'])->name('inventory.recipe.save');
+        Route::post('/inventory/recipe/{id}/delete', [\App\Http\Controllers\KhaasController::class, 'deleteRecipe'])->name('inventory.recipe.delete');
+        Route::post('/inventory/custom-material', [\App\Http\Controllers\KhaasController::class, 'saveCustomMaterialWeb'])->name('inventory.custom-material.save');
+        Route::post('/inventory/storage-config', [\App\Http\Controllers\KhaasController::class, 'updateStorageConfig'])->name('inventory.storage-config');
     });
 
     // Finance & Ledger Routes

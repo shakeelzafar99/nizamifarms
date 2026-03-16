@@ -683,7 +683,7 @@ function openStoreLogModal(productId, productName, currentQty) {
     document.body.style.overflow = 'hidden';
 
     // Fetch transaction log
-    fetch('{{ url("khaas/products") }}/' + productId + '/store-log?limit=15')
+    fetch('{{ url("khaas/products") }}/' + productId + '/store-log?limit=30')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.success || !data.events || data.events.length === 0) {
@@ -693,7 +693,7 @@ function openStoreLogModal(productId, productName, currentQty) {
                     '<p class="text-sm">No store inventory transactions found yet.</p></div>';
                 return;
             }
-            renderStoreLog(data.events, data.current_store_qty);
+            renderStoreLog(data.days || [], data.current_store_qty);
         })
         .catch(function(err) {
             document.getElementById('store-log-body').innerHTML =
@@ -709,86 +709,75 @@ function closeStoreLogModal() {
     document.body.style.overflow = '';
 }
 
-function renderStoreLog(events, currentQty) {
+function renderStoreLog(days, currentQty) {
     var html = '';
 
-    // Current balance header
     html += '<div class="px-5 py-3 bg-blue-50 border-b border-blue-100 flex items-center justify-between">';
     html += '<span class="text-xs font-semibold text-blue-700">Current Store Balance</span>';
     html += '<span class="text-lg font-bold text-blue-800">' + currentQty + ' units</span>';
     html += '</div>';
 
-    // Transaction list
-    html += '<div class="divide-y divide-gray-100">';
+    for (var d = 0; d < days.length; d++) {
+        var day = days[d];
+        var netSign = day.net_change > 0 ? '+' : '';
+        var netColor = day.net_change > 0 ? '#16a34a' : day.net_change < 0 ? '#dc2626' : '#6b7280';
 
-    for (var i = 0; i < events.length; i++) {
-        var ev = events[i];
-        var isPositive = ev.change > 0;
+        // Day separator header
+        html += '<div class="px-5 py-2 bg-gray-100 border-y border-gray-200 flex items-center justify-between">';
+        html += '<span class="text-xs font-bold text-gray-700">📅 ' + escStoreLog(day.label) + '</span>';
+        html += '<div class="flex items-center gap-3 text-[10px]">';
+        html += '<span class="text-gray-500">Open: <b>' + day.opening_balance + '</b></span>';
+        html += '<span class="text-gray-500">Close: <b>' + day.closing_balance + '</b></span>';
+        html += '<span style="color:' + netColor + ';font-weight:700;">' + netSign + day.net_change + '</span>';
+        html += '</div></div>';
 
-        // Color classes based on type
-        var bgColor, changeColor, borderColor, iconBg;
-        if (ev.type === 'transfer_in') {
-            bgColor = '';
-            changeColor = 'color: #16a34a;'; // green
-            borderColor = 'border-left: 3px solid #22c55e;';
-            iconBg = 'background-color: #dcfce7;';
-        } else if (ev.type === 'order_deduction') {
-            bgColor = '';
-            changeColor = 'color: #dc2626;'; // red
-            borderColor = 'border-left: 3px solid #ef4444;';
-            iconBg = 'background-color: #fee2e2;';
-        } else if (ev.type === 'cancellation_restore') {
-            bgColor = '';
-            changeColor = 'color: #2563eb;'; // blue
-            borderColor = 'border-left: 3px solid #3b82f6;';
-            iconBg = 'background-color: #dbeafe;';
-        } else if (ev.type === 'store_adjustment') {
-            bgColor = '';
-            changeColor = isPositive ? 'color: #7c3aed;' : 'color: #ea580c;'; // purple for +, orange for -
-            borderColor = isPositive ? 'border-left: 3px solid #8b5cf6;' : 'border-left: 3px solid #f97316;';
-            iconBg = isPositive ? 'background-color: #ede9fe;' : 'background-color: #fff7ed;';
-        } else {
-            bgColor = '';
-            changeColor = isPositive ? 'color: #16a34a;' : 'color: #dc2626;';
-            borderColor = 'border-left: 3px solid #9ca3af;';
-            iconBg = 'background-color: #f3f4f6;';
+        // Events for this day
+        html += '<div class="divide-y divide-gray-50">';
+        for (var i = 0; i < day.events.length; i++) {
+            var ev = day.events[i];
+            var isPositive = ev.change > 0;
+            var changeColor, borderColor, iconBg;
+            if (ev.type === 'transfer_in') {
+                changeColor = 'color: #16a34a;';
+                borderColor = 'border-left: 3px solid #22c55e;';
+                iconBg = 'background-color: #dcfce7;';
+            } else if (ev.type === 'order_deduction') {
+                changeColor = 'color: #dc2626;';
+                borderColor = 'border-left: 3px solid #ef4444;';
+                iconBg = 'background-color: #fee2e2;';
+            } else if (ev.type === 'cancellation_restore') {
+                changeColor = 'color: #2563eb;';
+                borderColor = 'border-left: 3px solid #3b82f6;';
+                iconBg = 'background-color: #dbeafe;';
+            } else if (ev.type === 'store_adjustment') {
+                changeColor = isPositive ? 'color: #7c3aed;' : 'color: #ea580c;';
+                borderColor = isPositive ? 'border-left: 3px solid #8b5cf6;' : 'border-left: 3px solid #f97316;';
+                iconBg = isPositive ? 'background-color: #ede9fe;' : 'background-color: #fff7ed;';
+            } else {
+                changeColor = isPositive ? 'color: #16a34a;' : 'color: #dc2626;';
+                borderColor = 'border-left: 3px solid #9ca3af;';
+                iconBg = 'background-color: #f3f4f6;';
+            }
+            html += '<div class="px-5 py-2.5 hover:bg-gray-50 transition-colors" style="' + borderColor + '">';
+            html += '<div class="flex items-start gap-3">';
+            html += '<div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style="' + iconBg + '">';
+            html += '<span class="text-xs">' + ev.icon + '</span></div>';
+            html += '<div class="flex-1 min-w-0">';
+            html += '<div class="flex items-center justify-between">';
+            html += '<span class="text-xs font-semibold text-gray-900">' + escStoreLog(ev.label) + '</span>';
+            html += '<span class="text-xs font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
+            html += '</div>';
+            html += '<div class="text-[11px] text-gray-600 mt-0.5">' + escStoreLog(ev.detail) + '</div>';
+            if (ev.sub_detail) {
+                html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escStoreLog(ev.sub_detail) + '</div>';
+            }
+            html += '<div class="flex items-center justify-between mt-1">';
+            html += '<span class="text-[10px] text-gray-400">' + escStoreLog(ev.date_formatted) + '</span>';
+            html += '<span class="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">' + ev.balance_before + ' → ' + ev.balance_after + '</span>';
+            html += '</div></div></div></div>';
         }
-
-        html += '<div class="px-5 py-3 hover:bg-gray-50 transition-colors" style="' + borderColor + '">';
-        html += '<div class="flex items-start gap-3">';
-
-        // Icon
-        html += '<div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style="' + iconBg + '">';
-        html += '<span class="text-sm">' + ev.icon + '</span>';
         html += '</div>';
-
-        // Main content
-        html += '<div class="flex-1 min-w-0">';
-        html += '<div class="flex items-center justify-between">';
-        html += '<span class="text-sm font-semibold text-gray-900">' + escStoreLog(ev.label) + '</span>';
-        html += '<span class="text-sm font-bold" style="' + changeColor + '">' + (isPositive ? '+' : '') + ev.change + '</span>';
-        html += '</div>';
-
-        // Detail line
-        html += '<div class="text-xs text-gray-600 mt-0.5">' + escStoreLog(ev.detail) + '</div>';
-        if (ev.sub_detail) {
-            html += '<div class="text-[10px] text-gray-400 mt-0.5">' + escStoreLog(ev.sub_detail) + '</div>';
-        }
-
-        // Date and balance
-        html += '<div class="flex items-center justify-between mt-1.5">';
-        html += '<span class="text-[10px] text-gray-400" title="' + escStoreLog(ev.date_formatted) + '">' + escStoreLog(ev.date_ago) + ' · ' + escStoreLog(ev.date_formatted) + '</span>';
-        html += '<span class="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">';
-        html += escStoreLog(String(ev.balance_before)) + ' → ' + escStoreLog(String(ev.balance_after));
-        html += '</span>';
-        html += '</div>';
-
-        html += '</div>'; // end main content
-        html += '</div>'; // end flex
-        html += '</div>'; // end row
     }
-
-    html += '</div>'; // end divide-y
 
     // Legend
     html += '<div class="px-5 py-3 bg-gray-50 border-t border-gray-100">';
@@ -797,8 +786,7 @@ function renderStoreLog(events, currentQty) {
     html += '<span><span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:2px;margin-right:3px;"></span>Order Deduction</span>';
     html += '<span><span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:2px;margin-right:3px;"></span>Cancelled Restore</span>';
     html += '<span><span style="display:inline-block;width:8px;height:8px;background:#8b5cf6;border-radius:2px;margin-right:3px;"></span>Manual Adjust</span>';
-    html += '</div>';
-    html += '</div>';
+    html += '</div></div>';
 
     document.getElementById('store-log-body').innerHTML = html;
 }

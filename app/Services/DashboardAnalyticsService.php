@@ -2118,18 +2118,13 @@ class DashboardAnalyticsService
         
         $monthCustomers = $monthCustomersResult->count ?? 0;
         
-        // New customers: those whose first_delivery_date (pre-computed, includes history) is in this month
-        // This is consistent with the bar chart which also uses first_delivery_date
+        // New customers: first_order_date falls in this month (consistent with top cards)
         $newCustomersResult = DB::selectOne("
-            SELECT COUNT(DISTINCT o.customer_id) as count
-            FROM t_crm_prod_order o
-            INNER JOIN t_crm_order_status_history h ON o.id = h.order_id AND h.status_code = 'delivered'
-            INNER JOIN t_crm_prod_customer c ON o.customer_id = c.id
-            WHERE DATE(h.changed_at) >= ? AND DATE(h.changed_at) <= ?
-            AND o.order_status NOT IN ('reversed', 'cancelled')
+            SELECT COUNT(*) as count
+            FROM t_crm_prod_customer c
+            WHERE c.first_order_date >= ? AND c.first_order_date <= ?
             AND c.merged_into_customer_id IS NULL
-            AND DATE_FORMAT(c.first_delivery_date, '%Y-%m') = ?
-        ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d'), $monthFormat]);
+        ", [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
         
         $newCustomers = $newCustomersResult->count ?? 0;
         

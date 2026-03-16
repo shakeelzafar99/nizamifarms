@@ -124,6 +124,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
         Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
         Route::get('/attendance/monthly', [\App\Http\Controllers\API\RiderController::class, 'getMonthlyAttendance']);
+        Route::get('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'getPetrolRate']);
+        Route::post('/attendance/petrol-rate', [\App\Http\Controllers\API\RiderController::class, 'setPetrolRate']);
         
         // Requests
         Route::get('/requests/categories', [\App\Http\Controllers\API\RiderController::class, 'getRequestCategories']);
@@ -164,6 +166,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/add-customer-note', [\App\Http\Controllers\API\RiderController::class, 'addCustomerNote']); // ⭐ Pin note to customer profile
     Route::post('/store/update-payment-method', [\App\Http\Controllers\API\RiderController::class, 'updatePaymentMethod']); // ⭐ Change payment type
     Route::post('/store/update-delivery-priorities', [\App\Http\Controllers\API\RiderController::class, 'updateDeliveryPriorities']); // ⭐ Set delivery sequence
+    
+    // Store Mode - WhatsApp Message Templates
+    Route::get('/store/whatsapp-templates', [\App\Http\Controllers\API\RiderController::class, 'getWhatsappTemplates']);
+    Route::post('/store/whatsapp-templates', [\App\Http\Controllers\API\RiderController::class, 'saveWhatsappTemplate']);
+    
+    // Store Mode - Campaign Management
+    Route::get('/store/campaigns', [\App\Http\Controllers\API\RiderController::class, 'getCampaigns']);
+    Route::post('/store/campaigns', [\App\Http\Controllers\API\RiderController::class, 'createCampaign']);
+    Route::post('/store/campaigns/preview', [\App\Http\Controllers\API\RiderController::class, 'previewCampaign']);
+    Route::get('/store/campaigns/cities', [\App\Http\Controllers\API\RiderController::class, 'getCampaignCities']);
+    Route::get('/store/campaigns/{id}', [\App\Http\Controllers\API\RiderController::class, 'getCampaignDetail']);
+    Route::post('/store/campaigns/{id}/refresh', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaign']);
+    Route::post('/store/campaigns/{id}/end', [\App\Http\Controllers\API\RiderController::class, 'endCampaign']);
+    Route::get('/store/campaigns/{id}/stats', [\App\Http\Controllers\API\RiderController::class, 'getCampaignStats']);
+    Route::post('/store/campaigns/{id}/customers/{customerId}/mark-sent', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSent']);
+    Route::post('/store/campaigns/{id}/customers/{customerId}/mark-skipped', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSkipped']);
     
     // Store Mode - Open Order Quantities
     Route::get('/store/open-quantities', [\App\Http\Controllers\API\RiderController::class, 'getOpenOrderQuantities']);
@@ -253,6 +271,9 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // ⭐ Calculate delivery ETAs for rider's out_for_delivery orders (manual trigger)
         Route::post('/{riderId}/calculate-delivery-etas', [\App\Http\Controllers\API\RiderController::class, 'calculateDeliveryEtas']);
+        Route::post('/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeRoute']);
+        Route::post('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'lockRoute']);
+        Route::delete('/{riderId}/route-lock', [\App\Http\Controllers\API\RiderController::class, 'unlockRoute']);
         
         // ⭐ LOCATION TRACKING: Heartbeat from mobile app (every 5 minutes when checked in)
         Route::post('/location-heartbeat', [\App\Http\Controllers\API\RiderController::class, 'locationHeartbeat']);
@@ -378,6 +399,7 @@ Route::middleware('auth:sanctum')->group(function () {
         
         // ⭐ Inventory & Sales Report
         Route::get('/inventory-report', [\App\Http\Controllers\CRM\WarehouseController::class, 'inventoryReport']);
+        Route::get('/inventory-report/daily', [\App\Http\Controllers\CRM\WarehouseController::class, 'dailyInventoryReport']);
         
         // ⭐ Storage Feature (NF Meat → Khaas Warehouse)
         Route::get('/storage/inventory', [\App\Http\Controllers\CRM\WarehouseController::class, 'getStorageInventory']);
@@ -386,9 +408,29 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/storage/order', [\App\Http\Controllers\CRM\WarehouseController::class, 'placeStorageOrder']);
         Route::post('/storage/order/{id}/receive', [\App\Http\Controllers\CRM\WarehouseController::class, 'receiveStorageOrder']);
         Route::post('/storage/use', [\App\Http\Controllers\CRM\WarehouseController::class, 'useStorageItem']);
+        Route::post('/storage/adjust', [\App\Http\Controllers\CRM\WarehouseController::class, 'adjustStorageItem']);
+        Route::get('/storage/product/{productId}/monthly', [\App\Http\Controllers\CRM\WarehouseController::class, 'getStorageMonthlyBreakdown']);
         Route::post('/storage/settings', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateStorageSettings']);
         
         Route::get('/products/{productId}/store-log', [\App\Http\Controllers\KhaasController::class, 'getStoreInventoryLog']);
+        Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReportApi']);
+        Route::get('/sales-report/daily', [\App\Http\Controllers\KhaasController::class, 'salesReportDaily']);
+        Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown']);
+
+        // Production Demand
+        Route::get('/demand/products', [\App\Http\Controllers\CRM\WarehouseController::class, 'getDemandProducts']);
+        Route::get('/demand/list', [\App\Http\Controllers\CRM\WarehouseController::class, 'getDemands']);
+        Route::get('/demand/history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getDemandHistory']);
+        Route::post('/demand/create', [\App\Http\Controllers\CRM\WarehouseController::class, 'createDemand']);
+        Route::post('/demand/{id}/accept', [\App\Http\Controllers\CRM\WarehouseController::class, 'acceptDemand']);
+        Route::post('/demand/{id}/cancel', [\App\Http\Controllers\CRM\WarehouseController::class, 'cancelDemand']);
+        Route::get('/recipes', [\App\Http\Controllers\CRM\WarehouseController::class, 'getProductRecipes']);
+        Route::post('/recipes/save', [\App\Http\Controllers\CRM\WarehouseController::class, 'saveProductRecipe']);
+        Route::post('/recipes/delete', [\App\Http\Controllers\CRM\WarehouseController::class, 'deleteProductRecipe']);
+        Route::get('/custom-materials', [\App\Http\Controllers\CRM\WarehouseController::class, 'getCustomMaterials']);
+        Route::post('/custom-materials', [\App\Http\Controllers\CRM\WarehouseController::class, 'saveCustomMaterial']);
+
+        Route::get('/khaas-badges', [\App\Http\Controllers\CRM\WarehouseController::class, 'getKhaasBadges']);
     });
 
     // ============================

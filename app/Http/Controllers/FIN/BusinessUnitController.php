@@ -153,17 +153,26 @@ class BusinessUnitController extends Controller
     }
 
     /**
-     * API: Get all business units for dropdowns
+     * API: Get business units accessible to the current user
+     * Pass ?all=1 to get all active BUs (used by store-mode screens like Khaas Inventory)
      */
-    public function apiList()
+    public function apiList(Request $request)
     {
-        $businessUnits = BusinessUnitModel::active()
-            ->ordered()
-            ->get(['id', 'code', 'short_code', 'name', 'color_hex']);
+        if ($request->input('all')) {
+            $businessUnits = BusinessUnitModel::where('is_active', 1)->get();
+        } else {
+            $businessUnits = AccountModel::getUserAccessibleBusinessUnits();
+        }
 
         return response()->json([
             'success' => true,
-            'data' => $businessUnits
+            'data' => $businessUnits->map(fn($bu) => [
+                'id' => $bu->id,
+                'code' => $bu->code,
+                'short_code' => $bu->short_code,
+                'name' => $bu->name,
+                'color_hex' => $bu->color_hex,
+            ])->values()
         ]);
     }
 }

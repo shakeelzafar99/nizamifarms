@@ -1492,6 +1492,7 @@ class CustomerController extends Controller
             $path = $file->storeAs('whatsapp_promo', $filename, 'public');
             
             $url = asset('storage/' . $path);
+            $url = str_replace('://app.nizamifarms.com', '://www.nizamifarms.com', $url);
             
             return response()->json([
                 'success' => true,

@@ -130,7 +130,8 @@ class RequestController extends Controller
             'leave_start_date' => 'nullable|date',
             'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
             'leave_type' => 'nullable|string',
-            'priority' => 'nullable|in:low,normal,high,urgent'
+            'priority' => 'nullable|in:low,normal,high,urgent',
+            'attachment_image' => 'nullable|image|max:5120', // 5MB max for receipt/bill images
         ]);
         
         // ⭐ Validate expense_date is within allowed backdate range
@@ -159,6 +160,58 @@ class RequestController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => "You can only backdate expenses up to {$maxBackdateDays} days. Selected date is {$daysDiff} days ago."
+                ], 422);
+            }
+        }
+
+        // Server-side payment source validation: non-EXP_FUND requires permission
+        if ($request->filled('payment_source_account_id')) {
+            $loggedInUserForSource = auth()->user();
+            $sourceAccount = \App\Models\FIN\AccountModel::find($validated['payment_source_account_id']);
+            if ($sourceAccount && $sourceAccount->account_code !== 'EXP_FUND') {
+                $buId = $validated['business_unit_id'] ?? null;
+                $canUseAllSources = $loggedInUserForSource->hasMobilePermission('expense_all_payment_sources')
+                    || ($buId && $loggedInUserForSource->hasMobilePermission('approve_khaas_transfer'));
+                if (!$canUseAllSources) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You do not have permission to create expenses from this payment source. Only Expense Fund is allowed.'
+                    ], 403);
+                }
+            }
+            if ($sourceAccount && $sourceAccount->is_private) {
+                $isTaimurRole = $loggedInUserForSource->roles()->whereRaw('LOWER(urole_name) = ?', ['taimur'])->exists();
+                if (!$isTaimurRole) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This payment source is not available.'
+                    ], 403);
+                }
+            }
+        }
+
+        // Prevent duplicate leave requests for overlapping dates
+        if ($request->filled('leave_start_date') && $request->filled('leave_end_date')) {
+            $leaveStart = $validated['leave_start_date'];
+            $leaveEnd = $validated['leave_end_date'];
+            $leaveUserId = $validated['requester_user_id'] ?? auth()->id();
+
+            $overlapping = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.requester_user_id', $leaveUserId)
+                ->whereNotIn('r.status', ['cancelled', 'rejected'])
+                ->where('r.leave_start_date', '<=', $leaveEnd)
+                ->where('r.leave_end_date', '>=', $leaveStart)
+                ->select('r.leave_start_date', 'r.leave_end_date', 'r.request_number')
+                ->first();
+
+            if ($overlapping) {
+                $existingStart = \Carbon\Carbon::parse($overlapping->leave_start_date)->format('M d');
+                $existingEnd = \Carbon\Carbon::parse($overlapping->leave_end_date)->format('M d');
+                return response()->json([
+                    'success' => false,
+                    'message' => "Leave already raised for {$existingStart} - {$existingEnd} ({$overlapping->request_number}). Cannot create overlapping leave request."
                 ], 422);
             }
         }
@@ -301,22 +354,34 @@ class RequestController extends Controller
                 );
             }
             
+            // Store attachment image if provided (e.g. fuel bill photo)
+            $attachments = null;
+            if ($request->hasFile('attachment_image')) {
+                $file = $request->file('attachment_image');
+                $date = now();
+                $filename = "req_{$requesterId}_{$date->format('Ymd_His')}.jpg";
+                $path = "requests/attachments/{$date->format('Y')}/{$date->format('m')}/{$filename}";
+                \Storage::disk('public')->put($path, file_get_contents($file));
+                $attachments = [$path];
+            }
+
             // Create request
             $requestModel = RequestModel::create([
                 'request_number' => RequestModel::generateRequestNumber(),
                 'category_id' => $validated['category_id'],
-                'requester_user_id' => $requesterId, // The employee the request is for
+                'requester_user_id' => $requesterId,
                 'title' => $validated['title'],
                 'description' => ($validated['description'] ?? '') . $createdByNote,
                 'amount' => $validated['amount'] ?? null,
                 'expense_category' => $validated['expense_category'] ?? null,
-                'expense_date' => $validated['expense_date'] ?? now()->toDateString(), // ⭐ Expense date (defaults to today)
+                'expense_date' => $validated['expense_date'] ?? now()->toDateString(),
                 'payment_source_account_id' => $validated['payment_source_account_id'] ?? null,
-                'business_unit_id' => $validated['business_unit_id'] ?? 1, // ⭐ Business unit (defaults to NF)
+                'business_unit_id' => $validated['business_unit_id'] ?? 1,
                 'leave_start_date' => $validated['leave_start_date'] ?? null,
                 'leave_end_date' => $validated['leave_end_date'] ?? null,
                 'leave_type' => $validated['leave_type'] ?? null,
                 'leave_days' => $leaveDays,
+                'attachments' => $attachments,
                 'status' => $overallStatus,
                 'priority' => $validated['priority'] ?? 'normal',
                 'requires_level_1' => $requiresL1,
@@ -330,7 +395,7 @@ class RequestController extends Controller
                 'level_2_approved_by' => $level2ApprovedBy,
                 'level_2_approved_at' => $level2ApprovedAt,
                 'submitted_at' => now(),
-                'created_by' => $loggedInUser->id // Track who actually created it
+                'created_by' => $loggedInUser->id,
             ]);
 
             // If auto-approved and it's an expense/salary advance, post to ledger

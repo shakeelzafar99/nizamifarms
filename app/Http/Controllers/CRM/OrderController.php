@@ -2056,20 +2056,45 @@ class OrderController extends Controller
             $orders = $query->orderBy('order_date', 'desc')->limit(100)->get();
 
             // ⭐ ENHANCEMENT: Add customer order counts for mobile app
-            // Get unique customer IDs from the fetched orders
-            $customerIds = $orders->pluck('customer_id')->unique()->filter();
+            // Uses combined production + history counts (same logic as CustomerController)
+            $customerIds = $orders->pluck('customer_id')->unique()->filter()->values()->all();
             $customerOrderCounts = [];
-            if ($customerIds->isNotEmpty()) {
-                $counts = \DB::table('t_crm_prod_order')
-                    ->select('customer_id', \DB::raw('COUNT(*) as order_count'))
-                    ->whereIn('customer_id', $customerIds)
-                    ->whereIn('order_status', ['delivered', 'completed']) // Only count completed orders
-                    ->groupBy('customer_id')
-                    ->get()
-                    ->keyBy('customer_id');
-                
-                foreach ($counts as $customerId => $count) {
-                    $customerOrderCounts[$customerId] = $count->order_count;
+            if (!empty($customerIds)) {
+                $placeholders = implode(',', array_fill(0, count($customerIds), '?'));
+                $hasHistoryTable = \DB::getSchemaBuilder()->hasTable('t_crm_history_order');
+
+                if ($hasHistoryTable) {
+                    $counts = \DB::select("
+                        SELECT customer_id, SUM(order_count) as order_count
+                        FROM (
+                            SELECT customer_id, COUNT(*) as order_count
+                            FROM t_crm_prod_order
+                            WHERE customer_id IN ({$placeholders})
+                              AND (external_source != 'shopify' OR external_source IS NULL)
+                              AND order_status IN ('delivered', 'completed')
+                            GROUP BY customer_id
+                            UNION ALL
+                            SELECT customer_id, COUNT(*) as order_count
+                            FROM t_crm_history_order
+                            WHERE customer_id IN ({$placeholders})
+                              AND order_status = 'delivered'
+                            GROUP BY customer_id
+                        ) combined
+                        GROUP BY customer_id
+                    ", array_merge($customerIds, $customerIds));
+                } else {
+                    $counts = \DB::select("
+                        SELECT customer_id, COUNT(*) as order_count
+                        FROM t_crm_prod_order
+                        WHERE customer_id IN ({$placeholders})
+                          AND (external_source != 'shopify' OR external_source IS NULL)
+                          AND order_status IN ('delivered', 'completed')
+                        GROUP BY customer_id
+                    ", $customerIds);
+                }
+
+                foreach ($counts as $row) {
+                    $customerOrderCounts[$row->customer_id] = $row->order_count;
                 }
             }
 

@@ -152,6 +152,15 @@ class LedgerPostingService
             
             $description = "Invoice #{$order->order_number} - Delivered ({$customerName})";
             
+            // Determine if balances should be applied now:
+            // - approved: yes (auto-approved or cash)
+            // - pending_l2: yes (L2 is verification only, balance reflects at L1/creation)
+            // - pending_l1: no (awaiting L1 approval)
+            $applyBalanceNow = in_array($approvalStatus, [
+                LedgerModel::STATUS_APPROVED,
+                LedgerModel::STATUS_PENDING_L2,
+            ]);
+
             // Create ledger entry
             $ledger = LedgerModel::create([
                 'transaction_date' => now(),
@@ -162,7 +171,8 @@ class LedgerPostingService
                 'amount' => $order->total_price,
                 'mode' => $mode,
                 'approval_status' => $approvalStatus,
-                'settlement_status' => 'open', // New invoices start as open
+                'balance_updated' => $applyBalanceNow ? 1 : 0,
+                'settlement_status' => 'open',
                 'settled_amount' => 0.00,
                 'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now() : null,
                 'approved_by' => $approvalStatus === LedgerModel::STATUS_APPROVED ? auth()->id() : null,
@@ -170,12 +180,12 @@ class LedgerPostingService
                 'created_by' => auth()->id() ?? 1
             ]);
 
-            // Update account balances if approved
-            if ($approvalStatus === LedgerModel::STATUS_APPROVED) {
-                $salesAccount->current_balance -= $order->total_price; // Revenue (credit side)
+            // Update account balances if approved or pending_l2 (L2 is verification only)
+            if ($applyBalanceNow) {
+                $salesAccount->current_balance -= $order->total_price;
                 $salesAccount->save();
                 
-                $toAccount->current_balance += $order->total_price; // Asset (debit side)
+                $toAccount->current_balance += $order->total_price;
                 $toAccount->save();
             }
 
@@ -265,12 +275,23 @@ class LedgerPostingService
                 throw new \Exception("Expense account not found");
             }
 
-            // Build description
+            // Build description (include requester name for ledger clarity)
+            $requesterName = '';
+            if ($request->relationLoaded('requester') && $request->requester) {
+                $requesterName = $request->requester->fullname;
+            } else {
+                $requester = $request->requester()->first();
+                $requesterName = $requester ? $requester->fullname : '';
+            }
+
             $description = "Expense Request #{$request->request_number}";
             if ($request->expense_category) {
                 $description .= " - {$request->expense_category}";
             } else {
                 $description .= " - {$request->category->category_name}";
+            }
+            if ($requesterName) {
+                $description .= " ({$requesterName})";
             }
             
             // Create ledger entry
@@ -517,21 +538,23 @@ class LedgerPostingService
             $ledger->approval_status = LedgerModel::STATUS_APPROVED;
             $ledger->approval_date = now();
             $ledger->approved_by = $userId ?? auth()->id();
-            $ledger->save();
 
-            // Update account balances based on transaction type
-            $fromAccount = $ledger->fromAccount;
-            $toAccount = $ledger->toAccount;
+            // Only update balances if not already applied (e.g. at L1 stage)
+            if (!$ledger->balance_updated) {
+                $fromAccount = $ledger->fromAccount;
+                $toAccount = $ledger->toAccount;
 
-            if ($fromAccount && $toAccount) {
-                // Debit from account (decrease)
-                $fromAccount->current_balance -= $ledger->amount;
-                $fromAccount->save();
+                if ($fromAccount && $toAccount) {
+                    $fromAccount->current_balance -= $ledger->amount;
+                    $fromAccount->save();
 
-                // Credit to account (increase)
-                $toAccount->current_balance += $ledger->amount;
-                $toAccount->save();
+                    $toAccount->current_balance += $ledger->amount;
+                    $toAccount->save();
+                }
+                $ledger->balance_updated = 1;
             }
+
+            $ledger->save();
 
             DB::commit();
 

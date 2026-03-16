@@ -87,7 +87,8 @@ class ExpenseSettlementService
                 'transaction_date' => now(),
                 'transaction_type' => LedgerModel::TYPE_SETTLEMENT,
                 'description' => "Settlement for Expense #{$expenseRequest->request_number}" 
-                                . ($expenseRequest->expense_category ? " ({$expenseRequest->expense_category})" : ''),
+                                . ($expenseRequest->expense_category ? " - {$expenseRequest->expense_category}" : '')
+                                . ($expenseRequest->requester ? " ({$expenseRequest->requester->fullname})" : ''),
                 'from_account_id' => $expenseFund->id,
                 'to_account_id' => $settlementDestination->id,
                 'amount' => $expenseRequest->amount,

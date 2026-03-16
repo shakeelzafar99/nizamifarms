@@ -16,14 +16,14 @@ class RequestApprovalController extends Controller
     public function approve(Request $request, $id)
     {
         $validated = $request->validate([
-            'level' => 'required|integer|in:1,2',
+            'level' => 'required|in:1,2',
             'comments' => 'nullable|string',
-            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id' // For expense requests
+            'payment_source_account_id' => 'nullable|exists:t_fin_accounts,id'
         ]);
 
         $requestModel = RequestModel::findOrFail($id);
         $user = auth()->user();
-        $level = $validated['level'];
+        $level = (int) $validated['level'];
 
         // Check if user has approval rights for this level
         if (!RoleApprovalLevelModel::userHasApprovalLevel($user->id, $level)) {
@@ -88,13 +88,13 @@ class RequestApprovalController extends Controller
     public function reject(Request $request, $id)
     {
         $validated = $request->validate([
-            'level' => 'required|integer|in:1,2',
+            'level' => 'required|in:1,2',
             'comments' => 'required|string'
         ]);
 
         $requestModel = RequestModel::findOrFail($id);
         $user = auth()->user();
-        $level = $validated['level'];
+        $level = (int) $validated['level'];
 
         // Check if user has approval rights for this level
         if (!RoleApprovalLevelModel::userHasApprovalLevel($user->id, $level)) {

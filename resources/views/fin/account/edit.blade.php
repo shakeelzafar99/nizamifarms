@@ -122,6 +122,19 @@
             </label>
         </div>
 
+        @if($isTaimurRole ?? false)
+        <!-- Private Account (Taimur only) -->
+        <div class="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <label class="flex items-center">
+                <input type="checkbox" name="is_private" value="1" 
+                       {{ old('is_private', $account->is_private ?? 0) == '1' ? 'checked' : '' }}
+                       class="rounded border-amber-400 text-amber-600 focus:ring-amber-500">
+                <span class="ml-2 text-sm font-medium text-amber-800">Private Account</span>
+            </label>
+            <p class="text-xs text-amber-700 mt-1 ml-6">Hidden from all users except you in NF Ledger, Overall Ledger, and expense management</p>
+        </div>
+        @endif
+
         <!-- Buttons -->
         <div class="flex gap-3">
             <button type="submit" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md">

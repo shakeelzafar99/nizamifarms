@@ -161,18 +161,42 @@ document.addEventListener('DOMContentLoaded', function() {
             </div>
         </div>
 
-        <!-- Right Side: Large Card with Top 10 Categories -->
+        <!-- Right Side: Large Card with Top Categories + User Drill-down -->
         <div class="bg-gradient-to-br from-purple-50 to-indigo-50 border border-purple-200 rounded-lg p-4">
             <div class="flex items-center justify-between mb-3">
                 <div class="text-sm text-purple-700 uppercase font-semibold">📊 Top Expense Categories</div>
-                <span class="text-xs text-purple-600">Click to filter</span>
+                <span class="text-xs text-purple-600">Click to filter · ▶ to expand</span>
             </div>
-            <div class="space-y-1.5 max-h-[180px] overflow-y-auto">
-                @foreach($kpis['top_categories'] ?? [] as $cat => $amount)
-                    <div class="flex items-center justify-between p-2 bg-white rounded hover:bg-purple-100 cursor-pointer transition-colors border border-transparent hover:border-purple-300"
-                         onclick="filterByCategory('{{ $cat }}')">
-                        <span class="text-xs font-medium text-gray-700 truncate mr-2">{{ $cat }}</span>
-                        <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($amount, 0) }}</span>
+            <div class="space-y-1 max-h-[260px] overflow-y-auto" id="categoriesList">
+                @foreach($kpis['top_categories'] ?? [] as $cat => $catData)
+                    @php
+                        $catTotal = is_array($catData) ? ($catData['total'] ?? 0) : $catData;
+                        $catUsers = is_array($catData) ? ($catData['users'] ?? []) : [];
+                        $hasUsers = count($catUsers) > 0;
+                        $catId = 'cat_' . md5($cat);
+                    @endphp
+                    <div>
+                        <div class="flex items-center p-2 bg-white rounded hover:bg-purple-100 transition-colors border border-transparent hover:border-purple-300 group">
+                            @if($hasUsers)
+                                <button type="button" onclick="toggleCategory('{{ $catId }}')" class="w-5 h-5 flex items-center justify-center text-gray-400 hover:text-purple-600 mr-1 flex-shrink-0 transition-transform" id="toggle_{{ $catId }}">
+                                    ▶
+                                </button>
+                            @else
+                                <span class="w-5 mr-1 flex-shrink-0"></span>
+                            @endif
+                            <span class="text-xs font-medium text-gray-700 truncate mr-2 flex-1 cursor-pointer" onclick="filterByCategory('{{ $cat }}')">{{ $cat }}</span>
+                            <span class="text-xs font-bold text-purple-900 whitespace-nowrap">Rs. {{ number_format($catTotal, 0) }}</span>
+                        </div>
+                        @if($hasUsers)
+                            <div id="{{ $catId }}" class="hidden ml-6 mb-1 pl-2 border-l-2 border-purple-200">
+                                @foreach($catUsers as $userName => $userAmount)
+                                    <div class="flex items-center justify-between py-1 px-2 hover:bg-purple-50 rounded cursor-pointer" onclick="filterByEmployee('{{ $userName }}')">
+                                        <span class="text-xs text-blue-600 hover:text-blue-800 truncate mr-2">↳ {{ $userName }}</span>
+                                        <span class="text-xs font-medium text-purple-700 whitespace-nowrap">Rs. {{ number_format($userAmount, 0) }}</span>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
                     </div>
                 @endforeach
             </div>
@@ -235,6 +259,19 @@ document.addEventListener('DOMContentLoaded', function() {
                     </select>
                 </div>
 
+                <!-- Hidden employee filter -->
+                <input type="hidden" name="employee" id="employeeFilter" value="{{ $employeeFilter ?? '' }}">
+
+                <!-- Employee Filter Badge -->
+                @if(!empty($employeeFilter))
+                <div class="flex items-center">
+                    <span class="inline-flex items-center gap-1 px-3 py-1.5 bg-indigo-100 text-indigo-800 text-xs font-medium rounded-full">
+                        👤 {{ $employeeFilter }}
+                        <button type="button" onclick="clearEmployeeFilter()" class="ml-1 text-indigo-500 hover:text-indigo-800">&times;</button>
+                    </span>
+                </div>
+                @endif
+
                 <!-- Action Buttons -->
                 <div class="flex gap-2 ml-auto">
                     <button type="submit" class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors">
@@ -284,6 +321,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
+    // Toggle category user drill-down
+    function toggleCategory(catId) {
+        const el = document.getElementById(catId);
+        const toggle = document.getElementById('toggle_' + catId);
+        if (el) {
+            const isHidden = el.classList.contains('hidden');
+            el.classList.toggle('hidden');
+            if (toggle) {
+                toggle.style.transform = isHidden ? 'rotate(90deg)' : '';
+            }
+        }
+    }
+    
     // Filter by category (from top 10 categories card)
     function filterByCategory(category) {
         const form = document.getElementById('filterForm');
@@ -301,6 +351,18 @@ document.addEventListener('DOMContentLoaded', function() {
             form.appendChild(input);
             form.submit();
         }
+    }
+    
+    function filterByEmployee(name) {
+        const form = document.getElementById('filterForm');
+        document.getElementById('employeeFilter').value = name;
+        form.submit();
+    }
+    
+    function clearEmployeeFilter() {
+        const form = document.getElementById('filterForm');
+        document.getElementById('employeeFilter').value = '';
+        form.submit();
     }
     
     // Clear all filters

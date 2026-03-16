@@ -25,6 +25,19 @@ class LedgerController extends Controller
         
         $query = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer']);
 
+        // Exclude transactions involving private accounts for non-Taimur users
+        $webUser = auth()->user();
+        $isWebTaimur = $webUser && $webUser->roles()
+            ->whereRaw('LOWER(urole_name) = ?', ['taimur'])
+            ->exists();
+        if (!$isWebTaimur) {
+            $privateIds = AccountModel::where('is_private', 1)->pluck('id')->toArray();
+            if (!empty($privateIds)) {
+                $query->whereNotIn('from_account_id', $privateIds)
+                      ->whereNotIn('to_account_id', $privateIds);
+            }
+        }
+
         // Filter by date range
         // For vendor payments, use posted_date; for others, use transaction_date
         if ($startDate) {
@@ -108,8 +121,9 @@ class LedgerController extends Controller
                        ->orderBy('created_at', 'desc')
                        ->paginate(50);
 
-        // Get all accounts for filters
+        // Get all accounts for filters — hide private accounts for non-Taimur
         $accounts = AccountModel::where('is_active', 1)
+                                ->visibleTo(auth()->user())
                                 ->orderBy('account_name', 'asc')
                                 ->get();
 
@@ -326,8 +340,9 @@ class LedgerController extends Controller
      */
     public function createTransfer()
     {
-        // Get all active accounts
+        // Get all active accounts — hide private for non-Taimur
         $accounts = AccountModel::where('is_active', 1)
+                                ->visibleTo(auth()->user())
                                 ->orderBy('account_name', 'asc')
                                 ->get()
                                 ->groupBy('account_type');
@@ -621,24 +636,38 @@ class LedgerController extends Controller
 
             // Decide new status
             $finalApproval = false;
+            $shouldUpdateBalances = false;
             $forceFullApproval = $request->boolean('force_full_approval', false);
             
             // ⭐ If force_full_approval is requested, check if user has L2 rights
             $userHasL2Rights = RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
             
             if ($currentLevel === 1 && $requiresL2 && !($forceFullApproval && $userHasL2Rights)) {
-                // Move from L1 -> L2 pending (normal workflow)
+                // L1 → L2 pending: balance is applied now, L2 is verification only
                 $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
                 $ledger->comments = ($ledger->comments ?? '') .
                     " | L1 approved by User ID " . auth()->id();
-            } else {
-                // Final approval: either single-level, at L2, or force_full with L2 rights
+                $shouldUpdateBalances = true;
+                $ledger->balance_updated = 1;
+            } elseif ($currentLevel === 2) {
+                // L2 approval: verification step — mark approved, skip balance if already applied at L1
                 $ledger->approval_status = LedgerModel::STATUS_APPROVED;
                 $ledger->approved_by = auth()->id();
-                $ledger->approval_date = now(); // ⭐ Store full datetime instead of just date
+                $ledger->approval_date = now();
                 $finalApproval = true;
+                $shouldUpdateBalances = !$ledger->balance_updated;
+                if (!$ledger->balance_updated) {
+                    $ledger->balance_updated = 1;
+                }
+            } else {
+                // Final approval: single-level, or force_full with L2 rights
+                $ledger->approval_status = LedgerModel::STATUS_APPROVED;
+                $ledger->approved_by = auth()->id();
+                $ledger->approval_date = now();
+                $finalApproval = true;
+                $shouldUpdateBalances = true;
+                $ledger->balance_updated = 1;
                 
-                // Add note if this was a forced full approval
                 if ($forceFullApproval && $currentLevel === 1 && $requiresL2 && $userHasL2Rights) {
                     $ledger->comments = ($ledger->comments ?? '') .
                         " | Fully approved (L1+L2) by User ID " . auth()->id() . " with L2 rights";
@@ -668,26 +697,18 @@ class LedgerController extends Controller
             $fromAccount = $ledger->fromAccount;
             $toAccount = $ledger->toAccount;
 
-            // Only adjust balances on final approval
-            if ($finalApproval) {
-                // From account adjustment
-                // For Asset accounts (Cash, Bank, Employee Cash): Debit increases, Credit decreases
-                // For Liability/Income/Equity: Credit increases, Debit decreases
+            // Update balances: at L1 (early reflect), force-full, or L2 for historical records without balance_updated
+            if ($shouldUpdateBalances) {
                 if ($fromAccount->account_type === 'asset') {
-                    // Money going OUT from asset account = Decrease
                     $fromAccount->current_balance -= $ledger->amount;
                 } else {
-                    // Money going OUT from liability/income/equity = Increase (reducing the liability/increasing expense)
                     $fromAccount->current_balance += $ledger->amount;
                 }
                 $fromAccount->save();
 
-                // To account adjustment
                 if ($toAccount->account_type === 'asset') {
-                    // Money coming IN to asset account = Increase
                     $toAccount->current_balance += $ledger->amount;
                 } else {
-                    // Money coming IN to liability/income/equity = Decrease (increasing the liability/reducing expense)
                     $toAccount->current_balance -= $ledger->amount;
                 }
                 $toAccount->save();
@@ -765,13 +786,15 @@ class LedgerController extends Controller
             // Decide success message based on whether this was final approval or L1 only
             $successMessage = $finalApproval
                 ? 'Transaction approved successfully!'
-                : 'Transaction approved at Level 1 and is now awaiting Level 2 approval!';
+                : 'Transaction approved at Level 1 (reflected in balances). Awaiting Level 2 verification.';
 
-            // If AJAX request (from modal), return JSON
+            // If AJAX request (from modal), return JSON with updated balance
             if ($request->ajax() || $request->wantsJson()) {
+                $updatedToAccount = $ledger->to_account_id ? AccountModel::find($ledger->to_account_id) : null;
                 return response()->json([
                     'success' => true,
-                    'message' => $successMessage
+                    'message' => $successMessage,
+                    'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
                 ]);
             }
 
@@ -864,8 +887,9 @@ class LedgerController extends Controller
                 throw new \Exception("This transaction does not require L2 approval");
             }
 
-            // Move to L2 pending (exactly like L1 approval)
+            // Move to L2 pending and apply balances (L2 is verification only)
             $ledger->approval_status = LedgerModel::STATUS_PENDING_L2;
+            $ledger->balance_updated = 1;
             $ledger->comments = ($ledger->comments ?? '') .
                 " | L1 approved by User ID " . auth()->id() . " (L1-only approval)";
 
@@ -887,15 +911,38 @@ class LedgerController extends Controller
 
             $ledger->save();
 
+            // Update account balances at L1 stage (reflects in ledger immediately)
+            $ledger->load(['fromAccount', 'toAccount']);
+            $fromAccount = $ledger->fromAccount;
+            $toAccount = $ledger->toAccount;
+
+            if ($fromAccount && $toAccount) {
+                if ($fromAccount->account_type === 'asset') {
+                    $fromAccount->current_balance -= $ledger->amount;
+                } else {
+                    $fromAccount->current_balance += $ledger->amount;
+                }
+                $fromAccount->save();
+
+                if ($toAccount->account_type === 'asset') {
+                    $toAccount->current_balance += $ledger->amount;
+                } else {
+                    $toAccount->current_balance -= $ledger->amount;
+                }
+                $toAccount->save();
+            }
+
             DB::commit();
 
-            $successMessage = "Transaction approved at Level 1. Now pending Level 2 approval.";
+            $successMessage = "Transaction approved at Level 1 and reflected in balances. Now pending Level 2 verification.";
 
-            // If AJAX request (from modal), return JSON
+            // If AJAX request (from modal), return JSON with updated balance
             if ($request->ajax() || $request->wantsJson()) {
+                $updatedToAccount = $ledger->to_account_id ? AccountModel::find($ledger->to_account_id) : null;
                 return response()->json([
                     'success' => true,
-                    'message' => $successMessage
+                    'message' => $successMessage,
+                    'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
                 ]);
             }
 
@@ -935,11 +982,15 @@ class LedgerController extends Controller
         ]);
 
         try {
-            $ledger = LedgerModel::findOrFail($id);
+            DB::beginTransaction();
+
+            $ledger = LedgerModel::with(['fromAccount', 'toAccount'])->findOrFail($id);
 
             if (!$ledger->isPending()) {
                 throw new \Exception("Transaction is not pending approval");
             }
+
+            $wasAtL2 = $ledger->approval_status === LedgerModel::STATUS_PENDING_L2;
 
             $ledger->approval_status = LedgerModel::STATUS_REJECTED;
             $ledger->approved_by = auth()->id();
@@ -950,19 +1001,56 @@ class LedgerController extends Controller
                 $ledger->comments = ($ledger->comments ? $ledger->comments . "\n\n" : '') . 
                                    "Rejection Reason: " . $request->rejection_reason;
             }
+
+            // Reverse account balances if they were already applied at L1
+            if ($ledger->balance_updated) {
+                $fromAccount = $ledger->fromAccount;
+                $toAccount = $ledger->toAccount;
+
+                if ($fromAccount && $toAccount) {
+                    if ($fromAccount->account_type === 'asset') {
+                        $fromAccount->current_balance += $ledger->amount;
+                    } else {
+                        $fromAccount->current_balance -= $ledger->amount;
+                    }
+                    $fromAccount->save();
+
+                    if ($toAccount->account_type === 'asset') {
+                        $toAccount->current_balance -= $ledger->amount;
+                    } else {
+                        $toAccount->current_balance += $ledger->amount;
+                    }
+                    $toAccount->save();
+
+                    $ledger->balance_updated = 0;
+                    $ledger->comments = ($ledger->comments ? $ledger->comments . "\n" : '') .
+                        "Balance reversed due to L2 rejection by User ID " . auth()->id();
+
+                    Log::info("Reversed account balances on L2 rejection", [
+                        'ledger_id' => $ledger->id,
+                        'amount' => $ledger->amount,
+                        'from_account' => $fromAccount->id,
+                        'to_account' => $toAccount->id
+                    ]);
+                }
+            }
             
             $ledger->save();
+
+            DB::commit();
             
             // Clean up settlement data from session
             \Session::forget("settlement_pending_{$ledger->id}");
 
             $successMessage = 'Transaction rejected successfully!';
 
-            // If AJAX request (from modal), return JSON
+            // If AJAX request (from modal), return JSON with updated balance
             if ($request->ajax() || $request->wantsJson()) {
+                $updatedToAccount = $ledger->to_account_id ? AccountModel::find($ledger->to_account_id) : null;
                 return response()->json([
                     'success' => true,
-                    'message' => $successMessage
+                    'message' => $successMessage,
+                    'new_balance' => $updatedToAccount ? $updatedToAccount->current_balance : null,
                 ]);
             }
 
@@ -981,6 +1069,7 @@ class LedgerController extends Controller
                            ->with('success', $successMessage);
 
         } catch (\Exception $e) {
+            DB::rollBack();
             Log::error("Error rejecting transaction: " . $e->getMessage());
             
             // If AJAX request, return JSON error

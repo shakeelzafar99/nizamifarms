@@ -49,7 +49,7 @@
         </div>
         
         <!-- Top Cards Grid -->
-        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
             <!-- Invoices - With Online/Cash Breakdown -->
             <div class="kt-card cursor-pointer hover:shadow-lg transition-shadow lg:col-span-2" onclick="showDrilldown('invoices')">
                 <div class="p-4">
@@ -184,6 +184,27 @@
                         </div>
                     </div>
                     <p class="text-xs text-gray-400 mt-2">Click for details</p>
+                </div>
+            </div>
+
+            <!-- Frozen Sales -->
+            <div id="frozenSalesCard" class="kt-card cursor-pointer hover:shadow-lg transition-shadow" style="display:none;" onclick="openFrozenSalesReport()">
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="p-2 rounded-lg" style="background-color: #FEF3C7;">
+                            <span class="text-lg">🧊</span>
+                        </div>
+                        <span id="frozenBuName" class="text-xs font-medium" style="color: #B45309;">Frozen</span>
+                    </div>
+                    <p class="text-xs font-medium text-gray-500 mb-1">Frozen Sales</p>
+                    <p id="frozenRevenue" class="text-lg font-bold text-gray-900">Rs. 0</p>
+                    <div class="flex gap-3 text-xs mt-1">
+                        <span class="text-gray-500"><span id="frozenQty" class="font-semibold text-gray-700">0</span> units</span>
+                        <span class="text-red-400"><span id="frozenFree" class="font-semibold">0</span> free</span>
+                    </div>
+                    <div id="frozenProductBreakdown" class="mt-2 pt-2 border-t border-gray-100 space-y-1" style="max-height: 120px; overflow-y: auto;">
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2">Click for full report →</p>
                 </div>
             </div>
         </div>
@@ -975,6 +996,9 @@ class EnhancedDashboard {
                 
                 // Load month-specific customer stats
                 this.loadMonthCustomerStats(month);
+                
+                // Load frozen sales
+                this.loadFrozenSales(month);
             }
         } catch (error) {
             console.error('Error loading top cards:', error);
@@ -1001,6 +1025,41 @@ class EnhancedDashboard {
             }
         } catch (error) {
             console.error('Error loading month customer stats:', error);
+        }
+    }
+
+    async loadFrozenSales(month) {
+        try {
+            const response = await fetch(`/dashboard/frozen-sales?month=${month}`);
+            const data = await response.json();
+            const card = document.getElementById('frozenSalesCard');
+            
+            if (data.success && data.data) {
+                const d = data.data;
+                card.style.display = '';
+                document.getElementById('frozenBuName').textContent = d.bu_name || 'Frozen';
+                document.getElementById('frozenRevenue').textContent = `Rs. ${this.formatNumber(d.total_revenue)}`;
+                document.getElementById('frozenQty').textContent = d.delivered_qty;
+                document.getElementById('frozenFree').textContent = d.free_qty;
+                
+                const breakdown = document.getElementById('frozenProductBreakdown');
+                if (d.products && d.products.length > 0) {
+                    breakdown.innerHTML = d.products.map(p => 
+                        `<div class="flex justify-between text-[10px]">
+                            <span class="text-gray-600 truncate" style="max-width:65%">${p.name.replace(/^NF\s*[-–]\s*/i, '')}</span>
+                            <span class="font-semibold text-gray-700 whitespace-nowrap">${p.delivered} · Rs.${this.formatNumber(p.revenue)}</span>
+                        </div>`
+                    ).join('');
+                } else {
+                    breakdown.innerHTML = '<p class="text-[10px] text-gray-400 text-center">No sales this month</p>';
+                }
+                
+                this._frozenMonth = month;
+            } else {
+                card.style.display = 'none';
+            }
+        } catch (error) {
+            console.error('Error loading frozen sales:', error);
         }
     }
 
@@ -2574,6 +2633,11 @@ document.addEventListener('DOMContentLoaded', function() {
     dashboard = new EnhancedDashboard();
     dashboard.init();
 });
+
+function openFrozenSalesReport() {
+    const month = dashboard?._frozenMonth || document.getElementById('topCardsMonthSelector')?.value || '';
+    window.open(`/khaas/sales-report?month=${month}&exclude_free=0`, '_blank');
+}
 
 // Global wrapper functions for onclick handlers
 function showActiveCustomersPopup() {

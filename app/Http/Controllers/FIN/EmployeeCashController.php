@@ -445,84 +445,111 @@ class EmployeeCashController extends Controller
         // Get date filter parameters
         $dateFrom = $request->input('date_from');
         $dateTo = $request->input('date_to');
+        $hasExplicitFilter = $dateFrom && $dateTo;
 
-        // Build ledger query with date filters
+        // Date-based pagination: show 20 calendar days per page by default
+        $daysPerPage = 20;
+        if ($hasExplicitFilter) {
+            $windowStart = $dateFrom;
+            $windowEnd = $dateTo;
+        } else {
+            $dateEndStr = $request->input('date_end');
+            $dateEnd = $dateEndStr ? \Carbon\Carbon::parse($dateEndStr) : \Carbon\Carbon::today();
+            $windowStart = $dateEnd->copy()->subDays($daysPerPage - 1)->format('Y-m-d');
+            $windowEnd = $dateEnd->format('Y-m-d');
+        }
+
+        // Build ledger query with date window
         $ledgerQuery = LedgerModel::where(function($q) use ($id) {
             $q->where('from_account_id', $id)
               ->orWhere('to_account_id', $id);
         });
 
-        // Apply date filters if provided
-        if ($dateFrom && $dateTo) {
-            // For vendor payments, use posted_date if available; otherwise transaction_date.
-            $ledgerQuery->where(function($q) use ($dateFrom, $dateTo) {
-                $q->where(function($subQ) use ($dateFrom, $dateTo) {
-                    $subQ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
-                         ->where(function($dateQ) use ($dateFrom, $dateTo) {
-                             $dateQ->whereBetween('posted_date', [$dateFrom, $dateTo])
-                                   ->orWhere(function($fallbackQ) use ($dateFrom, $dateTo) {
-                                       $fallbackQ->whereNull('posted_date')
-                                                 ->whereBetween('transaction_date', [$dateFrom, $dateTo]);
-                                   });
-                         });
-                })->orWhere(function($subQ) use ($dateFrom, $dateTo) {
-                    $subQ->where('transaction_type', '!=', LedgerModel::TYPE_VENDOR_PAYMENT)
-                         ->whereBetween('transaction_date', [$dateFrom, $dateTo]);
-                });
+        // Apply date window filter (vendor payments use posted_date when available)
+        $ledgerQuery->where(function($q) use ($windowStart, $windowEnd) {
+            $q->where(function($subQ) use ($windowStart, $windowEnd) {
+                $subQ->where('transaction_type', LedgerModel::TYPE_VENDOR_PAYMENT)
+                     ->where(function($dateQ) use ($windowStart, $windowEnd) {
+                         $dateQ->whereBetween('posted_date', [$windowStart, $windowEnd])
+                               ->orWhere(function($fallbackQ) use ($windowStart, $windowEnd) {
+                                   $fallbackQ->whereNull('posted_date')
+                                             ->whereBetween('transaction_date', [$windowStart, $windowEnd]);
+                               });
+                     });
+            })->orWhere(function($subQ) use ($windowStart, $windowEnd) {
+                $subQ->where('transaction_type', '!=', LedgerModel::TYPE_VENDOR_PAYMENT)
+                     ->whereBetween('transaction_date', [$windowStart, $windowEnd]);
             });
-        }
-
-        // Get ledger transactions
-        $ledger = $ledgerQuery
-            ->with(['fromAccount', 'toAccount', 'order.customer'])
-            // Order by effective date: posted_date (for vendor payments) or transaction_date
-            ->orderByRaw("COALESCE(CASE WHEN transaction_type = ? THEN posted_date END, transaction_date) DESC", [LedgerModel::TYPE_VENDOR_PAYMENT])
-            ->orderBy('created_at', 'desc')
-            ->paginate(50);
-
-        // Calculate running balance (from oldest to newest for calculation)
-        // IMPORTANT: Get ALL transactions for display, but only update balance for APPROVED ones
-        $allTransactionsQuery = LedgerModel::where(function($q) use ($id) {
-            $q->where('from_account_id', $id)
-              ->orWhere('to_account_id', $id);
         });
 
-        // Apply same date filters to running balance calculation
-        if ($dateFrom && $dateTo) {
-            $allTransactionsQuery->whereBetween('transaction_date', [$dateFrom, $dateTo]);
-        }
-
-        $allTransactions = $allTransactionsQuery
-            ->orderBy('transaction_date', 'asc')
-            ->orderBy('created_at', 'asc')
+        // Get all transactions in the date window (no record-based pagination)
+        $ledger = $ledgerQuery
+            ->with(['fromAccount', 'toAccount', 'order.customer'])
+            ->orderByRaw("COALESCE(CASE WHEN transaction_type = ? THEN posted_date END, transaction_date) DESC", [LedgerModel::TYPE_VENDOR_PAYMENT])
+            ->orderBy('created_at', 'desc')
             ->get();
 
-        $runningBalance = $account->opening_balance;
+        $totalInWindow = $ledger->count();
+
+        // Calculate running balance: compute balance up to the window start, then accumulate
+        $balanceBefore = $account->opening_balance;
+
+        $inBefore = LedgerModel::where('to_account_id', $id)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->where('transaction_date', '<', $windowStart)
+            ->sum('amount');
+
+        $outBefore = LedgerModel::where('from_account_id', $id)
+            ->where('approval_status', LedgerModel::STATUS_APPROVED)
+            ->where('transaction_date', '<', $windowStart)
+            ->sum('amount');
+
+        $balanceBefore += $inBefore - $outBefore;
+
+        // Build balance map for transactions in the window (oldest first)
+        $orderedLedger = $ledger->sortBy([
+            ['transaction_date', 'asc'],
+            ['created_at', 'asc']
+        ]);
+
+        $runningBalance = $balanceBefore;
         $balanceMap = [];
-        
-        foreach ($allTransactions as $transaction) {
-            // Only update balance for APPROVED transactions
-            // Pending and rejected transactions show the balance WITHOUT their effect
+        foreach ($orderedLedger as $transaction) {
             if ($transaction->approval_status === LedgerModel::STATUS_APPROVED) {
-                if ($transaction->to_account_id === $account->id) {
-                    // Money coming in
+                if ($transaction->to_account_id == $account->id) {
                     $runningBalance += $transaction->amount;
                 } else {
-                    // Money going out
                     $runningBalance -= $transaction->amount;
                 }
             }
-            // Store the current balance for this transaction (whether approved or not)
-            // Rejected/pending transactions will show the balance as if they never happened
             $balanceMap[$transaction->id] = $runningBalance;
         }
 
-        // Attach running balances to paginated results (in reverse since we display newest first)
-        $ledger->getCollection()->transform(function($transaction) use ($balanceMap, $account) {
-            // Use the balance from the map, or fall back to current balance if not found
+        // Attach running balances
+        $ledger->transform(function($transaction) use ($balanceMap, $account) {
             $transaction->running_balance = $balanceMap[$transaction->id] ?? $account->current_balance;
             return $transaction;
         });
+
+        // Date navigation (when not using explicit filter)
+        $dateNavigation = null;
+        if (!$hasExplicitFilter) {
+            $hasOlderRecords = LedgerModel::where(function($q) use ($id) {
+                $q->where('from_account_id', $id)->orWhere('to_account_id', $id);
+            })->where('transaction_date', '<', $windowStart)->exists();
+
+            $isAtLatest = \Carbon\Carbon::parse($windowEnd)->gte(\Carbon\Carbon::today());
+
+            $dateNavigation = [
+                'window_start' => $windowStart,
+                'window_end' => $windowEnd,
+                'prev_end' => \Carbon\Carbon::parse($windowStart)->subDay()->format('Y-m-d'),
+                'next_end' => \Carbon\Carbon::parse($windowEnd)->addDays($daysPerPage)->min(\Carbon\Carbon::today())->format('Y-m-d'),
+                'has_prev' => $hasOlderRecords,
+                'has_next' => !$isAtLatest,
+                'days_per_page' => $daysPerPage,
+            ];
+        }
 
         // Summary with date filters
         // For EMPLOYEE accounts: Invoices come TO account, deposits go FROM account
@@ -1031,7 +1058,7 @@ class EmployeeCashController extends Controller
             ->pluck('config_value')
             ->toArray();
 
-        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo', 'isEmployeeAccount'));
+        return view('fin.employee.show', compact('account', 'ledger', 'summary', 'userRole', 'expenseRequests', 'expenseSummary', 'expenseCategories', 'dateFrom', 'dateTo', 'isEmployeeAccount', 'totalInWindow', 'dateNavigation', 'windowStart', 'windowEnd', 'hasExplicitFilter'));
     }
 
     /**
@@ -2358,11 +2385,29 @@ class EmployeeCashController extends Controller
             // ============================================================
             $onlineMessageTracking = $this->fetchOnlineMessageTracking($riderFilter);
             
+            // ============================================================
+            // ⛽ Petrol Requests from Rider Attendance
+            // Pending petrol expense requests raised via meter reading
+            // ============================================================
+            $pendingPetrolRequests = $this->fetchPendingPetrolRequests();
+            
+            // Fetch payment source accounts for petrol approval dropdown
+            $petrolPaymentAccounts = [];
+            if ($pendingPetrolRequests) {
+                $petrolPaymentAccounts = AccountModel::whereIn('account_code', ['NF_CASH', 'EXP_FUND', 'ONLINE', 'PETTY_CASH'])
+                    ->where('is_active', 1)
+                    ->orderByRaw("CASE WHEN account_code = 'NF_CASH' THEN 1 WHEN account_code = 'EXP_FUND' THEN 2 WHEN account_code = 'ONLINE' THEN 3 ELSE 4 END")
+                    ->select('id', 'account_code', 'account_name')
+                    ->get();
+            }
+            
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
-                'invoicesByDate' => $invoicesByDate, // ⭐ New: Date-level grouping
-                'onlineData' => $onlineData, // ⭐ New: Online orders data
-                'onlineMessageTracking' => $onlineMessageTracking, // ⭐ WhatsApp message tracking
+                'invoicesByDate' => $invoicesByDate,
+                'onlineData' => $onlineData,
+                'onlineMessageTracking' => $onlineMessageTracking,
+                'pendingPetrolRequests' => $pendingPetrolRequests,
+                'petrolPaymentAccounts' => $petrolPaymentAccounts,
                 'stats' => $stats,
                 'pendingSettlements' => $pendingSettlements,
                 'allRiders' => $allRiders,
@@ -2371,8 +2416,8 @@ class EmployeeCashController extends Controller
                     'rider' => $riderFilter,
                     'date_from' => $dateFrom,
                     'date_to' => $dateTo,
-                    'group_by' => $groupBy, // ⭐ New
-                    'include_online' => $includeOnline // ⭐ New
+                    'group_by' => $groupBy,
+                    'include_online' => $includeOnline
                 ]
             ]);
             
@@ -2484,6 +2529,69 @@ class EmployeeCashController extends Controller
             
         } catch (\Exception $e) {
             \Log::error('fetchOnlineMessageTracking error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Fetch pending petrol expense requests raised from rider attendance (meter readings).
+     * Groups by rider for display in daily closing.
+     */
+    private function fetchPendingPetrolRequests()
+    {
+        try {
+            $petrolRequests = \App\Models\Request\RequestModel::where('status', 'pending')
+                ->where('expense_category', 'Petrol')
+                ->whereHas('category', function($q) {
+                    $q->where('category_code', 'expense');
+                })
+                ->with(['requester'])
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            if ($petrolRequests->isEmpty()) {
+                return null;
+            }
+
+            $base = request()->getSchemeAndHttpHost();
+
+            $byRider = $petrolRequests->groupBy('requester_user_id')->map(function ($requests) use ($base) {
+                $requester = $requests->first()->requester;
+                return [
+                    'rider_name' => $requester ? $requester->fullname : 'Unknown',
+                    'count' => $requests->count(),
+                    'total_amount' => round($requests->sum('amount'), 2),
+                    'requests' => $requests->map(function ($req) use ($base) {
+                        $attachmentUrl = null;
+                        if ($req->attachments && is_array($req->attachments) && count($req->attachments) > 0) {
+                            $attachmentUrl = rtrim($base, '/') . '/public-storage/' . ltrim($req->attachments[0], '/');
+                        }
+                        return [
+                            'id' => $req->id,
+                            'request_number' => $req->request_number,
+                            'expense_date' => $req->expense_date ? $req->expense_date->format('M d, Y') : ($req->created_at ? $req->created_at->format('M d, Y') : '-'),
+                            'meter_distance' => $req->meter_distance,
+                            'petrol_rate' => $req->petrol_rate,
+                            'amount' => $req->amount,
+                            'notes' => $req->description,
+                            'source' => $req->attendance_id ? 'meter' : 'manual',
+                            'attachment_url' => $attachmentUrl,
+                            'created_at' => $req->created_at ? $req->created_at->format('h:i A') : '',
+                            'level_1_status' => $req->level_1_status,
+                            'requires_level_1' => $req->requires_level_1,
+                            'requires_level_2' => $req->requires_level_2,
+                        ];
+                    })->values(),
+                ];
+            })->values();
+
+            return [
+                'total_count' => $petrolRequests->count(),
+                'total_amount' => round($petrolRequests->sum('amount'), 2),
+                'by_rider' => $byRider,
+            ];
+        } catch (\Exception $e) {
+            \Log::error('fetchPendingPetrolRequests error: ' . $e->getMessage());
             return null;
         }
     }

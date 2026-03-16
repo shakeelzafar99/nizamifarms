@@ -88,6 +88,13 @@
             >
               👥 Customize User List
             </button>
+            <button 
+              type="button"
+              onclick="openFuelRateModal(); toggleSettingsMenu();" 
+              class="w-full text-left block px-4 py-3 text-gray-800 hover:bg-gray-100 transition font-medium"
+            >
+              ⛽ Fuel Rate Groups
+            </button>
           </div>
         </div>
       </div>
@@ -2688,5 +2695,260 @@ function closeGpsAudit() {
 window.showGpsAudit = showGpsAudit;
 window.closeGpsAudit = closeGpsAudit;
 
+// ========================================
+// ⛽ Fuel Rate Groups Management
+// ========================================
+var fuelRateGroups = [];
+var fuelAllRiders = [];
+
+async function openFuelRateModal() {
+  var modal = document.getElementById('fuelRateModal');
+  modal.style.display = 'flex';
+  document.getElementById('fuelRateLoading').style.display = 'block';
+  document.getElementById('fuelRateContent').style.display = 'none';
+
+  try {
+    var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    var resp = await fetch('/attendance/fuel-rate-groups', {
+      headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    });
+    var data = await resp.json();
+    if (data.success) {
+      fuelRateGroups = data.rate_groups || [];
+      fuelAllRiders = data.all_riders || [];
+      renderFuelRateGroups();
+    } else {
+      alert('Failed to load fuel rate data: ' + (data.message || 'Unknown error'));
+    }
+  } catch(e) {
+    console.error('Failed to load fuel rates:', e);
+    alert('Failed to load fuel rate data');
+  }
+
+  document.getElementById('fuelRateLoading').style.display = 'none';
+  document.getElementById('fuelRateContent').style.display = 'block';
+}
+
+function closeFuelRateModal() {
+  document.getElementById('fuelRateModal').style.display = 'none';
+}
+
+function renderFuelRateGroups() {
+  var container = document.getElementById('fuelRateGroupsList');
+  if (fuelRateGroups.length === 0) {
+    fuelRateGroups = [{id: null, name: 'Default', rate: 10, user_ids: '', users: [], _expanded: true}];
+  }
+
+  var html = '';
+  fuelRateGroups.forEach(function(group, idx) {
+    var userIds = group.user_ids ? group.user_ids.split(',').map(function(id){ return id.trim(); }).filter(Boolean) : [];
+    var isExpanded = group._expanded;
+
+    html += '<div style="border: 1px solid ' + (isExpanded ? '#F97316' : '#E5E7EB') + '; border-radius: 10px; margin-bottom: 12px; overflow: hidden; background: #fff;">';
+    html += '<div onclick="toggleFuelGroup(' + idx + ')" style="cursor: pointer; display: flex; align-items: center; padding: 12px 16px; background: ' + (isExpanded ? '#FFF7ED' : '#F9FAFB') + ';">';
+    html += '<div style="flex:1;"><strong style="font-size: 15px; color: #1F2937;">' + (group.name || 'Group ' + (idx+1)) + '</strong>';
+    html += '<div style="font-size: 12px; color: #6B7280; margin-top: 2px;">Rs. ' + group.rate + '/km · ' + userIds.length + ' rider' + (userIds.length !== 1 ? 's' : '') + '</div></div>';
+    html += '<span style="font-size: 18px; color: #9CA3AF;">' + (isExpanded ? '▲' : '▼') + '</span></div>';
+
+    if (isExpanded) {
+      html += '<div style="padding: 16px;">';
+      html += '<div style="margin-bottom: 12px;"><label style="font-size: 12px; font-weight: 600; color: #374151; display: block; margin-bottom: 4px;">Group Name</label>';
+      html += '<input type="text" id="fuelGroupName_' + idx + '" value="' + (group.name || '').replace(/"/g, '&quot;') + '" style="width: 100%; border: 1px solid #D1D5DB; border-radius: 8px; padding: 8px 12px; font-size: 14px;" placeholder="e.g. Bike Riders"></div>';
+      html += '<div style="margin-bottom: 12px;"><label style="font-size: 12px; font-weight: 600; color: #374151; display: block; margin-bottom: 4px;">Rate (Rs/km)</label>';
+      html += '<input type="number" step="0.01" min="0.01" id="fuelGroupRate_' + idx + '" value="' + group.rate + '" style="width: 100%; border: 1px solid #D1D5DB; border-radius: 8px; padding: 8px 12px; font-size: 14px;" placeholder="e.g. 12.5"></div>';
+
+      html += '<div style="margin-bottom: 8px;"><label style="font-size: 12px; font-weight: 600; color: #374151; display: block; margin-bottom: 4px;">Assign Riders (' + userIds.length + ' selected)</label>';
+      html += '<input type="text" id="fuelRiderSearch_' + idx + '" oninput="filterFuelRiders(' + idx + ')" style="width: 100%; border: 1px solid #D1D5DB; border-radius: 8px; padding: 6px 12px; font-size: 13px; margin-bottom: 8px;" placeholder="Search riders...">';
+      html += '<div id="fuelRiderList_' + idx + '" style="max-height: 200px; overflow-y: auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 4px;">';
+
+      fuelAllRiders.forEach(function(rider) {
+        var riderId = String(rider.id);
+        var isChecked = userIds.includes(riderId);
+        var otherGroup = getFuelGroupForRider(riderId, idx);
+
+        html += '<label style="display: flex; align-items: center; padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #F3F4F6; gap: 8px;">';
+        html += '<input type="checkbox" data-group="' + idx + '" data-rider="' + riderId + '" ' + (isChecked ? 'checked' : '') + ' onchange="handleFuelRiderToggle(' + idx + ',' + riderId + ', this.checked)" style="accent-color: #F97316; width: 16px; height: 16px;">';
+        html += '<span style="flex: 1; font-size: 13px; color: ' + (otherGroup !== null ? '#9CA3AF' : '#1F2937') + ';" class="fuel-rider-name">' + rider.name + '</span>';
+        if (otherGroup !== null) {
+          html += '<span style="font-size: 10px; color: #F97316; font-weight: 600;">in ' + (fuelRateGroups[otherGroup]?.name || 'Group ' + (otherGroup + 1)) + '</span>';
+        }
+        html += '</label>';
+      });
+
+      html += '</div></div>';
+
+      if (fuelRateGroups.length > 1) {
+        html += '<button onclick="removeFuelGroup(' + idx + ')" style="margin-top: 8px; padding: 6px 14px; border-radius: 6px; background: #FEE2E2; color: #DC2626; border: none; font-size: 12px; font-weight: 600; cursor: pointer;">Remove Group</button>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+
+  container.innerHTML = html;
+}
+
+function toggleFuelGroup(idx) {
+  syncFuelGroupInputs();
+  fuelRateGroups[idx]._expanded = !fuelRateGroups[idx]._expanded;
+  renderFuelRateGroups();
+}
+
+function syncFuelGroupInputs() {
+  fuelRateGroups.forEach(function(group, idx) {
+    var nameEl = document.getElementById('fuelGroupName_' + idx);
+    var rateEl = document.getElementById('fuelGroupRate_' + idx);
+    if (nameEl) group.name = nameEl.value;
+    if (rateEl) group.rate = parseFloat(rateEl.value) || group.rate;
+  });
+}
+
+function addFuelGroup() {
+  syncFuelGroupInputs();
+  fuelRateGroups.forEach(function(g) { g._expanded = false; });
+  fuelRateGroups.push({id: null, name: '', rate: 0, user_ids: '', users: [], _expanded: true});
+  renderFuelRateGroups();
+}
+
+function removeFuelGroup(idx) {
+  if (fuelRateGroups.length <= 1) { alert('At least one rate group is required.'); return; }
+  if (!confirm('Remove "' + (fuelRateGroups[idx].name || 'Unnamed') + '" group?')) return;
+  syncFuelGroupInputs();
+  fuelRateGroups.splice(idx, 1);
+  renderFuelRateGroups();
+}
+
+function getFuelGroupForRider(riderId, excludeIdx) {
+  for (var i = 0; i < fuelRateGroups.length; i++) {
+    if (i === excludeIdx) continue;
+    var ids = fuelRateGroups[i].user_ids ? fuelRateGroups[i].user_ids.split(',').map(function(id){ return id.trim(); }) : [];
+    if (ids.includes(String(riderId))) return i;
+  }
+  return null;
+}
+
+function handleFuelRiderToggle(groupIdx, riderId, isChecked) {
+  syncFuelGroupInputs();
+  var rid = String(riderId);
+
+  if (isChecked) {
+    // Remove from any other group
+    fuelRateGroups.forEach(function(g, i) {
+      if (i !== groupIdx && g.user_ids) {
+        var ids = g.user_ids.split(',').map(function(id){ return id.trim(); }).filter(Boolean);
+        ids = ids.filter(function(id) { return id !== rid; });
+        g.user_ids = ids.join(',');
+      }
+    });
+    // Add to this group
+    var currentIds = fuelRateGroups[groupIdx].user_ids ? fuelRateGroups[groupIdx].user_ids.split(',').map(function(id){ return id.trim(); }).filter(Boolean) : [];
+    if (!currentIds.includes(rid)) currentIds.push(rid);
+    fuelRateGroups[groupIdx].user_ids = currentIds.join(',');
+  } else {
+    // Remove from this group
+    var ids = fuelRateGroups[groupIdx].user_ids ? fuelRateGroups[groupIdx].user_ids.split(',').map(function(id){ return id.trim(); }).filter(Boolean) : [];
+    ids = ids.filter(function(id) { return id !== rid; });
+    fuelRateGroups[groupIdx].user_ids = ids.join(',');
+  }
+
+  renderFuelRateGroups();
+}
+
+function filterFuelRiders(groupIdx) {
+  var searchEl = document.getElementById('fuelRiderSearch_' + groupIdx);
+  if (!searchEl) return;
+  var query = searchEl.value.toLowerCase();
+  var listEl = document.getElementById('fuelRiderList_' + groupIdx);
+  if (!listEl) return;
+  var labels = listEl.querySelectorAll('label');
+  labels.forEach(function(label) {
+    var name = label.querySelector('.fuel-rider-name');
+    if (name) {
+      label.style.display = name.textContent.toLowerCase().includes(query) ? 'flex' : 'none';
+    }
+  });
+}
+
+async function saveFuelRateGroups() {
+  syncFuelGroupInputs();
+
+  // Validate
+  for (var i = 0; i < fuelRateGroups.length; i++) {
+    var g = fuelRateGroups[i];
+    if (!g.name || !g.name.trim()) { alert('Group ' + (i+1) + ' needs a name.'); return; }
+    if (!g.rate || g.rate <= 0) { alert('Group "' + g.name + '" needs a valid rate greater than 0.'); return; }
+  }
+
+  // Check duplicates
+  var seen = {};
+  for (var i = 0; i < fuelRateGroups.length; i++) {
+    var ids = fuelRateGroups[i].user_ids ? fuelRateGroups[i].user_ids.split(',').map(function(id){ return id.trim(); }).filter(Boolean) : [];
+    for (var j = 0; j < ids.length; j++) {
+      if (seen[ids[j]]) {
+        var rider = fuelAllRiders.find(function(r){ return String(r.id) === ids[j]; });
+        alert((rider ? rider.name : 'A user') + ' is in multiple groups. Each user can only be in one group.');
+        return;
+      }
+      seen[ids[j]] = true;
+    }
+  }
+
+  var saveBtn = document.getElementById('fuelRateSaveBtn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving...';
+
+  try {
+    var groups = fuelRateGroups.map(function(g) {
+      return { id: g.id || null, name: g.name.trim(), rate: parseFloat(g.rate), user_ids: g.user_ids || '' };
+    });
+
+    var csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    var resp = await fetch('/attendance/fuel-rate-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+      body: JSON.stringify({ groups: groups })
+    });
+
+    var data = await resp.json();
+    if (data.success) {
+      alert('Fuel rate groups saved successfully!');
+      closeFuelRateModal();
+    } else {
+      alert('Error: ' + (data.message || 'Failed to save'));
+    }
+  } catch(e) {
+    console.error('Save error:', e);
+    alert('Failed to save fuel rate groups');
+  }
+
+  saveBtn.disabled = false;
+  saveBtn.textContent = 'Save All Groups';
+}
+
 </script>
+
+<!-- ⛽ Fuel Rate Groups Modal -->
+<div id="fuelRateModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; justify-content: center; align-items: center; padding: 16px;">
+  <div style="background: #fff; border-radius: 16px; max-width: 600px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px rgba(0,0,0,0.25);" onclick="event.stopPropagation()">
+    <div style="padding: 20px 24px 12px; border-bottom: 1px solid #E5E7EB; display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <h2 style="font-size: 18px; font-weight: 700; color: #1F2937; margin: 0;">⛽ Fuel Rate Groups</h2>
+        <p style="font-size: 13px; color: #6B7280; margin: 4px 0 0;">Each group has its own rate. Assign riders — each rider can only be in one group.</p>
+      </div>
+      <button onclick="closeFuelRateModal()" style="background: none; border: none; font-size: 24px; color: #9CA3AF; cursor: pointer; padding: 4px;">&times;</button>
+    </div>
+    <div id="fuelRateLoading" style="padding: 40px; text-align: center; color: #6B7280;">Loading...</div>
+    <div id="fuelRateContent" style="display: none; flex: 1; overflow-y: auto; padding: 16px 24px;">
+      <div id="fuelRateGroupsList"></div>
+    </div>
+    <div style="padding: 12px 24px 20px; border-top: 1px solid #E5E7EB; display: flex; justify-content: space-between; align-items: center;">
+      <button onclick="addFuelGroup()" style="padding: 8px 16px; border-radius: 8px; background: #FFF7ED; color: #F97316; border: 1px solid #FDBA74; font-weight: 600; font-size: 13px; cursor: pointer;">+ Add Group</button>
+      <div style="display: flex; gap: 8px;">
+        <button onclick="closeFuelRateModal()" style="padding: 8px 20px; border-radius: 8px; background: #fff; color: #6B7280; border: 1px solid #D1D5DB; font-weight: 600; font-size: 14px; cursor: pointer;">Cancel</button>
+        <button id="fuelRateSaveBtn" onclick="saveFuelRateGroups()" style="padding: 8px 24px; border-radius: 8px; background: #F97316; color: #fff; border: none; font-weight: 700; font-size: 14px; cursor: pointer;">Save All Groups</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 @endsection

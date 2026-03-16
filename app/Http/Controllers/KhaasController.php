@@ -802,37 +802,66 @@ class KhaasController extends Controller
         // Get all Khaas product IDs
         $khaasProductIds = ProductModel::where('business_unit_id', $khaasBU->id)->pluck('id');
 
-        // ─── Product-level Sales Summary ───
-        $productSales = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
-            ->whereHas('order', function($q) use ($monthStart, $monthEnd) {
-                $q->whereNotIn('order_status', ['cancelled'])
-                  ->whereRaw('DATE(order_date) >= ?', [$monthStart])
-                  ->whereRaw('DATE(order_date) <= ?', [$monthEnd]);
-            })
-            ->selectRaw('product_id, name, SUM(quantity) as total_qty, SUM(line_total) as total_revenue, COUNT(DISTINCT order_id) as order_count')
-            ->groupBy('product_id', 'name')
+        // ─── Product-level Sales Summary with delivered/open/free breakdown ───
+        $excludeFree = filter_var($request->input('exclude_free', false), FILTER_VALIDATE_BOOLEAN);
+
+        $salesQuery = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
+            ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+            ->whereNotIn('o.order_status', ['cancelled'])
+            ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+            ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd]);
+
+        if ($excludeFree) {
+            $salesQuery->where(function($q) {
+                $q->whereNull('t_crm_prod_order_line_item.is_free')
+                  ->orWhere('t_crm_prod_order_line_item.is_free', 0);
+            });
+        }
+
+        $productSales = $salesQuery->selectRaw('t_crm_prod_order_line_item.product_id, t_crm_prod_order_line_item.name,
+                SUM(t_crm_prod_order_line_item.quantity) as total_qty,
+                SUM(t_crm_prod_order_line_item.line_total) as total_revenue,
+                COUNT(DISTINCT t_crm_prod_order_line_item.order_id) as order_count,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as delivered_qty,
+                SUM(CASE WHEN o.order_status NOT IN ("delivered","cancelled") THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as open_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 1 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as free_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 0 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as paid_qty,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.line_total ELSE 0 END) as delivered_revenue')
+            ->groupBy('t_crm_prod_order_line_item.product_id', 't_crm_prod_order_line_item.name')
             ->orderByDesc('total_revenue')
             ->get();
 
         $grandTotalRevenue = $productSales->sum('total_revenue');
         $grandTotalQty = $productSales->sum('total_qty');
-        $grandTotalOrders = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
+        $grandTotalDeliveredQty = $productSales->sum('delivered_qty');
+        $grandTotalOpenQty = $productSales->sum('open_qty');
+        $grandTotalFreeQty = $productSales->sum('free_qty');
+        $ordersQuery = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
             ->whereHas('order', function($q) use ($monthStart, $monthEnd) {
                 $q->whereNotIn('order_status', ['cancelled'])
                   ->whereRaw('DATE(order_date) >= ?', [$monthStart])
                   ->whereRaw('DATE(order_date) <= ?', [$monthEnd]);
-            })
-            ->distinct('order_id')
-            ->count('order_id');
+            });
+        if ($excludeFree) {
+            $ordersQuery->where(function($q) {
+                $q->whereNull('is_free')->orWhere('is_free', 0);
+            });
+        }
+        $grandTotalOrders = $ordersQuery->distinct('order_id')->count('order_id');
 
         // ─── Detailed Transactions (all line items with order info) ───
-        $transactions = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
+        $txnQuery = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
             ->whereHas('order', function($q) use ($monthStart, $monthEnd) {
                 $q->whereNotIn('order_status', ['cancelled'])
                   ->whereRaw('DATE(order_date) >= ?', [$monthStart])
                   ->whereRaw('DATE(order_date) <= ?', [$monthEnd]);
-            })
-            ->with(['order:id,order_number,order_date,order_status,total_price,customer_id,payment_method', 'order.customer:id,first_name,last_name,phone_original'])
+            });
+        if ($excludeFree) {
+            $txnQuery->where(function($q) {
+                $q->whereNull('is_free')->orWhere('is_free', 0);
+            });
+        }
+        $transactions = $txnQuery->with(['order:id,order_number,order_date,order_status,total_price,customer_id,payment_method', 'order.customer:id,first_name,last_name,phone_original'])
             ->orderBy('created_at', 'desc')
             ->paginate(50);
 
@@ -846,8 +875,257 @@ class KhaasController extends Controller
         return view('khaas.sales-report', compact(
             'khaasBU', 'selectedMonth', 'monthLabel', 'availableMonths',
             'productSales', 'grandTotalRevenue', 'grandTotalQty', 'grandTotalOrders',
+            'grandTotalDeliveredQty', 'grandTotalOpenQty', 'grandTotalFreeQty',
             'transactions'
         ));
+    }
+
+    /**
+     * API version of sales report for mobile
+     */
+    public function salesReportApi(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        $selectedMonth = $request->input('month', date('Y-m'));
+        $monthStart = $selectedMonth . '-01';
+        $monthEnd = date('Y-m-t', strtotime($monthStart));
+
+        $khaasProductIds = ProductModel::where('business_unit_id', $khaasBU->id)->pluck('id');
+
+        // Get selling price per product (variant price or price_min)
+        $priceByProduct = [];
+        $variantPrices = \DB::table('t_crm_prod_product_variant')
+            ->whereIn('product_id', $khaasProductIds)
+            ->where('price', '>', 0)
+            ->select('product_id', \DB::raw('MIN(price) as variant_price'))
+            ->groupBy('product_id')
+            ->get();
+        foreach ($variantPrices as $vp) {
+            if ($vp->variant_price > 0) {
+                $priceByProduct[(int) $vp->product_id] = round((float) $vp->variant_price, 2);
+            }
+        }
+        $productPrices = ProductModel::whereIn('id', $khaasProductIds)->pluck('price_min', 'id');
+        foreach ($productPrices as $pid => $priceMin) {
+            if (!isset($priceByProduct[(int) $pid]) && $priceMin > 0) {
+                $priceByProduct[(int) $pid] = round((float) $priceMin, 2);
+            }
+        }
+
+        $excludeFree = filter_var($request->input('exclude_free', false), FILTER_VALIDATE_BOOLEAN);
+
+        $salesQuery = \App\Models\CRM\OrderLineItemModel::whereIn('product_id', $khaasProductIds)
+            ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+            ->whereNotIn('o.order_status', ['cancelled'])
+            ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+            ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd]);
+
+        if ($excludeFree) {
+            $salesQuery->where(function($q) {
+                $q->whereNull('t_crm_prod_order_line_item.is_free')
+                  ->orWhere('t_crm_prod_order_line_item.is_free', 0);
+            });
+        }
+
+        $productSales = $salesQuery->selectRaw('t_crm_prod_order_line_item.product_id, t_crm_prod_order_line_item.name,
+                SUM(t_crm_prod_order_line_item.quantity) as total_qty,
+                SUM(t_crm_prod_order_line_item.line_total) as total_revenue,
+                COUNT(DISTINCT t_crm_prod_order_line_item.order_id) as order_count,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as delivered_qty,
+                SUM(CASE WHEN o.order_status NOT IN ("delivered","cancelled") THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as open_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 1 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as free_qty')
+            ->groupBy('t_crm_prod_order_line_item.product_id', 't_crm_prod_order_line_item.name')
+            ->orderByDesc('total_revenue')
+            ->get();
+
+        $grandTotalRevenue = $productSales->sum('total_revenue');
+        $totalFreeValue = 0;
+
+        $mappedProducts = $productSales->map(function($ps) use ($grandTotalRevenue, $priceByProduct, &$totalFreeValue) {
+            $pid = (int) $ps->product_id;
+            $freeQty = (int) $ps->free_qty;
+            $sellingPrice = $priceByProduct[$pid] ?? 0;
+            $freeValue = round($freeQty * $sellingPrice, 2);
+            $totalFreeValue += $freeValue;
+
+            return [
+                'product_id' => $pid,
+                'name' => $ps->name,
+                'total_qty' => (int) $ps->total_qty,
+                'total_revenue' => (float) $ps->total_revenue,
+                'order_count' => (int) $ps->order_count,
+                'delivered_qty' => (int) $ps->delivered_qty,
+                'open_qty' => (int) $ps->open_qty,
+                'free_qty' => $freeQty,
+                'free_value' => $freeValue,
+                'selling_price' => $sellingPrice,
+                'pct_of_total' => $grandTotalRevenue > 0 ? round(($ps->total_revenue / $grandTotalRevenue) * 100, 1) : 0,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'month' => $selectedMonth,
+            'products' => $mappedProducts,
+            'totals' => [
+                'revenue' => (float) $productSales->sum('total_revenue'),
+                'qty' => (int) $productSales->sum('total_qty'),
+                'delivered_qty' => (int) $productSales->sum('delivered_qty'),
+                'open_qty' => (int) $productSales->sum('open_qty'),
+                'free_qty' => (int) $productSales->sum('free_qty'),
+                'free_value' => round($totalFreeValue, 2),
+            ],
+        ]);
+    }
+
+    /**
+     * Daily sales report: day-by-day totals with per-product breakdown
+     * GET /warehouse/sales-report/daily?business_unit_id=X&month=YYYY-MM
+     */
+    public function salesReportDaily(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        $selectedMonth = $request->input('month', date('Y-m'));
+        $monthStart = $selectedMonth . '-01';
+        $monthEnd = date('Y-m-t', strtotime($monthStart));
+
+        $khaasProductIds = ProductModel::where('business_unit_id', $khaasBU->id)->pluck('id');
+        $excludeFree = filter_var($request->input('exclude_free', false), FILTER_VALIDATE_BOOLEAN);
+
+        $freeFilter = function($q) {
+            $q->whereNull('t_crm_prod_order_line_item.is_free')
+              ->orWhere('t_crm_prod_order_line_item.is_free', 0);
+        };
+
+        // Day-level totals
+        $dayQuery = \App\Models\CRM\OrderLineItemModel::whereIn('t_crm_prod_order_line_item.product_id', $khaasProductIds)
+            ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+            ->whereNotIn('o.order_status', ['cancelled'])
+            ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+            ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd]);
+        if ($excludeFree) $dayQuery->where($freeFilter);
+
+        $dayTotals = $dayQuery->selectRaw('DATE(o.order_date) as sale_date,
+                SUM(t_crm_prod_order_line_item.quantity) as total_qty,
+                SUM(t_crm_prod_order_line_item.line_total) as revenue,
+                COUNT(DISTINCT t_crm_prod_order_line_item.order_id) as order_count,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as delivered_qty,
+                SUM(CASE WHEN o.order_status NOT IN ("delivered","cancelled") THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as open_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 1 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as free_qty')
+            ->groupByRaw('DATE(o.order_date)')
+            ->orderByDesc('sale_date')
+            ->get();
+
+        // Per-product per-day breakdown
+        $prodQuery = \App\Models\CRM\OrderLineItemModel::whereIn('t_crm_prod_order_line_item.product_id', $khaasProductIds)
+            ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+            ->whereNotIn('o.order_status', ['cancelled'])
+            ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+            ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd]);
+        if ($excludeFree) $prodQuery->where($freeFilter);
+
+        $productByDay = $prodQuery->selectRaw('DATE(o.order_date) as sale_date,
+                t_crm_prod_order_line_item.product_id,
+                t_crm_prod_order_line_item.name as product_name,
+                SUM(t_crm_prod_order_line_item.quantity) as total_qty,
+                SUM(t_crm_prod_order_line_item.line_total) as revenue,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as delivered_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 1 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as free_qty')
+            ->groupByRaw('DATE(o.order_date), t_crm_prod_order_line_item.product_id, t_crm_prod_order_line_item.name')
+            ->orderBy('product_name')
+            ->get()
+            ->groupBy('sale_date');
+
+        $days = $dayTotals->map(function ($day) use ($productByDay) {
+            $date = $day->sale_date;
+            $products = ($productByDay[$date] ?? collect())->map(function ($p) {
+                return [
+                    'product_id' => (int) $p->product_id,
+                    'product_name' => $p->product_name,
+                    'qty' => (int) $p->total_qty,
+                    'revenue' => round((float) $p->revenue, 2),
+                    'delivered_qty' => (int) $p->delivered_qty,
+                    'free_qty' => (int) $p->free_qty,
+                ];
+            })->values();
+
+            return [
+                'date' => $date,
+                'total_qty' => (int) $day->total_qty,
+                'revenue' => round((float) $day->revenue, 2),
+                'order_count' => (int) $day->order_count,
+                'delivered_qty' => (int) $day->delivered_qty,
+                'open_qty' => (int) $day->open_qty,
+                'free_qty' => (int) $day->free_qty,
+                'products' => $products,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'month' => $selectedMonth,
+            'days' => $days,
+        ]);
+    }
+
+    /**
+     * Web-facing daily sales AJAX endpoint (session auth)
+     */
+    public function salesReportDailyWeb(Request $request)
+    {
+        $request->merge(['business_unit_id' => optional($this->getKhaasBU())->id]);
+        return $this->salesReportDaily($request);
+    }
+
+    /**
+     * Daily breakdown for a product in the sales report (AJAX)
+     */
+    public function productDailyBreakdown(Request $request, $productId)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'Access denied'], 403);
+        }
+
+        $selectedMonth = $request->input('month', date('Y-m'));
+        $monthStart = $selectedMonth . '-01';
+        $monthEnd = date('Y-m-t', strtotime($monthStart));
+
+        $dailyData = \App\Models\CRM\OrderLineItemModel::where('product_id', $productId)
+            ->join('t_crm_prod_order as o', 'o.id', '=', 't_crm_prod_order_line_item.order_id')
+            ->whereNotIn('o.order_status', ['cancelled'])
+            ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+            ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd])
+            ->selectRaw('DATE(o.order_date) as sale_date,
+                SUM(t_crm_prod_order_line_item.quantity) as total_qty,
+                SUM(t_crm_prod_order_line_item.line_total) as revenue,
+                SUM(CASE WHEN o.order_status = "delivered" THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as delivered_qty,
+                SUM(CASE WHEN o.order_status NOT IN ("delivered","cancelled") THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as open_qty,
+                SUM(CASE WHEN COALESCE(t_crm_prod_order_line_item.is_free, 0) = 1 THEN t_crm_prod_order_line_item.quantity ELSE 0 END) as free_qty,
+                COUNT(DISTINCT t_crm_prod_order_line_item.order_id) as order_count')
+            ->groupByRaw('DATE(o.order_date)')
+            ->orderByDesc('sale_date')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'daily' => $dailyData,
+        ]);
     }
 
     /**
@@ -924,7 +1202,11 @@ class KhaasController extends Controller
      */
     public function getStoreInventoryLog(Request $request, $productId)
     {
-        if (!$this->hasKhaasAccess()) {
+        $user = auth()->user();
+        $canAccess = $this->hasKhaasAccess()
+            || ($user && $user->hasMobilePermission('view_khaas_store_inventory'))
+            || ($user && $user->hasMobilePermission('access_store_mode'));
+        if (!$canAccess) {
             return response()->json(['success' => false, 'message' => 'No access'], 403);
         }
 
@@ -938,7 +1220,7 @@ class KhaasController extends Controller
             return response()->json(['success' => false, 'message' => 'Product not found'], 404);
         }
 
-        $limit = (int) ($request->get('limit', 15));
+        $limit = (int) ($request->get('limit', 30));
         $variantIds = $product->variants->pluck('id')->toArray();
 
         // Current store qty
@@ -1124,23 +1406,648 @@ class KhaasController extends Controller
 
         foreach ($events as $event) {
             $event['balance_after'] = $runningBalance;
-            $runningBalance = $runningBalance - $event['change']; // reverse the effect
+            $runningBalance = $runningBalance - $event['change'];
             $event['balance_before'] = $runningBalance;
-            $event['date_formatted'] = $event['date']
-                ? \Carbon\Carbon::parse($event['date'])->format('M d, h:i A')
-                : 'Unknown';
-            $event['date_ago'] = $event['date']
-                ? \Carbon\Carbon::parse($event['date'])->diffForHumans()
-                : '';
+            $parsedDate = $event['date'] ? \Carbon\Carbon::parse($event['date']) : null;
+            $event['date_formatted'] = $parsedDate ? $parsedDate->format('M d, h:i A') : 'Unknown';
+            $event['date_ago'] = $parsedDate ? $parsedDate->diffForHumans() : '';
+            $event['date_day'] = $parsedDate ? $parsedDate->toDateString() : 'unknown';
+            $event['date_day_label'] = $parsedDate ? ($parsedDate->isToday() ? 'Today' : ($parsedDate->isYesterday() ? 'Yesterday' : $parsedDate->format('D, M d'))) : 'Unknown';
             $eventsWithBalance[] = $event;
         }
+
+        // Group events by day for structured display
+        $days = [];
+        foreach ($eventsWithBalance as $ev) {
+            $dayKey = $ev['date_day'];
+            if (!isset($days[$dayKey])) {
+                $days[$dayKey] = [
+                    'date' => $dayKey,
+                    'label' => $ev['date_day_label'],
+                    'events' => [],
+                ];
+            }
+            $days[$dayKey]['events'][] = $ev;
+        }
+        // Add opening/closing balance per day
+        foreach ($days as &$day) {
+            $dayEvents = $day['events'];
+            $day['closing_balance'] = $dayEvents[0]['balance_after'];
+            $day['opening_balance'] = end($dayEvents)['balance_before'];
+            $day['net_change'] = $day['closing_balance'] - $day['opening_balance'];
+        }
+        unset($day);
 
         return response()->json([
             'success' => true,
             'product_name' => $product->title,
             'current_store_qty' => $currentStoreQty,
             'events' => $eventsWithBalance,
+            'days' => array_values($days),
             'events_count' => count($eventsWithBalance),
         ]);
+    }
+
+    /**
+     * Khaas Meat Order — Track Orders & Place New Order
+     */
+    public function meatOrder(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return redirect('/dashboard')->with('error', 'Khaas business unit not found.');
+        }
+
+        $activeTab = $request->input('tab', 'orders');
+
+        // Storage orders with NF order status
+        $orders = DB::table('t_crm_khaas_storage_order as so')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'so.order_id')
+            ->where('so.khaas_business_unit_id', $khaasBU->id)
+            ->select(
+                'so.*',
+                'o.order_number',
+                'o.order_status as nf_order_status',
+                'o.total_price as total_amount',
+                'o.created_at as order_created_at'
+            )
+            ->orderByDesc('so.created_at')
+            ->limit(50)
+            ->get();
+
+        // Get line items for each order
+        foreach ($orders as $order) {
+            $order->items = DB::table('t_crm_prod_order_line_item as oi')
+                ->join('t_crm_prod_product as p', 'p.id', '=', 'oi.product_id')
+                ->where('oi.order_id', $order->order_id)
+                ->select('oi.*', 'p.title as product_name')
+                ->get();
+            $order->created_by_name = $order->created_by
+                ? DB::table('t_sys_user')->where('id', $order->created_by)->value('fullname')
+                : null;
+        }
+
+        // Separate pending receive vs others
+        $pendingReceive = $orders->filter(function ($o) {
+            return !in_array($o->status, ['received', 'cancelled'])
+                && in_array($o->nf_order_status, ['delivered', 'completed']);
+        });
+        $otherOrders = $orders->filter(function ($o) {
+            return in_array($o->status, ['received', 'cancelled'])
+                || !in_array($o->nf_order_status, ['delivered', 'completed']);
+        });
+
+        // Configured storage products for new order
+        $storageProducts = DB::table('t_crm_khaas_storage_config as sc')
+            ->join('t_crm_prod_product as p', 'p.id', '=', 'sc.source_product_id')
+            ->leftJoin('t_crm_prod_product_variant as v', 'v.id', '=', 'sc.source_variant_id')
+            ->where('sc.khaas_business_unit_id', $khaasBU->id)
+            ->where('sc.is_active', 1)
+            ->select('sc.*', 'p.title as product_title', 'v.title as variant_title', 'sc.default_unit')
+            ->orderBy('sc.sort_order')
+            ->orderBy('p.title')
+            ->get();
+
+        // Settings (from config table, same as the mobile API's getStorageInventory)
+        $vendorId = \App\Models\FIN\ConfigModel::where('config_key', 'KHAAS_STORAGE_VENDOR_ID')
+            ->where('business_unit_id', $khaasBU->id)->value('config_value');
+        $vendorName = null;
+        if ($vendorId) {
+            $vendorName = \App\Models\FIN\VendorModel::where('id', $vendorId)->value('vendor_name');
+        }
+        $settings = (object)[
+            'vendor_name' => $vendorName ?: 'Nizami Farms',
+        ];
+
+        return view('khaas.meat-order', compact(
+            'khaasBU', 'activeTab', 'orders', 'pendingReceive', 'otherOrders',
+            'storageProducts', 'settings'
+        ));
+    }
+
+    /**
+     * Khaas Meat Order — receive a delivered order into storage
+     */
+    public function receiveStorageOrder($id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        $storageOrder = DB::table('t_crm_khaas_storage_order')->where('id', $id)
+            ->where('khaas_business_unit_id', $khaasBU->id)->first();
+        if (!$storageOrder || $storageOrder->status === 'received') {
+            return back()->with('error', 'Order not found or already received.');
+        }
+
+        // Call the existing API method via the WarehouseController
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $fakeRequest = new Request();
+        $response = $controller->receiveStorageOrder($fakeRequest, $id);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return back()->with('success', $data['message'] ?? 'Order received into storage.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to receive order.');
+    }
+
+    /**
+     * Khaas Meat Order — place a new order (web form submission)
+     */
+    public function placeStorageOrder(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        // Filter out items with no quantity
+        $items = collect($request->input('items', []))->filter(function ($item) {
+            return isset($item['quantity']) && (float)$item['quantity'] > 0;
+        })->values()->toArray();
+
+        if (empty($items)) {
+            return back()->with('error', 'Please enter quantity for at least one item.');
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $apiRequest = new Request([
+            'business_unit_id' => $khaasBU->id,
+            'items' => $items,
+            'notes' => $request->input('notes'),
+        ]);
+        $response = $controller->placeStorageOrder($apiRequest);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return redirect()->route('khaas.meat-order', ['tab' => 'orders'])
+                ->with('success', $data['message'] ?? 'Order placed successfully.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to place order.');
+    }
+
+    /**
+     * Khaas Inventory — Current Stock & Production Plan
+     */
+    public function inventory(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return redirect('/dashboard')->with('error', 'Khaas business unit not found.');
+        }
+
+        $activeTab = $request->input('tab', 'stock');
+
+        // === CURRENT STOCK ===
+        $configuredProducts = DB::table('t_crm_khaas_storage_config as sc')
+            ->join('t_crm_prod_product as p', 'p.id', '=', 'sc.source_product_id')
+            ->leftJoin('t_crm_prod_product_variant as v', 'v.id', '=', 'sc.source_variant_id')
+            ->where('sc.khaas_business_unit_id', $khaasBU->id)
+            ->where('sc.is_active', 1)
+            ->select('sc.*', 'p.title as product_title', 'v.title as variant_title')
+            ->orderBy('sc.sort_order')
+            ->orderBy('p.title')
+            ->get();
+
+        $inventoryRows = DB::table('t_crm_khaas_storage_inventory')
+            ->where('khaas_business_unit_id', $khaasBU->id)
+            ->get()
+            ->keyBy(function ($row) {
+                return $row->source_product_id . '_' . ($row->source_variant_id ?: '0');
+            });
+
+        // Compute processing quantities — supports both old (single storage_product_id) and new (multi-recipe) demand items
+        $inProgressItems = DB::table('t_crm_khaas_production_demand_item as di')
+            ->join('t_crm_khaas_production_demand as d', 'd.id', '=', 'di.demand_id')
+            ->where('d.business_unit_id', $khaasBU->id)
+            ->whereIn('di.status', ['in_progress', 'accepted'])
+            ->where('di.storage_deducted', 1)
+            ->select('di.khaas_product_id', 'di.quantity_kg', 'di.storage_product_id', 'di.storage_deducted_qty')
+            ->get();
+
+        $processingQtys = [];
+        foreach ($inProgressItems as $item) {
+            if ($item->storage_product_id) {
+                $pid = $item->storage_product_id;
+                $processingQtys[$pid] = ($processingQtys[$pid] ?? 0) + (float)$item->storage_deducted_qty;
+            } else {
+                $recipes = DB::table('t_crm_khaas_product_recipe')
+                    ->where('khaas_product_id', $item->khaas_product_id)
+                    ->where('is_active', 1)
+                    ->get();
+                foreach ($recipes as $recipe) {
+                    $pid = $recipe->storage_product_id;
+                    $deductQty = round((float)$item->quantity_kg * (float)$recipe->ratio_kg, 3);
+                    $processingQtys[$pid] = ($processingQtys[$pid] ?? 0) + $deductQty;
+                }
+            }
+        }
+
+        $stockItems = $configuredProducts->map(function ($p) use ($inventoryRows, $processingQtys) {
+            $key = $p->source_product_id . '_' . ($p->source_variant_id ?: '0');
+            $inv = $inventoryRows[$key] ?? null;
+            return (object)[
+                'config_id' => $p->id,
+                'product_id' => $p->source_product_id,
+                'variant_id' => $p->source_variant_id,
+                'name' => $p->display_name ?: $p->product_title,
+                'variant_title' => $p->variant_title,
+                'unit' => $p->default_unit ?: 'kg',
+                'quantity' => $inv ? round((float)$inv->quantity_on_hand, 3) : 0,
+                'processing_qty' => round((float)($processingQtys[$p->source_product_id] ?? 0), 3),
+                'last_received' => $inv ? $inv->last_received_at : null,
+            ];
+        });
+
+        // === PRODUCTION DEMANDS ===
+        $demands = DB::table('t_crm_khaas_production_demand as d')
+            ->where('d.business_unit_id', $khaasBU->id)
+            ->whereIn('d.status', ['submitted', 'accepted', 'in_progress'])
+            ->orderByDesc('d.created_at')
+            ->limit(20)
+            ->get();
+
+        foreach ($demands as $demand) {
+            $demand->items = DB::table('t_crm_khaas_production_demand_item as di')
+                ->leftJoin('t_crm_prod_product as kp', 'kp.id', '=', 'di.khaas_product_id')
+                ->where('di.demand_id', $demand->id)
+                ->select('di.*', 'kp.title as product_name')
+                ->get();
+            $demand->created_by_name = $demand->created_by
+                ? DB::table('t_sys_user')->where('id', $demand->created_by)->value('fullname')
+                : null;
+        }
+
+        // Demand history (completed/cancelled)
+        $demandHistory = DB::table('t_crm_khaas_production_demand as d')
+            ->where('d.business_unit_id', $khaasBU->id)
+            ->whereIn('d.status', ['completed', 'cancelled'])
+            ->orderByDesc('d.created_at')
+            ->limit(20)
+            ->get();
+
+        foreach ($demandHistory as $demand) {
+            $demand->items = DB::table('t_crm_khaas_production_demand_item as di')
+                ->leftJoin('t_crm_prod_product as kp', 'kp.id', '=', 'di.khaas_product_id')
+                ->where('di.demand_id', $demand->id)
+                ->select('di.*', 'kp.title as product_name')
+                ->get();
+            $demand->created_by_name = $demand->created_by
+                ? DB::table('t_sys_user')->where('id', $demand->created_by)->value('fullname')
+                : null;
+        }
+
+        $pendingDemandCount = DB::table('t_crm_khaas_production_demand')
+            ->where('business_unit_id', $khaasBU->id)
+            ->where('status', 'submitted')
+            ->count();
+
+        // === DEMAND PRODUCTS (for create plan form) ===
+        $demandProducts = collect();
+        if ($activeTab === 'production') {
+            $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+            $apiReq = new Request(['business_unit_id' => $khaasBU->id]);
+            $resp = $controller->getDemandProducts($apiReq);
+            $data = json_decode($resp->getContent(), true);
+            $demandProducts = collect($data['products'] ?? []);
+        }
+
+        // === RECIPES (for recipes tab) ===
+        $recipes = collect();
+        $khaasProducts = collect();
+        $storageProductsForRecipe = collect();
+        $customMaterials = collect();
+        if ($activeTab === 'recipes') {
+            $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+            $apiReq = new Request(['business_unit_id' => $khaasBU->id]);
+            $resp = $controller->getProductRecipes($apiReq);
+            $data = json_decode($resp->getContent(), true);
+            $recipes = collect($data['recipes'] ?? []);
+
+            $khaasProducts = ProductModel::where('business_unit_id', $khaasBU->id)
+                ->where('status', 'active')
+                ->select('id', 'title')
+                ->orderBy('title')
+                ->get();
+
+            $storageProductsForRecipe = DB::table('t_crm_khaas_storage_config as sc')
+                ->join('t_crm_prod_product as p', 'p.id', '=', 'sc.source_product_id')
+                ->where('sc.khaas_business_unit_id', $khaasBU->id)
+                ->where('sc.is_active', 1)
+                ->select('sc.source_product_id as product_id', 'sc.source_variant_id as variant_id', 'sc.display_name', 'p.title as product_title')
+                ->orderBy('p.title')
+                ->get()
+                ->map(function ($p) {
+                    $p->name = $p->display_name ?: $p->product_title;
+                    return $p;
+                });
+
+            try {
+                $customMaterials = DB::table('t_crm_khaas_custom_material')
+                    ->where('business_unit_id', $khaasBU->id)
+                    ->where('is_active', 1)
+                    ->orderBy('name')
+                    ->get(['id', 'name', 'unit']);
+            } catch (\Exception $e) {
+                $customMaterials = collect();
+            }
+        }
+
+        // === CONFIGURE STORAGE PRODUCTS (for config tab) ===
+        $availableProducts = collect();
+        $configuredProductIds = [];
+        if ($activeTab === 'config') {
+            $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+            $resp = $controller->getAvailableStorageProducts(new Request());
+            $data = json_decode($resp->getContent(), true);
+            $availableProducts = collect($data['products'] ?? []);
+
+            $configuredProductIds = DB::table('t_crm_khaas_storage_config')
+                ->where('khaas_business_unit_id', $khaasBU->id)
+                ->where('is_active', 1)
+                ->pluck('source_product_id')
+                ->toArray();
+        }
+
+        return view('khaas.inventory', compact(
+            'khaasBU', 'activeTab', 'stockItems', 'demands', 'demandHistory', 'pendingDemandCount',
+            'demandProducts', 'recipes', 'khaasProducts', 'storageProductsForRecipe',
+            'customMaterials', 'availableProducts', 'configuredProductIds'
+        ));
+    }
+
+    /**
+     * Khaas Inventory — create a new production demand
+     */
+    public function createDemand(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        $items = collect($request->input('items', []))->filter(function ($item) {
+            return isset($item['quantity_kg']) && (float)$item['quantity_kg'] > 0;
+        })->values()->toArray();
+
+        if (empty($items)) {
+            return back()->with('error', 'Enter weight for at least one product.');
+        }
+
+        $tomorrow = now()->addDay()->toDateString();
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $apiRequest = new Request([
+            'business_unit_id' => $khaasBU->id,
+            'demand_date' => $request->input('demand_date', $tomorrow),
+            'items' => array_map(function ($i) {
+                return [
+                    'khaas_product_id' => $i['khaas_product_id'],
+                    'quantity_kg' => (float) $i['quantity_kg'],
+                ];
+            }, $items),
+            'notes' => $request->input('notes'),
+        ]);
+
+        $response = $controller->createDemand($apiRequest);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return redirect()->route('khaas.inventory', ['tab' => 'production'])
+                ->with('success', $data['message'] ?? 'Production demand created.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to create demand.');
+    }
+
+    /**
+     * Khaas Inventory — accept a production demand
+     */
+    public function acceptDemand($id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $response = $controller->acceptDemand(new Request(), $id);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return back()->with('success', $data['message'] ?? 'Demand accepted.');
+        }
+
+        $msg = $data['message'] ?? 'Failed to accept demand.';
+        if (!empty($data['shortages'])) {
+            $msg .= ' — ' . implode(', ', $data['shortages']);
+        }
+        return back()->with('error', $msg);
+    }
+
+    /**
+     * Khaas Inventory — cancel a production demand
+     */
+    public function cancelDemand($id)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $response = $controller->cancelDemand(new Request(), $id);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return back()->with('success', $data['message'] ?? 'Demand cancelled.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to cancel demand.');
+    }
+
+    /**
+     * Khaas Inventory — save recipe mapping(s). Accepts single or multiple storage_product_ids.
+     */
+    public function saveRecipe(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            if ($request->expectsJson()) {
+                return response()->json(['success' => false, 'message' => 'Access denied'], 403);
+            }
+            abort(403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            if ($request->expectsJson()) {
+                return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+            }
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        $khaasProductId = $request->input('khaas_product_id');
+        $storageProductId = $request->input('storage_product_id');
+        $customMaterialIds = $request->input('custom_material_ids', []);
+        if (!is_array($customMaterialIds)) $customMaterialIds = array_filter([$customMaterialIds]);
+
+        // Support array of storage_product_ids for multi-select
+        $storageProductIds = is_array($storageProductId) ? $storageProductId : [$storageProductId];
+        $storageProductIds = array_filter($storageProductIds);
+
+        if (empty($khaasProductId) || (empty($storageProductIds) && empty($customMaterialIds))) {
+            if ($request->expectsJson()) {
+                return response()->json(['success' => false, 'message' => 'Select a product and at least one raw material'], 400);
+            }
+            return back()->with('error', 'Select a product and at least one raw material.');
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $savedCount = 0;
+        $lastError = null;
+
+        foreach ($storageProductIds as $spId) {
+            $apiRequest = new Request([
+                'business_unit_id' => $khaasBU->id,
+                'khaas_product_id' => $khaasProductId,
+                'storage_product_id' => $spId,
+                'storage_variant_id' => $request->input('storage_variant_id'),
+            ]);
+
+            $response = $controller->saveProductRecipe($apiRequest);
+            $data = json_decode($response->getContent(), true);
+
+            if ($data['success'] ?? false) {
+                $savedCount++;
+            } else {
+                $lastError = $data['message'] ?? 'Failed to save';
+            }
+        }
+
+        foreach ($customMaterialIds as $cmId) {
+            $apiRequest = new Request([
+                'business_unit_id' => $khaasBU->id,
+                'khaas_product_id' => $khaasProductId,
+                'custom_material_id' => $cmId,
+            ]);
+
+            $response = $controller->saveProductRecipe($apiRequest);
+            $data = json_decode($response->getContent(), true);
+
+            if ($data['success'] ?? false) {
+                $savedCount++;
+            } else {
+                $lastError = $data['message'] ?? 'Failed to save';
+            }
+        }
+
+        $message = $savedCount > 0
+            ? "Saved {$savedCount} recipe mapping" . ($savedCount > 1 ? 's' : '') . '.'
+            : ($lastError ?? 'Failed to save recipe.');
+
+        if ($request->expectsJson()) {
+            return response()->json([
+                'success' => $savedCount > 0,
+                'message' => $message,
+                'saved_count' => $savedCount,
+            ]);
+        }
+
+        if ($savedCount > 0) {
+            return redirect()->route('khaas.inventory', ['tab' => 'recipes'])
+                ->with('success', $message);
+        }
+        return back()->with('error', $message);
+    }
+
+    /**
+     * Web-facing: create a custom material (session auth)
+     */
+    public function saveCustomMaterialWeb(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            return response()->json(['success' => false, 'message' => 'Access denied'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'BU not found'], 404);
+        }
+
+        $request->merge(['business_unit_id' => $khaasBU->id]);
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        return $controller->saveCustomMaterial($request);
+    }
+
+    /**
+     * Khaas Inventory — delete a recipe mapping
+     */
+    public function deleteRecipe(Request $request, $recipeId)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $apiRequest = new Request(['recipe_id' => $recipeId]);
+        $response = $controller->deleteProductRecipe($apiRequest);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return redirect()->route('khaas.inventory', ['tab' => 'recipes'])
+                ->with('success', $data['message'] ?? 'Recipe mapping removed.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to remove recipe.');
+    }
+
+    /**
+     * Khaas Inventory — add/remove product from storage configuration
+     */
+    public function updateStorageConfig(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return back()->with('error', 'Khaas business unit not found.');
+        }
+
+        $controller = app(\App\Http\Controllers\CRM\WarehouseController::class);
+        $apiRequest = new Request([
+            'business_unit_id' => $khaasBU->id,
+            'product_id' => $request->input('product_id'),
+            'action' => $request->input('action'),
+            'display_name' => $request->input('display_name'),
+            'default_unit' => $request->input('default_unit', 'kg'),
+        ]);
+
+        $response = $controller->updateStorageConfig($apiRequest);
+        $data = json_decode($response->getContent(), true);
+
+        if ($data['success'] ?? false) {
+            return redirect()->route('khaas.inventory', ['tab' => 'config'])
+                ->with('success', $data['message'] ?? 'Configuration updated.');
+        }
+        return back()->with('error', $data['message'] ?? 'Failed to update configuration.');
     }
 }

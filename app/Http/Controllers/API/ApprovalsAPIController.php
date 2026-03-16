@@ -330,6 +330,10 @@ class ApprovalsAPIController extends Controller
             $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()
                 ->get(['id', 'name', 'short_code', 'color_hex']);
 
+            // Fetch current Online Bank balance
+            $onlineAccount = \App\Models\FIN\AccountModel::where('account_code', 'ONLINE')->first();
+            $onlineBalance = $onlineAccount ? $onlineAccount->current_balance : 0;
+
             $responseData = [
                 'items' => $items,
                 'count' => count($items),
@@ -345,9 +349,10 @@ class ApprovalsAPIController extends Controller
                         'amount' => array_sum(array_column($l2Items, 'amount'))
                     ]
                 ],
+                'online_balance' => (float) $onlineBalance,
                 'has_level_1_rights' => $hasLevel1Rights,
                 'has_level_2_rights' => $hasLevel2Rights,
-                'receiving_accounts' => $receivingAccounts, // ⭐ Bank accounts for dropdown
+                'receiving_accounts' => $receivingAccounts,
                 'last_synced' => now()->toIso8601String(),
                 '_debug_timings' => $timings
             ];

@@ -527,4 +527,104 @@ class DashboardController extends Controller
             ]);
         }
     }
+
+    /**
+     * Frozen (Khaas) sales summary for dashboard card
+     */
+    public function getFrozenSales(Request $request)
+    {
+        try {
+            $monthKey = $request->get('month', Carbon::now()->format('Y-m'));
+            $monthStart = $monthKey . '-01';
+            $monthEnd = date('Y-m-t', strtotime($monthStart));
+
+            $khaasBU = \DB::table('t_fin_business_units')
+                ->where('code', 'khaas')
+                ->first();
+
+            if (!$khaasBU) {
+                return response()->json(['success' => true, 'data' => null]);
+            }
+
+            $khaasProductIds = \DB::table('t_crm_prod_product')
+                ->where('business_unit_id', $khaasBU->id)
+                ->where('is_active', 1)
+                ->pluck('id');
+
+            if ($khaasProductIds->isEmpty()) {
+                return response()->json(['success' => true, 'data' => null]);
+            }
+
+            $priceByProduct = [];
+            $variantPrices = \DB::table('t_crm_prod_product_variant')
+                ->whereIn('product_id', $khaasProductIds)
+                ->where('price', '>', 0)
+                ->select('product_id', \DB::raw('MIN(price) as variant_price'))
+                ->groupBy('product_id')
+                ->get();
+            foreach ($variantPrices as $vp) {
+                if ($vp->variant_price > 0) {
+                    $priceByProduct[(int) $vp->product_id] = round((float) $vp->variant_price, 2);
+                }
+            }
+            $productPrices = \DB::table('t_crm_prod_product')
+                ->whereIn('id', $khaasProductIds)
+                ->pluck('price_min', 'id');
+            foreach ($productPrices as $pid => $priceMin) {
+                if (!isset($priceByProduct[(int) $pid]) && $priceMin > 0) {
+                    $priceByProduct[(int) $pid] = round((float) $priceMin, 2);
+                }
+            }
+
+            $productSales = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+                ->whereIn('li.product_id', $khaasProductIds)
+                ->whereNotIn('o.order_status', ['cancelled'])
+                ->whereRaw('DATE(o.order_date) >= ?', [$monthStart])
+                ->whereRaw('DATE(o.order_date) <= ?', [$monthEnd])
+                ->selectRaw('li.product_id, li.name,
+                    SUM(li.quantity) as total_qty,
+                    SUM(li.line_total) as total_revenue,
+                    SUM(CASE WHEN o.order_status = "delivered" THEN li.quantity ELSE 0 END) as delivered_qty,
+                    SUM(CASE WHEN COALESCE(li.is_free, 0) = 1 THEN li.quantity ELSE 0 END) as free_qty')
+                ->groupBy('li.product_id', 'li.name')
+                ->orderByDesc('total_revenue')
+                ->get();
+
+            $totalRevenue = $productSales->sum('total_revenue');
+            $totalQty = $productSales->sum('total_qty');
+            $deliveredQty = $productSales->sum('delivered_qty');
+            $freeQty = $productSales->sum('free_qty');
+            $totalFreeValue = 0;
+
+            $products = $productSales->map(function($ps) use ($priceByProduct, &$totalFreeValue) {
+                $pid = (int) $ps->product_id;
+                $freeValue = round(((int) $ps->free_qty) * ($priceByProduct[$pid] ?? 0), 2);
+                $totalFreeValue += $freeValue;
+                return [
+                    'name' => $ps->name,
+                    'qty' => (int) $ps->total_qty,
+                    'delivered' => (int) $ps->delivered_qty,
+                    'free' => (int) $ps->free_qty,
+                    'revenue' => round((float) $ps->total_revenue, 2),
+                ];
+            })->values();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'bu_name' => $khaasBU->name,
+                    'total_revenue' => round($totalRevenue, 2),
+                    'total_qty' => (int) $totalQty,
+                    'delivered_qty' => (int) $deliveredQty,
+                    'free_qty' => (int) $freeQty,
+                    'free_value' => round($totalFreeValue, 2),
+                    'products' => $products,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Frozen sales error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'error' => $e->getMessage()]);
+        }
+    }
 }

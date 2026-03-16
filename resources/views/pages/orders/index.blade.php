@@ -9504,19 +9504,33 @@ function formatPhoneForWhatsApp(phone) {
     return '92' + cleaned;
 }
 
-function openWhatsAppWeb(phone, message = '') {
-    const formattedPhone = formatPhoneForWhatsApp(phone);
+var _whatsappWindow = null;
+function openWhatsAppWeb(phone, message) {
+    var formattedPhone = formatPhoneForWhatsApp(phone);
     if (!formattedPhone) {
         alert('Invalid phone number');
         return;
     }
     
-    let url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
+    var url = 'https://web.whatsapp.com/send?phone=' + formattedPhone;
     if (message) {
         url += '&text=' + encodeURIComponent(message);
     }
     
-    window.open(url, '_blank');
+    // Try to reuse existing WhatsApp window by navigating it
+    if (_whatsappWindow && !_whatsappWindow.closed) {
+        try {
+            _whatsappWindow.location.href = url;
+            _whatsappWindow.focus();
+            closeWhatsAppModal();
+            return;
+        } catch(e) {
+            // location assignment blocked - fall through to window.open
+        }
+    }
+    
+    _whatsappWindow = window.open(url, 'whatsapp_web');
+    if (_whatsappWindow) _whatsappWindow.focus();
     closeWhatsAppModal();
 }
 

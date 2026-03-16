@@ -134,6 +134,9 @@ class AttendanceController extends Controller
                 'a.is_remote_checkin',
                 'a.checkout_latitude',
                 'a.checkout_longitude',
+                // Road distance (stored on checkout)
+                'a.road_distance_km',
+                'a.road_distance_source',
                 // Keep legacy shifts for fallback only (will be replaced by ShiftResolutionService)
                 DB::raw('COALESCE(rp.shift_start, "09:00") as legacy_shift_start'),
                 DB::raw('COALESCE(rp.shift_end, "17:00") as legacy_shift_end'),
@@ -582,8 +585,27 @@ class AttendanceController extends Controller
                 return strcmp($a['attendance_date'], $b['attendance_date']);
             });
             
-            unset($userData['leave_dates']); // Remove temporary data
-            unset($userData['processed_attendance_ids']); // Remove temporary tracking array
+            unset($userData['leave_dates']);
+            unset($userData['processed_attendance_ids']);
+
+            // Approved leaves for current year
+            $currentYear = date('Y');
+            $yearLeaveDays = 0;
+            $yearLeaves = DB::table('t_req_master as r')
+                ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
+                ->where('c.category_code', 'leave')
+                ->where('r.requester_user_id', $userId)
+                ->where('r.status', 'approved')
+                ->where('r.leave_start_date', '>=', "{$currentYear}-01-01")
+                ->where('r.leave_end_date', '<=', "{$currentYear}-12-31")
+                ->select('r.leave_start_date', 'r.leave_end_date')
+                ->get();
+            foreach ($yearLeaves as $yl) {
+                $yearLeaveDays += \Carbon\Carbon::parse($yl->leave_start_date)
+                    ->diffInDays(\Carbon\Carbon::parse($yl->leave_end_date)) + 1;
+            }
+            $userData['leaves_taken_year'] = $yearLeaveDays;
+            $userData['leaves_year'] = (int) $currentYear;
         }
         
         Log::info('Monthly report processed', [
@@ -1517,6 +1539,148 @@ class AttendanceController extends Controller
                 'coordinates_count' => count($coordinates)
             ]);
             return null;
+        }
+    }
+
+    /**
+     * Get fuel rate groups (JSON for modal)
+     */
+    public function getFuelRateGroups(Request $request)
+    {
+        try {
+            $groups = DB::table('t_fin_petrol_rate_group')
+                ->where('is_active', 1)
+                ->orderBy('name')
+                ->get();
+
+            $rateGroups = [];
+            foreach ($groups as $group) {
+                $users = [];
+                if (!empty($group->user_ids)) {
+                    $ids = array_map('trim', explode(',', $group->user_ids));
+                    $ids = array_filter($ids);
+                    $users = DB::table('t_sys_user')
+                        ->whereIn('id', $ids)
+                        ->select('id', 'fullname')
+                        ->get()
+                        ->map(fn($u) => ['id' => $u->id, 'name' => $u->fullname])
+                        ->values()
+                        ->toArray();
+                }
+                $rateGroups[] = [
+                    'id' => $group->id,
+                    'name' => $group->name,
+                    'rate' => (float) $group->rate,
+                    'user_ids' => $group->user_ids ?: '',
+                    'users' => $users,
+                ];
+            }
+
+            $allRiders = DB::table('t_sys_user as u')
+                ->leftJoin('t_ops_attendance_visibility as av', 'av.user_id', '=', 'u.id')
+                ->where('u.is_active', 1)
+                ->where(function($q) {
+                    $q->whereNull('av.is_visible')
+                      ->orWhere('av.is_visible', 1);
+                })
+                ->select('u.id', 'u.fullname')
+                ->orderBy('u.fullname')
+                ->get()
+                ->map(fn($u) => ['id' => $u->id, 'name' => $u->fullname])
+                ->values();
+
+            return response()->json([
+                'success' => true,
+                'rate_groups' => $rateGroups,
+                'all_riders' => $allRiders,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Save fuel rate groups (JSON POST from modal)
+     */
+    public function saveFuelRateGroups(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'groups' => 'required|array|min:1',
+                'groups.*.id' => 'nullable|integer',
+                'groups.*.name' => 'required|string|max:100',
+                'groups.*.rate' => 'required|numeric|min:0.01|max:999',
+                'groups.*.user_ids' => 'nullable|string',
+            ]);
+
+            // Validate no user in multiple groups
+            $allAssignedIds = [];
+            foreach ($validated['groups'] as $group) {
+                if (!empty($group['user_ids'])) {
+                    $ids = array_map('trim', explode(',', $group['user_ids']));
+                    $ids = array_filter($ids);
+                    foreach ($ids as $id) {
+                        if (in_array($id, $allAssignedIds)) {
+                            $userName = DB::table('t_sys_user')->where('id', $id)->value('fullname') ?: "User #$id";
+                            return response()->json([
+                                'success' => false,
+                                'message' => "$userName is assigned to multiple rate groups."
+                            ], 422);
+                        }
+                        $allAssignedIds[] = $id;
+                    }
+                }
+            }
+
+            DB::beginTransaction();
+
+            $existingIds = DB::table('t_fin_petrol_rate_group')->where('is_active', 1)->pluck('id')->toArray();
+            $incomingIds = array_filter(array_column($validated['groups'], 'id'));
+
+            $toDelete = array_diff($existingIds, $incomingIds);
+            if (!empty($toDelete)) {
+                DB::table('t_fin_petrol_rate_group')
+                    ->whereIn('id', $toDelete)
+                    ->update(['is_active' => 0, 'updated_at' => now()]);
+            }
+
+            foreach ($validated['groups'] as $groupData) {
+                if (!empty($groupData['id'])) {
+                    DB::table('t_fin_petrol_rate_group')
+                        ->where('id', $groupData['id'])
+                        ->update([
+                            'name' => $groupData['name'],
+                            'rate' => $groupData['rate'],
+                            'user_ids' => $groupData['user_ids'] ?? null,
+                            'is_active' => 1,
+                            'updated_at' => now(),
+                        ]);
+                } else {
+                    DB::table('t_fin_petrol_rate_group')->insert([
+                        'name' => $groupData['name'],
+                        'rate' => $groupData['rate'],
+                        'user_ids' => $groupData['user_ids'] ?? null,
+                        'is_active' => 1,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            // Keep legacy config in sync
+            $firstGroup = $validated['groups'][0] ?? null;
+            if ($firstGroup) {
+                \App\Models\FIN\ConfigModel::set('PETROL_RATE_PER_KM', (string) $firstGroup['rate'], 'Petrol rate (synced from rate groups)');
+                \App\Models\FIN\ConfigModel::set('PETROL_AUTO_CALC_USER_IDS', implode(',', $allAssignedIds), 'Petrol user IDs (synced from rate groups)');
+            }
+
+            DB::commit();
+
+            return response()->json(['success' => true, 'message' => 'Fuel rate groups saved successfully']);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 }
