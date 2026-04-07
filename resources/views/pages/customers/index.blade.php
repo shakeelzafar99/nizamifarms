@@ -126,6 +126,48 @@ window.viewCustomer = function(id) {
                 </div>
             `;
             
+            // Delivery Region section
+            html += `
+                <div style="margin-top: 24px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h4 style="font-weight: 600; color: #374151; margin: 0;">🚚 Delivery Region</h4>
+                    </div>
+                    <div style="background-color: ${data.delivery_region_name ? '#eef2ff' : '#fef2f2'}; padding: 16px; border-radius: 8px; border: 1px solid ${data.delivery_region_name ? '#6366f1' : '#fca5a5'};">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="flex:1;">
+                                <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Current Region</label>
+                                <p style="margin: 4px 0 0 0; font-weight: 600; color: ${data.delivery_region_name ? '#4338ca' : '#dc2626'};">
+                                    ${data.delivery_region_name || 'Not assigned'}
+                                    ${customer.delivery_region_source ? '<span style="font-size:11px;font-weight:400;color:#9ca3af;margin-left:6px;">(' + customer.delivery_region_source + ')</span>' : ''}
+                                </p>
+                            </div>
+                            <div>
+                                <select id="custRegionSelect_${customer.id}" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;">
+                                    <option value="">-- No Region --</option>
+                                </select>
+                            </div>
+                            <button onclick="saveCustomerRegion(${customer.id})" style="padding:6px 16px;background:#4f46e5;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;">
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Populate region dropdown after render
+            setTimeout(async () => {
+                try {
+                    const regResp = await fetch('/regions/list');
+                    const regData = await regResp.json();
+                    if (regData.success) {
+                        const sel = document.getElementById('custRegionSelect_' + customer.id);
+                        if (sel) {
+                            sel.innerHTML = '<option value="">-- No Region --</option>' +
+                                regData.regions.map(r => '<option value="' + r.id + '"' + (r.id == customer.delivery_region_id ? ' selected' : '') + '>' + r.name + '</option>').join('');
+                        }
+                    }
+                } catch(e) { console.error(e); }
+            }, 100);
+
             // Add Verified Location section
             if (data.verified_location) {
                 html += `
@@ -378,6 +420,7 @@ const defaultCustomerColumns = [
     { id: 'name', visible: true, fixed: true },
     { id: 'contact', visible: true, fixed: false },
     { id: 'location', visible: true, fixed: false },
+    { id: 'region', visible: true, fixed: false },
     { id: 'total_orders', visible: true, fixed: false },
     { id: 'total_spent', visible: true, fixed: false },
     { id: 'notes', visible: true, fixed: false },
@@ -415,6 +458,7 @@ const availableCustomerColumns = {
     'name': { label: 'Customer', fixed: true },
     'contact': { label: 'Contact', fixed: false },
     'location': { label: 'Location', fixed: false },
+    'region': { label: 'Region', fixed: false },
     'total_orders': { label: 'Orders', fixed: false },
     'total_spent': { label: 'Total Spent', fixed: false },
     'notes': { label: 'Notes', fixed: false },
@@ -858,7 +902,7 @@ function parseSortValue(sortValue) {
 
 function fetchFilteredCustomers() {
     const searchTerm = document.getElementById('customerSearchInput').value.trim();
-    const cityFilter = document.getElementById('customerCityFilter').value;
+    const regionFilter = document.getElementById('customerRegionFilter').value;
     const activityFilter = document.getElementById('customerActivityFilter').value;
     const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
@@ -868,7 +912,7 @@ function fetchFilteredCustomers() {
     // Build query parameters
     const params = new URLSearchParams();
     if (searchTerm) params.append('search', searchTerm);
-    if (cityFilter) params.append('city', cityFilter);
+    if (regionFilter) params.append('region', regionFilter);
     if (activityFilter) params.append('activity', activityFilter);
     if (sortBy) params.append('sort_by', sortBy);
     if (sortDir) params.append('sort_dir', sortDir);
@@ -995,6 +1039,12 @@ function getCustomerCellContent(customer, columnId) {
             locationHtml += '</div>';
             return locationHtml || '<span class="text-sm text-gray-500">N/A</span>';
             
+        case 'region':
+            if (customer.delivery_region_name) {
+                return '<span style="display:inline-block;padding:2px 8px;background:#eef2ff;color:#4338ca;border-radius:4px;font-size:12px;font-weight:600;">' + customer.delivery_region_name + '</span>';
+            }
+            return '<span style="font-size:12px;color:#9ca3af;">Not set</span>';
+            
         case 'total_orders':
             return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 cursor-pointer hover:bg-blue-200 transition-colors" onclick="viewCustomerOrders(' + customer.id + ', \'' + customer.first_name + ' ' + customer.last_name + '\')" title="Click to view customer orders">' + (customer.total_orders || 0) + '</span>';
             
@@ -1101,6 +1151,7 @@ function getCustomerColumnWidth(columnId) {
         case 'name': return 'min-w-[200px]';
         case 'contact': return 'w-40';
         case 'location': return 'w-32';
+        case 'region': return 'w-32';
         case 'total_orders': return 'w-20';
         case 'total_spent': return 'w-32';
         case 'first_order_date': return 'w-32';
@@ -1142,7 +1193,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     const searchInput = document.getElementById('customerSearchInput');
-    const cityFilter = document.getElementById('customerCityFilter');
+    const regionFilter = document.getElementById('customerRegionFilter');
     const activityFilter = document.getElementById('customerActivityFilter');
     const sortFilter = document.getElementById('customerSortFilter');
     
@@ -1164,8 +1215,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 300);
     });
     
-    // City filter - navigate with URL params for pagination support
-    cityFilter.addEventListener('change', function() {
+    // Region filter - navigate with URL params for pagination support
+    regionFilter.addEventListener('change', function() {
         navigateWithFilters();
     });
     
@@ -1185,12 +1236,12 @@ function navigateWithFilters() {
     const params = new URLSearchParams();
     
     const search = document.getElementById('customerSearchInput').value.trim();
-    const city = document.getElementById('customerCityFilter').value;
+    const region = document.getElementById('customerRegionFilter').value;
     const activity = document.getElementById('customerActivityFilter').value;
     const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
     if (search) params.set('search', search);
-    if (city) params.set('city', city);
+    if (region) params.set('region', region);
     if (activity) params.set('activity', activity);
     
     // Only add sort params if not the default
@@ -1232,6 +1283,24 @@ window.formatDateLocal = function(dateString) {
         console.error('Date formatting error:', error);
         return dateString;
     }
+};
+
+window.saveCustomerRegion = async function(customerId) {
+    const sel = document.getElementById('custRegionSelect_' + customerId);
+    if (!sel) return;
+    const regionId = sel.value || null;
+    try {
+        const resp = await fetch('/regions/set-customer-region', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content },
+            body: JSON.stringify({ customer_id: customerId, delivery_region_id: regionId })
+        });
+        const d = await resp.json();
+        if (d.success) {
+            alert('Region updated to: ' + (d.region_name || 'None'));
+            window.viewCustomer(customerId);
+        } else alert(d.message || 'Error');
+    } catch(e) { alert('Error: ' + e.message); }
 };
 
 window.viewCustomerOrders = function(customerId, customerName) {
@@ -2228,13 +2297,14 @@ function removePromoImage() {
                         </div>
                     </div>
                     
-                    <select name="city" class="select select-sm w-32 text-xs" id="customerCityFilter">
-                        <option value="">All Cities</option>
-                        @foreach($cities as $city)
-                            <option value="{{ $city }}" {{ request('city') == $city ? 'selected' : '' }}>
-                                {{ $city }}
+                    <select name="region" class="select select-sm w-36 text-xs" id="customerRegionFilter">
+                        <option value="">All Regions</option>
+                        @foreach($regions as $region)
+                            <option value="{{ $region->id }}" {{ request('region') == $region->id ? 'selected' : '' }}>
+                                {{ $region->name }}
                             </option>
                         @endforeach
+                        <option value="none" {{ request('region') == 'none' ? 'selected' : '' }}>No Region</option>
                     </select>
                     
                     <select name="activity" class="select select-sm w-36 text-xs" id="customerActivityFilter">

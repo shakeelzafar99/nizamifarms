@@ -167,6 +167,21 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/update-payment-method', [\App\Http\Controllers\API\RiderController::class, 'updatePaymentMethod']); // ⭐ Change payment type
     Route::post('/store/update-delivery-priorities', [\App\Http\Controllers\API\RiderController::class, 'updateDeliveryPriorities']); // ⭐ Set delivery sequence
     
+    // Store Mode - Delivery Regions
+    Route::get('/store/delivery-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRegionsWithStats']);
+    Route::get('/store/region-stats', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getStats']);
+    Route::get('/store/rider-assignments', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRiderAssignments']);
+    Route::get('/store/active-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getActiveRiders']);
+    Route::post('/store/assign-rider-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRiderAssignment']);
+    Route::delete('/store/remove-rider-region/{id}', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'removeRiderAssignment']);
+    Route::post('/store/set-order-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setOrderRegion']);
+    Route::post('/store/set-customer-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setCustomerRegion']);
+    Route::post('/store/auto-assign-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'autoAssignRiders']);
+    Route::post('/store/batch-detect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'batchDetect']);
+    Route::post('/store/redetect-regions', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'redetectAll']);
+    Route::post('/store/save-region-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegionPolygon']);
+    Route::post('/store/save-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegion']);
+    
     // Store Mode - WhatsApp Message Templates
     Route::get('/store/whatsapp-templates', [\App\Http\Controllers\API\RiderController::class, 'getWhatsappTemplates']);
     Route::post('/store/whatsapp-templates', [\App\Http\Controllers\API\RiderController::class, 'saveWhatsappTemplate']);
@@ -422,6 +437,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/demand/list', [\App\Http\Controllers\CRM\WarehouseController::class, 'getDemands']);
         Route::get('/demand/history', [\App\Http\Controllers\CRM\WarehouseController::class, 'getDemandHistory']);
         Route::post('/demand/create', [\App\Http\Controllers\CRM\WarehouseController::class, 'createDemand']);
+        Route::post('/demand/{id}/update', [\App\Http\Controllers\CRM\WarehouseController::class, 'updateDemand']);
         Route::post('/demand/{id}/accept', [\App\Http\Controllers\CRM\WarehouseController::class, 'acceptDemand']);
         Route::post('/demand/{id}/cancel', [\App\Http\Controllers\CRM\WarehouseController::class, 'cancelDemand']);
         Route::get('/recipes', [\App\Http\Controllers\CRM\WarehouseController::class, 'getProductRecipes']);

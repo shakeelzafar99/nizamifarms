@@ -37,6 +37,15 @@ class CustomerController extends Controller
         if ($request->has('city') && $request->city) {
             $query->where('city', $request->city);
         }
+
+        // Filter by delivery region
+        if ($request->has('region') && $request->region) {
+            if ($request->region === 'none') {
+                $query->whereNull('delivery_region_id');
+            } else {
+                $query->where('delivery_region_id', $request->region);
+            }
+        }
         
         // Filter by activity period (30-day or 90-day active)
         $activity = $request->get('activity', '');
@@ -101,6 +110,20 @@ class CustomerController extends Controller
                               ->pluck('city')
                               ->sort()
                               ->values();
+
+        // Get delivery regions for filter dropdown
+        $regions = DB::table('t_ops_delivery_region')
+            ->where('is_active', 1)
+            ->orderBy('sort_order')
+            ->get(['id', 'name', 'code']);
+
+        // Build region name map for customer list
+        $regionMap = $regions->pluck('name', 'id')->toArray();
+        $customers->getCollection()->transform(function($customer) use ($regionMap) {
+            $customer->delivery_region_name = $customer->delivery_region_id
+                ? ($regionMap[$customer->delivery_region_id] ?? null) : null;
+            return $customer;
+        });
         
         // Get statistics
         $now = now();
@@ -113,7 +136,7 @@ class CustomerController extends Controller
             'active_90_days' => CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)->count()
         ];
         
-        return view('pages.customers.index', compact('customers', 'cities', 'stats'));
+        return view('pages.customers.index', compact('customers', 'cities', 'regions', 'stats'));
     }
     
     public function show(Request $request, $id)
@@ -228,14 +251,19 @@ class CustomerController extends Controller
                     ];
                 });
             
-            // Always return JSON for now to maintain existing functionality
-            // The existing viewCustomer function expects JSON response
+            $deliveryRegionName = null;
+            if (!empty($customer->delivery_region_id)) {
+                $deliveryRegionName = \DB::table('t_ops_delivery_region')
+                    ->where('id', $customer->delivery_region_id)
+                    ->value('name');
+            }
+
             return response()->json([
                 'success' => true,
                 'customer' => $customer,
                 'verified_location' => $verifiedLocation,
                 'merged_customers' => $mergedCustomers,
-                // Additional stats breakdown (optional, for debugging/display)
+                'delivery_region_name' => $deliveryRegionName,
                 'stats_breakdown' => [
                     'production' => [
                         'order_count' => $prodStats->order_count ?? 0,
@@ -344,6 +372,16 @@ class CustomerController extends Controller
             if (!empty($city)) {
                 $query->where('city', $city);
             }
+
+            // Apply region filter
+            $region = $request->get('region', '');
+            if (!empty($region)) {
+                if ($region === 'none') {
+                    $query->whereNull('delivery_region_id');
+                } else {
+                    $query->where('delivery_region_id', $region);
+                }
+            }
             
             // Apply activity filter
             if ($activity === '30day') {
@@ -392,13 +430,19 @@ class CustomerController extends Controller
                 $combinedStats = $this->getCombinedCustomerStats($customerIds);
                 
                 // Merge combined stats into customer objects
-                $customers = $customers->map(function($customer) use ($combinedStats) {
+                $regionMap = DB::table('t_ops_delivery_region')
+                    ->where('is_active', 1)
+                    ->pluck('name', 'id')
+                    ->toArray();
+
+                $customers = $customers->map(function($customer) use ($combinedStats, $regionMap) {
                     $stats = $combinedStats[$customer->id] ?? null;
                     if ($stats) {
-                        // Override stored values with combined values
                         $customer->total_orders = $stats->combined_order_count;
                         $customer->total_spent = $stats->combined_total_spent;
                     }
+                    $customer->delivery_region_name = $customer->delivery_region_id
+                        ? ($regionMap[$customer->delivery_region_id] ?? null) : null;
                     return $customer;
                 });
             }

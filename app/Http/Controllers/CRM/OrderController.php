@@ -248,22 +248,29 @@ class OrderController extends Controller
                 }
             }
             
+            $regionName = null;
+            $custRegionId = $order->customer->delivery_region_id ?? null;
+            if ($custRegionId) {
+                $regionName = \DB::table('t_ops_delivery_region')
+                    ->where('id', $custRegionId)
+                    ->value('name');
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => $order,
-                'lineItems' => $order->lineItems, // Explicitly include line items
-                'discounts' => $order->discounts, // Include discount details for frontend display (backward compat)
-                'delivery_location' => $deliveryLocation, // Include delivery GPS location if available
-                'verified_location' => $verifiedLocation, // Include customer's verified location
-                // ⭐ Customer Notes - important customer-level information
+                'lineItems' => $order->lineItems,
+                'discounts' => $order->discounts,
+                'delivery_location' => $deliveryLocation,
+                'verified_location' => $verifiedLocation,
                 'customer_notes' => $order->customer ? ($order->customer->notes ?? null) : null,
                 'has_customer_notes' => $order->customer && !empty($order->customer->notes),
-                // ⭐ Order Notes - order-specific notes  
                 'order_note' => $order->note ?? null,
                 'has_order_note' => !empty($order->note),
-                // ⭐ Pending approval status for this order's invoice
                 'pending_approval' => $pendingApproval,
-                'has_pending_approval' => $pendingApproval !== null
+                'has_pending_approval' => $pendingApproval !== null,
+                'delivery_region_name' => $regionName,
+                'delivery_region_id' => $custRegionId,
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -1446,6 +1453,18 @@ class OrderController extends Controller
                 }
             }
             
+            // Auto-detect delivery region for new order
+            if ($order->customer_id || $order->id) {
+                try {
+                    \App\Services\RegionDetectionService::detectAndSaveForOrder($order->id, $order->customer_id);
+                } catch (\Exception $e) {
+                    \Log::warning('Auto region detection failed for new order', [
+                        'order_id' => $order->id,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+            
             return response()->json([
                 'success' => true,
                 'message' => 'Order created successfully',
@@ -1730,6 +1749,18 @@ class OrderController extends Controller
                             'error' => $e->getMessage()
                         ]);
                     }
+                }
+            }
+            
+            // Auto-detect delivery region for converted order
+            if ($convertedOrder->customer_id || $convertedOrder->id) {
+                try {
+                    \App\Services\RegionDetectionService::detectAndSaveForOrder($convertedOrder->id, $convertedOrder->customer_id);
+                } catch (\Exception $e) {
+                    \Log::warning('Auto region detection failed for Shopify converted order', [
+                        'order_id' => $convertedOrder->id,
+                        'error' => $e->getMessage()
+                    ]);
                 }
             }
             
@@ -2098,15 +2129,25 @@ class OrderController extends Controller
                 }
             }
 
-            // Add customer order count to each order
-            $orders->transform(function($order) use ($customerOrderCounts) {
+            $regionMap = [];
+            try {
+                $regionMap = \DB::table('t_ops_delivery_region')
+                    ->where('is_active', 1)
+                    ->pluck('name', 'id')
+                    ->toArray();
+            } catch (\Exception $e) {}
+
+            // Add customer order count and region info to each order
+            $orders->transform(function($order) use ($customerOrderCounts, $regionMap) {
                 $orderCount = $customerOrderCounts[$order->customer_id] ?? 0;
-                $isNewCustomer = $orderCount <= 1; // 0 or 1 order means new customer
+                $isNewCustomer = $orderCount <= 1;
                 
-                // Add customer order count info to the order object
                 $order->customer_order_count = $orderCount;
                 $order->customer_is_new = $isNewCustomer;
                 $order->customer_badge = $isNewCustomer ? 'NEW' : "{$orderCount} orders";
+                $custRegionId = $order->customer->delivery_region_id ?? null;
+                $order->delivery_region_id = $custRegionId;
+                $order->delivery_region_name = $custRegionId ? ($regionMap[$custRegionId] ?? null) : null;
                 
                 return $order;
             });

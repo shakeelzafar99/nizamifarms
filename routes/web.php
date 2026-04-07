@@ -188,6 +188,28 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/fuel-rate-groups', [\App\Http\Controllers\CRM\AttendanceController::class, 'getFuelRateGroups'])->name('attendance.fuel-rate-groups');
     Route::post('/attendance/fuel-rate-groups', [\App\Http\Controllers\CRM\AttendanceController::class, 'saveFuelRateGroups'])->name('attendance.fuel-rate-groups.save');
 
+    // Delivery Regions Management
+    Route::prefix('regions')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'index'])->name('regions.index');
+        Route::get('/data', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRegions'])->name('regions.data');
+        Route::post('/save', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegion'])->name('regions.save');
+        Route::get('/areas', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getAreas'])->name('regions.areas');
+        Route::post('/areas/save', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveArea'])->name('regions.areas.save');
+        Route::delete('/areas/{id}', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'deleteArea'])->name('regions.areas.delete');
+        Route::get('/riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRiderAssignments'])->name('regions.riders');
+        Route::get('/riders/active', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getActiveRiders'])->name('regions.riders.active');
+        Route::post('/riders/assign', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRiderAssignment'])->name('regions.riders.assign');
+        Route::delete('/riders/{id}', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'removeRiderAssignment'])->name('regions.riders.remove');
+        Route::post('/batch-detect', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'batchDetect'])->name('regions.batch-detect');
+        Route::post('/redetect-all', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'redetectAll'])->name('regions.redetect-all');
+        Route::get('/stats', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getStats'])->name('regions.stats');
+        Route::get('/customer-cities', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getCustomerCities'])->name('regions.customer-cities');
+        Route::get('/list', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'getRegionsList'])->name('regions.list');
+        Route::post('/set-order-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setOrderRegion'])->name('regions.set-order-region');
+        Route::post('/set-customer-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setCustomerRegion'])->name('regions.set-customer-region');
+        Route::post('/auto-assign-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'autoAssignRiders'])->name('regions.auto-assign-riders');
+    });
+
     // Shift Management
     Route::get('/shifts', [\App\Http\Controllers\Ops\ShiftController::class, 'index'])->name('shifts.index');
     Route::get('/shifts/clear-cache', [\App\Http\Controllers\Ops\ShiftController::class, 'clearCache'])->name('shifts.clear-cache');

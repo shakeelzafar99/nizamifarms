@@ -7420,9 +7420,7 @@ class RiderController extends Controller
             // Build optimized query - load line items for immediate "mark prepared" functionality
             // Note: Not using select() to avoid column name issues - optimization is in relationships
             $query = OrderModel::with(['customer' => function($q) {
-                    // ⭐ Include 'notes' for customer notes display, 'phone_original' for contact
-                    // ⭐ Include verified_location_saved_by and saved_at for showing who saved location
-                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id');
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude', 'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes', 'verified_location_saved_by', 'verified_location_saved_at', 'merged_into_customer_id', 'delivery_region_id');
                 }])
                 ->with(['assignedRider' => function($q) {
                     $q->select('id', 'fullname');
@@ -7466,8 +7464,16 @@ class RiderController extends Controller
                     ->pluck('t_crm_prod_order_line_item.order_id');
             }
             
+            $regionMap = [];
+            try {
+                $regionMap = \DB::table('t_ops_delivery_region')
+                    ->where('is_active', 1)
+                    ->pluck('name', 'id')
+                    ->toArray();
+            } catch (\Exception $e) {}
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -7592,6 +7598,8 @@ class RiderController extends Controller
                         'geocoded_longitude' => $order->customer->geocoded_longitude,
                     ] : null,
                     'external_source' => $order->external_source,
+                    'delivery_region_id' => $order->customer->delivery_region_id ?? null,
+                    'delivery_region_name' => ($order->customer->delivery_region_id ?? null) ? ($regionMap[$order->customer->delivery_region_id] ?? null) : null,
                     'updated_at' => $order->updated_at ? $order->updated_at->toIso8601String() : null, // ⭐ For processing time calculation
                     // ⭐ Invoice fields - needed for invoice view
                     'subtotal_price' => $order->subtotal_price ?? 0,

@@ -996,6 +996,13 @@ input:focus, select:focus, button:focus {
                             </svg>
                             📍 Riders Map
                         </button>
+                        <!-- Auto-assign riders by region -->
+                        <button onclick="openAutoAssignModal()" class="action-btn" style="background: linear-gradient(135deg, #eef2ff 0%, #c7d2fe 100%); border-color: #6366f1; color: #3730a3;">
+                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            🚴 Auto-assign Riders
+                        </button>
                         @endif
                     </div>
                 </div>
@@ -2064,6 +2071,14 @@ function viewOrderDetails(orderId) {
             html += '<p><strong>Payment Method:</strong> ' + normalizePaymentMethodDisplay(order.payment_method) + '</p>';
             html += '<p><strong>Total:</strong> ' + formatCurrency(order.total_price, order.currency) + '</p>';
             html += '<p><strong>Items:</strong> ' + (order.line_items ? order.line_items.length : 0) + '</p>';
+            
+            // Region in order detail
+            var regionDisplay = data.delivery_region_name || '<span style="color:#dc2626;">Not assigned</span>';
+            html += '<div style="margin-top:10px; padding:8px 10px; background:' + (data.delivery_region_name ? '#eef2ff' : '#fef2f2') + '; border-radius:6px; border:1px solid ' + (data.delivery_region_name ? '#c7d2fe' : '#fecaca') + ';">';
+            html += '<p style="margin:0;"><strong>🚚 Region:</strong> ' + regionDisplay + '</p>';
+            html += '<button onclick="openQuickRegionChange(' + order.id + ', ' + (order.delivery_region_id || 'null') + ')" style="margin-top:6px; padding:4px 10px; background:#4f46e5; color:#fff; border:none; border-radius:4px; font-size:11px; cursor:pointer; font-weight:500;">Change Region</button>';
+            html += '</div>';
+            
             html += '</div>';
             html += '</div>';
             
@@ -2787,6 +2802,19 @@ function openCustomerDetails(customerId) {
                     </div>
                 </div>
                 
+                <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 20px;">
+                    <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 10px;">🚚 Delivery Region</h4>
+                    <div style="background: ${data.delivery_region_name ? '#eef2ff' : '#fef2f2'}; padding: 12px; border-radius: 8px; border: 1px solid ${data.delivery_region_name ? '#c7d2fe' : '#fecaca'}; display: flex; align-items: center; gap: 12px;">
+                        <span style="font-size: 14px; font-weight: 600; color: ${data.delivery_region_name ? '#4338ca' : '#dc2626'};">
+                            ${data.delivery_region_name || 'Not assigned'}
+                        </span>
+                        <select id="orderCustRegionSelect_${customer.id}" style="padding:4px 8px; border:1px solid #d1d5db; border-radius:4px; font-size:12px;">
+                            <option value="">-- No Region --</option>
+                        </select>
+                        <button onclick="saveOrderCustRegion(${customer.id})" style="padding:4px 12px; background:#4f46e5; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:500; cursor:pointer;">Save</button>
+                    </div>
+                </div>
+                
                 <div style="border-top: 1px solid #e5e7eb; padding-top: 20px;">
                     <h4 style="font-size: 16px; font-weight: 600; color: #374151; margin-bottom: 15px;">Order Statistics</h4>
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
@@ -2814,6 +2842,17 @@ function openCustomerDetails(customerId) {
                 </div>
                 ` : ''}
             `;
+            // Populate region dropdown
+            setTimeout(async () => {
+                try {
+                    const regions = await _fetchRegionList();
+                    const sel = document.getElementById('orderCustRegionSelect_' + customer.id);
+                    if (sel) {
+                        sel.innerHTML = '<option value="">-- No Region --</option>' +
+                            regions.map(r => '<option value="' + r.id + '"' + (r.id == customer.delivery_region_id ? ' selected' : '') + '>' + r.name + '</option>').join('');
+                    }
+                } catch(e) {}
+            }, 50);
         } else {
             content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
         }
@@ -2822,6 +2861,22 @@ function openCustomerDetails(customerId) {
         console.error('Error fetching customer details:', error);
         content.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Error loading customer details</div>';
     });
+}
+
+async function saveOrderCustRegion(customerId) {
+    const sel = document.getElementById('orderCustRegionSelect_' + customerId);
+    if (!sel) return;
+    try {
+        const d = await (await fetch('/regions/set-customer-region', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content },
+            body: JSON.stringify({ customer_id: customerId, delivery_region_id: sel.value || null })
+        })).json();
+        if (d.success) {
+            alert('Region updated to: ' + (d.region_name || 'None'));
+            openCustomerDetails(customerId);
+        }
+    } catch(e) { alert('Error: ' + e.message); }
 }
 
 // Edit Order Details
@@ -4458,6 +4513,146 @@ function getTimeAgo(date) {
     if (diffDays < 7) return `${diffDays}d ago`;
     return date.toLocaleDateString();
 }
+// ===== AUTO-ASSIGN RIDERS BY REGION =====
+async function openAutoAssignModal() {
+    let modal = document.getElementById('autoAssignRidersModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'autoAssignRidersModal';
+        modal.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;';
+        modal.innerHTML = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:24px;width:440px;max-width:95%;box-shadow:0 8px 30px rgba(0,0,0,.2);">
+            <h3 style="margin:0 0 8px;font-size:18px;font-weight:700;">🚴 Auto-assign Riders by Region</h3>
+            <p style="margin:0 0 16px;font-size:13px;color:#6b7280;">Assigns the primary rider for each region to matching open orders. Orders with status "out_for_delivery" are never changed.</p>
+            <div id="autoAssignMapping" style="background:#f9fafb;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;color:#374151;">Loading region → rider mapping...</div>
+            <div id="autoAssignResult" style="display:none;background:#ecfdf5;border:1px solid #10b981;border-radius:8px;padding:12px;margin-bottom:16px;font-size:13px;color:#065f46;"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button onclick="runAutoAssign('unassigned')" id="autoAssignBtn" style="flex:1;padding:10px;background:#4f46e5;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;">Assign Unassigned Orders</button>
+                <button onclick="runAutoAssign('reassign')" id="autoReassignBtn" style="flex:1;padding:10px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;">Reassign ALL Orders</button>
+            </div>
+            <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">Reassign ALL will change riders on all orders except "out for delivery".</p>
+            <button onclick="document.getElementById('autoAssignRidersModal').style.display='none'" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:22px;color:#9ca3af;cursor:pointer;">&times;</button>
+        </div>`;
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+        document.body.appendChild(modal);
+    }
+    document.getElementById('autoAssignResult').style.display = 'none';
+    modal.style.display = 'block';
+
+    // Load the current mapping
+    try {
+        const [regionsResp, ridersResp] = await Promise.all([
+            fetch('/regions/data').then(r => r.json()),
+            fetch('/regions/riders').then(r => r.json())
+        ]);
+        if (regionsResp.success && ridersResp.success) {
+            const regionMap = {};
+            regionsResp.regions.forEach(r => { regionMap[r.id] = r.name; });
+            const assignments = ridersResp.assignments.filter(a => a.is_primary);
+            if (assignments.length === 0) {
+                document.getElementById('autoAssignMapping').innerHTML = '<span style="color:#dc2626;">No primary rider assignments found. Go to Delivery Regions → Rider Assignments to set them up.</span>';
+                document.getElementById('autoAssignBtn').disabled = true;
+                document.getElementById('autoReassignBtn').disabled = true;
+            } else {
+                let html = '<strong style="display:block;margin-bottom:6px;">Region → Rider mapping (primary):</strong>';
+                assignments.forEach(a => {
+                    html += `<div style="padding:3px 0;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${a.region_color};margin-right:6px;"></span>${a.region_name} → <strong>${a.rider_name}</strong></div>`;
+                });
+                document.getElementById('autoAssignMapping').innerHTML = html;
+                document.getElementById('autoAssignBtn').disabled = false;
+                document.getElementById('autoReassignBtn').disabled = false;
+            }
+        }
+    } catch(e) {
+        document.getElementById('autoAssignMapping').innerHTML = 'Error loading mapping';
+    }
+}
+
+async function runAutoAssign(mode) {
+    const msg = mode === 'reassign'
+        ? 'This will CHANGE the assigned rider on ALL open orders (except out for delivery) based on region mapping. Continue?'
+        : 'This will assign riders to open orders that currently have no rider, based on region mapping. Continue?';
+    if (!confirm(msg)) return;
+
+    const btn = document.getElementById(mode === 'reassign' ? 'autoReassignBtn' : 'autoAssignBtn');
+    btn.disabled = true; btn.textContent = 'Processing...';
+    const result = document.getElementById('autoAssignResult');
+
+    try {
+        const d = await (await fetch('/regions/auto-assign-riders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content },
+            body: JSON.stringify({ mode })
+        })).json();
+        result.textContent = d.message || 'Done';
+        result.style.display = 'block';
+        if (typeof applyFilters === 'function') setTimeout(applyFilters, 500);
+    } catch(e) {
+        result.textContent = 'Error: ' + e.message;
+        result.style.display = 'block';
+        result.style.background = '#fef2f2';
+        result.style.borderColor = '#dc2626';
+        result.style.color = '#991b1b';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = mode === 'reassign' ? 'Reassign ALL Orders' : 'Assign Unassigned Orders';
+    }
+}
+
+let _regionListCache = null;
+async function _fetchRegionList() {
+    if (_regionListCache) return _regionListCache;
+    try {
+        const d = await (await fetch('/regions/list')).json();
+        if (d.success) { _regionListCache = d.regions; return d.regions; }
+    } catch(e) {}
+    return [];
+}
+
+async function openQuickRegionChange(orderId, currentRegionId) {
+    try {
+        let modal = document.getElementById('quickRegionModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'quickRegionModal';
+            modal.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;';
+            modal.innerHTML = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;padding:20px;width:320px;box-shadow:0 8px 30px rgba(0,0,0,.2);">
+                <h3 style="margin:0 0 4px;font-size:16px;font-weight:600;">Set Delivery Region</h3>
+                <p style="margin:0 0 12px;font-size:11px;color:#6b7280;">Sets the region on the customer (applies to all their orders)</p>
+                <select id="quickRegionSelect" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;margin-bottom:12px;"></select>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button onclick="document.getElementById('quickRegionModal').style.display='none'" style="padding:8px 16px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer;font-size:13px;">Cancel</button>
+                    <button id="quickRegionSaveBtn" style="padding:8px 16px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">Save</button>
+                </div>
+            </div>`;
+            modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+            document.body.appendChild(modal);
+        }
+
+        const regions = await _fetchRegionList();
+        const sel = document.getElementById('quickRegionSelect');
+        sel.innerHTML = '<option value="">-- No Region --</option>' +
+            regions.map(r => `<option value="${r.id}" ${r.id == currentRegionId ? 'selected' : ''}>${r.name}</option>`).join('');
+
+        document.getElementById('quickRegionSaveBtn').onclick = async function() {
+            const regionId = sel.value || null;
+            try {
+                const d = await (await fetch('/regions/set-order-region', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content },
+                    body: JSON.stringify({ order_id: orderId, delivery_region_id: regionId })
+                })).json();
+                if (d.success) {
+                    modal.style.display = 'none';
+                    if (typeof applyFilters === 'function') applyFilters();
+                    else location.reload();
+                } else alert(d.message || 'Error');
+            } catch(e) { alert('Error: ' + e.message); }
+        };
+
+        modal.style.display = 'block';
+    } catch(e) { console.error(e); }
+}
+
 function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
     try {
         let modal = document.getElementById('quickRiderModal');
@@ -7156,6 +7351,9 @@ const availableColumns = {
     rider: { label: 'Rider', width: 'w-32', key: 'rider' },
     rider_id: { label: 'Rider ID', width: 'w-20', key: 'rider_id' },
     
+    // Region Info
+    delivery_region: { label: 'Region', width: 'w-28', key: 'delivery_region' },
+    
     // Actions column
     actions: { label: '{{ $source === "shopify" && ($tab ?? "all") === "approvals" ? "Approve / Ignore" : "Actions" }}', width: 'w-44', key: 'actions', fixed: true }
 };
@@ -7200,7 +7398,8 @@ const defaultColumns = [
     { id: 'coupon_code', visible: false },
     { id: 'note', visible: false },
     { id: 'created_at', visible: false },
-    { id: 'updated_at', visible: false }
+    { id: 'updated_at', visible: false },
+    { id: 'delivery_region', visible: false }
 ];
 
 // Current column settings
@@ -8273,6 +8472,15 @@ function getCellContent(order, columnId) {
             
             // We have a name - show it in blue (clickable)
             return `<button type="button" onclick="event.stopPropagation(); openQuickRiderAssign(${order.id}, ${rid}, '${String(rname).replace(/'/g, "\\'")}')" class="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-800 border border-blue-300 text-xs font-medium hover:bg-blue-100 cursor-pointer transition" title="Click to change rider">${String(rname)}</button>`;
+        // Delivery Region
+        case 'delivery_region':
+            const regionName = order.delivery_region_name;
+            const regionId = order.delivery_region_id;
+            if (regionName) {
+                return `<button type="button" onclick="event.stopPropagation(); openQuickRegionChange(${order.id}, ${regionId})" class="inline-flex items-center px-2 py-1 rounded bg-indigo-50 text-indigo-800 border border-indigo-300 text-xs font-medium hover:bg-indigo-100 cursor-pointer transition" title="Click to change region">${regionName}</button>`;
+            }
+            return `<button type="button" onclick="event.stopPropagation(); openQuickRegionChange(${order.id}, null)" class="inline-flex items-center px-2 py-1 rounded bg-gray-100 text-gray-500 text-xs hover:bg-gray-200 cursor-pointer transition" title="Click to assign region">No region</button>`;
+
         // Actions
         case 'actions':
             // Check if this is a Shopify order (any Shopify order, not just approvals)
