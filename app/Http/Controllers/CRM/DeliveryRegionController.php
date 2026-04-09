@@ -97,7 +97,7 @@ class DeliveryRegionController extends Controller
     }
 
     /**
-     * Save only polygon coordinates for a region (used from mobile search-based polygon setter).
+     * Add a polygon to a region (appends to existing polygons).
      */
     public function saveRegionPolygon(Request $request)
     {
@@ -106,23 +106,84 @@ class DeliveryRegionController extends Controller
             'polygon_coordinates' => 'required|string',
             'center_lat' => 'nullable|numeric|between:-90,90',
             'center_lng' => 'nullable|numeric|between:-180,180',
+            'replace' => 'nullable|boolean',
         ]);
+
+        $region = DB::table('t_ops_delivery_region')->where('id', $validated['region_id'])->first();
+        $newPolygon = json_decode($validated['polygon_coordinates'], true);
+
+        if (!is_array($newPolygon) || count($newPolygon) < 3) {
+            return response()->json(['success' => false, 'message' => 'Invalid polygon data'], 400);
+        }
+
+        if ($request->input('replace')) {
+            $allPolygons = [$newPolygon];
+        } else {
+            $allPolygons = $region->polygon_coordinates
+                ? RegionDetectionService::parsePolygons($region->polygon_coordinates)
+                : [];
+            $allPolygons[] = $newPolygon;
+        }
 
         DB::table('t_ops_delivery_region')
             ->where('id', $validated['region_id'])
             ->update([
-                'polygon_coordinates' => $validated['polygon_coordinates'],
-                'center_lat' => $validated['center_lat'] ?? null,
-                'center_lng' => $validated['center_lng'] ?? null,
+                'polygon_coordinates' => json_encode($allPolygons),
+                'center_lat' => $validated['center_lat'] ?? $region->center_lat,
+                'center_lng' => $validated['center_lng'] ?? $region->center_lng,
                 'updated_by' => auth()->id(),
                 'updated_at' => now(),
             ]);
 
         RegionDetectionService::clearCache();
 
+        $count = count($allPolygons);
         return response()->json([
             'success' => true,
-            'message' => 'Polygon saved successfully',
+            'message' => "Polygon saved ({$count} total)",
+            'polygon_count' => $count,
+        ]);
+    }
+
+    /**
+     * Remove a specific polygon from a region by index.
+     */
+    public function removeRegionPolygon(Request $request)
+    {
+        $validated = $request->validate([
+            'region_id' => 'required|integer|exists:t_ops_delivery_region,id',
+            'polygon_index' => 'required|integer|min:0',
+        ]);
+
+        $region = DB::table('t_ops_delivery_region')->where('id', $validated['region_id'])->first();
+        if (!$region->polygon_coordinates) {
+            return response()->json(['success' => false, 'message' => 'No polygons to remove'], 400);
+        }
+
+        $allPolygons = RegionDetectionService::parsePolygons($region->polygon_coordinates);
+        $index = $validated['polygon_index'];
+
+        if ($index >= count($allPolygons)) {
+            return response()->json(['success' => false, 'message' => 'Invalid polygon index'], 400);
+        }
+
+        array_splice($allPolygons, $index, 1);
+
+        DB::table('t_ops_delivery_region')
+            ->where('id', $validated['region_id'])
+            ->update([
+                'polygon_coordinates' => empty($allPolygons) ? null : json_encode($allPolygons),
+                'updated_by' => auth()->id(),
+                'updated_at' => now(),
+            ]);
+
+        RegionDetectionService::clearCache();
+
+        $count = count($allPolygons);
+        return response()->json([
+            'success' => true,
+            'message' => $count > 0 ? "Polygon removed ({$count} remaining)" : 'All polygons removed',
+            'polygon_count' => $count,
         ]);
     }
 
@@ -529,10 +590,14 @@ class DeliveryRegionController extends Controller
      * Auto-assign riders to open orders based on region → rider mapping.
      * mode=unassigned: only orders without a rider
      * mode=reassign: all orders except out_for_delivery
+     * overrides: optional {region_id: rider_id} to use instead of defaults
+     * region_ids: optional array of region IDs to limit assignment to specific regions
      */
     public function autoAssignRiders(Request $request)
     {
         $mode = $request->input('mode', 'unassigned');
+        $overrides = $request->input('overrides', []);
+        $regionIdsFilter = $request->input('region_ids');
 
         $riderMap = DB::table('t_ops_rider_region')
             ->where('is_active', 1)
@@ -546,6 +611,21 @@ class DeliveryRegionController extends Controller
             }
         }
 
+        // Apply per-region overrides from the modal
+        if (!empty($overrides) && is_array($overrides)) {
+            foreach ($overrides as $regionId => $riderId) {
+                if ($riderId) {
+                    $regionToRider[(int) $regionId] = (int) $riderId;
+                }
+            }
+        }
+
+        // Filter to only selected regions if specified
+        if (!empty($regionIdsFilter) && is_array($regionIdsFilter)) {
+            $allowedIds = array_map('intval', $regionIdsFilter);
+            $regionToRider = array_intersect_key($regionToRider, array_flip($allowedIds));
+        }
+
         if (empty($regionToRider)) {
             return response()->json([
                 'success' => false,
@@ -553,18 +633,27 @@ class DeliveryRegionController extends Controller
             ]);
         }
 
+        $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'];
+        $nonShopifyScope = function ($q) {
+            $q->where('external_source', '!=', 'shopify')
+              ->orWhereNull('external_source');
+        };
+
         $totalOpen = DB::table('t_crm_prod_order')
-            ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'])
+            ->whereNotIn('order_status', $excludedStatuses)
+            ->where($nonShopifyScope)
             ->count();
 
         $alreadyAssigned = DB::table('t_crm_prod_order')
-            ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'])
+            ->whereNotIn('order_status', $excludedStatuses)
+            ->where($nonShopifyScope)
             ->whereNotNull('assigned_rider_user_id')
             ->count();
 
         $noRegion = DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-            ->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'])
+            ->whereNotIn('o.order_status', $excludedStatuses)
+            ->where(function ($q) { $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source'); })
             ->where(function ($q) use ($regionToRider) {
                 $q->whereNull('c.delivery_region_id')
                   ->orWhereNotIn('c.delivery_region_id', array_keys($regionToRider));
@@ -573,7 +662,8 @@ class DeliveryRegionController extends Controller
 
         $query = DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
-            ->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'])
+            ->whereNotIn('o.order_status', $excludedStatuses)
+            ->where(function ($q) { $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source'); })
             ->whereNotNull('c.delivery_region_id')
             ->whereIn('c.delivery_region_id', array_keys($regionToRider));
 
@@ -629,6 +719,7 @@ class DeliveryRegionController extends Controller
             $mappingDesc[] = ($regionNames[$regionId] ?? "Region $regionId") . ' → ' . ($riderNames[$riderId] ?? "Rider $riderId");
         }
 
+        $processed = $assigned + $changed + $skipped;
         $parts = [];
         if ($assigned > 0) $parts[] = "$assigned newly assigned";
         if ($changed > 0) $parts[] = "$changed re-assigned";
@@ -636,15 +727,18 @@ class DeliveryRegionController extends Controller
         $actionSummary = implode(', ', $parts) ?: 'No changes made';
 
         $contextParts = [];
-        $contextParts[] = "$totalOpen open orders total";
-        if ($alreadyAssigned > 0 && $mode === 'unassigned') {
-            $contextParts[] = "$alreadyAssigned already had riders";
-        }
         if ($noRegion > 0) {
-            $contextParts[] = "$noRegion without region/rider mapping";
+            $contextParts[] = "$noRegion orders without region";
+        }
+        if ($alreadyAssigned > 0 && $mode === 'unassigned') {
+            $unassignedCount = $totalOpen - $alreadyAssigned;
+            $contextParts[] = "$unassignedCount of $totalOpen were unassigned";
         }
 
-        $message = $actionSummary . "\n(" . implode(', ', $contextParts) . ")";
+        $message = $actionSummary;
+        if (!empty($contextParts)) {
+            $message .= "\n(" . implode(', ', $contextParts) . ")";
+        }
 
         return response()->json([
             'success' => true,

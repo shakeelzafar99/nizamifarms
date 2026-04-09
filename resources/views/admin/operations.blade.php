@@ -532,6 +532,90 @@
             </div>
         </div>
 
+        <!-- Qurbani Mode Toggle Card -->
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">🐄 Qurbani Mode</h2>
+            </div>
+            
+            <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-md">
+                <h3 class="text-sm font-semibold text-amber-800 mb-2">Qurbani Section Visibility</h3>
+                <div class="text-xs text-amber-700 space-y-1">
+                    <p>Controls whether the Qurbani section appears in the web sidebar menu and mobile app.</p>
+                    <p><strong>When enabled:</strong> Qurbani Orders and Settings links appear in sidebar.</p>
+                    <p><strong>When disabled:</strong> Qurbani section is hidden from sidebar.</p>
+                </div>
+            </div>
+            
+            @php
+                $qurbaniModeEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+            @endphp
+            
+            <div class="p-4 bg-gray-50 rounded-lg mb-4">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900">Current Status</h3>
+                        <p class="text-xs text-gray-600 mt-1">Qurbani mode is currently:</p>
+                    </div>
+                    <span id="qurbaniStatusBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $qurbaniModeEnabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
+                        {{ $qurbaniModeEnabled ? 'ENABLED' : 'DISABLED' }}
+                    </span>
+                </div>
+                
+                <div class="mt-4">
+                    <button type="button" 
+                            id="qurbaniToggleButton" 
+                            onclick="toggleQurbaniMode()"
+                            class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $qurbaniModeEnabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                        {{ $qurbaniModeEnabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode' }}
+                    </button>
+                </div>
+            </div>
+            
+            <div id="qurbaniFeedback" class="mt-3 hidden"></div>
+        </div>
+
+        <script>
+        function toggleQurbaniMode() {
+            const btn = document.getElementById('qurbaniToggleButton');
+            const badge = document.getElementById('qurbaniStatusBadge');
+            const feedback = document.getElementById('qurbaniFeedback');
+            
+            const currentlyEnabled = btn.textContent.includes('Disable');
+            btn.disabled = true;
+            btn.textContent = 'Updating...';
+            
+            fetch('{{ route("qurbani.api.toggle") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+                }
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const enabled = data.enabled;
+                    badge.textContent = enabled ? 'ENABLED' : 'DISABLED';
+                    badge.className = 'px-4 py-2 rounded-full text-sm font-bold ' + (enabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800');
+                    btn.textContent = enabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode';
+                    btn.className = 'w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 ' + (enabled ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white');
+                    feedback.innerHTML = '<div class="p-2 bg-green-50 border border-green-200 rounded text-green-800 text-xs">' + data.message + '</div>';
+                    feedback.classList.remove('hidden');
+                    setTimeout(() => feedback.classList.add('hidden'), 3000);
+                }
+                btn.disabled = false;
+            })
+            .catch(err => {
+                feedback.innerHTML = '<div class="p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">Error: ' + err.message + '</div>';
+                feedback.classList.remove('hidden');
+                btn.disabled = false;
+                btn.textContent = currentlyEnabled ? 'Disable Qurbani Mode' : 'Enable Qurbani Mode';
+            });
+        }
+        </script>
+
         <script>
         function executeSelectedImport() {
             const source = document.getElementById('importSource').value;

@@ -115,19 +115,12 @@ class RegionDetectionService
             }
         }
 
-        // Priority 4: City-level fallback
-        if ($city) {
-            $regionId = self::findRegionByCity($city);
-            if ($regionId) {
-                return ['region_id' => $regionId, 'source' => 'city'];
-            }
-        }
-
         return null;
     }
 
     /**
      * Point-in-polygon check against all regions with defined polygons.
+     * Supports both single polygon and multi-polygon formats.
      */
     private static function findRegionByCoordinates(float $lat, float $lng, array $regions): ?int
     {
@@ -136,16 +129,38 @@ class RegionDetectionService
                 continue;
             }
 
-            $polygon = json_decode($region->polygon_coordinates, true);
-            if (!is_array($polygon) || count($polygon) < 3) {
-                continue;
-            }
+            $polygons = self::parsePolygons($region->polygon_coordinates);
 
-            if (self::pointInPolygon($lat, $lng, $polygon)) {
-                return (int) $region->id;
+            foreach ($polygons as $polygon) {
+                if (count($polygon) < 3) continue;
+                if (self::pointInPolygon($lat, $lng, $polygon)) {
+                    return (int) $region->id;
+                }
             }
         }
         return null;
+    }
+
+    /**
+     * Parse polygon_coordinates JSON into an array of polygons.
+     * Handles both old format (single polygon: [[lat,lng],...])
+     * and new format (multi-polygon: [[[lat,lng],...], [[lat,lng],...]]).
+     */
+    public static function parsePolygons(string $json): array
+    {
+        $data = json_decode($json, true);
+        if (!is_array($data) || empty($data)) {
+            return [];
+        }
+
+        // Detect format: if first element is a [number, number] pair, it's a single polygon
+        if (isset($data[0]) && is_array($data[0]) && count($data[0]) === 2
+            && is_numeric($data[0][0]) && is_numeric($data[0][1])) {
+            return [$data];
+        }
+
+        // Multi-polygon format: array of polygon arrays
+        return $data;
     }
 
     /**

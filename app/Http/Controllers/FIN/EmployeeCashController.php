@@ -1257,8 +1257,9 @@ class EmployeeCashController extends Controller
             // Get all open and partial invoices for this rider
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
             // Now we include invoices with pending settlements if they still have remaining balance
+            // Also include order_payment entries (qurbani payments collected by riders)
             $openInvoices = LedgerModel::where('to_account_id', $employeeAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
                 ->whereIn('settlement_status', ['open', 'partial'])
                 ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->whereNotIn('id', $pendingSettlementInvoiceIds)
@@ -1319,22 +1320,10 @@ class EmployeeCashController extends Controller
 
             $employeeAccount = AccountModel::findOrFail($id);
             
-            // Get destination account
-            if ($request->destination_account_id) {
-                $destinationAccount = AccountModel::findOrFail($request->destination_account_id);
-            } else {
-                $destinationAccount = ConfigModel::getNFCashAccount();
-            }
-
-            if (!$destinationAccount) {
-                throw new \Exception("Destination account not found");
-            }
-
             // Verify selected invoices belong to this rider and are open or partial
-            // Exclude reversed transactions (e.g., from payment method changes)
             $selectedInvoices = LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $employeeAccount->id)
-                ->where('transaction_type', LedgerModel::TYPE_INVOICE)
+                ->whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
                 ->whereIn('settlement_status', ['open', 'partial'])
                 ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->orderBy('transaction_date', 'asc')
@@ -1342,6 +1331,25 @@ class EmployeeCashController extends Controller
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Get destination account - auto-detect for qurbani vs regular if not explicitly specified
+            if ($request->destination_account_id) {
+                $destinationAccount = AccountModel::findOrFail($request->destination_account_id);
+            } else {
+                $hasQurbaniPayments = $selectedInvoices->contains(function ($inv) {
+                    if ($inv->transaction_type !== LedgerModel::TYPE_ORDER_PAYMENT) return false;
+                    if (!$inv->order_id) return false;
+                    $order = \App\Models\CRM\OrderModel::find($inv->order_id);
+                    return $order && (str_starts_with($order->order_number ?? '', 'QUR') || !empty($order->qurbani_day));
+                });
+                $destinationAccount = $hasQurbaniPayments
+                    ? ConfigModel::getQurbaniCashAccount()
+                    : ConfigModel::getNFCashAccount();
+            }
+
+            if (!$destinationAccount) {
+                throw new \Exception("Destination account not found");
             }
 
             // Calculate expected amount (remaining balance for partial invoices)
@@ -2065,7 +2073,8 @@ class EmployeeCashController extends Controller
             
             // Base query for ALL invoices (not just open)
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
-            $invoicesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+            // Include both regular invoices and qurbani order_payment entries routed to rider accounts
+            $invoicesQuery = LedgerModel::whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
                 ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->with(['toAccount', 'order'])
                 ->whereHas('toAccount', function($q) {

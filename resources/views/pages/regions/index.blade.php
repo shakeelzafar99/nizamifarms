@@ -514,36 +514,81 @@ function renderRegionsList() {
         <span>${r.customer_count} cust</span><span>${r.open_order_count} orders</span>
       </div>
       <div class="text-xs mt-1">
-        ${r.polygon_coordinates ? '<span class="text-green-600 font-medium">Polygon set</span>' : '<span class="text-amber-600">No polygon — select this region and draw one</span>'}
+        ${r.polygon_coordinates ? '<span class="text-green-600 font-medium">' + getPolygonCount(r) + ' polygon(s) set</span>' : '<span class="text-amber-600">No polygon — select this region and draw one</span>'}
       </div>
     </div>
   `).join('');
 }
 
 function focusRegion(id) {
-  const layer = regionPolygonLayers[id];
-  if (layer) map.fitBounds(layer.getBounds().pad(0.1));
+  const layers = regionPolygonLayers[id];
+  if (layers && layers.length) {
+    const group = L.featureGroup(layers);
+    map.fitBounds(group.getBounds().pad(0.1));
+  }
   document.getElementById('drawRegionSelect').value = id;
   const drawBtn = document.getElementById('btnDraw');
   drawBtn.disabled = false; drawBtn.style.opacity = '1';
 }
 
+function parsePolygons(jsonStr) {
+  try {
+    const data = JSON.parse(jsonStr);
+    if (!Array.isArray(data) || !data.length) return [];
+    if (Array.isArray(data[0]) && data[0].length === 2 && typeof data[0][0] === 'number') {
+      return [data];
+    }
+    return data;
+  } catch(e) { return []; }
+}
+
+function getPolygonCount(r) {
+  if (!r.polygon_coordinates) return 0;
+  return parsePolygons(r.polygon_coordinates).length;
+}
+
 function renderRegionsOnMap() {
-  Object.values(regionPolygonLayers).forEach(l => map.removeLayer(l));
+  Object.values(regionPolygonLayers).forEach(layers => {
+    if (Array.isArray(layers)) layers.forEach(l => map.removeLayer(l));
+    else map.removeLayer(layers);
+  });
   regionPolygonLayers = {};
   regionsData.forEach(r => {
     if (!r.polygon_coordinates) return;
-    try {
-      const coords = JSON.parse(r.polygon_coordinates);
+    const polygons = parsePolygons(r.polygon_coordinates);
+    if (!polygons.length) return;
+    regionPolygonLayers[r.id] = [];
+    polygons.forEach((coords, idx) => {
       if (!Array.isArray(coords) || coords.length < 3) return;
       const layer = L.polygon(coords, { color: r.color, weight: 2, fillOpacity: 0.15, fillColor: r.color });
-      layer.bindTooltip(r.name, { permanent: false, direction: 'center' });
+      const label = polygons.length > 1 ? r.name + ' (#' + (idx + 1) + ')' : r.name;
+      layer.bindTooltip(label, { permanent: false, direction: 'center' });
+      layer.on('click', function() {
+        if (confirm('Remove polygon #' + (idx + 1) + ' from ' + r.name + '?')) {
+          removePolygon(r.id, idx);
+        }
+      });
       layer.addTo(map);
-      regionPolygonLayers[r.id] = layer;
-    } catch(e) {}
+      regionPolygonLayers[r.id].push(layer);
+    });
   });
-  const all = Object.values(regionPolygonLayers);
-  if (all.length) map.fitBounds(L.featureGroup(all).getBounds().pad(0.1));
+  const allLayers = Object.values(regionPolygonLayers).flat();
+  if (allLayers.length) map.fitBounds(L.featureGroup(allLayers).getBounds().pad(0.1));
+}
+
+async function removePolygon(regionId, polygonIndex) {
+  try {
+    const d = await (await fetch('/regions/remove-polygon', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF },
+      body: JSON.stringify({ region_id: regionId, polygon_index: polygonIndex })
+    })).json();
+    if (d.success) {
+      showMapStatus(d.message, 'success');
+      await loadRegions();
+      await loadStats();
+    } else alert(d.message || 'Error');
+  } catch(e) { alert('Error removing polygon'); }
 }
 
 function populateRegionDropdowns() {
@@ -642,23 +687,23 @@ async function savePolygon() {
   const center = layers[0].getBounds().getCenter();
 
   try {
-    const d = await (await fetch('/regions/save', {
+    const d = await (await fetch('/regions/save-polygon', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF },
       body: JSON.stringify({
-        id: regionId, name: region.name, code: region.code, color: region.color,
+        region_id: regionId,
         polygon_coordinates: JSON.stringify(coords),
-        center_lat: center.lat, center_lng: center.lng,
-        sort_order: region.sort_order, is_active: region.is_active
+        center_lat: center.lat,
+        center_lng: center.lng,
       })
     })).json();
 
     if (d.success) {
-      showMapStatus('Polygon saved for ' + region.name + '!', 'success');
+      showMapStatus(d.message + ' for ' + region.name, 'success');
       clearDrawing();
       await loadRegions();
       await loadStats();
-      if (confirm('Polygon saved for ' + region.name + '! Run batch detection now to assign this region to matching customers and orders?')) {
+      if (confirm(d.message + ' for ' + region.name + '! Run batch detection now?')) {
         await runQuickBatch('customers');
         await runQuickBatch('orders');
       }

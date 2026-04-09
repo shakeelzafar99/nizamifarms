@@ -81,6 +81,15 @@ class OrderController extends Controller
             // If viewing open orders or riders tab, filter to exclude completed statuses
             if ($tab === 'open' || $tab === 'riders') {
                 $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+                // Exclude qurbani orders from regular open orders view
+                $query->where(function ($q) {
+                    $q->whereNull('qurbani_day')
+                      ->whereDoesntHave('lineItems', function ($li) {
+                          $li->whereHas('product', function ($p) {
+                              $p->whereRaw("LOWER(attribute_1) = 'qurbani'");
+                          });
+                      });
+                });
             }
         }
         
@@ -256,6 +265,34 @@ class OrderController extends Controller
                     ->value('name');
             }
 
+            $isQurbani = !empty($order->qurbani_day) || !empty($order->qurbani_slot) || !empty($order->qurbani_region) || !empty($order->qurbani_delivery_type);
+            // Also check line items for qurbani fields or qurbani products
+            if (!$isQurbani) {
+                $isQurbani = $order->lineItems->contains(function($li) {
+                    return !empty($li->qurbani_day) || !empty($li->qurbani_slot) || !empty($li->qurbani_region) || !empty($li->qurbani_delivery_type);
+                });
+            }
+            if (!$isQurbani) {
+                $isQurbani = $order->hasQurbaniItems();
+            }
+            $qurbaniPayments = [];
+            if ($isQurbani) {
+                $qurbaniPayments = \DB::table('t_crm_order_payments as p')
+                    ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
+                    ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                    ->where('p.order_id', $order->id)
+                    ->where('p.status', 'active')
+                    ->orderBy('p.payment_date', 'desc')
+                    ->select([
+                        'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
+                        'p.reference', 'p.notes', 'p.created_by', 'p.created_at',
+                        'u.fullname as created_by_name',
+                        'l.approval_status as ledger_approval_status',
+                        'l.settlement_status as ledger_settlement_status',
+                    ])
+                    ->get();
+            }
+
             return response()->json([
                 'success' => true,
                 'order' => $order,
@@ -271,12 +308,139 @@ class OrderController extends Controller
                 'has_pending_approval' => $pendingApproval !== null,
                 'delivery_region_name' => $regionName,
                 'delivery_region_id' => $custRegionId,
+                'is_qurbani' => $isQurbani,
+                'qurbani_payments' => $qurbaniPayments,
             ]);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Order not found'
             ], 404);
+        }
+    }
+
+    public function getQurbaniPayments($id)
+    {
+        try {
+            $order = $this->findOrder($id);
+            $payments = \DB::table('t_crm_order_payments as p')
+                ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
+                ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                ->where('p.order_id', $id)
+                ->where('p.status', 'active')
+                ->orderBy('p.payment_date', 'desc')
+                ->select([
+                    'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
+                    'p.reference', 'p.notes', 'p.created_by', 'p.created_at',
+                    'u.fullname as created_by_name',
+                    'l.approval_status as ledger_approval_status',
+                    'l.settlement_status as ledger_settlement_status',
+                ])
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'order_number' => $order->order_number,
+                'total_price' => (float) $order->total_price,
+                'total_paid' => (float) ($order->total_paid ?? 0),
+                'payment_status' => $order->payment_status ?? 'unpaid',
+                'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                'payments' => $payments,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function addQurbaniPayment(\Illuminate\Http\Request $request, $id)
+    {
+        try {
+            $user = \Auth::user();
+            $order = $this->findOrder($id);
+
+            $validated = $request->validate([
+                'amount' => 'required|numeric|min:0.01',
+                'payment_method' => 'required|string|in:cash,online',
+                'reference' => 'nullable|string|max:255',
+                'notes' => 'nullable|string|max:1000',
+            ]);
+
+            $amount = (float) $validated['amount'];
+            $currentPaid = (float) ($order->total_paid ?? 0);
+            $totalPrice = (float) $order->total_price;
+            $remaining = max(0, $totalPrice - $currentPaid);
+
+            if ($amount > $remaining + 0.01) {
+                return response()->json(['success' => false, 'message' => 'Amount exceeds remaining balance of Rs. ' . number_format($remaining, 2)], 422);
+            }
+
+            $paymentMethod = $validated['payment_method'];
+            $paymentDate = now()->toDateString();
+
+            $payment = \App\Models\CRM\OrderPaymentModel::create([
+                'order_id' => $order->id,
+                'amount' => $amount,
+                'payment_method' => $paymentMethod,
+                'payment_date' => $paymentDate,
+                'reference' => $validated['reference'] ?? null,
+                'notes' => $validated['notes'] ?? null,
+                'status' => 'active',
+                'created_by' => $user->id,
+            ]);
+
+            $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
+            if (!$salesAccount) {
+                return response()->json(['success' => false, 'message' => 'Sales revenue account not configured'], 500);
+            }
+
+            if ($paymentMethod === 'cash') {
+                $toAccount = \App\Models\FIN\ConfigModel::getQurbaniCashAccount();
+            } else {
+                $toAccount = \App\Models\FIN\ConfigModel::getQurbaniOnlineAccount();
+            }
+
+            if (!$toAccount) {
+                return response()->json(['success' => false, 'message' => 'Qurbani payment account not configured'], 500);
+            }
+
+            $ledger = \App\Models\FIN\LedgerModel::create([
+                'transaction_date' => $paymentDate,
+                'transaction_type' => \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+                'description' => "Qurbani payment for order #{$order->order_number} - Rs. " . number_format($amount, 2) . " ({$paymentMethod}) by {$user->fullname}",
+                'from_account_id' => $salesAccount->id,
+                'to_account_id' => $toAccount->id,
+                'amount' => $amount,
+                'mode' => $paymentMethod === 'cash' ? 'cash' : 'online',
+                'approval_status' => \App\Models\FIN\LedgerModel::STATUS_APPROVED,
+                'balance_updated' => 1,
+                'settlement_status' => 'settled',
+                'settled_amount' => $amount,
+                'settled_at' => now(),
+                'approval_date' => now(),
+                'approved_by' => $user->id,
+                'order_id' => $order->id,
+                'created_by' => $user->id,
+            ]);
+
+            $payment->ledger_transaction_id = $ledger->id;
+            $payment->save();
+
+            $toAccount->current_balance += $amount;
+            $toAccount->save();
+            $salesAccount->current_balance -= $amount;
+            $salesAccount->save();
+            $order->recalculatePaymentStatus();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment of Rs. ' . number_format($amount, 2) . ' recorded successfully',
+                'payment' => $payment,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to add qurbani payment', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
@@ -565,6 +729,11 @@ class OrderController extends Controller
                 'items.*.variant_id' => 'nullable|string',
                 'items.*.product_id' => 'nullable|string',
                 'items.*.is_free' => 'nullable|boolean',
+                'items.*.qurbani_day' => 'nullable|string|max:50',
+                'items.*.qurbani_slot' => 'nullable|string|max:50',
+                'items.*.qurbani_region' => 'nullable|string|max:100',
+                'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
+                'items.*.instructions' => 'nullable|string|max:500',
                 // Multiple discounts support
                 'discounts' => 'nullable|array',
                 'discounts.*.title' => 'required_with:discounts|string|max:255',
@@ -598,6 +767,11 @@ class OrderController extends Controller
                 $validationRules['address_country'] = 'nullable|string';
                 // ⭐ Option to sync address changes back to customer profile
                 $validationRules['sync_to_customer'] = 'nullable|boolean';
+                // Qurbani fields (editable on full update)
+                $validationRules['qurbani_day'] = 'nullable|string|max:50';
+                $validationRules['qurbani_slot'] = 'nullable|string|max:50';
+                $validationRules['qurbani_region'] = 'nullable|string|max:100';
+                $validationRules['qurbani_delivery_type'] = 'nullable|string|max:50';
             }
             
             $validated = $request->validate($validationRules);
@@ -935,7 +1109,7 @@ class OrderController extends Controller
                     }
                     
                     $isFree = !empty($itemData['is_free']);
-                    $formattedLineItems[] = [
+                    $updateLineItem = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
                         'unit_price' => $unitPrice,
@@ -948,8 +1122,33 @@ class OrderController extends Controller
                         'variant_id' => $variantId,
                         'product_id' => $productId,
                     ];
+                    if (!empty($itemData['qurbani_day'])) $updateLineItem['qurbani_day'] = $itemData['qurbani_day'];
+                    if (!empty($itemData['qurbani_slot'])) $updateLineItem['qurbani_slot'] = $itemData['qurbani_slot'];
+                    if (!empty($itemData['qurbani_region'])) $updateLineItem['qurbani_region'] = $itemData['qurbani_region'];
+                    if (!empty($itemData['qurbani_delivery_type'])) $updateLineItem['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
+                    if (array_key_exists('instructions', $itemData)) $updateLineItem['instructions'] = $itemData['instructions'];
+
+                    // Backward compat: use order-level qurbani fields if item-level not set
+                    if (empty($itemData['qurbani_day']) && $request->filled('qurbani_day')) $updateLineItem['qurbani_day'] = $request->qurbani_day;
+                    if (empty($itemData['qurbani_slot']) && $request->filled('qurbani_slot')) $updateLineItem['qurbani_slot'] = $request->qurbani_slot;
+                    if (empty($itemData['qurbani_region']) && $request->filled('qurbani_region')) $updateLineItem['qurbani_region'] = $request->qurbani_region;
+                    if (empty($itemData['qurbani_delivery_type']) && $request->filled('qurbani_delivery_type')) $updateLineItem['qurbani_delivery_type'] = $request->qurbani_delivery_type;
+
+                    $formattedLineItems[] = $updateLineItem;
                 }
                 
+                // Sync qurbani fields from line items to order level (for efficient filtering)
+                $firstQurbaniUpdateItem = collect($formattedLineItems)->first(function($item) {
+                    return !empty($item['qurbani_day']) || !empty($item['qurbani_slot']) || !empty($item['qurbani_region']) || !empty($item['qurbani_delivery_type']);
+                });
+                if ($firstQurbaniUpdateItem) {
+                    $order->qurbani_day = $firstQurbaniUpdateItem['qurbani_day'] ?? $order->qurbani_day;
+                    $order->qurbani_slot = $firstQurbaniUpdateItem['qurbani_slot'] ?? $order->qurbani_slot;
+                    $order->qurbani_region = $firstQurbaniUpdateItem['qurbani_region'] ?? $order->qurbani_region;
+                    $order->qurbani_delivery_type = $firstQurbaniUpdateItem['qurbani_delivery_type'] ?? $order->qurbani_delivery_type;
+                    $order->save();
+                }
+
                 // Update line items directly since this is an existing order
                 // ⭐ PRESERVE preparation_status: Get existing line items before deleting
                 $existingLineItems = $order->lineItems()->get()->keyBy(function($item) {
@@ -1199,6 +1398,11 @@ class OrderController extends Controller
                 'items.*.variant_id' => 'nullable|string',
                 'items.*.product_id' => 'nullable|string',
                 'items.*.is_free' => 'nullable|boolean',
+                'items.*.qurbani_day' => 'nullable|string|max:50',
+                'items.*.qurbani_slot' => 'nullable|string|max:50',
+                'items.*.qurbani_region' => 'nullable|string|max:100',
+                'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
+                'items.*.instructions' => 'nullable|string|max:500',
                 // Customer creation fields
                 'customer_phone' => 'nullable|string',
                 'customer_first_name' => 'nullable|string',
@@ -1217,7 +1421,11 @@ class OrderController extends Controller
                 'discounts.*.type' => 'nullable|in:fixed,percentage',
                 'discounts.*.percentage' => 'nullable|numeric|min:0|max:100',
                 'discounts.*.coupon_code' => 'nullable|string|max:100',
-                'discounts.*.notes' => 'nullable|string'
+                'discounts.*.notes' => 'nullable|string',
+                'qurbani_day' => 'nullable|string|max:50',
+                'qurbani_slot' => 'nullable|string|max:50',
+                'qurbani_region' => 'nullable|string|max:100',
+                'qurbani_delivery_type' => 'nullable|string|max:50',
             ]);
             
             // ================================================================
@@ -1296,22 +1504,108 @@ class OrderController extends Controller
                 $validated['order_status'] = 'new';
             }
 
-            // Generate order number for webapp orders
-            // ⚠️ FIX: Use database-level locking to prevent race conditions
-            // Look at ALL orders with NF- prefix (not just webapp) and use MAX to get highest number
-            $orderNumber = \DB::transaction(function() {
-                // Lock the orders table to prevent concurrent inserts getting same number
-                $maxOrderNumber = \DB::table('t_crm_prod_order')
-                    ->where('order_number', 'LIKE', 'NF-%')
-                    ->lockForUpdate()
-                    ->max(\DB::raw("CAST(SUBSTRING(order_number, 4) AS UNSIGNED)"));
-                
-                $nextNumber = ($maxOrderNumber ?? 0) + 1;
-                return 'NF-' . $nextNumber;
-            });
+            // Qurbani / regular order mixing guard:
+            // Resolve actual product IDs from line items (handles variant_XXX format)
+            $lineProductIds = collect($validated['items'] ?? [])
+                ->map(function ($item) {
+                    // Try product_id first, then variant_id
+                    $pid = $item['product_id'] ?? null;
+                    $vid = $item['variant_id'] ?? null;
+
+                    // Resolve variant_XXX format from either field
+                    foreach ([$pid, $vid] as $idVal) {
+                        if ($idVal && str_starts_with((string)$idVal, 'variant_')) {
+                            $variantId = (int) str_replace('variant_', '', $idVal);
+                            $resolved = \DB::table('t_crm_prod_product_variant')
+                                ->where('id', $variantId)->value('product_id');
+                            if ($resolved) return (int) $resolved;
+                        }
+                    }
+
+                    // Numeric variant_id → resolve to product_id
+                    if ($vid && is_numeric($vid)) {
+                        $resolved = \DB::table('t_crm_prod_product_variant')
+                            ->where('id', (int)$vid)->value('product_id');
+                        if ($resolved) return (int) $resolved;
+                    }
+
+                    // Direct product_id
+                    if ($pid && is_numeric($pid)) {
+                        return (int) $pid;
+                    }
+
+                    // Fallback: try SKU lookup
+                    $sku = $item['sku'] ?? null;
+                    if ($sku) {
+                        $resolved = \DB::table('t_crm_prod_product_variant')
+                            ->where('sku', $sku)->value('product_id');
+                        if ($resolved) return (int) $resolved;
+                    }
+
+                    return null;
+                })
+                ->filter()
+                ->unique()
+                ->values();
+
+            if ($lineProductIds->isNotEmpty()) {
+                $qurbaniCount = \DB::table('t_crm_prod_product')
+                    ->whereIn('id', $lineProductIds)
+                    ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+                    ->count();
+                $totalCount = $lineProductIds->count();
+
+                if ($qurbaniCount > 0 && $qurbaniCount < $totalCount) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot mix Qurbani and regular products in one order. Please create separate orders for Qurbani items.'
+                    ], 422);
+                }
+
+                $isQurbaniOrder = $qurbaniCount > 0 && $qurbaniCount === $totalCount;
+            } else {
+                $isQurbaniOrder = false;
+            }
+
+            // Validate qurbani fields are present for qurbani orders
+            if ($isQurbaniOrder) {
+                $validated['qurbani_day'] = $request->input('qurbani_day');
+                $validated['qurbani_slot'] = $request->input('qurbani_slot');
+                $validated['qurbani_region'] = $request->input('qurbani_region');
+                $validated['qurbani_delivery_type'] = $request->input('qurbani_delivery_type');
+            }
+
+            // Generate order number
+            if ($isQurbaniOrder) {
+                // QUR format: QUR26-001 (2-digit year + sequential 3-digit number, resets each year)
+                $orderNumber = \DB::transaction(function() {
+                    $yearSuffix = date('y'); // e.g. "26"
+                    $prefix = 'QUR' . $yearSuffix . '-';
+                    $prefixLen = strlen($prefix) + 1;
+                    // Check both order tables to avoid collisions with Shopify-converted qurbani orders
+                    $maxSeq1 = \DB::table('t_crm_prod_order')
+                        ->where('order_number', 'LIKE', $prefix . '%')
+                        ->lockForUpdate()
+                        ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                    $maxSeq2 = \DB::table('t_crm_shopify_order')
+                        ->where('order_number', 'LIKE', $prefix . '%')
+                        ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                    $nextSeq = max(($maxSeq1 ?? 0), ($maxSeq2 ?? 0)) + 1;
+                    return $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
+                });
+            } else {
+                $orderNumber = \DB::transaction(function() {
+                    $maxOrderNumber = \DB::table('t_crm_prod_order')
+                        ->where('order_number', 'LIKE', 'NF-%')
+                        ->lockForUpdate()
+                        ->max(\DB::raw("CAST(SUBSTRING(order_number, 4) AS UNSIGNED)"));
+                    $nextNumber = ($maxOrderNumber ?? 0) + 1;
+                    return 'NF-' . $nextNumber;
+                });
+            }
             
             // Handle customer selection/population
-            $customerId = $validated['customer_id'];
+            $customerId = $validated['customer_id'] ?? null;
             if (!$customerId && !empty($validated['customer_phone'])) {
                 // Don't create customer here - let storeOrderFromApi handle it to avoid double counting
                 // Just populate address fields for the order
@@ -1389,7 +1683,7 @@ class OrderController extends Controller
                     }
                     
                     $isFreeStore = !empty($itemData['is_free']);
-                    $formattedLineItems[] = [
+                    $lineItemData = [
                         'name' => $itemData['name'],
                         'quantity' => $quantity,
                         'unit_price' => $unitPrice,
@@ -1402,6 +1696,19 @@ class OrderController extends Controller
                         'variant_id' => $variantId,
                         'product_id' => $productId,
                     ];
+                    if (!empty($itemData['qurbani_day'])) $lineItemData['qurbani_day'] = $itemData['qurbani_day'];
+                    if (!empty($itemData['qurbani_slot'])) $lineItemData['qurbani_slot'] = $itemData['qurbani_slot'];
+                    if (!empty($itemData['qurbani_region'])) $lineItemData['qurbani_region'] = $itemData['qurbani_region'];
+                    if (!empty($itemData['qurbani_delivery_type'])) $lineItemData['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
+                    if (array_key_exists('instructions', $itemData)) $lineItemData['instructions'] = $itemData['instructions'];
+
+                    // Backward compat: also accept order-level qurbani fields and apply to all items
+                    if (empty($itemData['qurbani_day']) && !empty($validated['qurbani_day'])) $lineItemData['qurbani_day'] = $validated['qurbani_day'];
+                    if (empty($itemData['qurbani_slot']) && !empty($validated['qurbani_slot'])) $lineItemData['qurbani_slot'] = $validated['qurbani_slot'];
+                    if (empty($itemData['qurbani_region']) && !empty($validated['qurbani_region'])) $lineItemData['qurbani_region'] = $validated['qurbani_region'];
+                    if (empty($itemData['qurbani_delivery_type']) && !empty($validated['qurbani_delivery_type'])) $lineItemData['qurbani_delivery_type'] = $validated['qurbani_delivery_type'];
+
+                    $formattedLineItems[] = $lineItemData;
                 }
             }
             
@@ -1410,6 +1717,19 @@ class OrderController extends Controller
             
             // Use existing storeOrderFromApi method to handle both order and line items
             $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
+            
+            // Sync qurbani fields from line items to order level (for efficient filtering)
+            $firstQurbaniItem = collect($formattedLineItems)->first(function($item) {
+                return !empty($item['qurbani_day']) || !empty($item['qurbani_slot']) || !empty($item['qurbani_region']) || !empty($item['qurbani_delivery_type']);
+            });
+            if ($firstQurbaniItem) {
+                $order->update([
+                    'qurbani_day' => $firstQurbaniItem['qurbani_day'] ?? $order->qurbani_day,
+                    'qurbani_slot' => $firstQurbaniItem['qurbani_slot'] ?? $order->qurbani_slot,
+                    'qurbani_region' => $firstQurbaniItem['qurbani_region'] ?? $order->qurbani_region,
+                    'qurbani_delivery_type' => $firstQurbaniItem['qurbani_delivery_type'] ?? $order->qurbani_delivery_type,
+                ]);
+            }
             
             // Create discount detail records if multiple discounts were provided
             if (isset($validated['discounts']) && is_array($validated['discounts']) && !empty($validated['discounts'])) {
@@ -2030,6 +2350,18 @@ class OrderController extends Controller
                 // Apply tab filter for open orders and riders
                 if ($tab === 'open' || $tab === 'riders') {
                     $query->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+                    // Exclude qurbani orders from store mode / web open orders,
+                    // but NOT from rider mode (riders need to see qurbani orders assigned to them)
+                    if (!$isMobileRequest) {
+                        $query->where(function ($q) {
+                            $q->whereNull('qurbani_day')
+                              ->whereDoesntHave('lineItems', function ($li) {
+                                  $li->whereHas('product', function ($p) {
+                                      $p->whereRaw("LOWER(attribute_1) = 'qurbani'");
+                                  });
+                              });
+                        });
+                    }
                 }
             }
             
@@ -2241,6 +2573,14 @@ class OrderController extends Controller
                 ->where(function($q){
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
+                })
+                ->whereNull('o.qurbani_day')
+                ->whereNotExists(function($sub) {
+                    $sub->select(\DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as li')
+                        ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                        ->whereColumn('li.order_id', 'o.id')
+                        ->whereRaw("LOWER(p.attribute_1) = 'qurbani'");
                 })
                 ->groupBy('normalized_code');
 

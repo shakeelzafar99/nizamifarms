@@ -274,9 +274,10 @@ class AuthController extends Controller
         $mobilePermissions = $user->getMobilePermissions();
         $hasStoreAccess = in_array('access_store_mode', $mobilePermissions);
         $hasKhaasAccess = in_array('access_khaas_mode', $mobilePermissions);
+        $hasQurbaniAccess = in_array('access_qurbani_mode', $mobilePermissions);
         
         // Determine default view based on available modes
-        // Priority: store > khaas > rider
+        // Priority: store > khaas > rider (store always wins; qurbani is explicit switch only)
         if ($hasStoreAccess) {
             $defaultView = 'store';
         } elseif ($hasKhaasAccess) {
@@ -316,6 +317,7 @@ class AuthController extends Controller
             'has_store_access' => $hasStoreAccess, // Quick check for store access
             'has_khaas_access' => $hasKhaasAccess, // ⭐ Quick check for khaas access
             'khaas_business_unit' => $khaasBusinessUnit, // ⭐ Khaas BU details (id, name, color)
+            'has_qurbani_access' => $hasQurbaniAccess,
             'default_view' => $defaultView, // Default starting view for mobile app
             'expense_backdate_days' => (int)$expenseBackdateDays, // ⭐ Expense backdate days allowed
         ];

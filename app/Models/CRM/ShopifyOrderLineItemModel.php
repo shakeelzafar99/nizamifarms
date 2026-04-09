@@ -37,6 +37,11 @@ class ShopifyOrderLineItemModel extends BaseModel
      */
     protected $appends = ['product_name', 'title', 'unit_price_formatted', 'total_formatted'];
 
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(ProductModel::class, 'product_id');
+    }
+
     public function variant(): BelongsTo
     {
         return $this->belongsTo(ProductVariantModel::class, 'variant_id');

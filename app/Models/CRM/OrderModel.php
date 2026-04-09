@@ -59,6 +59,12 @@ class OrderModel extends BaseModel
         'delivery_priority', // ⭐ Delivery sequence priority (1=first, 2=second, etc)
         'online_message_sent_at', // WhatsApp payment reminder sent timestamp
         'online_message_sent_by', // User ID who sent the WhatsApp message
+        'qurbani_day',
+        'qurbani_slot',
+        'qurbani_region',
+        'qurbani_delivery_type',
+        'payment_status',
+        'total_paid',
         'created_by',
         'updated_by'
     ];
@@ -77,7 +83,8 @@ class OrderModel extends BaseModel
         'expected_packets' => 'integer',
         'actual_packets' => 'integer',
         'online_message_sent_at' => 'datetime',
-        'online_message_sent_by' => 'integer'
+        'online_message_sent_by' => 'integer',
+        'total_paid' => 'decimal:2'
     ];
 
     // Ensure relationships are included when converting to array/JSON
@@ -142,6 +149,56 @@ class OrderModel extends BaseModel
     public function discounts(): HasMany
     {
         return $this->hasMany(OrderDiscountModel::class, 'order_id')->orderBy('display_order')->orderBy('id');
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(OrderPaymentModel::class, 'order_id')->where('status', 'active')->orderBy('payment_date', 'desc');
+    }
+
+    public function hasQurbaniItems(): bool
+    {
+        if (!$this->relationLoaded('lineItems')) {
+            $this->load('lineItems');
+        }
+        $productIds = $this->lineItems->pluck('product_id')->filter()->unique();
+        if ($productIds->isEmpty()) {
+            return false;
+        }
+        return \DB::table('t_crm_prod_product')
+            ->whereIn('id', $productIds)
+            ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+            ->exists();
+    }
+
+    public function hasPreReceivedPayments(): bool
+    {
+        return \DB::table('t_crm_order_payments')
+            ->where('order_id', $this->id)
+            ->where('status', 'active')
+            ->exists();
+    }
+
+    public function recalculatePaymentStatus(): void
+    {
+        $totalPaid = (float) \DB::table('t_crm_order_payments')
+            ->where('order_id', $this->id)
+            ->where('status', 'active')
+            ->sum('amount');
+
+        $totalPrice = (float) $this->total_price;
+
+        if ($totalPaid <= 0) {
+            $status = 'unpaid';
+        } elseif ($totalPaid >= $totalPrice) {
+            $status = 'paid';
+        } else {
+            $status = 'partial';
+        }
+
+        $this->total_paid = $totalPaid;
+        $this->payment_status = $status;
+        $this->save();
     }
 
     /**
@@ -360,7 +417,10 @@ class OrderModel extends BaseModel
 
             // Prepare order data
             $orderAttributes = $orderData;
-            $orderAttributes['customer_id'] = $customer?->id;
+            if ($customer) {
+                $orderAttributes['customer_id'] = $customer->id;
+            }
+            // Keep the original customer_id from $orderData if phone lookup didn't find/create one
             $orderAttributes['created_by'] = auth()->check() ? auth()->id() : null;
             
             // Extract line items
@@ -543,6 +603,30 @@ class OrderModel extends BaseModel
             // (via bulkUpdateLineItemStatus or bulkMarkOrdersAsPrepared),
             // or auto-deducted when the order moves to "out_for_delivery".
             // This applies to all order sources (webapp, Shopify conversions, etc.).
+
+            // Rename Shopify qurbani orders to QUR format
+            if ($isShopify && !$existingOrder) {
+                $liTable = $isShopify ? 't_crm_shopify_order_line_item' : 't_crm_prod_order_line_item';
+                $hasQurbani = DB::table($liTable . ' as li')
+                    ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                    ->where('li.order_id', $order->id)
+                    ->whereRaw("LOWER(p.attribute_1) = 'qurbani'")
+                    ->exists();
+                if ($hasQurbani && !str_starts_with($order->order_number ?? '', 'QUR')) {
+                    $yearSuffix = date('y');
+                    $prefix = 'QUR' . $yearSuffix . '-';
+                    $maxSeq = DB::table('t_crm_prod_order')
+                        ->where('order_number', 'LIKE', $prefix . '%')
+                        ->max(DB::raw("CAST(SUBSTRING(order_number, " . (strlen($prefix) + 1) . ") AS UNSIGNED)"));
+                    // Also check shopify orders table
+                    $maxSeqShopify = DB::table('t_crm_shopify_order')
+                        ->where('order_number', 'LIKE', $prefix . '%')
+                        ->max(DB::raw("CAST(SUBSTRING(order_number, " . (strlen($prefix) + 1) . ") AS UNSIGNED)"));
+                    $nextSeq = max(($maxSeq ?? 0), ($maxSeqShopify ?? 0)) + 1;
+                    $order->order_number = $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
+                    $order->save();
+                }
+            }
 
             DB::commit();
             return $order->load(['customer', 'lineItems']);
@@ -1103,6 +1187,56 @@ class OrderModel extends BaseModel
                     }
                 }
 
+                // 4b. If cancelled and has pre-received payments, reverse their ledger entries too
+                if ($statusCode === 'cancelled') {
+                    try {
+                        $paymentLedgerIds = \DB::table('t_crm_order_payments')
+                            ->where('order_id', $this->id)
+                            ->where('status', 'active')
+                            ->whereNotNull('ledger_transaction_id')
+                            ->pluck('ledger_transaction_id');
+
+                        $reversedCount = 0;
+                        foreach ($paymentLedgerIds as $ledgerId) {
+                            $ledger = \App\Models\FIN\LedgerModel::find($ledgerId);
+                            if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
+                                if ($ledger->settlement_status === 'settled' || ($ledger->settled_amount > 0)) {
+                                    \Log::warning("Cannot reverse settled payment ledger entry on cancellation", [
+                                        'order_id' => $this->id,
+                                        'ledger_id' => $ledgerId,
+                                    ]);
+                                    continue;
+                                }
+                                $this->reverseLedgerForCancellation($ledger);
+                                $reversedCount++;
+                            }
+                        }
+
+                        // Mark all payments as voided
+                        \DB::table('t_crm_order_payments')
+                            ->where('order_id', $this->id)
+                            ->where('status', 'active')
+                            ->update(['status' => 'voided', 'updated_at' => now()]);
+
+                        $this->payment_status = 'unpaid';
+                        $this->total_paid = 0;
+                        $this->save();
+
+                        if ($reversedCount > 0) {
+                            \Log::info("Reversed payment ledger entries for cancelled order", [
+                                'order_id' => $this->id,
+                                'reversed_count' => $reversedCount,
+                            ]);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error("Failed to reverse payment ledger entries for cancelled order", [
+                            'order_id' => $this->id,
+                            'error' => $e->getMessage()
+                        ]);
+                        // Don't block cancellation for payment reversal failures
+                    }
+                }
+
                 // ⭐ INVENTORY RESTORATION: Restore store inventory on order cancellation
                 // Only restores inventory for line items that actually had inventory deducted
                 // (inventory_deducted = 1). This works for both old orders (backfilled by migration)
@@ -1190,26 +1324,36 @@ class OrderModel extends BaseModel
                 }
 
                 // 6. If status changed to 'delivered', post invoice to ledger
+                //    GUARD: Skip if order has pre-received payments (qurbani flow).
+                //    Those payments already have their own ledger entries.
                 if ($statusCode === 'delivered') {
                     try {
-                        // Ensure customer relationship is loaded for ledger description
-                        if (!$this->relationLoaded('customer')) {
-                            $this->load('customer');
-                        }
-                        
-                        $ledgerService = new \App\Services\FIN\LedgerPostingService();
-                        $result = $ledgerService->postInvoiceFromOrder($this);
-                        
-                        if ($result['success']) {
-                            \Log::info("Invoice posted to ledger", [
+                        if ($this->hasPreReceivedPayments()) {
+                            \Log::info("Skipping invoice posting - order has pre-received payments (qurbani flow)", [
                                 'order_id' => $this->id,
-                                'ledger_id' => $result['ledger_id'] ?? null
+                                'order_number' => $this->order_number,
+                                'total_paid' => $this->total_paid,
                             ]);
                         } else {
-                            \Log::warning("Failed to post invoice to ledger", [
-                                'order_id' => $this->id,
-                                'message' => $result['message'] ?? 'Unknown error'
-                            ]);
+                            // Ensure customer relationship is loaded for ledger description
+                            if (!$this->relationLoaded('customer')) {
+                                $this->load('customer');
+                            }
+                            
+                            $ledgerService = new \App\Services\FIN\LedgerPostingService();
+                            $result = $ledgerService->postInvoiceFromOrder($this);
+                            
+                            if ($result['success']) {
+                                \Log::info("Invoice posted to ledger", [
+                                    'order_id' => $this->id,
+                                    'ledger_id' => $result['ledger_id'] ?? null
+                                ]);
+                            } else {
+                                \Log::warning("Failed to post invoice to ledger", [
+                                    'order_id' => $this->id,
+                                    'message' => $result['message'] ?? 'Unknown error'
+                                ]);
+                            }
                         }
                     } catch (\Exception $e) {
                         \Log::error("Exception posting invoice to ledger", [

@@ -97,6 +97,7 @@ class LedgerModel extends BaseModel
     const TYPE_ADJUSTMENT = 'adjustment';
     const TYPE_OPENING_BALANCE = 'opening_balance';
     const TYPE_SETTLEMENT = 'expense_settlement';
+    const TYPE_ORDER_PAYMENT = 'order_payment';
 
     // Mode constants
     const MODE_CASH = 'cash';

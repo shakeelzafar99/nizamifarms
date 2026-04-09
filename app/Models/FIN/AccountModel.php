@@ -212,7 +212,8 @@ class AccountModel extends BaseModel
     public function isSystemAccount(): bool
     {
         return in_array($this->account_code, [
-            'NF_CASH', 'ONLINE', 'REV_SALES', 'EXP_FUND', 'EQUITY_OPENING'
+            'NF_CASH', 'ONLINE', 'REV_SALES', 'EXP_FUND', 'EQUITY_OPENING',
+            'QURBANI_CASH', 'QURBANI_ONLINE',
         ]);
     }
 

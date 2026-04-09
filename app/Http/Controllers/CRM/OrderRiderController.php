@@ -15,16 +15,32 @@ class OrderRiderController extends Controller
     public function assign(Request $request, int $orderId)
     {
         $data = $request->validate([
-            'rider_user_id' => 'required|integer',
+            'rider_user_id' => 'required|integer|min:0',
             'notes' => 'nullable|string',
             'assigned_at' => 'nullable|date',
-            'confirmed' => 'nullable|boolean', // For ledger change confirmation
+            'confirmed' => 'nullable|boolean',
         ]);
 
         /** @var OrderModel|null $order */
         $order = OrderModel::find($orderId);
         if (!$order) {
             return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        // Unassign rider when rider_user_id is 0
+        if ((int)$data['rider_user_id'] === 0) {
+            DB::table('t_ops_order_rider_history')
+                ->where('order_id', $orderId)
+                ->where('is_current', 1)
+                ->update(['is_current' => 0, 'unassigned_at' => now()]);
+
+            $order->assigned_rider_user_id = null;
+            $order->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Rider unassigned successfully',
+            ]);
         }
 
         // ================================================================

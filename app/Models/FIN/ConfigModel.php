@@ -32,6 +32,8 @@ class ConfigModel extends BaseModel
     const KEY_SALES_REVENUE_ACCOUNT = 'sales_revenue_account_id';
     const KEY_OPENING_EQUITY_ACCOUNT = 'opening_equity_account_id';
     const KEY_BU_DEFAULT_EXPENSE_ACCOUNT = 'BU_DEFAULT_EXPENSE_ACCOUNT';
+    const KEY_QURBANI_CASH_ACCOUNT = 'qurbani_cash_account_id';
+    const KEY_QURBANI_ONLINE_ACCOUNT = 'qurbani_online_account_id';
 
     /**
      * Get config value by key
@@ -111,6 +113,32 @@ class ConfigModel extends BaseModel
     }
 
     /**
+     * Get Qurbani Cash account (falls back to NF Cash if not configured)
+     */
+    public static function getQurbaniCashAccount()
+    {
+        $accountId = static::get(self::KEY_QURBANI_CASH_ACCOUNT);
+        if ($accountId) {
+            $account = AccountModel::find($accountId);
+            if ($account) return $account;
+        }
+        return AccountModel::getByCode('QURBANI_CASH') ?? static::getNFCashAccount();
+    }
+
+    /**
+     * Get Qurbani Online account (falls back to Online Bank if not configured)
+     */
+    public static function getQurbaniOnlineAccount()
+    {
+        $accountId = static::get(self::KEY_QURBANI_ONLINE_ACCOUNT);
+        if ($accountId) {
+            $account = AccountModel::find($accountId);
+            if ($account) return $account;
+        }
+        return AccountModel::getByCode('QURBANI_ONLINE') ?? static::getOnlineBankAccount();
+    }
+
+    /**
      * Get the default expense account for a business unit.
      * Looks up BU_DEFAULT_EXPENSE_ACCOUNT in t_fin_config for the given BU.
      * Falls back to the first active non-employee/non-vendor account for that BU.
@@ -183,7 +211,9 @@ class ConfigModel extends BaseModel
             self::KEY_NF_CASH_ACCOUNT,
             self::KEY_ONLINE_BANK_ACCOUNT,
             self::KEY_SALES_REVENUE_ACCOUNT,
-            self::KEY_OPENING_EQUITY_ACCOUNT
+            self::KEY_OPENING_EQUITY_ACCOUNT,
+            self::KEY_QURBANI_CASH_ACCOUNT,
+            self::KEY_QURBANI_ONLINE_ACCOUNT,
         ];
 
         foreach ($keys as $key) {

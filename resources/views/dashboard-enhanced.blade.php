@@ -231,6 +231,12 @@
                 <button id="statsTab" class="dashboard-tab border-b-2 border-transparent py-2 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
                     <i class="ki-filled ki-chart-pie mr-1"></i> General Stats
                 </button>
+                @php $qurbaniDashEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1'; @endphp
+                @if($qurbaniDashEnabled)
+                <button id="qurbaniTab" class="dashboard-tab border-b-2 border-transparent py-2 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                    <i class="ki-filled ki-parcel mr-1"></i> Qurbani
+                </button>
+                @endif
             </nav>
         </div>
     </div>
@@ -753,6 +759,54 @@
             </div>
         </div>
     </div>
+
+    @if($qurbaniDashEnabled ?? false)
+    <!-- =========================================================================
+         QURBANI TAB
+         ========================================================================= -->
+    <div id="qurbaniContent" class="dashboard-content hidden">
+        <div class="mb-6">
+            <h2 class="text-lg font-semibold text-gray-900 mb-4">Qurbani Orders by Year</h2>
+            <div class="kt-card">
+                <div class="p-5">
+                    <div style="position: relative; height: 300px;">
+                        <canvas id="qurbaniYearlyChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="kt-card">
+            <div class="p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-base font-semibold text-gray-900">Order Details</h3>
+                    <select id="qurbaniYearSelector" class="px-3 py-1.5 border border-gray-300 rounded-md text-sm" onchange="loadQurbaniDashboard()">
+                        <option value="{{ date('Y') }}">{{ date('Y') }}</option>
+                    </select>
+                </div>
+                <div id="qurbaniTableLoading" class="py-6 text-center text-gray-400">Loading...</div>
+                <div id="qurbaniTableContainer" style="display:none;">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 border-b">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Order #</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Customer</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Date</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Status</th>
+                                    <th class="px-3 py-2 text-right text-xs font-medium text-gray-500">Total</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Day</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Region</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500">Source</th>
+                                </tr>
+                            </thead>
+                            <tbody id="qurbaniDashTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    @endif
 </div>
 
 <!-- Include Chart.js -->
@@ -832,6 +886,9 @@ class EnhancedDashboard {
         document.getElementById('customersTab').addEventListener('click', () => this.switchTab('customers'));
         document.getElementById('productsTab').addEventListener('click', () => this.switchTab('products'));
         document.getElementById('statsTab').addEventListener('click', () => this.switchTab('stats'));
+        if (document.getElementById('qurbaniTab')) {
+            document.getElementById('qurbaniTab').addEventListener('click', () => this.switchTab('qurbani'));
+        }
 
         // Top cards month selector - Controls all tabs (Daily, Customers, Products)
         document.getElementById('topCardsMonthSelector').addEventListener('change', () => {
@@ -944,6 +1001,9 @@ class EnhancedDashboard {
                 break;
             case 'stats':
                 this.loadGeneralStats();
+                break;
+            case 'qurbani':
+                loadQurbaniDashboard();
                 break;
         }
     }
@@ -3088,6 +3148,116 @@ console.log('Available modals:', {
     box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
 }
 </style>
+
+<script>
+let qurbaniDashChart = null;
+let qurbaniDashLoaded = false;
+
+function loadQurbaniDashboard() {
+    const yearSel = document.getElementById('qurbaniYearSelector');
+    const year = yearSel ? yearSel.value : new Date().getFullYear();
+    const loading = document.getElementById('qurbaniTableLoading');
+    const container = document.getElementById('qurbaniTableContainer');
+    if (loading) loading.style.display = '';
+    if (container) container.style.display = 'none';
+
+    fetch('/qurbani/api/dashboard?year=' + year, {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) return;
+        renderQurbaniDashChart(data.yearly_summary);
+        populateQurbaniYearSelector(data.yearly_summary, data.selected_year);
+        renderQurbaniDashTable(data.detailed_orders);
+        qurbaniDashLoaded = true;
+    });
+}
+
+function renderQurbaniDashChart(summary) {
+    const canvas = document.getElementById('qurbaniYearlyChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (qurbaniDashChart) qurbaniDashChart.destroy();
+
+    qurbaniDashChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: summary.map(s => s.year),
+            datasets: [
+                {
+                    label: 'Orders',
+                    data: summary.map(s => s.order_count),
+                    backgroundColor: 'rgba(217,119,6,0.7)',
+                    borderColor: '#d97706',
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Revenue (PKR)',
+                    data: summary.map(s => s.revenue),
+                    type: 'line',
+                    borderColor: '#059669',
+                    backgroundColor: 'rgba(5,150,105,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    yAxisID: 'y1',
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                y: { position: 'left', title: { display: true, text: 'Orders' }, beginAtZero: true },
+                y1: { position: 'right', title: { display: true, text: 'Revenue (PKR)' }, beginAtZero: true, grid: { drawOnChartArea: false } }
+            }
+        }
+    });
+}
+
+function populateQurbaniYearSelector(summary, selected) {
+    const sel = document.getElementById('qurbaniYearSelector');
+    if (!sel) return;
+    sel.innerHTML = '';
+    const years = summary.map(s => s.year).sort((a,b) => b - a);
+    if (years.length === 0) years.push(new Date().getFullYear());
+    years.forEach(y => {
+        const opt = document.createElement('option');
+        opt.value = y; opt.textContent = y;
+        if (y == selected) opt.selected = true;
+        sel.appendChild(opt);
+    });
+}
+
+function renderQurbaniDashTable(orders) {
+    const loading = document.getElementById('qurbaniTableLoading');
+    const container = document.getElementById('qurbaniTableContainer');
+    const tbody = document.getElementById('qurbaniDashTableBody');
+    if (loading) loading.style.display = 'none';
+    if (container) container.style.display = '';
+    if (!tbody) return;
+
+    if (!orders || orders.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-6 text-center text-gray-400">No orders found for this year</td></tr>';
+        return;
+    }
+    tbody.innerHTML = orders.map(o => {
+        const dateStr = o.order_date ? new Date(o.order_date).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '-';
+        return `<tr class="border-b border-gray-100 hover:bg-gray-50">
+            <td class="px-3 py-2 font-medium text-gray-900">${o.order_number || o.id}</td>
+            <td class="px-3 py-2">${(o.customer_name || '').trim() || '-'}</td>
+            <td class="px-3 py-2 text-gray-500 text-xs">${dateStr}</td>
+            <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs font-medium" style="background:#dbeafe;color:#1e40af;">${(o.order_status || '-').replace(/_/g,' ')}</span></td>
+            <td class="px-3 py-2 text-right font-medium">PKR ${Number(o.total_price || 0).toLocaleString()}</td>
+            <td class="px-3 py-2">${o.qurbani_day || '-'}</td>
+            <td class="px-3 py-2">${o.qurbani_region || '-'}</td>
+            <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs ${o.source === 'historical' ? 'bg-gray-100 text-gray-600' : 'bg-blue-50 text-blue-700'}">${o.source}</span></td>
+        </tr>`;
+    }).join('');
+}
+</script>
 @endsection
 
 @push('modals')

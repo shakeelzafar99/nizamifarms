@@ -32,6 +32,11 @@ class OrderLineItemModel extends BaseModel
         'preparation_status',
         'inventory_deducted',
         'is_free',
+        'qurbani_day',
+        'qurbani_slot',
+        'qurbani_region',
+        'qurbani_delivery_type',
+        'instructions',
         'created_by',
         'updated_by'
     ];
@@ -49,6 +54,11 @@ class OrderLineItemModel extends BaseModel
     public function order(): BelongsTo
     {
         return $this->belongsTo(OrderModel::class, 'order_id');
+    }
+
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(ProductModel::class, 'product_id');
     }
 
     public function variant(): BelongsTo

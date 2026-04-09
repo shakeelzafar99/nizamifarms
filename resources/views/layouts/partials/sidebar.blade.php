@@ -176,6 +176,41 @@
                       </a>
                   </div>
                   
+                  @php
+                      $qurbaniEnabled = \App\Models\FIN\ConfigModel::get('qurbani_mode_enabled', '1') === '1';
+                  @endphp
+                  @if($qurbaniEnabled && $userRole !== 'rider')
+                  <div class="kt-menu-item pt-2.25 pb-px">
+                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                          Qurbani
+                      </span>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/qurbani/orders">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-parcel text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Qurbani Orders
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/qurbani-settings">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-setting-2 text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Qurbani Settings
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+
                   <!-- Products Section -->
                   <div class="kt-menu-item pt-2.25 pb-px">
                       <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">

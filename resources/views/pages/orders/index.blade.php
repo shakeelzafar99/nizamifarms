@@ -2082,6 +2082,47 @@ function viewOrderDetails(orderId) {
             html += '</div>';
             html += '</div>';
             
+            // Qurbani order info
+            if (order.qurbani_day || order.qurbani_slot || order.qurbani_region || order.qurbani_delivery_type) {
+                html += '<div style="margin-top:12px; padding:10px 12px; background:#fffbeb; border-radius:8px; border:1px solid #fcd34d;">';
+                html += '<div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;"><span style="font-size:14px;">🐄</span><strong style="color:#92400e; font-size:13px;">Qurbani Details</strong></div>';
+                html += '<div style="display:flex; flex-wrap:wrap; gap:6px;">';
+                if (order.qurbani_day) html += '<span style="padding:3px 8px; background:#fef3c7; border-radius:6px; font-size:12px; font-weight:600; color:#92400e;">' + escapeHtml(order.qurbani_day) + '</span>';
+                if (order.qurbani_slot) html += '<span style="padding:3px 8px; background:#fef3c7; border-radius:6px; font-size:12px; font-weight:600; color:#92400e;">' + escapeHtml(order.qurbani_slot) + '</span>';
+                if (order.qurbani_region) html += '<span style="padding:3px 8px; background:#dbeafe; border-radius:6px; font-size:12px; font-weight:600; color:#1e40af;">' + escapeHtml(order.qurbani_region) + '</span>';
+                if (order.qurbani_delivery_type) html += '<span style="padding:3px 8px; background:#d1fae5; border-radius:6px; font-size:12px; font-weight:600; color:#065f46;">' + escapeHtml(order.qurbani_delivery_type) + '</span>';
+                html += '</div>';
+                if (order.payment_status) {
+                    var psBg = order.payment_status === 'paid' ? '#d1fae5' : order.payment_status === 'partial' ? '#fef3c7' : '#fee2e2';
+                    var psColor = order.payment_status === 'paid' ? '#065f46' : order.payment_status === 'partial' ? '#92400e' : '#991b1b';
+                    html += '<div style="margin-top:8px; display:flex; justify-content:space-between; align-items:center;">';
+                    html += '<span style="padding:3px 10px; background:' + psBg + '; color:' + psColor + '; border-radius:12px; font-size:12px; font-weight:700;">' + (order.payment_status || 'unpaid').toUpperCase() + '</span>';
+                    html += '<span style="font-size:13px; color:#374151;">Paid: <strong>Rs. ' + Number(order.total_paid || 0).toLocaleString() + '</strong> / Rs. ' + Number(order.total_price || 0).toLocaleString() + '</span>';
+                    html += '</div>';
+                }
+                // Qurbani "Add Payment" button
+                html += '<div style="margin-top:10px; display:flex; gap:8px;">';
+                html += '<button onclick="openQurbaniPaymentModal(' + order.id + ')" style="flex:1; padding:6px 12px; background:#d97706; color:#fff; border:none; border-radius:6px; font-size:12px; font-weight:700; cursor:pointer;">+ Add Payment</button>';
+                html += '</div>';
+                // Qurbani payment history
+                if (data.qurbani_payments && data.qurbani_payments.length > 0) {
+                    html += '<div style="margin-top:10px; border-top:1px solid #fcd34d; padding-top:8px;">';
+                    html += '<div style="font-size:12px; font-weight:700; color:#92400e; margin-bottom:6px;">Payment History</div>';
+                    data.qurbani_payments.forEach(function(p) {
+                        var mBg = p.payment_method === 'cash' ? '#d1fae5' : '#dbeafe';
+                        var mColor = p.payment_method === 'cash' ? '#065f46' : '#1e40af';
+                        html += '<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px; border-bottom:1px solid #fef3c7;">';
+                        html += '<span style="font-weight:600; color:#059669;">Rs. ' + Number(p.amount).toLocaleString() + '</span>';
+                        html += '<span style="padding:2px 6px; background:' + mBg + '; color:' + mColor + '; border-radius:8px; font-size:11px; font-weight:600;">' + escapeHtml(p.payment_method) + '</span>';
+                        html += '<span style="color:#6b7280;">' + (p.payment_date || '') + '</span>';
+                        html += '<span style="color:#9ca3af;">' + escapeHtml(p.created_by_name || '') + '</span>';
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+            
             // ⭐ Customer Notes - Important customer-level information (from API response)
             if (data.customer_notes) {
                 html += '<div style="margin-top: 16px; padding: 12px; background-color: #fef3c7; border-radius: 8px; border-left: 4px solid #f59e0b;">';
@@ -3145,6 +3186,12 @@ function editOrderDetails(orderId) {
                 order.has_pending_approval = data.has_pending_approval;
             }
             
+            // ⭐ Attach qurbani payment data for display
+            if (data.is_qurbani) {
+                order.is_qurbani = data.is_qurbani;
+                order.qurbani_payments = data.qurbani_payments || [];
+            }
+            
             // Store order globally for ledger adjustment detection
             window.currentOrder = order;
             loadEditForm(order);
@@ -3396,7 +3443,63 @@ function loadEditForm(order) {
             </div>
             
             </div><!-- End of orderDetailsExpanded -->
+
+            ${order.is_qurbani && order.line_items && order.line_items.length > 0 ? `
+            <!-- Qurbani Line Items Summary - Always visible -->
+            <div style="padding: 12px; background-color: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; margin-bottom: 12px;">
+                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                    <span style="font-size: 14px;">📦</span>
+                    <strong style="color: #166534; font-size: 13px;">Line Items (${order.line_items.length})</strong>
+                </div>
+                ${order.line_items.map(function(li) {
+                    var chips = [];
+                    if (li.qurbani_day) chips.push('<span style="padding:2px 6px; background:#fef3c7; color:#92400e; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_day + '</span>');
+                    if (li.qurbani_slot) chips.push('<span style="padding:2px 6px; background:#dbeafe; color:#1e40af; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_slot + '</span>');
+                    if (li.qurbani_region) chips.push('<span style="padding:2px 6px; background:#d1fae5; color:#065f46; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_region + '</span>');
+                    if (li.qurbani_delivery_type) chips.push('<span style="padding:2px 6px; background:#ede9fe; color:#5b21b6; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_delivery_type + '</span>');
+                    return '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#fff; border-radius:6px; margin-bottom:4px; border:1px solid #e5e7eb;">' +
+                        '<div style="display:flex; flex-direction:column; gap:2px;">' +
+                            '<span style="font-size:13px; font-weight:600; color:#374151;">' + (li.name || li.title || 'Item') + '</span>' +
+                            (chips.length > 0 ? '<div style="display:flex; gap:4px; flex-wrap:wrap;">' + chips.join('') + '</div>' : '') +
+                            (li.instructions ? '<div style="display:inline-flex; align-items:center; gap:3px; margin-top:2px; padding:2px 6px; background:#FEF3C7; border:1px solid #FCD34D; border-radius:4px;"><span style="font-size:10px;">📝</span><span style="font-size:11px; color:#92400E; font-weight:500;">' + li.instructions + '</span></div>' : '') +
+                        '</div>' +
+                        '<div style="text-align:right;">' +
+                            '<span style="font-size:12px; color:#6b7280;">Qty: ' + (li.quantity || 0) + '</span>' +
+                            '<span style="font-size:12px; color:#374151; font-weight:600; margin-left:12px;">Rs. ' + Number(li.price || 0).toLocaleString() + '</span>' +
+                        '</div>' +
+                    '</div>';
+                }).join('')}
+            </div>
+            ` : ''}
             
+            ${order.is_qurbani ? `
+            <!-- Qurbani Payments - Always visible, outside collapsible section -->
+            <div style="padding: 12px; background-color: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-size: 14px;">💰</span>
+                        <strong style="color: #92400e; font-size: 13px;">Qurbani Payments</strong>
+                    </div>
+                    <button onclick="openQurbaniPaymentModal(${order.id})" style="padding: 4px 12px; background: #d97706; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;">+ Add Payment</button>
+                </div>
+                <div style="display: flex; gap: 16px; font-size: 13px; margin-bottom: 8px;">
+                    <span>Total: <strong>Rs. ${Number(order.total_price || 0).toLocaleString()}</strong></span>
+                    <span style="color: #059669;">Paid: <strong>Rs. ${Number(order.total_paid || 0).toLocaleString()}</strong></span>
+                    <span style="color: #dc2626;">Remaining: <strong>Rs. ${Math.max(0, Number(order.total_price || 0) - Number(order.total_paid || 0)).toLocaleString()}</strong></span>
+                </div>
+                ${(order.qurbani_payments && order.qurbani_payments.length > 0) ? order.qurbani_payments.map(function(p) {
+                    var mBg = p.payment_method === 'cash' ? '#d1fae5' : '#dbeafe';
+                    var mColor = p.payment_method === 'cash' ? '#065f46' : '#1e40af';
+                    return '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; border-radius:6px; margin-bottom:4px; font-size:12px;">' +
+                        '<span style="font-weight:600; color:#059669;">Rs. ' + Number(p.amount).toLocaleString() + '</span>' +
+                        '<span style="padding:2px 8px; background:' + mBg + '; color:' + mColor + '; border-radius:8px; font-weight:600;">' + (p.payment_method || '') + '</span>' +
+                        '<span style="color:#6b7280;">' + (p.payment_date || '') + '</span>' +
+                        '<span style="color:#374151; font-weight:500;">' + (p.created_by_name || '') + '</span>' +
+                    '</div>';
+                }).join('') : '<div style="text-align:center; color:#9ca3af; font-size:12px; padding:8px;">No payments recorded yet</div>'}
+            </div>
+            ` : ''}
+
             <!-- Customer Notes Display (if available) -->
             <div id="editCustomerNotesDisplay" style="margin-bottom: 20px; display: none;"></div>
             
@@ -3528,6 +3631,56 @@ function loadEditForm(order) {
                                     ×
                                 </button>
                             </div>
+                            ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_delivery_type || order.is_qurbani) ? `
+                            <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
+                                    <select name="items[${index}][qurbani_day]" class="qurbani-item-select" data-field="qurbani_day" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_day || ''}" selected>${item.qurbani_day || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Slot</label>
+                                    <select name="items[${index}][qurbani_slot]" class="qurbani-item-select" data-field="qurbani_slot" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_slot || ''}" selected>${item.qurbani_slot || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Region</label>
+                                    <select name="items[${index}][qurbani_region]" class="qurbani-item-select" data-field="qurbani_region" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_region || ''}" selected>${item.qurbani_region || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Type</label>
+                                    <select name="items[${index}][qurbani_delivery_type]" class="qurbani-item-select" data-field="qurbani_delivery_type" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_delivery_type || ''}" selected>${item.qurbani_delivery_type || '-'}</option>
+                                    </select>
+                                </div>
+                                ${item.id ? '<div style="display:flex; align-items:flex-end;"><button type="button" onclick="unlockQurbaniFields(this)" style="padding:4px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; cursor:pointer; white-space:nowrap;">✏️ Edit</button></div>' : ''}
+                            </div>
+                            ` : ''}
+                            <div style="grid-column: 1 / -1;" class="instructions-wrapper" data-index="${index}">
+                                ${item.instructions ?
+                                    `<div class="instructions-badge" onclick="toggleInstructions(${index})" style="cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:#FEF3C7; border:1px solid #FCD34D; border-radius:4px; max-width:100%;">
+                                        <span style="font-size:12px;">📝</span>
+                                        <span style="font-size:12px; color:#92400E; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${item.instructions}</span>
+                                        <span style="font-size:10px; color:#B45309; margin-left:4px; flex-shrink:0;">✏️</span>
+                                    </div>
+                                    <div class="instructions-input-wrap" style="display:none; margin-top:4px;">
+                                        <input type="text" name="items[${index}][instructions]" value="${item.instructions || ''}" placeholder="Type instructions..." style="width:100%; padding:4px 8px; border:1px solid #FCD34D; border-radius:4px; font-size:12px; color:#374151; background:#FFFBEB;" onblur="collapseInstructions(${index})">
+                                    </div>` :
+                                    `<div class="instructions-badge" style="display:none;"></div>
+                                    <span class="instructions-add-link" onclick="toggleInstructions(${index})" style="cursor:pointer; font-size:11px; color:#9CA3AF; padding:2px 0; display:inline-flex; align-items:center; gap:3px;">📝 <span style="border-bottom:1px dashed #9CA3AF;">Add note</span></span>
+                                    <div class="instructions-input-wrap" style="display:none; margin-top:4px;">
+                                        <input type="text" name="items[${index}][instructions]" value="" placeholder="Type instructions..." style="width:100%; padding:4px 8px; border:1px solid #FCD34D; border-radius:4px; font-size:12px; color:#374151; background:#FFFBEB;" onblur="collapseInstructions(${index})">
+                                    </div>`
+                                }
+                            </div>
                         </div>
                         `).join('') : 
                         '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>'
@@ -3640,6 +3793,11 @@ function loadEditForm(order) {
         initializeDiscountsFromOrder(order);
     } catch (e) {
         console.warn('Failed to initialize discounts', e);
+    }
+    
+    // Populate qurbani field dropdowns if this is a qurbani order (check order-level, is_qurbani flag, and line items)
+    if (order.qurbani_day || order.qurbani_slot || order.qurbani_region || order.qurbani_delivery_type || order.is_qurbani || (order.line_items || []).some(li => li.qurbani_day || li.qurbani_slot || li.qurbani_region || li.qurbani_delivery_type)) {
+        try { populateQurbaniEditSelects(); } catch (e) { console.warn('Failed to populate qurbani selects', e); }
     }
     
     // Immediately load status options for the dropdown, independent of totals/line items
@@ -4129,6 +4287,13 @@ function addLineItem() {
                 ×
             </button>
         </div>
+        <div style="grid-column: 1 / -1;" class="instructions-wrapper" data-index="${lineItemIndex}">
+            <div class="instructions-badge" style="display:none;"></div>
+            <span class="instructions-add-link" onclick="toggleInstructions(${lineItemIndex})" style="cursor:pointer; font-size:11px; color:#9CA3AF; padding:2px 0; display:inline-flex; align-items:center; gap:3px;">📝 <span style="border-bottom:1px dashed #9CA3AF;">Add note</span></span>
+            <div class="instructions-input-wrap" style="display:none; margin-top:4px;">
+                <input type="text" name="items[${lineItemIndex}][instructions]" value="" placeholder="Type instructions..." style="width:100%; padding:4px 8px; border:1px solid #FCD34D; border-radius:4px; font-size:12px; color:#374151; background:#FFFBEB;" onblur="collapseInstructions(${lineItemIndex})">
+            </div>
+        </div>
     `;
     
     container.appendChild(newItem);
@@ -4137,6 +4302,7 @@ function addLineItem() {
 }
 
 function removeLineItem(index) {
+    if (!confirm('Are you sure you want to remove this item?')) return;
     const item = document.querySelector(`.line-item[data-index="${index}"]`);
     if (item) {
         item.remove();
@@ -4149,6 +4315,69 @@ function removeLineItem(index) {
             container.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">No line items. Click "Add Item" to add items.</div>';
         }
     }
+}
+
+function unlockQurbaniFields(btn) {
+    if (!confirm('Are you sure you want to edit the Qurbani details for this item?')) return;
+    const fieldsDiv = btn.closest('.qurbani-item-fields');
+    if (!fieldsDiv) return;
+    fieldsDiv.querySelectorAll('select.qurbani-item-select').forEach(sel => {
+        sel.disabled = false;
+        sel.style.background = '#fff';
+    });
+    btn.textContent = '🔓 Unlocked';
+    btn.disabled = true;
+    btn.style.background = '#9CA3AF';
+}
+
+function toggleInstructions(index) {
+    const wrapper = document.querySelector(`.instructions-wrapper[data-index="${index}"]`);
+    if (!wrapper) return;
+    const inputWrap = wrapper.querySelector('.instructions-input-wrap');
+    const badge = wrapper.querySelector('.instructions-badge');
+    const addLink = wrapper.querySelector('.instructions-add-link');
+    if (inputWrap.style.display === 'none') {
+        inputWrap.style.display = 'block';
+        if (badge) badge.style.display = 'none';
+        if (addLink) addLink.style.display = 'none';
+        const inp = inputWrap.querySelector('input');
+        if (inp) inp.focus();
+    } else {
+        collapseInstructions(index);
+    }
+}
+
+function collapseInstructions(index) {
+    setTimeout(() => {
+        const wrapper = document.querySelector(`.instructions-wrapper[data-index="${index}"]`);
+        if (!wrapper) return;
+        const inputWrap = wrapper.querySelector('.instructions-input-wrap');
+        const badge = wrapper.querySelector('.instructions-badge');
+        const addLink = wrapper.querySelector('.instructions-add-link');
+        const inp = inputWrap ? inputWrap.querySelector('input') : null;
+        const val = inp ? inp.value.trim() : '';
+        if (val) {
+            if (badge) {
+                badge.innerHTML = `<span style="font-size:12px;">📝</span><span style="font-size:12px; color:#92400E; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${val}</span><span style="font-size:10px; color:#B45309; margin-left:4px; flex-shrink:0;">✏️</span>`;
+                badge.style.display = 'inline-flex';
+                badge.style.cssText = 'cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:#FEF3C7; border:1px solid #FCD34D; border-radius:4px; max-width:100%;';
+                badge.onclick = () => toggleInstructions(index);
+            }
+            if (addLink) addLink.style.display = 'none';
+        } else {
+            if (badge) badge.style.display = 'none';
+            if (addLink) { addLink.style.display = 'inline-flex'; }
+            else {
+                const link = document.createElement('span');
+                link.className = 'instructions-add-link';
+                link.onclick = () => toggleInstructions(index);
+                link.style.cssText = 'cursor:pointer; font-size:11px; color:#9CA3AF; padding:2px 0; display:inline-flex; align-items:center; gap:3px;';
+                link.innerHTML = '📝 <span style="border-bottom:1px dashed #9CA3AF;">Add note</span>';
+                wrapper.insertBefore(link, inputWrap);
+            }
+        }
+        inputWrap.style.display = 'none';
+    }, 200);
 }
 
 function toggleFreeItem(index) {
@@ -5503,7 +5732,7 @@ function saveOrderChanges(orderId) {
     submitBtn.disabled = true;
     }
     
-    // Collect line items
+    // Collect line items (including per-item qurbani fields)
     const items = [];
     document.querySelectorAll('.line-item').forEach((item) => {
         const name = item.querySelector('input[name*="[name]"]')?.value;
@@ -5516,7 +5745,7 @@ function saveOrderChanges(orderId) {
         const isFree = isFreeInput && isFreeInput.value === '1';
         
         if (name && quantity > 0 && unitPrice >= 0) {
-            items.push({
+            var itemObj = {
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
@@ -5525,7 +5754,19 @@ function saveOrderChanges(orderId) {
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId
-            });
+            };
+            // Per-item qurbani fields
+            var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
+            var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
+            var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+            var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            if (qDay) itemObj.qurbani_day = qDay;
+            if (qSlot) itemObj.qurbani_slot = qSlot;
+            if (qRegion) itemObj.qurbani_region = qRegion;
+            if (qDT) itemObj.qurbani_delivery_type = qDT;
+            var instr = item.querySelector('input[name*="instructions"]')?.value;
+            itemObj.instructions = instr || '';
+            items.push(itemObj);
         }
     });
     
@@ -5616,7 +5857,7 @@ function saveOrderChanges(orderId) {
             address_city: formData.get('address_city'),
             address_country: formData.get('address_country'),
             // ⭐ Sync address to customer profile checkbox
-            sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false
+            sync_to_customer: formData.get('sync_to_customer') === '1' ? true : false,
         };
     }
     
@@ -5671,8 +5912,12 @@ function saveOrderChanges(orderId) {
     const endpoint = isNewOrder ? '/orders' : `/orders/${orderId}`;
     const method = isNewOrder ? 'POST' : 'PUT';
     
-    // For new orders, add customer creation fields if in new customer mode
+    // For new orders, always include customer_id and customer creation fields
     if (isNewOrder) {
+        orderData.customer_id = formData.get('customer_id');
+        orderData.order_status = formData.get('order_status');
+        orderData.contact_email = formData.get('contact_email');
+        orderData.payment_method = formData.get('payment_method');
         orderData.customer_phone = formData.get('customer_phone');
         orderData.customer_first_name = formData.get('customer_first_name');
         orderData.customer_last_name = formData.get('customer_last_name');
@@ -5748,7 +5993,7 @@ function saveAndCloseOrder(orderId) {
         const isFree = isFreeInput && isFreeInput.value === '1';
         
         if (name && quantity > 0 && unitPrice >= 0) {
-            items.push({
+            var itemObj = {
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
@@ -5757,7 +6002,18 @@ function saveAndCloseOrder(orderId) {
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId
-            });
+            };
+            var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
+            var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
+            var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+            var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            if (qDay) itemObj.qurbani_day = qDay;
+            if (qSlot) itemObj.qurbani_slot = qSlot;
+            if (qRegion) itemObj.qurbani_region = qRegion;
+            if (qDT) itemObj.qurbani_delivery_type = qDT;
+            var instr = item.querySelector('input[name*="instructions"]')?.value;
+            itemObj.instructions = instr || '';
+            items.push(itemObj);
         }
     });
     
@@ -6116,6 +6372,13 @@ function popoutOrder() {
                         ×
                     </button>
                 </div>
+                <div style="grid-column: 1 / -1;" class="instructions-wrapper" data-index="${newWindow.lineItemIndex}">
+                    <div class="instructions-badge" style="display:none;"></div>
+                    <span class="instructions-add-link" onclick="toggleInstructions(${newWindow.lineItemIndex})" style="cursor:pointer; font-size:11px; color:#9CA3AF; padding:2px 0; display:inline-flex; align-items:center; gap:3px;">📝 <span style="border-bottom:1px dashed #9CA3AF;">Add note</span></span>
+                    <div class="instructions-input-wrap" style="display:none; margin-top:4px;">
+                        <input type="text" name="items[${newWindow.lineItemIndex}][instructions]" value="" placeholder="Type instructions..." style="width:100%; padding:4px 8px; border:1px solid #FCD34D; border-radius:4px; font-size:12px; color:#374151; background:#FFFBEB;" onblur="collapseInstructions(${newWindow.lineItemIndex})">
+                    </div>
+                </div>
             `;
             
             container.appendChild(newItem);
@@ -6173,7 +6436,7 @@ function popoutOrder() {
                 const isFree = isFreeInput && isFreeInput.value === '1';
                 
                 if (name && quantity > 0 && unitPrice >= 0) {
-                    items.push({
+                    var itemObj = {
                         name: name,
                         quantity: quantity,
                         unit_price: unitPrice,
@@ -6182,7 +6445,18 @@ function popoutOrder() {
                         sku: sku,
                         variant_id: variantId,
                         product_id: productId
-                    });
+                    };
+                    var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
+                    var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
+                    var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+                    var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+                    if (qDay) itemObj.qurbani_day = qDay;
+                    if (qSlot) itemObj.qurbani_slot = qSlot;
+                    if (qRegion) itemObj.qurbani_region = qRegion;
+                    if (qDT) itemObj.qurbani_delivery_type = qDT;
+                    var instr = item.querySelector('input[name*="instructions"]')?.value;
+                    itemObj.instructions = instr || '';
+                    items.push(itemObj);
                 }
             });
             
@@ -6612,7 +6886,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Update title for create order pop-out
                     document.title = 'New Order';
                 }
-            }, 100);
+
+                // If qurbani_mode=1, auto-show qurbani fields
+                if (urlParams.get('qurbani_mode') === '1') {
+                    showQurbaniFields();
+                    document.title = 'New Qurbani Order';
+                }
+            }, 200);
         }
     } catch (e) {}
 });
@@ -6744,8 +7024,9 @@ function showProductResults(products, index) {
             // Extract variant_id and product_id from the product.id (format: "variant_123")
             const variantId = product.id && product.id.startsWith('variant_') ? product.id.replace('variant_', '') : '';
             const sku = (product.sku || '').replace(/'/g, "\\'");
+            const attr1 = (product.attribute_1 || '').replace(/'/g, "\\'");
             return `
-            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}')" 
+            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}', '${attr1}')" 
                  data-product-index="${idx}"
                  style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
                  onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
@@ -6760,7 +7041,7 @@ function showProductResults(products, index) {
     
     dropdown.style.display = 'block';
 }
-function selectProduct(index, productId, productName, price, sku = '', variantId = '') {
+function selectProduct(index, productId, productName, price, sku = '', variantId = '', attribute1 = '') {
     // Get the specific line item by data-index attribute to avoid selecting wrong row
     const lineItem = document.querySelector(`.line-item[data-index="${index}"]`);
     if (!lineItem) {
@@ -6826,6 +7107,51 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
     setTimeout(() => {
         autoAddNextLineItem();
     }, 100);
+
+    // Check if a qurbani product was selected and add per-item qurbani fields
+    if (attribute1 && attribute1.toLowerCase() === 'qurbani') {
+        showQurbaniFields();
+        addQurbaniFieldsToLineItem(lineItem, index);
+    }
+}
+
+function addQurbaniFieldsToLineItem(lineItem, index) {
+    if (lineItem.querySelector('.qurbani-item-fields')) return;
+    var fieldsDiv = document.createElement('div');
+    fieldsDiv.className = 'qurbani-item-fields';
+    fieldsDiv.style.cssText = 'grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;';
+    fieldsDiv.innerHTML = `
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
+            <select name="items[${index}][qurbani_day]" class="qurbani-item-select" data-field="qurbani_day" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Slot</label>
+            <select name="items[${index}][qurbani_slot]" class="qurbani-item-select" data-field="qurbani_slot" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Region</label>
+            <select name="items[${index}][qurbani_region]" class="qurbani-item-select" data-field="qurbani_region" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Type</label>
+            <select name="items[${index}][qurbani_delivery_type]" class="qurbani-item-select" data-field="qurbani_delivery_type" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+    `;
+    lineItem.appendChild(fieldsDiv);
+    if (qurbaniFieldOptionsCache) {
+        populateQurbaniSelects(qurbaniFieldOptionsCache);
+    } else {
+        populateQurbaniEditSelects();
+    }
 }
 
 // Auto-add a new line item if the current one is the last and has content
@@ -7229,6 +7555,216 @@ function hideProductDropdown(index) {
         }, 200);
     }
 }
+
+let qurbaniFieldOptionsCache = null;
+function showQurbaniFields() {
+    const section = document.getElementById('qurbaniFieldsSection');
+    if (!section) return;
+    if (section.style.display !== 'none' && section.offsetParent !== null) return;
+    section.style.display = '';
+
+    if (qurbaniFieldOptionsCache) {
+        populateQurbaniSelects(qurbaniFieldOptionsCache);
+        return;
+    }
+    fetch('/qurbani-settings/api/options', {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        qurbaniFieldOptionsCache = data.options || {};
+        populateQurbaniSelects(qurbaniFieldOptionsCache);
+    });
+}
+
+function populateQurbaniSelects(optionsGrouped) {
+    const fields = ['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type'];
+    fields.forEach(fieldKey => {
+        const fieldOpts = optionsGrouped[fieldKey] || [];
+        document.querySelectorAll(`select[name="${fieldKey}"]`).forEach(sel => {
+            const currentVal = sel.getAttribute('data-current') || sel.value;
+            while (sel.options.length > 1) sel.remove(1);
+            fieldOpts.forEach(o => {
+                if (!o.is_active) return;
+                const opt = document.createElement('option');
+                opt.value = o.option_value;
+                opt.textContent = o.option_value;
+                if (o.option_value === currentVal) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        });
+        document.querySelectorAll(`select.qurbani-item-select[data-field="${fieldKey}"]`).forEach(sel => {
+            populateItemSlotSelect(sel, fieldKey, optionsGrouped);
+        });
+    });
+    // Attach day→slot dependency listeners
+    document.querySelectorAll('select.qurbani-item-select[data-field="qurbani_day"]').forEach(daySel => {
+        daySel.removeEventListener('change', handleDayChangeForSlots);
+        daySel.addEventListener('change', handleDayChangeForSlots);
+    });
+}
+
+function populateItemSlotSelect(sel, fieldKey, optionsGrouped) {
+    const currentVal = sel.value;
+    const isNewItem = sel.hasAttribute('data-is-new');
+    while (sel.options.length > 1) sel.remove(1);
+
+    let fieldOpts = (optionsGrouped || qurbaniFieldOptionsCache)[fieldKey] || [];
+
+    if (fieldKey === 'qurbani_slot') {
+        const container = sel.closest('.qurbani-item-fields');
+        const daySel = container ? container.querySelector('select[data-field="qurbani_day"]') : null;
+        const selectedDay = daySel ? daySel.value : '';
+        if (selectedDay) {
+            const dayOpts = (optionsGrouped || qurbaniFieldOptionsCache)['qurbani_day'] || [];
+            const dayObj = dayOpts.find(o => o.option_value === selectedDay);
+            if (dayObj) {
+                const filtered = fieldOpts.filter(o => o.is_active && o.parent_id === dayObj.id);
+                if (filtered.length > 0) fieldOpts = filtered;
+            }
+        }
+    }
+
+    let defaultVal = null;
+    fieldOpts.forEach(o => {
+        if (!o.is_active) return;
+        const opt = document.createElement('option');
+        opt.value = o.option_value;
+        opt.textContent = o.option_value;
+        if (o.option_value === currentVal) opt.selected = true;
+        if (o.is_default) defaultVal = o.option_value;
+        sel.appendChild(opt);
+    });
+
+    if (isNewItem && !currentVal && defaultVal) {
+        sel.value = defaultVal;
+    }
+}
+
+function handleDayChangeForSlots(e) {
+    const container = e.target.closest('.qurbani-item-fields');
+    if (!container) return;
+    const slotSel = container.querySelector('select[data-field="qurbani_slot"]');
+    if (slotSel) {
+        slotSel.value = '';
+        populateItemSlotSelect(slotSel, 'qurbani_slot', qurbaniFieldOptionsCache);
+    }
+}
+
+function populateQurbaniEditSelects() {
+    if (qurbaniFieldOptionsCache) {
+        populateQurbaniSelects(qurbaniFieldOptionsCache);
+        return;
+    }
+    fetch('/qurbani-settings/api/options', {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        qurbaniFieldOptionsCache = data.options || {};
+        populateQurbaniSelects(qurbaniFieldOptionsCache);
+    });
+}
+
+// Qurbani payment modal for web
+var qurbaniPaymentOrderId = null;
+function openQurbaniPaymentModal(orderId) {
+    qurbaniPaymentOrderId = orderId;
+    // Build modal
+    var existing = document.getElementById('qurbaniPaymentOverlay');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'qurbaniPaymentOverlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#fff; border-radius:12px; padding:24px; width:400px; max-width:90vw; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0; font-size:18px; font-weight:700;">Add Qurbani Payment</h3>
+                <button onclick="document.getElementById('qurbaniPaymentOverlay').remove()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">&times;</button>
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:13px; font-weight:600; color:#374151;">Amount (Rs.) *</label>
+                <input type="number" id="qpAmount" step="0.01" min="0.01" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; margin-top:4px; font-size:14px;" placeholder="Enter amount">
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:13px; font-weight:600; color:#374151;">Payment Method *</label>
+                <div style="display:flex; gap:8px; margin-top:4px;">
+                    <button id="qpCashBtn" onclick="selectQPMethod('cash')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:#10b981; color:#fff; border:2px solid #10b981;">Cash</button>
+                    <button id="qpOnlineBtn" onclick="selectQPMethod('online')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:#f3f4f6; color:#374151; border:2px solid #d1d5db;">Online</button>
+                </div>
+            </div>
+            <input type="hidden" id="qpMethod" value="cash">
+            <div style="margin-bottom:12px;">
+                <label style="font-size:13px; font-weight:600; color:#374151;">Reference (optional)</label>
+                <input type="text" id="qpReference" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; margin-top:4px; font-size:13px;" placeholder="Transaction ID / receipt #">
+            </div>
+            <div style="margin-bottom:16px;">
+                <label style="font-size:13px; font-weight:600; color:#374151;">Notes (optional)</label>
+                <input type="text" id="qpNotes" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; margin-top:4px; font-size:13px;" placeholder="Any notes...">
+            </div>
+            <button id="qpSubmitBtn" onclick="submitQurbaniPayment()" style="width:100%; padding:10px; background:#d97706; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer;">Submit Payment</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+}
+
+var qpSelectedMethod = 'cash';
+function selectQPMethod(method) {
+    qpSelectedMethod = method;
+    document.getElementById('qpMethod').value = method;
+    var cashBtn = document.getElementById('qpCashBtn');
+    var onlineBtn = document.getElementById('qpOnlineBtn');
+    if (method === 'cash') {
+        cashBtn.style.background = '#10b981'; cashBtn.style.color = '#fff'; cashBtn.style.borderColor = '#10b981';
+        onlineBtn.style.background = '#f3f4f6'; onlineBtn.style.color = '#374151'; onlineBtn.style.borderColor = '#d1d5db';
+    } else {
+        onlineBtn.style.background = '#3b82f6'; onlineBtn.style.color = '#fff'; onlineBtn.style.borderColor = '#3b82f6';
+        cashBtn.style.background = '#f3f4f6'; cashBtn.style.color = '#374151'; cashBtn.style.borderColor = '#d1d5db';
+    }
+}
+
+function submitQurbaniPayment() {
+    var amount = parseFloat(document.getElementById('qpAmount').value);
+    if (!amount || amount <= 0) { alert('Please enter a valid amount'); return; }
+    var btn = document.getElementById('qpSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Submitting...';
+
+    fetch('/orders/' + qurbaniPaymentOrderId + '/qurbani-payments', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({
+            amount: amount,
+            payment_method: document.getElementById('qpMethod').value,
+            reference: document.getElementById('qpReference').value || null,
+            notes: document.getElementById('qpNotes').value || null,
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('qurbaniPaymentOverlay').remove();
+            alert(data.message || 'Payment recorded');
+            // Refresh the current order view
+            if (typeof loadEditForm === 'function' && qurbaniPaymentOrderId) {
+                loadEditForm(qurbaniPaymentOrderId);
+            }
+        } else {
+            alert(data.message || 'Failed to add payment');
+            btn.disabled = false; btn.textContent = 'Submit Payment';
+        }
+    })
+    .catch(err => {
+        alert('Error: ' + err.message);
+        btn.disabled = false; btn.textContent = 'Submit Payment';
+    });
+}
+
 // Create new order with preloaded customer
 function createNewOrderWithCustomer(customerId) {
     // Fetch customer data by ID (reuses customers show endpoint that returns JSON)
@@ -9123,6 +9659,13 @@ function createNewOrder() {
                 </div>
             </div>
 
+            <!-- Qurbani Details Section (shown when qurbani product selected) -->
+            <div id="qurbaniFieldsSection" style="display: none; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px; margin-bottom: 24px;">
+                <p style="margin: 0; font-size: 13px; color: #92400e; font-weight: 500;">
+                    <span style="margin-right: 6px;">🐄</span>Qurbani order detected — set Day, Slot, Region and Delivery Type for each item above.
+                </p>
+            </div>
+
             <!-- Notes Section -->
             <div style="margin-bottom: 24px;">
                 <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Notes</label>
@@ -9274,7 +9817,7 @@ function saveNewOrder() {
         
         // Only add items that have a name and valid quantity/price
         if (name && quantity > 0 && unitPrice >= 0) {
-            items.push({
+            var itemObj = {
                 name: name,
                 quantity: quantity,
                 unit_price: unitPrice,
@@ -9283,7 +9826,18 @@ function saveNewOrder() {
                 sku: sku,
                 variant_id: variantId,
                 product_id: productId
-            });
+            };
+            var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
+            var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
+            var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+            var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            if (qDay) itemObj.qurbani_day = qDay;
+            if (qSlot) itemObj.qurbani_slot = qSlot;
+            if (qRegion) itemObj.qurbani_region = qRegion;
+            if (qDT) itemObj.qurbani_delivery_type = qDT;
+            var instr = item.querySelector('input[name*="instructions"]')?.value;
+            itemObj.instructions = instr || '';
+            items.push(itemObj);
         }
     });
     
@@ -9360,29 +9914,39 @@ function saveNewOrder() {
 
 // Load default shipping price for order forms
 function loadDefaultShippingPrice(modalId = null) {
-    fetch('/api/shipping/price')
-        .then(response => response.json())
-        .then(data => {
-            if (data.success && data.shipping_price) {
-                let shippingInput;
-                if (modalId) {
-                    shippingInput = document.querySelector(`#${modalId} input[name="shipping_total"]`);
-                } else {
-                    shippingInput = document.querySelector('input[name="shipping_total"]');
+    const urlParams = new URLSearchParams(window.location.search);
+    const isQurbani = urlParams.get('qurbani_mode') === '1';
+
+    const applyPrice = (price) => {
+        let shippingInput;
+        if (modalId) {
+            shippingInput = document.querySelector(`#${modalId} input[name="shipping_total"]`);
+        } else {
+            shippingInput = document.querySelector('input[name="shipping_total"]');
+        }
+        if (shippingInput) {
+            shippingInput.value = price;
+            if (typeof updateOrderTotal === 'function') updateOrderTotal();
+        }
+    };
+
+    if (isQurbani) {
+        fetch('/qurbani-settings/api/options', { headers: { 'Accept': 'application/json' } })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success && data.qurbani_shipping_price != null) {
+                    applyPrice(data.qurbani_shipping_price);
                 }
-                
-                if (shippingInput) {
-                    shippingInput.value = data.shipping_price;
-                    // Try to update total if function exists
-                    if (typeof updateOrderTotal === 'function') {
-                        updateOrderTotal();
-                    }
-                }
-            }
-        })
-        .catch(error => {
-            console.log('Could not load default shipping price:', error);
-        });
+            })
+            .catch(() => applyPrice(1000));
+    } else {
+        fetch('/api/shipping/price')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.shipping_price) applyPrice(data.shipping_price);
+            })
+            .catch(error => console.log('Could not load default shipping price:', error));
+    }
 }
 // ==================== CUSTOMER SELECTION HELPERS (single source of truth) ====================
 let customerSearchTimeout;

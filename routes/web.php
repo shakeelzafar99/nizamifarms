@@ -150,6 +150,8 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/api/change-payment-method', [OrderController::class, 'changePaymentMethod'])->name('orders.api.change-payment-method');
     Route::get('/orders/{id}/payment-method/timeline', [OrderController::class, 'getPaymentMethodTimeline'])->name('orders.payment-method.timeline');
     Route::get('/orders/{id}/event-history', [OrderController::class, 'getOrderEventHistory'])->name('orders.event-history');
+    Route::get('/orders/{id}/qurbani-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.qurbani-payments');
+    Route::post('/orders/{id}/qurbani-payments', [OrderController::class, 'addQurbaniPayment'])->name('orders.qurbani-payments.add');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
     Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');
@@ -208,6 +210,8 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/set-order-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setOrderRegion'])->name('regions.set-order-region');
         Route::post('/set-customer-region', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'setCustomerRegion'])->name('regions.set-customer-region');
         Route::post('/auto-assign-riders', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'autoAssignRiders'])->name('regions.auto-assign-riders');
+        Route::post('/save-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'saveRegionPolygon'])->name('regions.save-polygon');
+        Route::post('/remove-polygon', [\App\Http\Controllers\CRM\DeliveryRegionController::class, 'removeRegionPolygon'])->name('regions.remove-polygon');
     });
 
     // Shift Management
@@ -255,6 +259,26 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/api/roles', [\App\Http\Controllers\CRM\OrderStatusController::class, 'getAvailableRoles'])->name('order-status.api.roles');
         Route::get('/history', [\App\Http\Controllers\CRM\OrderStatusController::class, 'historyIndex'])->name('order-status.history.index');
         Route::get('/history/{orderId}', [\App\Http\Controllers\CRM\OrderStatusController::class, 'orderHistory'])->name('order-status.history.order');
+    });
+
+    // Qurbani Settings Routes
+    Route::prefix('qurbani-settings')->group(function () {
+        Route::get('/', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'index'])->name('qurbani-settings.index');
+        Route::get('/api/options', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'getOptions'])->name('qurbani-settings.api.options');
+        Route::post('/api/options', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'storeOption'])->name('qurbani-settings.api.store');
+        Route::put('/api/options/{id}', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateOption'])->name('qurbani-settings.api.update');
+        Route::delete('/api/options/{id}', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'deleteOption'])->name('qurbani-settings.api.delete');
+        Route::post('/api/reorder', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'reorderOptions'])->name('qurbani-settings.api.reorder');
+        Route::post('/api/shipping-price', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateShippingPrice'])->name('qurbani-settings.api.shipping-price');
+    });
+
+    // Qurbani Web Pages (orders, dashboard)
+    Route::prefix('qurbani')->group(function () {
+        Route::get('/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'orders'])->name('qurbani.orders');
+        Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
+        Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
+        Route::post('/api/toggle', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleQurbaniMode'])->name('qurbani.api.toggle');
+        Route::post('/api/toggle-rider-delivered', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleRiderDelivered'])->name('qurbani.api.toggle-rider-delivered');
     });
 
     // Bulk Status Update Routes (Admin only)

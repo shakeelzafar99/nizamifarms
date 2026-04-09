@@ -200,6 +200,11 @@ class RiderController extends Controller
                     'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                     'preparation_status' => $item->preparation_status,
                     'is_free' => (bool) $item->is_free,
+                    'qurbani_day' => $item->qurbani_day,
+                    'qurbani_slot' => $item->qurbani_slot,
+                    'qurbani_region' => $item->qurbani_region,
+                    'qurbani_delivery_type' => $item->qurbani_delivery_type,
+                    'instructions' => $item->instructions,
                 ];
             });
             
@@ -329,6 +334,15 @@ class RiderController extends Controller
                         'total_items' => $totalItems,
                     ],
                     'status_history' => $statusHistory,
+                    'qurbani_day' => $order->qurbani_day,
+                    'qurbani_slot' => $order->qurbani_slot,
+                    'qurbani_region' => $order->qurbani_region,
+                    'qurbani_delivery_type' => $order->qurbani_delivery_type,
+                    'is_qurbani' => !empty($order->qurbani_day) || !empty($order->qurbani_slot) || !empty($order->qurbani_region) || !empty($order->qurbani_delivery_type) || $order->hasQurbaniItems() || $order->lineItems->contains(function($li) { return !empty($li->qurbani_day) || !empty($li->qurbani_slot) || !empty($li->qurbani_region) || !empty($li->qurbani_delivery_type); }),
+                    'total_paid' => (float)($order->total_paid ?? 0),
+                    'payment_status' => $order->payment_status ?? 'unpaid',
+                    'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                    'qurbani_rider_delivered_enabled' => \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1',
                 ],
             ]);
         } catch (\Exception $e) {
@@ -2106,22 +2120,36 @@ class RiderController extends Controller
 
             \DB::beginTransaction();
 
-            // Get destination account
-            $destinationAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
-            if (!$destinationAccount) {
-                throw new \Exception("Destination account not found");
-            }
-
-            // Verify selected invoices (include both open and partial invoices)
+            // Verify selected invoices (include both open/partial invoices and qurbani order_payment entries)
             $selectedInvoices = \App\Models\FIN\LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $account->id)
-                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                ->whereIn('transaction_type', [\App\Models\FIN\LedgerModel::TYPE_INVOICE, \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT])
                 ->whereIn('settlement_status', ['open', 'partial'])
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Determine destination based on whether these are qurbani order payments
+            $hasQurbaniPayments = $selectedInvoices->contains(function ($inv) {
+                if ($inv->transaction_type !== \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT) return false;
+                if (!$inv->order_id) return false;
+                $order = \App\Models\CRM\OrderModel::find($inv->order_id);
+                return $order && (str_starts_with($order->order_number ?? '', 'QUR') || !empty($order->qurbani_day));
+            });
+            $hasRegularInvoices = $selectedInvoices->contains(fn($inv) => $inv->transaction_type === \App\Models\FIN\LedgerModel::TYPE_INVOICE);
+
+            if ($hasQurbaniPayments && $hasRegularInvoices) {
+                throw new \Exception("Cannot settle qurbani payments and regular invoices together. Please settle them separately.");
+            }
+
+            $destinationAccount = $hasQurbaniPayments
+                ? \App\Models\FIN\ConfigModel::getQurbaniCashAccount()
+                : \App\Models\FIN\ConfigModel::getNFCashAccount();
+            if (!$destinationAccount) {
+                throw new \Exception("Destination account not found");
             }
 
             $totalOutstanding = $selectedInvoices->sum(function($invoice) {
@@ -2236,22 +2264,36 @@ class RiderController extends Controller
 
             \DB::beginTransaction();
 
-            // Get destination account
-            $destinationAccount = \App\Models\FIN\ConfigModel::getNFCashAccount();
-            if (!$destinationAccount) {
-                throw new \Exception("Destination account not found");
-            }
-
-            // Verify selected invoices (include both open and partial invoices)
+            // Verify selected invoices (include both open/partial invoices and qurbani order_payment entries)
             $selectedInvoices = \App\Models\FIN\LedgerModel::whereIn('id', $request->invoice_ids)
                 ->where('to_account_id', $account->id)
-                ->where('transaction_type', \App\Models\FIN\LedgerModel::TYPE_INVOICE)
+                ->whereIn('transaction_type', [\App\Models\FIN\LedgerModel::TYPE_INVOICE, \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT])
                 ->whereIn('settlement_status', ['open', 'partial'])
                 ->orderBy('transaction_date', 'asc')
                 ->get();
 
             if ($selectedInvoices->count() !== count($request->invoice_ids)) {
                 throw new \Exception("Some selected invoices are invalid or already settled");
+            }
+
+            // Determine destination based on qurbani vs regular
+            $hasQurbaniPayments = $selectedInvoices->contains(function ($inv) {
+                if ($inv->transaction_type !== \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT) return false;
+                if (!$inv->order_id) return false;
+                $order = \App\Models\CRM\OrderModel::find($inv->order_id);
+                return $order && (str_starts_with($order->order_number ?? '', 'QUR') || !empty($order->qurbani_day));
+            });
+            $hasRegularInvoices = $selectedInvoices->contains(fn($inv) => $inv->transaction_type === \App\Models\FIN\LedgerModel::TYPE_INVOICE);
+
+            if ($hasQurbaniPayments && $hasRegularInvoices) {
+                throw new \Exception("Cannot settle qurbani payments and regular invoices together. Please settle them separately.");
+            }
+
+            $destinationAccount = $hasQurbaniPayments
+                ? \App\Models\FIN\ConfigModel::getQurbaniCashAccount()
+                : \App\Models\FIN\ConfigModel::getNFCashAccount();
+            if (!$destinationAccount) {
+                throw new \Exception("Destination account not found");
             }
 
             // Calculate expected amount and shortage (remaining balance for partial invoices)
@@ -7082,13 +7124,18 @@ class RiderController extends Controller
                     ->first(['id', 'code', 'name', 'short_code', 'color_hex']);
             }
             
+            $hasQurbaniMode = in_array('access_qurbani_mode', $permissions);
+            $qurbaniRiderDeliveredEnabled = \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
+
             return response()->json([
                 'success' => true,
                 'permissions' => $permissions,
                 'has_store_mode' => in_array('access_store_mode', $permissions),
-                'has_khaas_mode' => $hasKhaasMode, // ⭐ Khaas mode access
-                'khaas_business_unit' => $khaasBusinessUnit, // ⭐ Khaas BU details (id, name, color)
-                'expense_backdate_days' => (int)$expenseBackdateDays // ⭐ Include backdate days
+                'has_khaas_mode' => $hasKhaasMode,
+                'khaas_business_unit' => $khaasBusinessUnit,
+                'has_qurbani_mode' => $hasQurbaniMode,
+                'qurbani_rider_delivered_enabled' => $qurbaniRiderDeliveredEnabled,
+                'expense_backdate_days' => (int)$expenseBackdateDays
             ]);
             
         } catch (\Exception $e) {
@@ -7103,7 +7150,8 @@ class RiderController extends Controller
                 'message' => 'Failed to fetch permissions',
                 'permissions' => [],
                 'has_store_mode' => false,
-                'has_khaas_mode' => false
+                'has_khaas_mode' => false,
+                'has_qurbani_mode' => false
             ], 500);
         }
     }
@@ -7237,7 +7285,18 @@ class RiderController extends Controller
                       ->orWhereNull('external_source');
                 })
                 ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
-            
+
+            // Exclude qurbani orders from store mode
+            $qurbaniExcludeIds = \DB::table('t_crm_prod_order_line_item')
+                ->join('t_crm_prod_product', 't_crm_prod_order_line_item.product_id', '=', 't_crm_prod_product.id')
+                ->whereRaw("LOWER(t_crm_prod_product.attribute_1) = 'qurbani'")
+                ->distinct()
+                ->pluck('t_crm_prod_order_line_item.order_id');
+
+            if ($qurbaniExcludeIds->isNotEmpty()) {
+                $query->whereNotIn('id', $qurbaniExcludeIds);
+            }
+
             // Apply status filter if provided
             if ($statusFilter) {
                 $query->where('order_status', $statusFilter);
@@ -7352,11 +7411,12 @@ class RiderController extends Controller
                             'quantity' => $item->quantity,
                             'unit_price' => $item->unit_price,
                             'unit_price_formatted' => 'Rs. ' . number_format($item->unit_price, 0),
-                            'line_total' => $item->line_total, // Add line_total for invoice calculations
+                            'line_total' => $item->line_total,
                             'total' => $item->line_total,
                             'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                             'preparation_status' => $item->preparation_status,
                             'is_free' => (bool) $item->is_free,
+                            'instructions' => $item->instructions,
                         ];
                     }),
                     'shipping_total' => $order->shipping_total ?? 0,
@@ -7372,8 +7432,8 @@ class RiderController extends Controller
                         'total_items' => $totalItems,
                     ],
                     'invoice' => [
-                        'image_url' => $invoiceImageUrl,  // URL to download invoice as PNG image
-                        'pdf_url' => $invoicePdfUrl,      // URL to download invoice as PDF
+                        'image_url' => $invoiceImageUrl,
+                        'pdf_url' => $invoicePdfUrl,
                     ],
                 ];
             });
@@ -7426,8 +7486,7 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    // Load essential line item fields for marking prepared
-                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free');
+                    $q->select('id', 'order_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'instructions');
                 }])
                 ->with(['discounts']) // ⭐ Load discounts for invoice view
                 ->where(function($q) {
@@ -7435,7 +7494,18 @@ class RiderController extends Controller
                       ->orWhereNull('external_source');
                 })
                 ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
-            
+
+            // Exclude qurbani orders from store mode (mixed orders are blocked at creation)
+            $qurbaniExcludeIds = \DB::table('t_crm_prod_order_line_item')
+                ->join('t_crm_prod_product', 't_crm_prod_order_line_item.product_id', '=', 't_crm_prod_product.id')
+                ->whereRaw("LOWER(t_crm_prod_product.attribute_1) = 'qurbani'")
+                ->distinct()
+                ->pluck('t_crm_prod_order_line_item.order_id');
+
+            if ($qurbaniExcludeIds->isNotEmpty()) {
+                $query->whereNotIn('id', $qurbaniExcludeIds);
+            }
+
             // Apply status filter if provided
             if ($statusFilter) {
                 $query->where('order_status', $statusFilter);
@@ -7615,7 +7685,7 @@ class RiderController extends Controller
                     'line_items' => $order->lineItems->map(function($item) {
                         return [
                             'id' => $item->id,
-                            'name' => $item->name ?? 'N/A',  // ⭐ Use 'name' consistently
+                            'name' => $item->name ?? 'N/A',
                             'product_name' => $item->name ?? 'N/A',
                             'variant_name' => $item->sku ?? '',
                             'quantity' => (float) $item->quantity,
@@ -7624,6 +7694,7 @@ class RiderController extends Controller
                             'line_total' => (float) $item->line_total,
                             'preparation_status' => $item->preparation_status,
                             'is_free' => (bool) $item->is_free,
+                            'instructions' => $item->instructions,
                         ];
                     })->values()->toArray(),
                 ];
@@ -7984,6 +8055,7 @@ class RiderController extends Controller
                             'total_formatted' => $item->is_free ? 'FREE' : 'Rs. ' . number_format($item->line_total, 0),
                             'preparation_status' => $item->preparation_status,
                             'is_free' => (bool) $item->is_free,
+                            'instructions' => $item->instructions,
                         ];
                     }),
                     'shipping_total' => $order->shipping_total ?? 0,
@@ -8082,7 +8154,7 @@ class RiderController extends Controller
             
             $validated = $request->validate([
                 'order_id' => 'required|exists:t_crm_prod_order,id',
-                'rider_id' => 'required|exists:t_sys_user,id'
+                'rider_id' => 'required|integer|min:0'
             ]);
             
             $order = OrderModel::findOrFail($validated['order_id']);
@@ -8095,6 +8167,20 @@ class RiderController extends Controller
                 ], 422);
             }
             
+            // Unassign rider when rider_id is 0
+            if ((int)$validated['rider_id'] === 0) {
+                DB::table('t_ops_order_rider_history')
+                    ->where('order_id', $order->id)
+                    ->where('is_current', 1)
+                    ->update(['is_current' => 0, 'unassigned_at' => now()]);
+                $order->assigned_rider_user_id = null;
+                $order->save();
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Rider unassigned successfully',
+                ]);
+            }
+            
             // Get rider name for response
             $rider = DB::table('t_sys_user')->where('id', $validated['rider_id'])->first();
             
@@ -8105,12 +8191,10 @@ class RiderController extends Controller
                 ], 404);
             }
             
-            // ✅ Use the model method to properly create history records
-            // This ensures rider history is tracked just like web UI does
             $success = $order->assignRider(
                 $validated['rider_id'],
-                'Assigned via Store Mode',  // Notes
-                $user->id                    // Assigned by user ID
+                'Assigned via Store Mode',
+                $user->id
             );
             
             if (!$success) {
@@ -8583,10 +8667,13 @@ class RiderController extends Controller
                 })
                 ->whereNotIn('o.order_status', $excludedStatuses)
                 ->where('o.order_date', '>=', Carbon::now()->subDays(20))
-                // ✅ EXCLUDE prepared items from quantities (same as web)
                 ->where(function($q) {
                     $q->whereNull('li.preparation_status')
                       ->orWhere('li.preparation_status', '!=', 'preparing');
+                })
+                ->where(function($q) {
+                    $q->whereNull('p.attribute_1')
+                      ->orWhereRaw("LOWER(p.attribute_1) != 'qurbani'");
                 });
 
             if ($statusFilter) {
@@ -9203,7 +9290,11 @@ class RiderController extends Controller
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
                 })
-                ->whereNotIn('o.order_status', $excludedStatuses);
+                ->whereNotIn('o.order_status', $excludedStatuses)
+                ->where(function($q) {
+                    $q->whereNull('p.attribute_1')
+                      ->orWhereRaw("LOWER(p.attribute_1) != 'qurbani'");
+                });
             
             // Apply status filter if provided
             if ($statusFilter) {
@@ -12013,16 +12104,6 @@ class RiderController extends Controller
             $fromAccount = \App\Models\FIN\AccountModel::findOrFail($request->from_account_id);
             $toAccount = \App\Models\FIN\AccountModel::findOrFail($request->to_account_id);
             
-            // Check if from account has sufficient balance for asset accounts
-            if ($fromAccount->account_type === 'asset') {
-                if ($fromAccount->current_balance < $request->amount) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Insufficient balance in {$fromAccount->account_name}. Current balance: Rs. " . number_format($fromAccount->current_balance, 2)
-                    ], 400);
-                }
-            }
-            
             // Determine approval status
             // Online transfers require approval
             $approvalStatus = $request->mode === 'online' 
@@ -12674,7 +12755,8 @@ class RiderController extends Controller
             
             // Base query for ALL invoices (not just open)
             // IMPORTANT: Exclude reversed transactions (e.g., from payment method changes)
-            $invoicesQuery = LedgerModel::where('transaction_type', LedgerModel::TYPE_INVOICE)
+            // Includes both regular invoices AND qurbani order_payment entries that go to rider accounts
+            $invoicesQuery = LedgerModel::whereIn('transaction_type', [LedgerModel::TYPE_INVOICE, LedgerModel::TYPE_ORDER_PAYMENT])
                 ->where('approval_status', '!=', LedgerModel::STATUS_REVERSED)
                 ->with(['toAccount', 'order'])
                 ->whereHas('toAccount', function($q) {
@@ -16165,6 +16247,561 @@ class RiderController extends Controller
             'count' => $updated,
             'advance_ids' => $advanceIds,
         ]);
+    }
+
+    // =========================================================================
+    // QURBANI MODE ENDPOINTS
+    // =========================================================================
+
+    /**
+     * Qurbani open orders - orders containing products with attribute_1 = 'qurbani'
+     * Supports filters: qurbani_day, qurbani_slot, qurbani_region, qurbani_delivery_type, status
+     */
+    public function getQurbaniOpenOrders(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            // Find open qurbani orders efficiently:
+            // First check orders with qurbani fields set (fast indexed check),
+            // then fall back to line-item join only for orders in last 60 days without fields set
+            $qurbaniOrderIds = \DB::table('t_crm_prod_order')
+                ->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])
+                ->where(function($q) {
+                    $q->where('external_source', '!=', 'shopify')->orWhereNull('external_source');
+                })
+                ->where(function($q) {
+                    // Orders with qurbani fields explicitly set (fast)
+                    $q->whereNotNull('qurbani_day')
+                      ->orWhereNotNull('qurbani_slot')
+                      ->orWhereNotNull('qurbani_region')
+                      ->orWhereNotNull('qurbani_delivery_type');
+                })
+                ->pluck('id');
+
+            // Also find orders identified by line item products (for orders created before fields were added)
+            $lineItemQurbaniIds = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->whereRaw("LOWER(p.attribute_1) = 'qurbani'")
+                ->whereNotIn('o.order_status', ['delivered', 'completed', 'cancelled', 'refunded'])
+                ->where(function($q) {
+                    $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source');
+                })
+                ->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(60))
+                ->distinct()
+                ->pluck('li.order_id');
+
+            $allQurbaniIds = $qurbaniOrderIds->merge($lineItemQurbaniIds)->unique();
+
+            if ($allQurbaniIds->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'orders' => [],
+                    'summary' => ['total' => 0, 'unpaid' => 0, 'partial' => 0, 'paid' => 0],
+                ]);
+            }
+
+            $query = OrderModel::with(['customer' => function($q) {
+                    $q->select('id', 'first_name', 'last_name', 'phone_original', 'latitude', 'longitude',
+                               'geocoded_latitude', 'geocoded_longitude', 'verified_location_url', 'notes',
+                               'verified_location_saved_by', 'verified_location_saved_at', 'delivery_region_id');
+                }])
+                ->with(['assignedRider' => function($q) {
+                    $q->select('id', 'fullname');
+                }])
+                ->with(['lineItems' => function($q) {
+                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type', 'instructions');
+                }])
+                ->with(['lineItems.product' => function($q) {
+                    $q->select('id', 'attribute_2');
+                }])
+                ->with(['discounts'])
+                ->whereIn('id', $allQurbaniIds);
+
+            // Apply status filter
+            if ($request->get('status')) {
+                $query->where('order_status', $request->get('status'));
+            }
+
+            // Apply qurbani field filters (check both order-level and line-item-level)
+            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type'] as $field) {
+                if ($request->get($field)) {
+                    $filterVal = $request->get($field);
+                    $query->where(function($q) use ($field, $filterVal) {
+                        $q->where($field, $filterVal)
+                          ->orWhereHas('lineItems', function($sub) use ($field, $filterVal) {
+                              $sub->where($field, $filterVal);
+                          });
+                    });
+                }
+            }
+
+            $orders = $query->orderBy('order_date', 'desc')->get();
+
+            // Preparation summaries
+            $prepSummaries = \DB::table('t_crm_prod_order_line_item')
+                ->whereIn('order_id', $orders->pluck('id'))
+                ->groupBy('order_id')
+                ->selectRaw('order_id, COUNT(*) as total, SUM(CASE WHEN preparation_status = "preparing" THEN 1 ELSE 0 END) as preparing')
+                ->get()
+                ->keyBy('order_id');
+
+            $regionMap = [];
+            try {
+                $regionMap = \DB::table('t_ops_delivery_region')
+                    ->where('is_active', 1)
+                    ->pluck('name', 'id')
+                    ->toArray();
+            } catch (\Exception $e) {}
+
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $regionMap) {
+                $customerName = $order->name ?? 'N/A';
+                if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
+                    $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+                }
+                if ($customerName === 'N/A' && $order->customer) {
+                    $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: 'Unknown';
+                }
+
+                $prepSummary = $prepSummaries[$order->id] ?? null;
+
+                $effectiveCustomerNotes = null;
+                if ($order->customer) {
+                    if ($order->customer->merged_into_customer_id ?? false) {
+                        $primaryCustomer = \App\Models\CRM\CustomerModel::find($order->customer->merged_into_customer_id);
+                        $effectiveCustomerNotes = $primaryCustomer ? ($primaryCustomer->notes ?? null) : null;
+                    } else {
+                        $effectiveCustomerNotes = $order->customer->notes ?? null;
+                    }
+                }
+
+                return [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number ?? 'NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT),
+                    'order_date' => $order->order_date,
+                    'order_status' => $order->order_status,
+                    'total_price' => $order->total_price,
+                    'payment_method' => $order->payment_method,
+                    'payment_status' => $order->payment_status ?? 'unpaid',
+                    'total_paid' => (float) ($order->total_paid ?? 0),
+                    'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                    'qurbani_day' => $order->qurbani_day,
+                    'qurbani_slot' => $order->qurbani_slot,
+                    'qurbani_region' => $order->qurbani_region,
+                    'qurbani_delivery_type' => $order->qurbani_delivery_type,
+                    'delivery_priority' => $order->delivery_priority,
+                    'expected_packets' => $order->expected_packets,
+                    'actual_packets' => $order->actual_packets,
+                    'customer_id' => $order->customer_id,
+                    'customer_name' => $customerName,
+                    'customer_address' => trim(implode(', ', array_filter([
+                        $order->address_line1, $order->address_line2, $order->address_city, $order->address_province
+                    ]))),
+                    'customer_phone' => $order->address_phone ?? ($order->customer->phone_original ?? null),
+                    'customer_notes' => $effectiveCustomerNotes,
+                    'has_customer_notes' => !empty($effectiveCustomerNotes),
+                    'order_note' => $order->note ?? null,
+                    'has_order_note' => !empty($order->note),
+                    'assigned_rider_id' => $order->assigned_rider_user_id,
+                    'assigned_rider' => $order->assignedRider ? [
+                        'id' => $order->assignedRider->id,
+                        'name' => $order->assignedRider->fullname,
+                    ] : null,
+                    'preparation_summary' => [
+                        'preparing_count' => $prepSummary->preparing ?? 0,
+                        'total_items' => $prepSummary->total ?? 0,
+                    ],
+                    'delivery_region_id' => $order->customer->delivery_region_id ?? null,
+                    'delivery_region_name' => ($order->customer->delivery_region_id ?? null) ? ($regionMap[$order->customer->delivery_region_id] ?? null) : null,
+                    'updated_at' => $order->updated_at ? $order->updated_at->toIso8601String() : null,
+                    'subtotal_price' => $order->subtotal_price ?? 0,
+                    'discount_total' => $order->discount_total ?? 0,
+                    'shipping_total' => $order->shipping_total ?? 0,
+                    'tip_amount' => $order->tip_amount ?? 0,
+                    'discounts' => $order->discounts ? $order->discounts->map(function($d) {
+                        return ['discount_amount' => $d->discount_amount, 'discount_type' => $d->discount_type];
+                    })->toArray() : [],
+                    'line_items' => $order->lineItems->map(function($item) {
+                        return [
+                            'id' => $item->id,
+                            'name' => $item->name ?? 'N/A',
+                            'product_name' => $item->name ?? 'N/A',
+                            'variant_name' => $item->sku ?? '',
+                            'quantity' => (float) $item->quantity,
+                            'unit_price' => (float) $item->unit_price,
+                            'unit_price_formatted' => $item->unit_price ? 'Rs. ' . number_format($item->unit_price, 0) : null,
+                            'line_total' => (float) $item->line_total,
+                            'preparation_status' => $item->preparation_status,
+                            'is_free' => (bool) $item->is_free,
+                            'qurbani_day' => $item->qurbani_day,
+                            'qurbani_slot' => $item->qurbani_slot,
+                            'qurbani_region' => $item->qurbani_region,
+                            'qurbani_delivery_type' => $item->qurbani_delivery_type,
+                            'category_level_2' => $item->product->attribute_2 ?? null,
+                            'instructions' => $item->instructions,
+                        ];
+                    })->values()->toArray(),
+                    'external_source' => $order->external_source,
+                ];
+            });
+
+            // Payment status summary
+            $summary = [
+                'total' => $formattedOrders->count(),
+                'unpaid' => $formattedOrders->where('payment_status', 'unpaid')->count(),
+                'partial' => $formattedOrders->where('payment_status', 'partial')->count(),
+                'paid' => $formattedOrders->where('payment_status', 'paid')->count(),
+            ];
+
+            return response()->json([
+                'success' => true,
+                'orders' => $formattedOrders->values(),
+                'summary' => $summary,
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get qurbani open orders', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json(['success' => false, 'message' => 'Failed to load qurbani orders: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Update qurbani details (day, slot, region, delivery_type) on an existing order
+     */
+    public function updateQurbaniDetails(Request $request, $orderId)
+    {
+        try {
+            $validated = $request->validate([
+                'qurbani_day' => 'nullable|string|max:50',
+                'qurbani_slot' => 'nullable|string|max:50',
+                'qurbani_region' => 'nullable|string|max:100',
+                'qurbani_delivery_type' => 'nullable|string|max:50',
+                'instructions' => 'nullable|string|max:500',
+                'line_item_id' => 'nullable|integer|exists:t_crm_prod_order_line_item,id',
+            ]);
+
+            $order = OrderModel::findOrFail($orderId);
+            $fields = [
+                'qurbani_day' => $validated['qurbani_day'] ?? null,
+                'qurbani_slot' => $validated['qurbani_slot'] ?? null,
+                'qurbani_region' => $validated['qurbani_region'] ?? null,
+                'qurbani_delivery_type' => $validated['qurbani_delivery_type'] ?? null,
+            ];
+            if (array_key_exists('instructions', $validated)) {
+                $fields['instructions'] = $validated['instructions'];
+            }
+
+            if (!empty($validated['line_item_id'])) {
+                $order->lineItems()->where('id', $validated['line_item_id'])->update($fields);
+            } else {
+                $order->lineItems()->update($fields);
+            }
+
+            // Sync first line item's values to order level for filtering
+            $firstItem = $order->lineItems()->first();
+            if ($firstItem) {
+                $order->update([
+                    'qurbani_day' => $firstItem->qurbani_day,
+                    'qurbani_slot' => $firstItem->qurbani_slot,
+                    'qurbani_region' => $firstItem->qurbani_region,
+                    'qurbani_delivery_type' => $firstItem->qurbani_delivery_type,
+                ]);
+            }
+
+            return response()->json(['success' => true, 'message' => 'Qurbani details updated']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function updateLineItemInstructions(Request $request, $orderId, $lineItemId)
+    {
+        try {
+            $validated = $request->validate([
+                'instructions' => 'nullable|string|max:500',
+            ]);
+
+            $lineItem = \App\Models\CRM\OrderLineItemModel::where('id', $lineItemId)
+                ->where('order_id', $orderId)
+                ->firstOrFail();
+
+            $lineItem->instructions = $validated['instructions'] ?? null;
+            $lineItem->save();
+
+            return response()->json(['success' => true, 'message' => 'Instructions updated']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Qurbani field options - dropdown values for qurbani order fields
+     */
+    public function getQurbaniFieldOptions(Request $request)
+    {
+        try {
+            $options = \DB::table('t_crm_qurbani_field_options')
+                ->where('is_active', 1)
+                ->orderBy('field_name')
+                ->orderBy('display_order')
+                ->get()
+                ->groupBy('field_name')
+                ->map(function ($group) {
+                    return $group->map(function ($item) {
+                        $opt = ['id' => $item->id, 'value' => $item->option_value];
+                        if ($item->parent_id) $opt['parent_id'] = $item->parent_id;
+                        if ($item->is_default) $opt['is_default'] = true;
+                        return $opt;
+                    })->values();
+                });
+
+            $categories = \DB::table('t_crm_prod_product')
+                ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+                ->whereNotNull('attribute_2')
+                ->where('attribute_2', '!=', '')
+                ->distinct()
+                ->orderBy('attribute_2')
+                ->pluck('attribute_2')
+                ->values();
+
+            $shippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
+
+            return response()->json([
+                'success' => true,
+                'options' => $options,
+                'categories' => $categories,
+                'qurbani_shipping_price' => $shippingPrice,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * List payments for an order
+     */
+    public function getOrderPayments(Request $request, $orderId)
+    {
+        try {
+            $user = Auth::user();
+
+            $order = OrderModel::findOrFail($orderId);
+
+            $payments = \DB::table('t_crm_order_payments as p')
+                ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
+                ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                ->where('p.order_id', $orderId)
+                ->where('p.status', 'active')
+                ->orderBy('p.payment_date', 'desc')
+                ->orderBy('p.created_at', 'desc')
+                ->select([
+                    'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
+                    'p.reference', 'p.notes', 'p.status', 'p.ledger_transaction_id',
+                    'p.created_by', 'p.created_at',
+                    'u.fullname as created_by_name',
+                    'l.approval_status as ledger_approval_status',
+                    'l.settlement_status as ledger_settlement_status',
+                ])
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'order_id' => (int) $orderId,
+                'order_number' => $order->order_number,
+                'total_price' => (float) $order->total_price,
+                'total_paid' => (float) ($order->total_paid ?? 0),
+                'payment_status' => $order->payment_status ?? 'unpaid',
+                'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                'payments' => $payments,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get order payments', ['order_id' => $orderId, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Add a payment to an order.
+     * Ledger routing:
+     *   Rider adds cash → rider's employee_cash (shows in daily closing, needs settlement)
+     *   Manager/Taimur adds cash → NF_CASH (auto-settled)
+     *   Online (any) → online bank account
+     */
+    public function addOrderPayment(Request $request, $orderId)
+    {
+        try {
+            $user = Auth::user();
+            $order = OrderModel::findOrFail($orderId);
+
+            $validated = $request->validate([
+                'amount' => 'required|numeric|min:0.01',
+                'payment_method' => 'required|string|in:cash,cash_on_delivery,online,bank_transfer',
+                'payment_date' => 'nullable|date',
+                'reference' => 'nullable|string|max:255',
+                'notes' => 'nullable|string|max:1000',
+            ]);
+
+            $amount = (float) $validated['amount'];
+            $currentPaid = (float) ($order->total_paid ?? 0);
+            $orderTotal = (float) $order->total_price;
+            $remaining = $orderTotal - $currentPaid;
+
+            if ($amount > $remaining + 0.01) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Payment amount (Rs. ' . number_format($amount) . ') exceeds remaining balance (Rs. ' . number_format($remaining) . ')'
+                ], 422);
+            }
+
+            $paymentMethod = $validated['payment_method'];
+            $paymentDate = $validated['payment_date'] ?? now()->toDateString();
+
+            // Normalize cash_on_delivery to cash for ledger
+            $normalizedMethod = in_array($paymentMethod, ['cash', 'cash_on_delivery']) ? 'cash' : $paymentMethod;
+            $isOnline = in_array($normalizedMethod, ['online', 'bank_transfer', 'card']);
+
+            // Determine if user is a manager (Taimur/Management) for auto-approval
+            $user->load('roles');
+            $roleNames = $user->roles->pluck('urole_name')->map(fn($n) => strtolower($n))->toArray();
+            $isManager = in_array('taimur', $roleNames)
+                || collect($roleNames)->contains(fn($n) => str_contains($n, 'management'))
+                || $user->user_type === 'admin';
+
+            \DB::beginTransaction();
+
+            // Create payment record
+            $payment = \App\Models\CRM\OrderPaymentModel::create([
+                'order_id' => $order->id,
+                'amount' => $amount,
+                'payment_method' => $paymentMethod,
+                'payment_date' => $paymentDate,
+                'reference' => $validated['reference'] ?? null,
+                'notes' => $validated['notes'] ?? null,
+                'status' => 'active',
+                'created_by' => $user->id,
+            ]);
+
+            // --- Ledger entry ---
+            $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
+            if (!$salesAccount) {
+                throw new \Exception("Sales revenue account not configured");
+            }
+
+            $customerName = $order->name ?? trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? '')) ?: 'Customer';
+            $isQurbaniOrder = str_starts_with($order->order_number ?? '', 'QUR') || !empty($order->qurbani_day);
+            $description = ($isQurbaniOrder ? "Qurbani" : "Order") . " Payment #{$order->order_number} - Rs. " . number_format($amount) . " ({$customerName})";
+
+            if ($isOnline) {
+                $toAccount = $isQurbaniOrder
+                    ? \App\Models\FIN\ConfigModel::getQurbaniOnlineAccount()
+                    : \App\Models\FIN\ConfigModel::getOnlineBankAccount();
+                if (!$toAccount) throw new \Exception("Online account not configured");
+                $mode = LedgerModel::MODE_ONLINE;
+                $invoiceCategory = \App\Models\Request\RequestCategoryModel::getByCode('invoice_approval');
+                $approvalStatus = LedgerModel::STATUS_APPROVED;
+                if ($invoiceCategory) {
+                    $config = $invoiceCategory->approvalConfig;
+                    if ($config && $config->canAutoApprove($amount)) {
+                        $approvalStatus = LedgerModel::STATUS_APPROVED;
+                    } elseif ($invoiceCategory->requiresLevel1()) {
+                        $approvalStatus = LedgerModel::STATUS_PENDING_L1;
+                    }
+                }
+                $settlementStatus = $approvalStatus === LedgerModel::STATUS_APPROVED ? 'settled' : 'open';
+            } elseif ($isManager) {
+                $toAccount = $isQurbaniOrder
+                    ? \App\Models\FIN\ConfigModel::getQurbaniCashAccount()
+                    : \App\Models\FIN\ConfigModel::getNFCashAccount();
+                if (!$toAccount) throw new \Exception("Cash account not configured");
+                $mode = LedgerModel::MODE_CASH;
+                $approvalStatus = LedgerModel::STATUS_APPROVED;
+                $settlementStatus = 'settled';
+            } else {
+                // Rider cash → rider's employee cash (needs settlement via daily closing)
+                $toAccount = AccountModel::createEmployeeCashAccount($user->id, $user->fullname ?? $user->name);
+                $mode = LedgerModel::MODE_CASH;
+                $approvalStatus = LedgerModel::STATUS_APPROVED;
+                $settlementStatus = 'open';
+            }
+
+            $applyBalanceNow = in_array($approvalStatus, [
+                LedgerModel::STATUS_APPROVED,
+                LedgerModel::STATUS_PENDING_L2,
+            ]);
+
+            $ledger = LedgerModel::create([
+                'transaction_date' => $paymentDate,
+                'transaction_type' => LedgerModel::TYPE_ORDER_PAYMENT,
+                'description' => $description,
+                'from_account_id' => $salesAccount->id,
+                'to_account_id' => $toAccount->id,
+                'amount' => $amount,
+                'mode' => $mode,
+                'approval_status' => $approvalStatus,
+                'balance_updated' => $applyBalanceNow ? 1 : 0,
+                'settlement_status' => $settlementStatus,
+                'settled_amount' => $settlementStatus === 'settled' ? $amount : 0,
+                'settled_at' => $settlementStatus === 'settled' ? now() : null,
+                'approval_date' => $approvalStatus === LedgerModel::STATUS_APPROVED ? now() : null,
+                'approved_by' => $approvalStatus === LedgerModel::STATUS_APPROVED ? $user->id : null,
+                'order_id' => $order->id,
+                'created_by' => $user->id,
+            ]);
+
+            if ($applyBalanceNow) {
+                $salesAccount->current_balance -= $amount;
+                $salesAccount->save();
+                $toAccount->current_balance += $amount;
+                $toAccount->save();
+            }
+
+            // Link ledger to payment
+            $payment->ledger_transaction_id = $ledger->id;
+            $payment->save();
+
+            // Recalculate order payment status
+            $order->recalculatePaymentStatus();
+
+            \DB::commit();
+
+            \Log::info('Qurbani payment added', [
+                'order_id' => $order->id,
+                'payment_id' => $payment->id,
+                'ledger_id' => $ledger->id,
+                'amount' => $amount,
+                'method' => $paymentMethod,
+                'by_role' => $isManager ? 'manager' : 'rider',
+                'approval' => $approvalStatus,
+                'settlement' => $settlementStatus,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment of Rs. ' . number_format($amount) . ' recorded successfully',
+                'payment' => [
+                    'id' => $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'payment_method' => $payment->payment_method,
+                    'payment_date' => $payment->payment_date,
+                    'ledger_transaction_id' => $ledger->id,
+                ],
+                'order_payment_status' => $order->payment_status,
+                'order_total_paid' => (float) $order->total_paid,
+                'order_balance_remaining' => max(0, (float)$order->total_price - (float)$order->total_paid),
+            ]);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            \DB::rollBack();
+            return response()->json(['success' => false, 'message' => $e->getMessage(), 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            \Log::error('Failed to add order payment', ['order_id' => $orderId, 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            return response()->json(['success' => false, 'message' => 'Failed to record payment: ' . $e->getMessage()], 500);
+        }
     }
 }
 

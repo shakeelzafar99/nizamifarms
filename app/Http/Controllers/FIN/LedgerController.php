@@ -370,13 +370,6 @@ class LedgerController extends Controller
             $fromAccount = AccountModel::findOrFail($request->from_account_id);
             $toAccount = AccountModel::findOrFail($request->to_account_id);
 
-            // Check if from account has sufficient balance for asset accounts
-            if ($fromAccount->account_type === 'asset') {
-                if ($fromAccount->current_balance < $request->amount) {
-                    throw new \Exception("Insufficient balance in {$fromAccount->account_name}. Current balance: Rs. " . number_format($fromAccount->current_balance, 2));
-                }
-            }
-
             // Determine approval status
             // Online transfers require approval
             $approvalStatus = $request->mode === 'online' 

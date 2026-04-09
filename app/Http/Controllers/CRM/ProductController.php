@@ -1969,9 +1969,15 @@ class ProductController extends Controller
             // Split search query into individual words for flexible matching
             $searchWords = array_filter(explode(' ', $query));
             
-            $products = \App\Models\CRM\ProductModel::with('variants')
-                ->where('is_active', true)
-                ->where(function($q) use ($query, $searchWords) {
+            $productsQuery = \App\Models\CRM\ProductModel::with('variants')
+                ->where('is_active', true);
+
+            // Qurbani filter: only show qurbani-category products
+            if ($request->get('qurbani')) {
+                $productsQuery->whereRaw("LOWER(attribute_1) = 'qurbani'");
+            }
+
+            $products = $productsQuery->where(function($q) use ($query, $searchWords) {
                     // Create hyphen-less version for flexible SKU search
                     $queryNoHyphens = str_replace(['-', ' '], '', $query);
                     
@@ -2027,7 +2033,8 @@ class ProductController extends Controller
                             'sku' => $variant->sku,
                             'price' => $variant->price,
                             'inventory' => $variant->inventory_quantity,
-                            'vendor' => $product->vendor
+                            'vendor' => $product->vendor,
+                            'attribute_1' => $product->attribute_1,
                         ];
                     }
                 }
@@ -2042,7 +2049,8 @@ class ProductController extends Controller
                         'sku' => $firstVariant->sku,
                         'price' => $firstVariant->price,
                         'inventory' => 0,
-                        'vendor' => $product->vendor
+                        'vendor' => $product->vendor,
+                        'attribute_1' => $product->attribute_1,
                     ];
                 }
             }

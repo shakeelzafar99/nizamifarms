@@ -235,6 +235,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
     Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
     
+    // Qurbani Mode
+    Route::get('/qurbani/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOpenOrders']);
+    Route::get('/qurbani/field-options', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniFieldOptions']);
+    Route::put('/orders/{id}/qurbani-details', [\App\Http\Controllers\API\RiderController::class, 'updateQurbaniDetails']);
+    Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
+    Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
+    Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);
+
     // Assets (Store Mode - requires view_assets permission)
     Route::get('/nf-ledger/assets', [\App\Http\Controllers\FIN\AssetController::class, 'apiIndex']);
     Route::get('/nf-ledger/assets/form-data', [\App\Http\Controllers\FIN\AssetController::class, 'apiFormData']);
