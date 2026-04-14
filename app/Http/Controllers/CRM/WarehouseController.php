@@ -1211,6 +1211,36 @@ class WarehouseController extends Controller
                 ];
             });
 
+            // ⭐ Orders pending approval (still in the approval queue)
+            $pendingApprovalOrders = \App\Models\CRM\ShopifyOrderModel::with('lineItems')
+                ->where('external_source', 'khaas_storage')
+                ->where(function($q) {
+                    $q->whereNull('converted')->orWhere('converted', 0);
+                })
+                ->where('khaas_business_unit_id', $businessUnitId)
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(function($o) {
+                    return [
+                        'id' => $o->id,
+                        'order_id' => null,
+                        'order_number' => $o->order_number,
+                        'nf_order_status' => 'pending_approval',
+                        'status' => 'pending_approval',
+                        'total_price' => $o->total_price,
+                        'notes' => $o->note,
+                        'created_at' => $o->created_at?->toDateTimeString(),
+                        'line_items' => $o->lineItems->map(function($li) {
+                            return [
+                                'name' => $li->name,
+                                'quantity' => $li->quantity,
+                                'unit_price' => $li->unit_price,
+                                'line_total' => $li->line_total,
+                            ];
+                        })->toArray(),
+                    ];
+                });
+
             // Get recent storage orders with line items and main order status
             $recentOrders = DB::table('t_crm_khaas_storage_order as so')
                 ->join('t_crm_prod_order as o', 'o.id', '=', 'so.order_id')
@@ -1219,7 +1249,7 @@ class WarehouseController extends Controller
                     'so.*',
                     'o.order_number',
                     'o.total_price',
-                    'o.order_status as nf_order_status', // ⭐ Main NF order status
+                    'o.order_status as nf_order_status',
                     'o.order_date',
                     'o.name as customer_name'
                 )
@@ -1271,6 +1301,7 @@ class WarehouseController extends Controller
                 'success' => true,
                 'products' => $products,
                 'recent_orders' => $recentOrders,
+                'pending_approval_orders' => $pendingApprovalOrders,
                 'settings' => [
                     'customer_phone' => $customerPhone,
                     'customer_id' => $customerId,
@@ -1449,22 +1480,26 @@ class WarehouseController extends Controller
                 ];
             }
 
-            // ⭐ Generate order number with lockForUpdate to prevent race conditions
+            // ⭐ Generate order number (KS = Khaas Storage) for the approval queue
             $orderNumber = DB::transaction(function() {
-                $maxOrderNumber = DB::table('t_crm_prod_order')
-                    ->where('order_number', 'LIKE', 'NF-%')
+                $maxNum = DB::table('t_crm_shopify_order')
+                    ->where('order_number', 'LIKE', 'KS-%')
                     ->lockForUpdate()
                     ->max(DB::raw("CAST(SUBSTRING(order_number, 4) AS UNSIGNED)"));
-                return 'NF-' . (($maxOrderNumber ?? 0) + 1);
+                $maxProd = DB::table('t_crm_prod_order')
+                    ->where('order_number', 'LIKE', 'KS-%')
+                    ->lockForUpdate()
+                    ->max(DB::raw("CAST(SUBSTRING(order_number, 4) AS UNSIGNED)"));
+                return 'KS-' . (max($maxNum ?? 0, $maxProd ?? 0) + 1);
             });
 
-            // ⭐ Use storeOrderFromApi — the proven order creation path
-            // This handles: customer linking, status history, line items, and proper model creation
+            // ⭐ Route to approval queue (t_crm_shopify_order) so frozen meat orders
+            // don't affect next-day quantity planning until approved
             $orderData = [
                 'customer_id' => $customerId,
                 'external_source' => 'khaas_storage',
                 'order_number' => $orderNumber,
-                'order_status' => 'new',
+                'order_status' => 'pending',
                 'order_date' => now()->toDateString(),
                 'currency' => 'PKR',
                 'name' => trim($customer->first_name . ' ' . ($customer->last_name ?? '')),
@@ -1479,13 +1514,17 @@ class WarehouseController extends Controller
                 'address_line1' => $customer->address1 ?? null,
                 'address_city' => $customer->city ?? 'Islamabad',
                 'address_country' => $customer->country ?? 'Pakistan',
-                'note' => $request->input('notes') ? '[Khaas Storage Order] ' . $request->input('notes') : '[Khaas Storage Order]',
+                'note' => $request->input('notes')
+                    ? '[Khaas Storage Order] ' . $request->input('notes')
+                    : '[Khaas Storage Order]',
+                'converted' => 0,
+                'khaas_business_unit_id' => $businessUnitId,
                 'line_items' => $lineItems,
                 'created_by' => auth()->id(),
                 'updated_by' => auth()->id(),
             ];
 
-            \Log::info('Placing storage order via storeOrderFromApi', [
+            \Log::info('Placing storage order into approval queue', [
                 'customer_id' => $customerId,
                 'order_number' => $orderNumber,
                 'items_count' => count($lineItems),
@@ -1495,25 +1534,15 @@ class WarehouseController extends Controller
 
             $order = \App\Models\CRM\OrderModel::storeOrderFromApi($orderData);
 
-            // Create storage order tracking record (outside storeOrderFromApi's transaction — it commits its own)
-            DB::table('t_crm_khaas_storage_order')->insert([
-                'order_id' => $order->id,
-                'khaas_business_unit_id' => $businessUnitId,
-                'status' => 'pending',
-                'notes' => $request->input('notes'),
-                'created_by' => auth()->id(),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-
             return response()->json([
                 'success' => true,
-                'message' => "Storage order {$order->order_number} placed successfully — {$this->formatItemsSummary($lineItems)}",
+                'message' => "Storage order {$order->order_number} placed into approval queue — {$this->formatItemsSummary($lineItems)}. Approve it from the Orders > Shopify Approvals tab.",
                 'order' => [
                     'id' => $order->id,
                     'order_number' => $order->order_number,
                     'total' => $subtotal,
                     'items_count' => count($lineItems),
+                    'pending_approval' => true,
                 ],
             ]);
 

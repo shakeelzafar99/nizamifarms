@@ -954,7 +954,7 @@ input:focus, select:focus, button:focus {
                             @if($canViewShopify ?? false)
                             <button onclick="switchToShopifyApprovals()" 
                                class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 {{ $source === 'shopify' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50' }}">
-                                Shopify Approvals
+                                Order Approvals
                                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">{{ $shopifyCount }}</span>
                             </button>
                             @endif
@@ -1958,9 +1958,12 @@ function viewOrderDetails(orderId) {
             html += '<p style="font-size: 14px; color: #6b7280; margin: 8px 0 0 0;">Date: ' + formatDate(order.order_date) + '</p>';
             html += '</div>';
             html += '<div style="text-align: right;">';
-            const sourceStyle = order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;' : 'background-color: #fed7aa; color: #9a3412;';
+            const sourceStyle = order.external_source === 'shopify' ? 'background-color: #dcfce7; color: #166534;'
+                : order.external_source === 'khaas_storage' ? 'background-color: #dbeafe; color: #1e40af;'
+                : 'background-color: #fed7aa; color: #9a3412;';
+            const sourceLabel = order.external_source === 'khaas_storage' ? 'FROZEN MEAT' : (order.external_source || 'manual').toUpperCase();
             html += '<span style="display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 500; ' + sourceStyle + '">';
-            html += (order.external_source || 'manual').toUpperCase();
+            html += sourceLabel;
             html += '</span>';
             html += '<p style="font-size: 24px; font-weight: bold; color: #2563eb; margin: 8px 0 0 0;">' + formatCurrency(order.total_price, order.currency) + '</p>';
             html += '</div>';
@@ -2132,8 +2135,8 @@ function viewOrderDetails(orderId) {
             // Line Items with preparation status (only for open orders, not Shopify)
             var items = (order.line_items && Array.isArray(order.line_items)) ? order.line_items : [];
             var isOpenOrder = !['delivered', 'completed', 'cancelled', 'refunded'].includes(order.order_status);
-            var isShopifyOrder = order.external_source === 'shopify';
-            var showPreparationControls = isOpenOrder && !isShopifyOrder;
+            var isInApprovalQueue = window.currentSource === 'shopify' && (order.external_source === 'shopify' || order.external_source === 'khaas_storage');
+            var showPreparationControls = isOpenOrder && !isInApprovalQueue;
             
             html += '<div style="padding: 20px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 0 0 20px 0;">';
             html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">';
@@ -2622,6 +2625,18 @@ function printInvoiceWithoutUnit() {
 }
 
 // Send Invoice via WhatsApp
+function openFullscreenImg(src) {
+    if (!src) return;
+    var overlay = document.getElementById('waImgOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'waImgOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+    overlay.innerHTML = '<img src="' + src + '" style="max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5);" /><button style="position:absolute;top:16px;right:24px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:28px;cursor:pointer;border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;">&times;</button>';
+    overlay.addEventListener('click', function() { overlay.remove(); });
+    document.body.appendChild(overlay);
+}
+
 function quickSendInvoiceWhatsApp(orderId, orderNum, total, custName, custPhone) {
     currentOrderId = orderId;
     window.currentOrder = { order_number: orderNum, total_price: total, customer_name: custName };
@@ -2677,7 +2692,7 @@ function openSendInvoiceWhatsApp() {
                 <div id="waInvPreviewArea" style="margin-bottom:16px;display:none;">
                     <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
                     <div id="waInvPreviewBox" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;text-align:center;background:#f9fafb;padding:8px;">
-                        <img id="waInvPreviewImg" style="max-width:100%;max-height:300px;border-radius:4px;" />
+                        <img id="waInvPreviewImg" style="max-width:100%;max-height:300px;border-radius:4px;cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" />
                     </div>
                 </div>
                 <div style="display:flex;gap:10px;">
@@ -2836,7 +2851,7 @@ function updateViewModalButtons(order) {
     const modal = document.getElementById('viewOrderModal');
     if (!modal) return;
     
-    const isShopifyOrder = order.external_source === 'shopify';
+    const isInApprovalQueue = window.currentSource === 'shopify' && (order.external_source === 'shopify' || order.external_source === 'khaas_storage');
     const isConverted = order.converted && order.converted !== 0 && order.converted !== 3;
     const isIgnored = order.converted === 2;
     
@@ -2846,7 +2861,7 @@ function updateViewModalButtons(order) {
     
     if (!buttonContainer) return;
     
-    if (isShopifyOrder) {
+    if (isInApprovalQueue) {
         if (isConverted || isIgnored) {
             // Already processed Shopify order - show only close button
             buttonContainer.innerHTML = `
@@ -8503,10 +8518,12 @@ function getCellContent_DEPRECATED(order, columnId) {
                 'shopify': 'bg-green-50 border-green-200 text-green-700',
                 'woocommerce': 'bg-purple-50 border-purple-200 text-purple-700',
                 'webapp': 'bg-blue-50 border-blue-200 text-blue-700',
+                'khaas_storage': 'bg-sky-50 border-sky-200 text-sky-700',
                 'manual': 'bg-orange-50 border-orange-200 text-orange-700'
             };
             const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
-            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
+            const srcLabel = source === 'khaas_storage' ? 'Frozen Meat' : source.charAt(0).toUpperCase() + source.slice(1);
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${srcLabel}</span>`;
         case 'external_id':
             return order.external_id || '';
             
@@ -8840,8 +8857,8 @@ function renderTableBody() {
                 const checkboxTd = document.createElement('td');
                 // ⭐ Add checkbox-column class - hidden by default via CSS
                 checkboxTd.className = 'checkbox-column px-3 py-4 whitespace-nowrap text-sm';
-                if (order.external_source === 'shopify') {
-                    checkboxTd.innerHTML = ''; // No checkbox for Shopify orders
+                if (window.currentSource === 'shopify' && (order.external_source === 'shopify' || order.external_source === 'khaas_storage')) {
+                    checkboxTd.innerHTML = ''; // No checkbox for approval queue orders
                 } else {
                     checkboxTd.innerHTML = `<input type=\"checkbox\" class=\"order-checkbox rounded\" id=\"order_${order.id}\" value=\"${order.id}\" onchange=\"toggleOrderSelection(${order.id})\" onclick=\"event.stopPropagation()\">`;
                 }
@@ -8983,10 +9000,12 @@ function getCellContent(order, columnId) {
             const sourceColors = {
                 'shopify': 'bg-green-50 border-green-200 text-green-700',
                 'woocommerce': 'bg-purple-50 border-purple-200 text-purple-700',
+                'khaas_storage': 'bg-sky-50 border-sky-200 text-sky-700',
                 'manual': 'bg-orange-50 border-orange-200 text-orange-700'
             };
             const sourceColor = sourceColors[source] || 'bg-gray-50 border-gray-200 text-gray-700';
-            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${source.charAt(0).toUpperCase() + source.slice(1)}</span>`;
+            const srcLabel = source === 'khaas_storage' ? 'Frozen Meat' : source.charAt(0).toUpperCase() + source.slice(1);
+            return `<span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${sourceColor}">${srcLabel}</span>`;
         case 'external_id':
             return order.external_id || '';
             
@@ -9179,10 +9198,10 @@ function getCellContent(order, columnId) {
 
         // Actions
         case 'actions':
-            // Check if this is a Shopify order (any Shopify order, not just approvals)
-            const isShopifyOrder = order.external_source === 'shopify';
+            // Only show approve/ignore for orders in the approval queue tab
+            const isInApprovalQueue = window.currentSource === 'shopify' && (order.external_source === 'shopify' || order.external_source === 'khaas_storage');
             
-            if (isShopifyOrder) {
+            if (isInApprovalQueue) {
                 // For Shopify orders, check if already converted/approved
                 const isConverted = order.converted && order.converted !== 0 && order.converted !== 3;
                 const isIgnored = order.converted === 2;
@@ -10920,7 +10939,7 @@ function updateTabsForOpenOrders(data) {
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">${data.open_count || '-'}</span>
             </button>
             <button onclick="switchToShopifyApprovals()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
-                Shopify Approvals
+                Order Approvals
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${data.shopify_approvals_count || '-'}</span>
             </button>
         `;
@@ -11189,7 +11208,7 @@ function filterByVerifiedLocation(statusCode, verificationType) {
         });
 }
 
-// Function to switch to Shopify Approvals from main orders page
+// Function to switch to Order Approvals from main orders page
 function switchToShopifyApprovals() {
     // Hide all card sections
     hideAllCardSections();
@@ -11257,7 +11276,7 @@ function updatePageForShopifyApprovals(orders, counts) {
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-invoices">${counts && counts.other_count != null ? counts.other_count : '-'}</span>
             </a>
             <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 bg-white text-blue-600 shadow-sm">
-                Shopify Approvals
+                Order Approvals
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${counts && counts.shopify_approvals_count != null ? counts.shopify_approvals_count : orders.length}</span>
             </button>
         `;
@@ -11287,7 +11306,7 @@ function rebuildTableWithOrders(orders, source, tab) {
         tableContainer.innerHTML = tableHTML;
     }
 
-    // Set runtime context so rendering logic can detect Shopify Approvals
+    // Set runtime context so rendering logic can detect Order Approvals
     window.currentSource = source;
     window.currentTab = tab;
 
@@ -11434,9 +11453,9 @@ function populateBulkOrdersList() {
     const container = document.getElementById('bulkOrdersList');
     if (!container || !window.currentOrders) return;
     
-    // Filter out Shopify orders
+    // Filter out orders in approval queue
     const eligibleOrders = window.currentOrders.filter(order => 
-        order.external_source !== 'shopify'
+        order.external_source !== 'shopify' && order.external_source !== 'khaas_storage'
     );
     
     if (eligibleOrders.length === 0) {
@@ -11990,7 +12009,7 @@ function updateTabsForRiders(data) {
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-riders">${data.open_count || '-'}</span>
             </button>
             <button onclick="switchToShopifyApprovals()" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50">
-                Shopify Approvals
+                Order Approvals
                 <span class="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold" id="badge-approvals">${data.shopify_approvals_count || '-'}</span>
             </button>
         `;

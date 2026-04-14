@@ -60,7 +60,10 @@ class WhatsAppWebController extends Controller
                 'last_message_at' => $conv->last_message_at,
                 'last_message_preview' => $lastMsg?->content ? \Illuminate\Support\Str::limit($lastMsg->content, 80) : ($lastMsg?->type ?? ''),
                 'last_message_direction' => $lastMsg?->direction ?? '',
-                'session_active' => $conv->last_customer_message_at && now()->diffInHours($conv->last_customer_message_at) < 24,
+                'session_active' => $conv->isSessionActive(),
+                'session_expires_at' => $conv->last_customer_message_at
+                    ? $conv->last_customer_message_at->addHours(24)->toIso8601String()
+                    : null,
             ];
         });
 
@@ -98,7 +101,10 @@ class WhatsAppWebController extends Controller
                 'wa_phone' => $conversation->wa_phone,
                 'status' => $conversation->status,
                 'unread_count' => $conversation->unread_count,
-                'session_active' => $conversation->last_customer_message_at && now()->diffInHours($conversation->last_customer_message_at) < 24,
+                'session_active' => $conversation->isSessionActive(),
+                'session_expires_at' => $conversation->last_customer_message_at
+                    ? $conversation->last_customer_message_at->addHours(24)->toIso8601String()
+                    : null,
             ],
             'messages' => $messages->map(function ($msg) {
                 return [
@@ -313,9 +319,10 @@ class WhatsAppWebController extends Controller
             $storagePath = $dir . '/' . $filename . '.png';
 
             if (Storage::disk($disk)->exists($storagePath)) {
+                $base = request()->getSchemeAndHttpHost();
                 return response()->json([
                     'success' => true,
-                    'image_url' => asset('storage/' . $storagePath),
+                    'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath,
                     'order_number' => $orderNum,
                 ]);
             }
@@ -364,9 +371,10 @@ class WhatsAppWebController extends Controller
 
             Storage::disk($disk)->put($storagePath, $decoded);
 
+            $base = request()->getSchemeAndHttpHost();
             return response()->json([
                 'success' => true,
-                'image_url' => asset('storage/' . $storagePath),
+                'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath,
                 'order_number' => $orderNum,
             ]);
 

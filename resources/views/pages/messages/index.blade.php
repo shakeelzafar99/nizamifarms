@@ -410,6 +410,29 @@
     flex-shrink: 0;
     z-index: 3;
 }
+.wa-date-sep {
+    text-align: center;
+    margin: 16px 0 10px;
+}
+.wa-date-sep span {
+    background: #e2e8f0;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 8px;
+    letter-spacing: 0.3px;
+}
+.wa-session-timer {
+    font-size: 11px;
+    color: #92400e;
+    background: #fef3c7;
+    padding: 5px 12px;
+    border-radius: 6px;
+    text-align: center;
+    margin-bottom: 6px;
+}
+.wa-session-timer.expiring { color: #dc2626; background: #fee2e2; font-weight: 600; }
 .wa-expired-bar {
     display: none;
     background: linear-gradient(135deg, #fef3c7, #fde68a);
@@ -911,6 +934,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 </div>
             </div>
             <div id="waActiveSessionInput">
+                <div id="waSessionTimer" class="wa-session-timer" style="display:none;"></div>
                 <div class="wa-input-row">
                     <textarea class="wa-text-input" id="waMessageInput" rows="1" placeholder="Type a message..." maxlength="4096"></textarea>
                     <button class="wa-send-btn" id="waSendBtn" title="Send">
@@ -1074,20 +1098,75 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     function fmtTime(iso) {
         if (!iso) return '';
         const d = new Date(iso), now = new Date();
-        const diff = Math.floor((now - d) / 86400000);
-        if (diff === 0) return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-        if (diff === 1) return 'Yesterday';
-        if (diff < 7) return d.toLocaleDateString([], {weekday:'short'});
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const diffDays = Math.round((today - msgDay) / 86400000);
+        if (diffDays === 0) return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        if (diffDays === 1) return 'Yesterday';
+        if (diffDays < 7) return d.toLocaleDateString([], {weekday:'short'});
         return d.toLocaleDateString([], {day:'numeric',month:'short'});
     }
     function fmtMsgTime(iso) {
         if (!iso) return '';
-        return new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        const d = new Date(iso), now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const diffDays = Math.round((today - msgDay) / 86400000);
+        const time = d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        if (diffDays === 0) return time;
+        if (diffDays === 1) return 'Yesterday ' + time;
+        return d.toLocaleDateString([], {day:'numeric',month:'short'}) + ' ' + time;
+    }
+    function fmtDateLabel(iso) {
+        if (!iso) return '';
+        const d = new Date(iso), now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const diffDays = Math.round((today - msgDay) / 86400000);
+        if (diffDays === 0) return 'Today';
+        if (diffDays === 1) return 'Yesterday';
+        if (diffDays < 7) return d.toLocaleDateString([], {weekday:'long'});
+        return d.toLocaleDateString([], {weekday:'short', day:'numeric', month:'short', year:'numeric'});
     }
     function statusIcon(s) {
         return {sent:'✓',delivered:'✓✓',read:'✓✓',failed:'✕'}[s] || '';
     }
     function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    let sessionTimerInterval = null;
+    function updateSessionUI(conv) {
+        const sessionActive = conv.session_active;
+        document.getElementById('waSessionBadge').style.display = sessionActive ? 'none' : 'block';
+        document.getElementById('waSessionExpiredBar').style.display = sessionActive ? 'none' : 'block';
+        document.getElementById('waActiveSessionInput').style.display = sessionActive ? 'block' : 'none';
+
+        if (sessionTimerInterval) { clearInterval(sessionTimerInterval); sessionTimerInterval = null; }
+        const timerEl = document.getElementById('waSessionTimer');
+        if (!conv.session_expires_at || !sessionActive) {
+            timerEl.style.display = 'none';
+            return;
+        }
+        function tick() {
+            const remaining = new Date(conv.session_expires_at) - new Date();
+            if (remaining <= 0) {
+                timerEl.style.display = 'none';
+                document.getElementById('waSessionBadge').style.display = 'block';
+                document.getElementById('waSessionExpiredBar').style.display = 'block';
+                document.getElementById('waActiveSessionInput').style.display = 'none';
+                if (sessionTimerInterval) { clearInterval(sessionTimerInterval); sessionTimerInterval = null; }
+                return;
+            }
+            const h = Math.floor(remaining / 3600000);
+            const m = Math.floor((remaining % 3600000) / 60000);
+            timerEl.style.display = 'block';
+            timerEl.className = 'wa-session-timer' + (h === 0 && m < 30 ? ' expiring' : '');
+            timerEl.textContent = h > 0
+                ? `Free messaging window closes in ${h}h ${m}m`
+                : `Free messaging window closes in ${m}m`;
+        }
+        tick();
+        sessionTimerInterval = setInterval(tick, 30000);
+    }
 
     // ── Conversations ──
     function loadConversations() {
@@ -1151,10 +1230,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (d.conversation.customer_orders) sub += ' · ' + d.conversation.customer_orders + ' orders';
             document.getElementById('waChatSub').textContent = sub;
 
-            const sessionActive = d.conversation.session_active;
-            document.getElementById('waSessionBadge').style.display = sessionActive ? 'none' : 'block';
-            document.getElementById('waSessionExpiredBar').style.display = sessionActive ? 'none' : 'block';
-            document.getElementById('waActiveSessionInput').style.display = sessionActive ? 'block' : 'none';
+            updateSessionUI(d.conversation);
 
             renderMessages(d.messages, d.has_more);
 
@@ -1177,10 +1253,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             apiFetch('/messages/conversations/' + id).then(d => {
                 if (!d.success || activeConvId !== id) return;
                 activeConv = d.conversation;
-                const sessionActive = d.conversation.session_active;
-                document.getElementById('waSessionBadge').style.display = sessionActive ? 'none' : 'block';
-                document.getElementById('waSessionExpiredBar').style.display = sessionActive ? 'none' : 'block';
-                document.getElementById('waActiveSessionInput').style.display = sessionActive ? 'block' : 'none';
+                updateSessionUI(d.conversation);
                 renderMessages(d.messages, d.has_more);
             });
             apiFetch('/messages/conversations/' + id + '/mark-read', {method:'POST'});
@@ -1196,7 +1269,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (!msgs.length) {
             html += '<div class="wa-loading">No messages in this conversation</div>';
         }
+        let lastDateKey = null;
         msgs.forEach(m => {
+            if (m.created_at) {
+                const md = new Date(m.created_at);
+                const dateKey = md.getFullYear() + '-' + md.getMonth() + '-' + md.getDate();
+                if (dateKey !== lastDateKey) {
+                    html += `<div class="wa-date-sep"><span>${fmtDateLabel(m.created_at)}</span></div>`;
+                    lastDateKey = dateKey;
+                }
+            }
             const isOut = m.direction === 'outbound';
             const meta = (typeof m.metadata === 'string') ? JSON.parse(m.metadata || '{}') : (m.metadata || {});
             html += `<div class="wa-msg ${isOut?'out':'in'}">`;
@@ -1252,6 +1334,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         const text = input.value.trim();
         if (!text || !activeConvId) return;
 
+        if (activeConv && activeConv.session_expires_at && new Date(activeConv.session_expires_at) <= new Date()) {
+            updateSessionUI({session_active: false, session_expires_at: null});
+            if (confirm('The 24-hour window has expired. Would you like to send a template message instead?')) {
+                openTemplatePicker();
+            }
+            return;
+        }
+
         const btn = document.getElementById('waSendBtn');
         btn.disabled = true;
 
@@ -1263,9 +1353,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (d.success) {
                 input.value = '';
                 apiFetch('/messages/conversations/' + activeConvId).then(r => {
-                    if (r.success) renderMessages(r.messages, r.has_more);
+                    if (r.success) {
+                        renderMessages(r.messages, r.has_more);
+                        if (r.conversation) updateSessionUI(r.conversation);
+                    }
                 });
             } else if (d.session_expired) {
+                updateSessionUI({session_active: false, session_expires_at: null});
                 if (confirm('The 24-hour window has expired. Would you like to send a template message instead?')) {
                     openTemplatePicker();
                 }
@@ -1460,9 +1554,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 document.getElementById('waChatAvatar').textContent = (customerName || phone || '?')[0].toUpperCase();
                 document.getElementById('waChatSub').textContent = phone + ' · New conversation';
                 document.getElementById('waChatMessages').innerHTML = '<div class="wa-loading"><div style="font-size:40px;">👋</div><div style="font-size:15px;color:#374151;font-weight:500;">Start a conversation</div><div style="font-size:13px;color:#6b7280;">Send a template message to begin</div></div>';
-                document.getElementById('waSessionBadge').style.display = 'block';
-                document.getElementById('waSessionExpiredBar').style.display = 'block';
-                document.getElementById('waActiveSessionInput').style.display = 'none';
+                updateSessionUI({session_active: false, session_expires_at: null});
             }
         });
     };
@@ -1757,7 +1849,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             <div id="waInvPickerPreview" style="margin-bottom:12px;display:none;">
                 <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
                 <div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;text-align:center;background:#f9fafb;padding:6px;">
-                    <img id="waInvPickerPreviewImg" style="max-width:100%;max-height:250px;border-radius:4px;" />
+                    <img id="waInvPickerPreviewImg" style="max-width:100%;max-height:250px;border-radius:4px;cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" />
                 </div>
             </div>
             <div style="display:flex;gap:8px;">
@@ -1854,6 +1946,18 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 }, 1500);
             } else { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = d.message || 'Failed'; btn.textContent = 'Send Invoice'; btn.disabled = false; }
         }).catch(e => { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
+    };
+
+    window.openFullscreenImg = function(src) {
+        if (!src) return;
+        let overlay = document.getElementById('waImgOverlay');
+        if (overlay) overlay.remove();
+        overlay = document.createElement('div');
+        overlay.id = 'waImgOverlay';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+        overlay.innerHTML = '<img src="' + src + '" style="max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5);" /><button style="position:absolute;top:16px;right:24px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:28px;cursor:pointer;border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;">&times;</button>';
+        overlay.addEventListener('click', function() { overlay.remove(); });
+        document.body.appendChild(overlay);
     };
 
     // ── Init ──

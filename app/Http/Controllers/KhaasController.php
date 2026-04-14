@@ -1464,7 +1464,42 @@ class KhaasController extends Controller
 
         $activeTab = $request->input('tab', 'orders');
 
-        // Storage orders with NF order status
+        // ⭐ Orders pending approval (still in the approval queue)
+        $pendingApproval = \App\Models\CRM\ShopifyOrderModel::with('lineItems')
+            ->where('external_source', 'khaas_storage')
+            ->where(function($q) {
+                $q->whereNull('converted')->orWhere('converted', 0);
+            })
+            ->where('khaas_business_unit_id', $khaasBU->id)
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(function($o) {
+                return (object)[
+                    'id' => $o->id,
+                    'order_id' => null,
+                    'order_number' => $o->order_number,
+                    'nf_order_status' => 'pending_approval',
+                    'total_amount' => $o->total_price,
+                    'status' => 'pending_approval',
+                    'notes' => $o->note,
+                    'order_created_at' => $o->created_at,
+                    'created_by' => $o->created_by,
+                    'created_by_name' => $o->created_by
+                        ? DB::table('t_sys_user')->where('id', $o->created_by)->value('fullname')
+                        : null,
+                    'items' => $o->lineItems->map(function($li) {
+                        $productName = DB::table('t_crm_prod_product')->where('id', $li->product_id)->value('title');
+                        return (object)[
+                            'product_name' => $productName ?? $li->name,
+                            'quantity' => $li->quantity,
+                            'unit_price' => $li->unit_price,
+                            'line_total' => $li->line_total,
+                        ];
+                    }),
+                ];
+            });
+
+        // Storage orders with NF order status (already approved/converted)
         $orders = DB::table('t_crm_khaas_storage_order as so')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'so.order_id')
             ->where('so.khaas_business_unit_id', $khaasBU->id)
@@ -1491,14 +1526,15 @@ class KhaasController extends Controller
                 : null;
         }
 
-        // Separate pending receive vs others
+        // Active orders = not yet received, not cancelled (show at top)
+        // Completed/cancelled orders go below
         $pendingReceive = $orders->filter(function ($o) {
             return !in_array($o->status, ['received', 'cancelled'])
-                && in_array($o->nf_order_status, ['delivered', 'completed']);
+                && $o->nf_order_status !== 'cancelled';
         });
         $otherOrders = $orders->filter(function ($o) {
             return in_array($o->status, ['received', 'cancelled'])
-                || !in_array($o->nf_order_status, ['delivered', 'completed']);
+                || $o->nf_order_status === 'cancelled';
         });
 
         // Configured storage products for new order
@@ -1525,7 +1561,7 @@ class KhaasController extends Controller
 
         return view('khaas.meat-order', compact(
             'khaasBU', 'activeTab', 'orders', 'pendingReceive', 'otherOrders',
-            'storageProducts', 'settings'
+            'pendingApproval', 'storageProducts', 'settings'
         ));
     }
 

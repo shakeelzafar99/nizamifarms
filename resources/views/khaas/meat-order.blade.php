@@ -40,8 +40,9 @@
                class="inline-flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors"
                style="{{ $activeTab === 'orders' ? 'border-color: #D97706; color: #B45309;' : 'border-color: transparent; color: #6B7280;' }}">
                 🛒 Track Orders
-                @if($pendingReceive->count() > 0)
-                    <span class="ml-1 px-2 py-0.5 rounded-full text-xs font-bold" style="background-color: #EF4444; color: white;">{{ $pendingReceive->count() }}</span>
+                @php $totalBadge = $pendingReceive->count() + (isset($pendingApproval) ? $pendingApproval->count() : 0); @endphp
+                @if($totalBadge > 0)
+                    <span class="ml-1 px-2 py-0.5 rounded-full text-xs font-bold" style="background-color: #EF4444; color: white;">{{ $totalBadge }}</span>
                 @else
                     <span class="ml-1 px-2 py-0.5 rounded-full text-xs" style="{{ $activeTab === 'orders' ? 'background-color: #FEF3C7; color: #B45309;' : 'background-color: #F3F4F6; color: #6B7280;' }}">{{ $orders->count() }}</span>
                 @endif
@@ -57,28 +58,66 @@
     {{-- ====================== TRACK ORDERS TAB ====================== --}}
     @if($activeTab === 'orders')
     <div>
-        {{-- Pending Receive Banner --}}
-        @if($pendingReceive->count() > 0)
-        <div class="rounded-xl p-4 mb-5 flex items-center gap-3 border" style="background-color: #FFFBEB; border-color: #FCD34D;">
-            <span class="text-xl">⚠️</span>
+        {{-- Pending Approval Banner --}}
+        @if(isset($pendingApproval) && $pendingApproval->count() > 0)
+        <div class="rounded-xl p-4 mb-5 flex items-center gap-3 border" style="background-color: #EFF6FF; border-color: #93C5FD;">
+            <span class="text-xl">🕐</span>
             <div>
-                <p class="text-sm font-bold" style="color: #92400E;">{{ $pendingReceive->count() }} order{{ $pendingReceive->count() > 1 ? 's' : '' }} ready to receive into storage</p>
-                <p class="text-xs mt-0.5" style="color: #D97706;">These orders have been delivered by NF and are waiting to be received.</p>
+                <p class="text-sm font-bold" style="color: #1E40AF;">{{ $pendingApproval->count() }} order{{ $pendingApproval->count() > 1 ? 's' : '' }} awaiting approval</p>
+                <p class="text-xs mt-0.5" style="color: #3B82F6;">These orders need to be approved from the Orders page before they appear in the delivery queue.</p>
             </div>
         </div>
-
-        {{-- Pending Receive Orders --}}
         <div class="space-y-3 mb-6">
-            @foreach($pendingReceive as $order)
-            @include('khaas.partials.meat-order-card', ['order' => $order, 'canReceive' => true])
+            @foreach($pendingApproval as $order)
+            <div class="bg-white border-l-4 rounded-xl p-4 shadow-sm" style="border-left-color: #3B82F6; border: 1px solid #BFDBFE; border-left-width: 4px;">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="font-mono text-sm font-bold" style="color: #1E40AF;">{{ $order->order_number }}</span>
+                        <span class="px-2 py-0.5 rounded-full text-xs font-medium" style="background-color: #DBEAFE; color: #1E40AF;">Pending Approval</span>
+                    </div>
+                    <span class="text-xs text-gray-400">{{ \Carbon\Carbon::parse($order->order_created_at)->diffForHumans() }}</span>
+                </div>
+                <div class="text-xs text-gray-600 mb-2">
+                    @foreach($order->items as $item)
+                    <span class="inline-flex items-center gap-1 mr-3">{{ $item->product_name }} <span class="font-medium">x{{ number_format($item->quantity, $item->quantity == (int)$item->quantity ? 0 : 2) }}</span></span>
+                    @endforeach
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                    <span class="text-gray-400">{{ $order->created_by_name ?? 'System' }}</span>
+                    <span class="font-bold" style="color: #1E40AF;">PKR {{ number_format($order->total_amount) }}</span>
+                </div>
+            </div>
             @endforeach
         </div>
         @endif
 
-        {{-- Other Orders --}}
+        {{-- Active Orders Section --}}
+        @if($pendingReceive->count() > 0)
+        @php
+            $readyToReceive = $pendingReceive->filter(fn($o) => in_array($o->nf_order_status, ['delivered', 'completed']));
+        @endphp
+        @if($readyToReceive->count() > 0)
+        <div class="rounded-xl p-4 mb-5 flex items-center gap-3 border" style="background-color: #FFFBEB; border-color: #FCD34D;">
+            <span class="text-xl">⚠️</span>
+            <div>
+                <p class="text-sm font-bold" style="color: #92400E;">{{ $readyToReceive->count() }} order{{ $readyToReceive->count() > 1 ? 's' : '' }} ready to receive into storage</p>
+                <p class="text-xs mt-0.5" style="color: #D97706;">These orders have been delivered by NF and are waiting to be received.</p>
+            </div>
+        </div>
+        @endif
+
+        {{-- Active Orders (entire lifecycle until received) --}}
+        <div class="space-y-3 mb-6">
+            @foreach($pendingReceive as $order)
+            @include('khaas.partials.meat-order-card', ['order' => $order, 'canReceive' => in_array($order->nf_order_status, ['delivered', 'completed'])])
+            @endforeach
+        </div>
+        @endif
+
+        {{-- Completed Orders --}}
         @if($otherOrders->count() > 0)
         <h3 class="text-sm font-semibold text-gray-500 uppercase mb-3">
-            @if($pendingReceive->count() > 0) Other Orders @else All Orders @endif
+            @if($pendingReceive->count() > 0) Completed Orders @else All Orders @endif
         </h3>
         <div class="space-y-3">
             @foreach($otherOrders as $order)
@@ -87,7 +126,7 @@
         </div>
         @endif
 
-        @if($orders->count() === 0)
+        @if($orders->count() === 0 && (!isset($pendingApproval) || $pendingApproval->count() === 0))
         <div class="bg-white border border-gray-200 rounded-xl p-10 text-center">
             <div class="text-3xl mb-2">🥩</div>
             <p class="text-sm text-gray-500">No meat orders yet. Place your first order!</p>

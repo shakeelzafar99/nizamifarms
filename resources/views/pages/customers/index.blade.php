@@ -2248,7 +2248,7 @@ function selectCustInvoice(orderId, orderNum, total) {
     area.innerHTML = '<div style="margin-bottom:8px;font-weight:600;font-size:13px;">Invoice for #' + orderNum + ' — Rs. ' + total.toLocaleString() + '</div>' +
         '<div style="margin-bottom:8px;"><label style="font-size:11px;color:#6b7280;">Template Name</label><input id="custInvTpl" type="text" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;" placeholder="e.g. send_invoice" /></div>' +
         '<div style="margin-bottom:8px;"><label style="font-size:11px;color:#6b7280;">Body Variables</label><input id="custInvParams" type="text" value="' + name + ', ' + orderNum + '" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;" /></div>' +
-        '<div id="custInvPreviewArea" style="display:none;margin-bottom:8px;"><img id="custInvPreviewImg" style="max-width:100%;max-height:200px;border-radius:6px;border:1px solid #e5e7eb;" /></div>' +
+        '<div id="custInvPreviewArea" style="display:none;margin-bottom:8px;"><img id="custInvPreviewImg" style="max-width:100%;max-height:200px;border-radius:6px;border:1px solid #e5e7eb;cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" /></div>' +
         '<div style="display:flex;gap:6px;">' +
             '<button onclick="previewCustInvoice(' + orderId + ')" id="custInvPrevBtn" style="flex:1;padding:8px;border:1px solid #d97706;color:#d97706;background:#fff;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;">Preview</button>' +
             '<button onclick="sendCustInvoice(' + orderId + ')" id="custInvSendBtn" style="flex:1;padding:8px;background:#25D366;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;" disabled>Send</button>' +
@@ -2263,6 +2263,18 @@ function selectCustInvoice(orderId, orderNum, total) {
             if (el && !el.value) el.value = d.templates[0].name;
         }
     }).catch(function() {});
+}
+
+function openFullscreenImg(src) {
+    if (!src) return;
+    var overlay = document.getElementById('waImgOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'waImgOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+    overlay.innerHTML = '<img src="' + src + '" style="max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5);" /><button style="position:absolute;top:16px;right:24px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:28px;cursor:pointer;border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;">&times;</button>';
+    overlay.addEventListener('click', function() { overlay.remove(); });
+    document.body.appendChild(overlay);
 }
 
 function captureInvoiceImageCust(invoiceUrl, orderId) {

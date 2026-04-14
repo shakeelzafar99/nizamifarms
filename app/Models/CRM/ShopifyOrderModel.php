@@ -51,6 +51,7 @@ class ShopifyOrderModel extends BaseModel
         'note',
         'raw_products_text',
         'converted',
+        'khaas_business_unit_id',
         'created_by',
         'updated_by'
     ];

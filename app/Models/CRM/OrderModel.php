@@ -386,8 +386,13 @@ class OrderModel extends BaseModel
         DB::beginTransaction();
         
         try {
-            // If the source is Shopify, route to ShopifyOrderModel while keeping customer flow
-            $isShopify = isset($orderData['external_source']) && $orderData['external_source'] === 'shopify';
+            // Route Shopify and khaas_storage orders to the approval queue (ShopifyOrderModel)
+            // The _force_prod_order flag bypasses this routing (used during conversion)
+            $forceProdOrder = !empty($orderData['_force_prod_order']);
+            unset($orderData['_force_prod_order']);
+            $isShopify = !$forceProdOrder
+                && isset($orderData['external_source'])
+                && in_array($orderData['external_source'], ['shopify', 'khaas_storage']);
 
             // Check for existing order
             $existingOrder = null;

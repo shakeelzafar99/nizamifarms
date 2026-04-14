@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Validator;
 use App\Services\ShopifyService;
 use App\Services\WooCommerceService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use App\Models\Request\RequestCategoryModel;
 class OrderController extends Controller
@@ -2006,14 +2007,21 @@ class OrderController extends Controller
             unset($orderData['id']);
             unset($orderData['created_at']);
             unset($orderData['updated_at']);
+            unset($orderData['converted']);
             
-            // Change source to webapp and clear external IDs
-            $orderData['external_source'] = 'webapp';
+            // Set appropriate source and order number based on original source
+            $isKhaasStorage = $originalOrder->external_source === 'khaas_storage';
+            $orderData['external_source'] = $isKhaasStorage ? 'khaas_storage' : 'webapp';
             $orderData['external_id'] = null;
             $orderData['external_customer_id'] = null;
             
-            // Use same order number as Shopify order with SH- prefix for easy identification
-            $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
+            // KS- orders keep their number; Shopify orders get SH- prefix
+            $orderData['order_number'] = $isKhaasStorage
+                ? $originalOrder->order_number
+                : 'SH-' . $originalOrder->order_number;
+
+            // Force creation in t_crm_prod_order (bypass approval queue routing)
+            $orderData['_force_prod_order'] = true;
             
             // Set current timestamp for order date
             $orderData['order_date'] = now();
@@ -2049,6 +2057,38 @@ class OrderController extends Controller
             
             // Mark original order as converted
             $originalOrder->update(['converted' => 1]);
+
+            // ⭐ If this was a khaas_storage order, create the storage tracking record.
+            // The BU ID was stored on the approval queue record at placement time —
+            // no config lookups or note parsing needed.
+            $khaasTrackingWarning = null;
+            if ($originalOrder->external_source === 'khaas_storage') {
+                $businessUnitId = $originalOrder->khaas_business_unit_id ?? 2;
+
+                try {
+                    DB::table('t_crm_khaas_storage_order')->insert([
+                        'order_id' => $convertedOrder->id,
+                        'khaas_business_unit_id' => (int) $businessUnitId,
+                        'status' => 'pending',
+                        'notes' => $originalOrder->note,
+                        'created_by' => $originalOrder->created_by ?? auth()->id(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+
+                    Log::info('Khaas storage tracking record created', [
+                        'order_id' => $convertedOrder->id,
+                        'business_unit_id' => $businessUnitId,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Failed to create khaas storage tracking record', [
+                        'converted_order_id' => $convertedOrder->id,
+                        'business_unit_id' => $businessUnitId,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $khaasTrackingWarning = 'Order converted but frozen meat tracking record failed — please check logs.';
+                }
+            }
             
             // ⭐ AUTO-GEOCODE: If customer has no coordinates, try to geocode their address
             // This ensures converted Shopify orders get geocoded addresses just like new orders
@@ -2086,8 +2126,12 @@ class OrderController extends Controller
             
             // Prepare response message with any warnings
             $message = 'Order converted successfully with product names and prices from your system';
-            if (!empty($validationResult['warnings'])) {
-                $message .= '. Warnings: ' . implode(', ', $validationResult['warnings']);
+            $allWarnings = $validationResult['warnings'] ?? [];
+            if ($khaasTrackingWarning) {
+                $allWarnings[] = $khaasTrackingWarning;
+            }
+            if (!empty($allWarnings)) {
+                $message .= '. Warnings: ' . implode(', ', $allWarnings);
             }
             
             return response()->json([
@@ -2097,7 +2141,7 @@ class OrderController extends Controller
                 'converted_order_id' => $convertedOrder->id,
                 'converted_order' => $convertedOrder->load(['customer', 'lineItems']),
                 'price_changes' => $validationResult['price_changes'],
-                'warnings' => $validationResult['warnings'] ?? []
+                'warnings' => $allWarnings
             ]);
             
         } catch (\Exception $e) {
@@ -2113,6 +2157,27 @@ class OrderController extends Controller
      */
     private function validateAndRecalculateOrder($shopifyOrder)
     {
+        // Khaas storage orders already have local product IDs and correct prices —
+        // skip the Shopify SKU lookup and just pass line items through
+        if ($shopifyOrder->external_source === 'khaas_storage') {
+            $recalculatedLineItems = [];
+            $newSubtotal = 0;
+            foreach ($shopifyOrder->lineItems as $lineItem) {
+                $lineItemData = $lineItem->toArray();
+                unset($lineItemData['id'], $lineItemData['order_id'], $lineItemData['created_at'], $lineItemData['updated_at']);
+                $recalculatedLineItems[] = $lineItemData;
+                $newSubtotal += (float) $lineItem->line_total;
+            }
+            return [
+                'success' => true,
+                'recalculated_line_items' => $recalculatedLineItems,
+                'new_subtotal' => $newSubtotal,
+                'new_total' => $newSubtotal + (float) $shopifyOrder->shipping_total - (float) $shopifyOrder->discount_total,
+                'price_changes' => [],
+                'warnings' => [],
+            ];
+        }
+
         $validationErrors = [];
         $warnings = [];
         $priceChanges = [];
