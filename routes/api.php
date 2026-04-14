@@ -5,6 +5,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\MailController; 
 use App\Http\Controllers\Webhook\ShopifyController;
 use App\Http\Controllers\Webhook\WooController;
+use App\Http\Controllers\Webhook\WhatsAppWebhookController;
+use App\Http\Controllers\API\WhatsAppController;
 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Route;
@@ -53,6 +55,10 @@ Route::prefix('webhook')->group(function () {
             Route::delete('remove/{id}', 'remove');
         });
     });
+
+    // WhatsApp Business API Webhook (public - called by Meta)
+    Route::get('whatsapp', [WhatsAppWebhookController::class, 'verify']);
+    Route::post('whatsapp', [WhatsAppWebhookController::class, 'receive']);
 });
 
 //Webhook
@@ -478,6 +484,31 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{id}/geocode-single', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeSingle']);
     });
     
+    // ============================
+    // WhatsApp Messaging (Store Mode)
+    // ============================
+    Route::prefix('whatsapp')->group(function () {
+        Route::get('/conversations', [WhatsAppController::class, 'getConversations']);
+        Route::get('/conversations/{id}', [WhatsAppController::class, 'getMessages']);
+        Route::post('/conversations/{id}/send', [WhatsAppController::class, 'sendMessage']);
+        Route::post('/conversations/{id}/mark-read', [WhatsAppController::class, 'markRead']);
+        Route::post('/send-template', [WhatsAppController::class, 'sendTemplate']);
+        Route::get('/unread-count', [WhatsAppController::class, 'getUnreadCount']);
+        Route::get('/templates', [WhatsAppController::class, 'getTemplates']);
+        Route::get('/cost-summary', [WhatsAppController::class, 'getCostSummary']);
+        Route::post('/send-to-customer', [WhatsAppController::class, 'sendToPhone']);
+        Route::post('/register-device', [WhatsAppController::class, 'registerDevice']);
+        Route::post('/test-notification', [WhatsAppController::class, 'testNotification']);
+        Route::get('/customer-orders/{customerId}', [WhatsAppController::class, 'getCustomerOrders']);
+        Route::get('/invoice-image/{orderId}', [WhatsAppController::class, 'getInvoiceImageUrl']);
+        Route::post('/upload-invoice-image', [WhatsAppController::class, 'uploadInvoiceImage']);
+        Route::post('/send-invoice', [WhatsAppController::class, 'sendInvoice']);
+    });
+
+    // WhatsApp per-customer (nested under customers)
+    Route::get('/customers/{id}/whatsapp-messages', [WhatsAppController::class, 'getCustomerMessages']);
+    Route::post('/customers/{id}/whatsapp-send', [WhatsAppController::class, 'sendToCustomer']);
+
     // ============================
     // Orders (Mobile Store Mode)
     // ============================

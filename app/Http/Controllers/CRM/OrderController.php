@@ -2269,6 +2269,14 @@ class OrderController extends Controller
     }
 
     /**
+     * Public accessor for findOrder (used by other controllers like WhatsApp invoice sending)
+     */
+    public function findOrderPublic($id)
+    {
+        return $this->findOrder($id);
+    }
+
+    /**
      * Helper method to find order from either Shopify or main orders table
      */
     private function findOrder($id, $withRelations = ['customer', 'lineItems', 'assignedRider', 'discounts'])

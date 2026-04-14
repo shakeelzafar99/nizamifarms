@@ -3276,6 +3276,15 @@ class WarehouseController extends Controller
 
             DB::commit();
 
+            // Send push notification to all Khaas mode users
+            try {
+                $creatorName = auth()->user()->name ?? auth()->user()->fullname ?? 'Someone';
+                $totalKg = collect($request->input('items'))->sum('quantity_kg');
+                app(\App\Services\FirebaseService::class)->notifyNewPlan($creatorName, $demandDate, $demandId, round($totalKg, 1));
+            } catch (\Exception $pushErr) {
+                \Log::debug('Demand push notification failed (non-fatal)', ['error' => $pushErr->getMessage()]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Production demand created for ' . date('M d', strtotime($demandDate)),

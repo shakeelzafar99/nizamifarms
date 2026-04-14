@@ -1442,6 +1442,15 @@ input:focus, select:focus, button:focus {
                         </svg>
                         Print Invoice
                     </button>
+                    <button onclick="openSendInvoiceWhatsApp()" 
+                            style="background: #25D366; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
+                            title="Send Invoice via WhatsApp">
+                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                            <path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/>
+                        </svg>
+                        WhatsApp
+                    </button>
                     <button onclick="openEditInTabFromView()" 
                             style="background: #7c3aed; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 4px;"
                             title="Open in new tab">
@@ -1561,16 +1570,15 @@ input:focus, select:focus, button:focus {
 </div>
 <!-- WhatsApp Messages Modal -->
 <div id="whatsappModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10200;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 400px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
-        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; width: 90%; max-width: 480px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+        <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; flex-shrink: 0;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h3 style="font-size: 18px; font-weight: 600; margin: 0;">💬 Send WhatsApp Message</h3>
                 <button onclick="closeWhatsAppModal()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer;">&times;</button>
             </div>
             <p id="whatsappRecipient" style="margin: 8px 0 0 0; font-size: 14px; color: #6b7280;"></p>
         </div>
-        <div style="padding: 20px;">
-            <!-- Default WhatsApp -->
+        <div style="padding: 20px; overflow-y: auto; flex: 1;">
             <button onclick="sendWhatsAppDefault()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
                 <span style="font-size: 24px;">💬</span>
                 <div style="text-align: left;">
@@ -1578,35 +1586,9 @@ input:focus, select:focus, button:focus {
                     <div style="font-size: 12px; color: #6b7280;">Start chat without pre-filled message</div>
                 </div>
             </button>
-            
-            <!-- Capacity Full -->
-            <button onclick="sendWhatsAppCapacityFull()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#ffedd5'" onmouseout="this.style.background='#fff7ed'">
-                <span style="font-size: 24px;">⚠️</span>
-                <div style="text-align: left;">
-                    <div style="font-weight: 600; color: #111827;">Capacity Full</div>
-                    <div style="font-size: 12px; color: #6b7280;">Busy today, offer tomorrow delivery</div>
-                </div>
-            </button>
-            
-            <!-- Next Day Delivery -->
-            <button onclick="sendWhatsAppNextDay()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fefce8; border: 1px solid #fef08a; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#fef9c3'" onmouseout="this.style.background='#fefce8'">
-                <span style="font-size: 24px;">📅</span>
-                <div style="text-align: left;">
-                    <div style="font-weight: 600; color: #111827;">Next Day Delivery</div>
-                    <div style="font-size: 12px; color: #6b7280;">Personalized next day request</div>
-                </div>
-            </button>
-            
-            <!-- Meatless Days -->
-            <button onclick="sendWhatsAppMeatlessDays()" style="width: 100%; padding: 14px 16px; margin-bottom: 10px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 12px; transition: all 0.2s;" onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fef2f2'">
-                <span style="font-size: 24px;">🚫</span>
-                <div style="text-align: left;">
-                    <div style="font-weight: 600; color: #111827;">Meatless Days</div>
-                    <div style="font-size: 12px; color: #6b7280;">Tuesday/Wednesday closed, Thursday delivery</div>
-                </div>
-            </button>
-            
-            <!-- Cancel -->
+            <div id="orderTemplatesContainer" style="margin-bottom: 10px;">
+                <div style="font-size: 12px; color: #9ca3af; padding: 8px;">Loading templates...</div>
+            </div>
             <button onclick="closeWhatsAppModal()" style="width: 100%; padding: 12px 16px; background: #e5e7eb; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; color: #374151; transition: all 0.2s;" onmouseover="this.style.background='#d1d5db'" onmouseout="this.style.background='#e5e7eb'">
                 Cancel
             </button>
@@ -2637,6 +2619,184 @@ function printInvoiceWithoutUnit() {
     } else {
         console.error('No order ID available for printing without unit');
     }
+}
+
+// Send Invoice via WhatsApp
+function quickSendInvoiceWhatsApp(orderId, orderNum, total, custName, custPhone) {
+    currentOrderId = orderId;
+    window.currentOrder = { order_number: orderNum, total_price: total, customer_name: custName };
+    window.currentOrder.customer = { phone_normalized: custPhone, phone: custPhone };
+    openSendInvoiceWhatsApp();
+}
+
+function openSendInvoiceWhatsApp() {
+    if (!currentOrderId) { alert('No order selected'); return; }
+
+    const order = window.currentOrder;
+    const custName = order?.customer_name || order?.address_first_name || (order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() : '') || '';
+    const custPhone = order?.customer?.phone_normalized || order?.address_phone || order?.customer?.phone || '';
+    const orderNum = order?.order_number || '';
+
+    let existing = document.getElementById('waInvoiceDialog');
+    if (existing) existing.remove();
+
+    const dialog = document.createElement('div');
+    dialog.id = 'waInvoiceDialog';
+    dialog.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    dialog.innerHTML = `
+        <div style="background:#fff;border-radius:12px;width:500px;max-width:95vw;max-height:85vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:20px;">📱</span>
+                    <span style="font-weight:700;font-size:15px;color:#111827;">Send Invoice via WhatsApp</span>
+                </div>
+                <button onclick="document.getElementById('waInvoiceDialog').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;">&times;</button>
+            </div>
+            <div style="padding:20px;">
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Customer</div>
+                    <div style="font-size:14px;font-weight:600;color:#111827;">${custName || 'Unknown'}</div>
+                </div>
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Order</div>
+                    <div style="font-size:14px;font-weight:600;color:#111827;">#${orderNum} — Rs. ${parseFloat(order?.total_price || 0).toLocaleString()}</div>
+                </div>
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Phone Number</label>
+                    <input id="waInvPhone" type="text" value="${custPhone}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="923001234567" />
+                </div>
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template Name (from WhatsApp Business)</label>
+                    <input id="waInvTemplate" type="text" value="" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="e.g. send_invoice" />
+                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Must match the approved template name in Meta Business Suite</div>
+                </div>
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated, e.g. customer name, order number)</label>
+                    <input id="waInvBodyParams" type="text" value="${custName}, ${orderNum}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
+                </div>
+                <div id="waInvPreviewArea" style="margin-bottom:16px;display:none;">
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
+                    <div id="waInvPreviewBox" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;text-align:center;background:#f9fafb;padding:8px;">
+                        <img id="waInvPreviewImg" style="max-width:100%;max-height:300px;border-radius:4px;" />
+                    </div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <button id="waInvPreviewBtn" onclick="previewInvoiceWhatsApp()" style="flex:1;padding:10px;border:1px solid #25D366;color:#25D366;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Preview Invoice</button>
+                    <button id="waInvSendBtn" onclick="sendInvoiceWhatsApp()" style="flex:1;padding:10px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;" disabled>Send Invoice</button>
+                </div>
+                <div id="waInvStatus" style="margin-top:10px;font-size:13px;text-align:center;display:none;"></div>
+            </div>
+        </div>`;
+    document.body.appendChild(dialog);
+    dialog.addEventListener('click', function(e) { if (e.target === dialog) dialog.remove(); });
+
+    fetch('/messages/templates?context=invoice', {
+        headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
+    }).then(r => r.json()).then(d => {
+        if (d.success && d.templates && d.templates.length) {
+            const el = document.getElementById('waInvTemplate');
+            if (el && !el.value) el.value = d.templates[0].name;
+        }
+    }).catch(() => {});
+}
+
+function captureInvoiceImageOrders(invoiceUrl, orderId) {
+    return new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        document.body.appendChild(iframe);
+        iframe.src = invoiceUrl;
+        iframe.onload = async function() {
+            try {
+                const addScript = (doc, src) => new Promise(r => { const s = doc.createElement('script'); s.src = src; s.onload = r; doc.head.appendChild(s); });
+                const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+                await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+                const node = iDoc.querySelector('.invoice-container');
+                if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
+                const canvas = await iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true});
+                const dataUrl = canvas.toDataURL('image/png');
+                iframe.remove();
+
+                const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+                const uploadRes = await fetch('/messages/upload-invoice-image', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'},
+                    body: JSON.stringify({ order_id: orderId, image_data: dataUrl })
+                }).then(r => r.json());
+                if (uploadRes.success) { resolve(uploadRes); }
+                else { reject(new Error(uploadRes.message || 'Upload failed')); }
+            } catch (err) { iframe.remove(); reject(err); }
+        };
+        iframe.onerror = function() { iframe.remove(); reject(new Error('Failed to load invoice')); };
+    });
+}
+
+function previewInvoiceWhatsApp() {
+    const btn = document.getElementById('waInvPreviewBtn');
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+
+    fetch('/messages/invoice-image/' + currentOrderId, {
+        headers: {'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json'}
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Preview Invoice'; btn.disabled = false; return; }
+
+        if (d.needs_capture) {
+            captureInvoiceImageOrders(d.invoice_url, currentOrderId).then(uploadRes => {
+                document.getElementById('waInvPreviewImg').src = uploadRes.image_url;
+                document.getElementById('waInvPreviewArea').style.display = 'block';
+                document.getElementById('waInvSendBtn').disabled = false;
+                btn.textContent = 'Refresh Preview'; btn.disabled = false;
+            }).catch(err => { alert('Failed to capture invoice: ' + err.message); btn.textContent = 'Preview Invoice'; btn.disabled = false; });
+        } else {
+            document.getElementById('waInvPreviewImg').src = d.image_url;
+            document.getElementById('waInvPreviewArea').style.display = 'block';
+            document.getElementById('waInvSendBtn').disabled = false;
+            btn.textContent = 'Refresh Preview'; btn.disabled = false;
+        }
+    })
+    .catch(e => { alert('Error: ' + e.message); btn.textContent = 'Preview Invoice'; btn.disabled = false; });
+}
+
+function sendInvoiceWhatsApp() {
+    const phone = document.getElementById('waInvPhone').value.trim();
+    const templateName = document.getElementById('waInvTemplate').value.trim();
+    const bodyParamsStr = document.getElementById('waInvBodyParams').value.trim();
+
+    if (!phone) { alert('Please enter a phone number'); return; }
+    if (!templateName) { alert('Please enter the template name'); return; }
+
+    const bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
+    const btn = document.getElementById('waInvSendBtn');
+    const statusEl = document.getElementById('waInvStatus');
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+    statusEl.style.display = 'none';
+
+    fetch('/messages/send-invoice', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json'},
+        body: JSON.stringify({ order_id: currentOrderId, phone: phone, template_name: templateName, body_params: bodyParams })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.success) {
+            statusEl.style.display = 'block';
+            statusEl.style.color = '#16a34a';
+            statusEl.textContent = 'Invoice sent successfully!';
+            btn.textContent = 'Sent!';
+            setTimeout(() => { document.getElementById('waInvoiceDialog')?.remove(); }, 2000);
+        } else {
+            statusEl.style.display = 'block';
+            statusEl.style.color = '#dc2626';
+            statusEl.textContent = d.message || 'Failed to send';
+            btn.textContent = 'Send Invoice';
+            btn.disabled = false;
+        }
+    })
+    .catch(e => { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
 }
 
 // Edit order from view modal
@@ -8592,7 +8752,7 @@ function renderTableHeader() {
             
             if (colgroup) {
                 const actionsCol = document.createElement('col');
-                actionsCol.style.width = '90px'; // Compact width for 3 action buttons
+                actionsCol.style.width = '110px'; // Width for action buttons
                 colgroup.appendChild(actionsCol);
             }
         }
@@ -9034,6 +9194,9 @@ function getCellContent(order, columnId) {
                             <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                             </button>
+                            <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.customer_name||'').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
+                            </button>
                         </div>`;
                 } else {
                     // Pending approval - show approve/ignore/view
@@ -9053,8 +9216,7 @@ function getCellContent(order, columnId) {
             }
             
             // Default full actions for non-Shopify orders (webapp, manual, etc.)
-            // ⭐ 2 action buttons: View Details, Invoice
-            // Pop Out is triggered by clicking the row itself (opens in background tab)
+            // ⭐ 3 action buttons: View Details, Invoice, WhatsApp
             return `
                 <div class="action-buttons flex items-center gap-1">
                     <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
@@ -9062,6 +9224,9 @@ function getCellContent(order, columnId) {
                     </button>
                     <button onclick="event.stopPropagation(); openInBackground('/orders/${order.id}/invoice')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    </button>
+                    <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.customer_name||'').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
                     </button>
                 </div>`;
         default:
@@ -10240,15 +10405,105 @@ function escapeForJs(text) {
 // ========================================
 let whatsappData = { customerName: '', phone: '', orderNumber: '' };
 
+var _orderTemplatesCache = null;
 function openWhatsAppMenu(customerName, phone, orderNumber) {
     whatsappData = { customerName, phone, orderNumber };
     document.getElementById('whatsappRecipient').textContent = 'To: ' + customerName + ' (' + phone + ')';
     document.getElementById('whatsappModal').style.display = 'block';
+    loadOrderTemplates();
 }
 
 function closeWhatsAppModal() {
     document.getElementById('whatsappModal').style.display = 'none';
     whatsappData = { customerName: '', phone: '', orderNumber: '' };
+}
+
+function loadOrderTemplates() {
+    var container = document.getElementById('orderTemplatesContainer');
+    if (_orderTemplatesCache) { renderOrderTemplates(_orderTemplatesCache); return; }
+    container.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:8px;">Loading templates...</div>';
+    fetch('/messages/templates?context=orders,shopify', { headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        _orderTemplatesCache = d.templates || [];
+        renderOrderTemplates(_orderTemplatesCache);
+    })
+    .catch(function() {
+        container.innerHTML = '<div style="font-size:12px;color:#ef4444;padding:8px;">Could not load templates</div>';
+    });
+}
+
+function renderOrderTemplates(tpls) {
+    var container = document.getElementById('orderTemplatesContainer');
+    if (!tpls.length) { container.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:8px;">No templates configured for orders. Add them in Messages > Manage Templates.</div>'; return; }
+    var html = '';
+    tpls.forEach(function(t, idx) {
+        var bodyPreview = (t.body_text || '').replace(/\\n/g, '\n');
+        if (whatsappData.customerName) bodyPreview = bodyPreview.replace('{{1}}', whatsappData.customerName);
+        if (whatsappData.orderNumber) bodyPreview = bodyPreview.replace('{{2}}', whatsappData.orderNumber);
+        html += '<div id="orderTpl_' + idx + '" style="width:100%;margin-bottom:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;overflow:hidden;">';
+        html += '<div onclick="toggleOrderTplDetail(' + idx + ')" style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;">';
+        html += '<span style="font-size:24px;">📋</span>';
+        html += '<div style="flex:1;text-align:left;">';
+        html += '<div style="font-weight:600;color:#111827;">' + (t.display_name || t.name || '').replace(/_/g, ' ') + '</div>';
+        html += '<div style="font-size:12px;color:#6b7280;">Send via WhatsApp API</div>';
+        html += '</div>';
+        html += '<span id="orderTplArrow_' + idx + '" style="color:#9ca3af;font-size:16px;">&#9660;</span>';
+        html += '</div>';
+        html += '<div id="orderTplBody_' + idx + '" style="display:none;padding:0 16px 14px;border-top:1px solid #dcfce7;">';
+        html += '<div style="margin-top:10px;padding:10px;background:#fff;border-radius:6px;border:1px solid #e5e7eb;font-size:12px;color:#374151;white-space:pre-wrap;line-height:1.5;">' + escapeHtml(bodyPreview) + '</div>';
+        if (t.variable_count > 0) {
+            html += '<div style="margin-top:8px;">';
+            for (var i = 1; i <= t.variable_count; i++) {
+                var defVal = '';
+                if (i === 1) defVal = whatsappData.customerName || '';
+                if (i === 2) defVal = whatsappData.orderNumber || '';
+                html += '<input id="orderTplVar_' + idx + '_' + i + '" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;margin-bottom:4px;" placeholder="Variable {{' + i + '}}" value="' + escapeHtml(defVal) + '" />';
+            }
+            html += '</div>';
+        }
+        html += '<button onclick="sendOrderTemplate(' + idx + ')" style="margin-top:8px;width:100%;padding:10px;background:#16A34A;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Send Template</button>';
+        html += '</div>';
+        html += '</div>';
+    });
+    container.innerHTML = html;
+}
+
+function toggleOrderTplDetail(idx) {
+    var body = document.getElementById('orderTplBody_' + idx);
+    var arrow = document.getElementById('orderTplArrow_' + idx);
+    if (body.style.display === 'none') { body.style.display = 'block'; arrow.innerHTML = '&#9650;'; }
+    else { body.style.display = 'none'; arrow.innerHTML = '&#9660;'; }
+}
+
+function sendOrderTemplate(idx) {
+    var t = _orderTemplatesCache[idx];
+    if (!t) return;
+    var params = [];
+    for (var i = 1; i <= (t.variable_count || 0); i++) {
+        var input = document.getElementById('orderTplVar_' + idx + '_' + i);
+        var val = input ? input.value.trim() : '';
+        if (!val) { alert('Please fill in all template variables.'); return; }
+        params.push(val);
+    }
+    var btn = event.target; btn.disabled = true; btn.textContent = 'Sending...';
+    fetch('/messages/send-template', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ phone: whatsappData.phone, template_name: t.name, body_params: params })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        btn.disabled = false; btn.textContent = 'Send Template';
+        if (d.success) { alert('Template sent successfully!'); closeWhatsAppModal(); }
+        else { alert(d.message || 'Failed to send template'); }
+    })
+    .catch(function() { btn.disabled = false; btn.textContent = 'Send Template'; alert('Network error - try again'); });
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function formatPhoneForWhatsApp(phone) {
@@ -10308,45 +10563,6 @@ function openWhatsAppWeb(phone, message) {
 
 function sendWhatsAppDefault() {
     openWhatsAppWeb(whatsappData.phone);
-}
-
-function sendWhatsAppCapacityFull() {
-    const message = `Dear ${whatsappData.customerName},
-
-An order was received on our website today (order number ${whatsappData.orderNumber})
-
-This order can be delivered to you fresh tomorrow, as we're fully occupied today. Would you like to have this order delivered tomorrow? Please confirm.
-
-Thank you for ordering from Nizami Farms`;
-    
-    openWhatsAppWeb(whatsappData.phone, message);
-}
-
-function sendWhatsAppNextDay() {
-    const message = `Dear ${whatsappData.customerName},
-
-An order was received on our website today - Order No: ${whatsappData.orderNumber}
-
-This order can be delivered to you fresh tomorrow. Would you like to have this order delivered tomorrow? Please confirm.
-
-Thank you for ordering from Nizami Farms`;
-    
-    openWhatsAppWeb(whatsappData.phone, message);
-}
-
-function sendWhatsAppMeatlessDays() {
-    const message = `Dear ${whatsappData.customerName},
-
-Thank you for placing your order ${whatsappData.orderNumber} with Nizami Farms! We confirm receipt of your order.
-
-Please note that Tuesday and Wednesday are non-meat days, and our operations are closed. Your order will be delivered on Thursday.
-
-To confirm, kindly reply to this message. We will process your order for Thursday delivery.
-
-Best regards,
-Nizami Farms Team`;
-    
-    openWhatsAppWeb(whatsappData.phone, message);
 }
 
 function searchCustomers(inputEl) {

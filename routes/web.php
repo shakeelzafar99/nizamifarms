@@ -293,6 +293,25 @@ Route::middleware(['auth'])->group(function () {
     // API endpoints for customers
     Route::get('/api/customers/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search'])->name('customers.search');
     
+    // WhatsApp Messages Routes
+    Route::prefix('messages')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'index'])->name('messages.index');
+        Route::get('/conversations', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getConversations'])->name('messages.conversations');
+        Route::get('/conversations/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getMessages'])->name('messages.messages');
+        Route::post('/conversations/{id}/send', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendMessage'])->name('messages.send');
+        Route::post('/conversations/{id}/mark-read', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markRead'])->name('messages.markRead');
+        Route::post('/send-template', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendTemplate'])->name('messages.sendTemplate');
+        Route::get('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getTemplates'])->name('messages.templates');
+        Route::post('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'storeTemplate'])->name('messages.storeTemplate');
+        Route::put('/templates/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'updateTemplate'])->name('messages.updateTemplate');
+        Route::delete('/templates/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'deleteTemplate'])->name('messages.deleteTemplate');
+        Route::get('/unread-count', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getUnreadCount'])->name('messages.unreadCount');
+        Route::get('/customer-orders/{customerId}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getCustomerOrders'])->name('messages.customerOrders');
+        Route::get('/invoice-image/{orderId}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getInvoiceImageUrl'])->name('messages.invoiceImage');
+        Route::post('/upload-invoice-image', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'uploadInvoiceImage'])->name('messages.uploadInvoiceImage');
+        Route::post('/send-invoice', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendInvoice'])->name('messages.sendInvoice');
+    });
+
     // Customer Management Routes
     Route::prefix('customers')->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index'])->name('customers.index');

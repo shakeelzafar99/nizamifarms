@@ -47,6 +47,37 @@
     </script>
     @stack('demo1_js')
     @stack('modals')
+    @auth
+    <script>
+    (function() {
+        var badge = document.getElementById('wa-unread-badge');
+        if (!badge) return;
+        function pollUnread() {
+            fetch('/messages/unread-count', {
+                headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json' }
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success && d.unread_count > 0) {
+                    badge.textContent = d.unread_count;
+                    badge.classList.remove('hidden');
+                    if (Notification.permission === 'granted' && d.unread_count > (window._lastWaUnread || 0)) {
+                        new Notification('Nizami Farms - New WhatsApp Message', { body: d.unread_count + ' unread message(s)', icon: '/favicon.ico' });
+                    }
+                    window._lastWaUnread = d.unread_count;
+                } else {
+                    badge.classList.add('hidden');
+                    window._lastWaUnread = 0;
+                }
+            })
+            .catch(function(){});
+        }
+        if (Notification.permission === 'default') Notification.requestPermission();
+        pollUnread();
+        setInterval(pollUnread, 15000);
+    })();
+    </script>
+    @endauth
 </body>
 
 </html>

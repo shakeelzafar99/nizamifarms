@@ -138,6 +138,29 @@ class ShopifyOrderModel extends BaseModel
         return $this->hasMany(OrderDiscountModel::class, 'order_id')->orderBy('display_order')->orderBy('id');
     }
 
+    public function getDiscountBreakdown()
+    {
+        if (!$this->relationLoaded('discounts')) {
+            $this->load('discounts');
+        }
+
+        $discounts = $this->discounts;
+
+        if ($discounts->isNotEmpty()) {
+            return $discounts;
+        }
+
+        if ($this->discount_total && $this->discount_total > 0) {
+            return collect([(object)[
+                'discount_code' => 'Discount',
+                'discount_type' => 'fixed',
+                'discount_amount' => $this->discount_total,
+            ]]);
+        }
+
+        return collect();
+    }
+
     /**
      * Accessor methods for mobile app compatibility
      * These provide the same data fields as OrderModel for consistent API responses

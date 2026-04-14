@@ -87,7 +87,7 @@ window.viewCustomer = function(id) {
                                 <label style="font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 500;">Phone (Original)</label>
                                 <p style="margin: 4px 0 0 0;">
                                     ${customer.phone_original || customer.phone || 'N/A'}
-                                    ${(customer.phone_original || customer.phone) ? `<button onclick="openCustomerWhatsApp('${escapeForJs(customer.first_name + ' ' + customer.last_name)}', '${escapeForJs(customer.phone_original || customer.phone)}')" style="padding: 2px 8px; background: #25D366; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 6px;" title="Send WhatsApp Message">💬 WhatsApp</button>` : ''}
+                                    ${(customer.phone_original || customer.phone) ? `<button onclick="openCustomerWhatsApp('${escapeForJs(customer.first_name + ' ' + customer.last_name)}', '${escapeForJs(customer.phone_original || customer.phone)}', ${customer.id})" style="padding: 2px 8px; background: #25D366; color: white; border: none; border-radius: 4px; font-size: 11px; cursor: pointer; margin-left: 6px;" title="Send WhatsApp Message">💬 WhatsApp</button>` : ''}
                                 </p>
                             </div>
                             <div style="margin-bottom: 12px;">
@@ -1129,7 +1129,7 @@ function getCustomerCellContent(customer, columnId) {
             let actionsHtml = '<div class="flex items-center gap-1" onclick="event.stopPropagation()">';
             const custPhone = customer.phone_original || customer.phone;
             if (custPhone) {
-                actionsHtml += '<button onclick="openCustomerWhatsApp(\'' + escapeForJs(customer.first_name + ' ' + customer.last_name) + '\', \'' + escapeForJs(custPhone) + '\')" class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" title="WhatsApp"><svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></button>';
+                actionsHtml += '<button onclick="openCustomerWhatsApp(\'' + escapeForJs(customer.first_name + ' ' + customer.last_name) + '\', \'' + escapeForJs(custPhone) + '\', ' + customer.id + ')" class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" title="WhatsApp"><svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></button>';
             }
             actionsHtml += '<button onclick="addCustomerNote(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-gray-300 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors duration-150" title="Add Notes"><i class="ki-filled ki-note text-sm"></i></button>';
             actionsHtml += '<button onclick="createOrderForCustomer(' + customer.id + ')" class="inline-flex items-center p-1.5 border border-emerald-300 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors duration-150" title="Create Order"><i class="ki-filled ki-plus text-sm"></i></button>';
@@ -2012,9 +2012,13 @@ function usePinnedMessage() {
     }
 }
 
-function openCustomerWhatsApp(customerName, phone) {
+function openCustomerWhatsApp(customerName, phone, customerId) {
     customerWhatsappData = { customerName, phone };
+    window._currentCustomerId = customerId || null;
     document.getElementById('customerWhatsappRecipient').textContent = 'To: ' + customerName + ' (' + phone + ')';
+    
+    // Load API templates
+    loadApiTemplatesForCustomer(customerName);
     
     // Reset file input
     const fileInput = document.getElementById('promoImageInput');
@@ -2097,8 +2101,251 @@ This is Nizami Farms. How can we help you today?
 Best regards,
 Nizami Farms Team`;
     
-    openWhatsAppWeb(customerWhatsappData.phone, message);
+    sendViaApiOrManual(customerWhatsappData.phone, message, 'customer_greeting', [customerWhatsappData.customerName]);
     closeCustomerWhatsAppModal();
+}
+
+function sendViaApiOrManual(phone, fallbackMessage, templateName, bodyParams) {
+    fetch('/messages/send-template', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ phone: phone, template_name: templateName, body_params: bodyParams || [] })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.success) {
+            showToast('Message sent via WhatsApp API', 'success');
+        } else {
+            openWhatsAppWeb(phone, fallbackMessage);
+        }
+    })
+    .catch(() => {
+        openWhatsAppWeb(phone, fallbackMessage);
+    });
+}
+
+function showToast(msg, type) {
+    var t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;color:#fff;background:' + (type === 'success' ? '#16a34a' : '#ef4444') + ';box-shadow:0 4px 12px rgba(0,0,0,0.15);transition:opacity 0.3s;';
+    document.body.appendChild(t);
+    setTimeout(function(){ t.style.opacity = '0'; setTimeout(function(){ t.remove(); }, 300); }, 3000);
+}
+
+var _cachedApiTemplates = null;
+function loadApiTemplatesForCustomer(customerName) {
+    var container = document.getElementById('waApiTemplateButtons');
+    if (!container) return;
+    container.innerHTML = '<span style="font-size:12px;color:#9ca3af;">Loading templates...</span>';
+    
+    if (_cachedApiTemplates) {
+        renderApiTemplateButtons(_cachedApiTemplates, customerName);
+        return;
+    }
+    
+    fetch('/messages/templates?context=customers', { headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        _cachedApiTemplates = d.templates || [];
+        renderApiTemplateButtons(_cachedApiTemplates, customerName);
+    })
+    .catch(function() {
+        container.innerHTML = '<span style="font-size:12px;color:#ef4444;">Could not load templates</span>';
+    });
+}
+
+function renderApiTemplateButtons(templates, customerName) {
+    var container = document.getElementById('waApiTemplateButtons');
+    if (!container) return;
+    if (!templates || templates.length === 0) {
+        container.innerHTML = '<span style="font-size:12px;color:#9ca3af;">No approved templates yet</span>';
+        return;
+    }
+    container.innerHTML = '';
+    templates.forEach(function(tpl) {
+        var btn = document.createElement('button');
+        btn.style.cssText = 'padding:8px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;cursor:pointer;font-size:12px;font-weight:500;color:#166534;transition:all 0.2s;';
+        btn.textContent = (tpl.display_name || tpl.name || 'Template').replace(/_/g, ' ');
+        btn.title = 'Send via WhatsApp API';
+        btn.onmouseover = function() { btn.style.background = '#dcfce7'; btn.style.borderColor = '#25D366'; };
+        btn.onmouseout = function() { btn.style.background = '#f0fdf4'; btn.style.borderColor = '#bbf7d0'; };
+        btn.onclick = function() { sendApiTemplate(tpl, customerName); };
+        container.appendChild(btn);
+    });
+}
+
+function sendApiTemplate(tpl, customerName) {
+    var phone = customerWhatsappData.phone;
+    if (!phone) return;
+
+    var params = [];
+    var varCount = tpl.variable_count || 0;
+    if (varCount > 0) {
+        params.push(customerName || 'Customer');
+        for (var i = 1; i < varCount; i++) {
+            var val = prompt('Enter value for variable {{' + (i + 1) + '}}:');
+            if (val === null) return;
+            params.push(val);
+        }
+    }
+    
+    fetch('/messages/send-template', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ phone: phone, template_name: tpl.name, body_params: params })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.success) {
+            showToast('Template "' + (tpl.display_name || tpl.name) + '" sent via API!', 'success');
+            closeCustomerWhatsAppModal();
+        } else {
+            showToast(d.error || 'Failed to send template', 'error');
+        }
+    })
+    .catch(function() {
+        showToast('Network error - try again', 'error');
+    });
+}
+
+function openCustomerInvoicePicker() {
+    var area = document.getElementById('custInvPickerArea');
+    if (!area) return;
+    area.style.display = 'block';
+    area.innerHTML = '<span style="font-size:12px;color:#9ca3af;">Loading orders...</span>';
+
+    var phone = customerWhatsappData.phone;
+    var name = customerWhatsappData.customerName;
+
+    var custId = window._currentCustomerId;
+    if (!custId) {
+        area.innerHTML = '<span style="font-size:12px;color:#ef4444;">No customer ID available. Open customer details first.</span>';
+        return;
+    }
+
+    fetch('/messages/customer-orders/' + custId, { headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (!d.success || !d.orders || !d.orders.length) {
+            area.innerHTML = '<span style="font-size:12px;color:#9ca3af;">No orders found.</span>';
+            return;
+        }
+        var html = '';
+        d.orders.forEach(function(o) {
+            var dt = o.order_date ? new Date(o.order_date).toLocaleDateString() : '';
+            html += '<div onclick="selectCustInvoice(' + o.id + ',\'' + (o.order_number||'').replace(/'/g,'') + '\',' + parseFloat(o.total||0) + ')" style="padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:6px;cursor:pointer;transition:background 0.15s;font-size:13px;" onmouseover="this.style.background=\'#fff7ed\'" onmouseout="this.style.background=\'#fff\'">';
+            html += '<b>#' + (o.order_number||'') + '</b> · ' + dt + ' · Rs. ' + parseFloat(o.total||0).toLocaleString() + ' · ' + o.items_count + ' items';
+            html += '</div>';
+        });
+        area.innerHTML = '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">Select order:</div>' + html;
+    })
+    .catch(function() { area.innerHTML = '<span style="font-size:12px;color:#ef4444;">Failed to load orders.</span>'; });
+}
+
+function selectCustInvoice(orderId, orderNum, total) {
+    var area = document.getElementById('custInvPickerArea');
+    var name = customerWhatsappData.customerName || '';
+    area.innerHTML = '<div style="margin-bottom:8px;font-weight:600;font-size:13px;">Invoice for #' + orderNum + ' — Rs. ' + total.toLocaleString() + '</div>' +
+        '<div style="margin-bottom:8px;"><label style="font-size:11px;color:#6b7280;">Template Name</label><input id="custInvTpl" type="text" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;" placeholder="e.g. send_invoice" /></div>' +
+        '<div style="margin-bottom:8px;"><label style="font-size:11px;color:#6b7280;">Body Variables</label><input id="custInvParams" type="text" value="' + name + ', ' + orderNum + '" style="width:100%;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;" /></div>' +
+        '<div id="custInvPreviewArea" style="display:none;margin-bottom:8px;"><img id="custInvPreviewImg" style="max-width:100%;max-height:200px;border-radius:6px;border:1px solid #e5e7eb;" /></div>' +
+        '<div style="display:flex;gap:6px;">' +
+            '<button onclick="previewCustInvoice(' + orderId + ')" id="custInvPrevBtn" style="flex:1;padding:8px;border:1px solid #d97706;color:#d97706;background:#fff;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;">Preview</button>' +
+            '<button onclick="sendCustInvoice(' + orderId + ')" id="custInvSendBtn" style="flex:1;padding:8px;background:#25D366;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;" disabled>Send</button>' +
+        '</div>' +
+        '<div id="custInvStatus" style="margin-top:6px;font-size:12px;text-align:center;display:none;"></div>';
+
+    fetch('/messages/templates?context=invoice', {
+        headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.success && d.templates && d.templates.length) {
+            var el = document.getElementById('custInvTpl');
+            if (el && !el.value) el.value = d.templates[0].name;
+        }
+    }).catch(function() {});
+}
+
+function captureInvoiceImageCust(invoiceUrl, orderId) {
+    return new Promise(function(resolve, reject) {
+        var iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        document.body.appendChild(iframe);
+        iframe.src = invoiceUrl;
+        iframe.onload = function() {
+            var addScript = function(doc, src) { return new Promise(function(r) { var s = doc.createElement('script'); s.src = src; s.onload = r; doc.head.appendChild(s); }); };
+            var iDoc = iframe.contentDocument || iframe.contentWindow.document;
+            addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js').then(function() {
+                var node = iDoc.querySelector('.invoice-container');
+                if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
+                iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true}).then(function(canvas) {
+                    var dataUrl = canvas.toDataURL('image/png');
+                    iframe.remove();
+                    var csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+                    fetch('/messages/upload-invoice-image', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'},
+                        body: JSON.stringify({ order_id: orderId, image_data: dataUrl })
+                    }).then(function(r) { return r.json(); }).then(function(res) {
+                        if (res.success) resolve(res); else reject(new Error(res.message || 'Upload failed'));
+                    }).catch(reject);
+                }).catch(function(err) { iframe.remove(); reject(err); });
+            }).catch(function(err) { iframe.remove(); reject(err); });
+        };
+        iframe.onerror = function() { iframe.remove(); reject(new Error('Failed to load invoice')); };
+    });
+}
+
+function previewCustInvoice(orderId) {
+    var btn = document.getElementById('custInvPrevBtn');
+    btn.textContent = 'Loading...'; btn.disabled = true;
+    fetch('/messages/invoice-image/' + orderId, { headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Preview'; btn.disabled = false; return; }
+
+        if (d.needs_capture) {
+            captureInvoiceImageCust(d.invoice_url, orderId).then(function(uploadRes) {
+                document.getElementById('custInvPreviewImg').src = uploadRes.image_url;
+                document.getElementById('custInvPreviewArea').style.display = 'block';
+                document.getElementById('custInvSendBtn').disabled = false;
+                btn.textContent = 'Refresh'; btn.disabled = false;
+            }).catch(function(err) { alert('Failed to capture: ' + err.message); btn.textContent = 'Preview'; btn.disabled = false; });
+        } else {
+            document.getElementById('custInvPreviewImg').src = d.image_url;
+            document.getElementById('custInvPreviewArea').style.display = 'block';
+            document.getElementById('custInvSendBtn').disabled = false;
+            btn.textContent = 'Refresh'; btn.disabled = false;
+        }
+    })
+    .catch(function() { btn.textContent = 'Preview'; btn.disabled = false; });
+}
+
+function sendCustInvoice(orderId) {
+    var tplName = document.getElementById('custInvTpl').value.trim();
+    if (!tplName) { alert('Enter template name'); return; }
+    var paramsStr = document.getElementById('custInvParams').value.trim();
+    var bodyParams = paramsStr ? paramsStr.split(',').map(function(s) { return s.trim(); }) : [];
+    var phone = customerWhatsappData.phone;
+    if (!phone) { alert('No phone'); return; }
+
+    var btn = document.getElementById('custInvSendBtn');
+    var status = document.getElementById('custInvStatus');
+    btn.textContent = 'Sending...'; btn.disabled = true; status.style.display = 'none';
+
+    fetch('/messages/send-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, phone: phone, template_name: tplName, body_params: bodyParams })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.success) {
+            status.style.display = 'block'; status.style.color = '#16a34a'; status.textContent = 'Invoice sent!';
+            btn.textContent = 'Sent!';
+            setTimeout(function() { closeCustomerWhatsAppModal(); }, 2000);
+        } else { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = d.message || 'Failed'; btn.textContent = 'Send'; btn.disabled = false; }
+    })
+    .catch(function(e) { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = 'Error'; btn.textContent = 'Send'; btn.disabled = false; });
 }
 
 function sendCustomerWhatsAppCustom() {
@@ -2437,7 +2684,7 @@ function removePromoImage() {
                                     <td class="px-6 py-4 whitespace-nowrap" onclick="event.stopPropagation()">
                                         <div class="flex items-center gap-1">
                                             @if($customer->phone_original || $customer->phone)
-                                                <button onclick="openCustomerWhatsApp('{{ addslashes($customer->first_name . ' ' . $customer->last_name) }}', '{{ addslashes($customer->phone_original ?: $customer->phone) }}')" 
+                                                <button onclick="openCustomerWhatsApp('{{ addslashes($customer->first_name . ' ' . $customer->last_name) }}', '{{ addslashes($customer->phone_original ?: $customer->phone) }}', {{ $customer->id }})" 
                                                         class="inline-flex items-center p-1.5 border border-green-300 rounded-md text-green-600 hover:text-green-700 hover:bg-green-50 transition-colors duration-150" 
                                                         title="WhatsApp">
                                                     <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
@@ -2578,6 +2825,29 @@ function removePromoImage() {
             </button>
             </div>
             
+            <!-- API Templates Section -->
+            <div id="waApiTemplatesSection" style="margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                    <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+                    <span style="font-size: 11px; color: #9ca3af; font-weight: 500;">SEND VIA WHATSAPP API</span>
+                    <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+                </div>
+                <div id="waApiTemplateButtons" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+            </div>
+
+            <!-- Send Invoice Section -->
+            <div style="margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                    <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+                    <span style="font-size: 11px; color: #9ca3af; font-weight: 500;">SEND INVOICE</span>
+                    <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
+                </div>
+                <button onclick="openCustomerInvoicePicker()" style="padding:8px 16px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;cursor:pointer;font-size:12px;font-weight:500;color:#9a3412;transition:all 0.2s;display:flex;align-items:center;gap:6px;" onmouseover="this.style.background='#ffedd5';this.style.borderColor='#f59e0b'" onmouseout="this.style.background='#fff7ed';this.style.borderColor='#fed7aa'">
+                    <span>📄</span> Send Invoice via WhatsApp
+                </button>
+                <div id="custInvPickerArea" style="display:none;margin-top:10px;"></div>
+            </div>
+
             <!-- Divider -->
             <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 14px;">
                 <div style="flex: 1; height: 1px; background: #e5e7eb;"></div>
