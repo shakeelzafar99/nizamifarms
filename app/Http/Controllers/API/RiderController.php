@@ -13966,6 +13966,8 @@ class RiderController extends Controller
             $request->validate([
                 'name' => 'required|string|max:255',
                 'message_template' => 'nullable|string|max:2000',
+                'wa_template_name' => 'required|string|max:255',
+                'wa_template_language' => 'nullable|string|max:10',
                 'filters' => 'required|array',
                 'tracking_type' => 'nullable|string|in:general,products',
                 'tracked_product_ids' => 'nullable|array',
@@ -14018,6 +14020,8 @@ class RiderController extends Controller
                 'status' => 'active',
                 'filters_json' => json_encode($filters),
                 'message_template' => $request->input('message_template', ''),
+                'wa_template_name' => $request->input('wa_template_name'),
+                'wa_template_language' => $request->input('wa_template_language', 'en'),
                 'tracking_type' => $request->input('tracking_type', 'general'),
                 'tracked_product_ids' => $request->input('tracked_product_ids') ? json_encode($request->input('tracked_product_ids')) : null,
                 'tracking_window_days' => $request->input('tracking_window_days', 30),
@@ -14126,6 +14130,7 @@ class RiderController extends Controller
                     'cc.status as campaign_status',
                     'cc.sent_at',
                     'cc.sent_by',
+                    'cc.error_message',
                     'c.first_name',
                     'c.last_name',
                     'c.phone',
@@ -14140,7 +14145,7 @@ class RiderController extends Controller
                 $customersQuery->where('cc.status', $statusFilter);
             }
 
-            $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'sent', 'skipped')");
+            $customersQuery->orderByRaw("FIELD(cc.status, 'pending', 'failed', 'sent', 'skipped')");
 
             $sortBy = json_decode($campaign->filters_json, true)['sort_by'] ?? 'last_order_date';
             $sortDir = json_decode($campaign->filters_json, true)['sort_dir'] ?? 'desc';
@@ -14235,6 +14240,139 @@ class RiderController extends Controller
 
             return response()->json(['success' => true, 'counts' => $counts]);
         } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Send campaign template to one or more customers via WhatsApp Business API
+     */
+    public function sendCampaignBulk(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->where('status', 'active')->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found or ended'], 404);
+            }
+
+            $templateName = $campaign->wa_template_name;
+            if (!$templateName) {
+                return response()->json(['success' => false, 'message' => 'No WhatsApp template configured for this campaign'], 422);
+            }
+
+            $request->validate([
+                'customer_ids' => 'required|array|min:1',
+                'customer_ids.*' => 'integer',
+                'body_params' => 'nullable|array',
+            ]);
+
+            $customerIds = $request->input('customer_ids');
+            $language = $campaign->wa_template_language ?: 'en';
+
+            $customers = DB::table('t_crm_campaign_customers as cc')
+                ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
+                ->where('cc.campaign_id', $id)
+                ->where('cc.status', 'pending')
+                ->whereIn('cc.customer_id', $customerIds)
+                ->select('cc.customer_id', 'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized')
+                ->get();
+
+            if ($customers->isEmpty()) {
+                return response()->json(['success' => false, 'message' => 'No pending customers found for the given IDs'], 422);
+            }
+
+            $whatsapp = app(\App\Services\WhatsAppService::class);
+            $results = ['sent' => 0, 'failed' => 0, 'errors' => []];
+
+            foreach ($customers as $customer) {
+                $phone = $customer->phone_normalized ?: $customer->phone;
+                if (!$phone) {
+                    DB::table('t_crm_campaign_customers')
+                        ->where('campaign_id', $id)
+                        ->where('customer_id', $customer->customer_id)
+                        ->update(['status' => 'failed', 'error_message' => 'No phone number']);
+                    $results['failed']++;
+                    continue;
+                }
+
+                try {
+                    $formattedPhone = $whatsapp->formatPhone($phone);
+                    $customerName = trim(($customer->first_name ?? '') . ' ' . ($customer->last_name ?? ''));
+
+                    $bodyParams = $request->input('body_params', []);
+                    $resolvedParams = array_map(function ($p) use ($customerName) {
+                        return $p === '{{customer_name}}' ? $customerName : $p;
+                    }, $bodyParams);
+
+                    $response = $whatsapp->sendTemplateMessage($formattedPhone, $templateName, $language, $resolvedParams);
+
+                    if ($response['success'] ?? false) {
+                        DB::table('t_crm_campaign_customers')
+                            ->where('campaign_id', $id)
+                            ->where('customer_id', $customer->customer_id)
+                            ->update([
+                                'status' => 'sent',
+                                'sent_at' => now(),
+                                'sent_by' => $user->id,
+                            ]);
+                        DB::table('t_crm_campaigns')->where('id', $id)->increment('sent_count');
+                        $results['sent']++;
+
+                        $conversation = $whatsapp->findOrCreateConversation($formattedPhone);
+                        if (!$conversation->customer_id) {
+                            $conversation->update(['customer_id' => $customer->customer_id]);
+                        }
+                        $whatsapp->saveOutboundMessage(
+                            $conversation->id,
+                            $response,
+                            'template',
+                            "Campaign: {$campaign->name}",
+                            $user->id,
+                            $templateName,
+                            $resolvedParams
+                        );
+                    } else {
+                        $error = $response['error'] ?? 'API send failed';
+                        DB::table('t_crm_campaign_customers')
+                            ->where('campaign_id', $id)
+                            ->where('customer_id', $customer->customer_id)
+                            ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
+                        $results['failed']++;
+                        $results['errors'][] = ['customer_id' => $customer->customer_id, 'phone' => $phone, 'error' => $error];
+                    }
+                } catch (\Exception $e) {
+                    $error = $e->getMessage();
+                    DB::table('t_crm_campaign_customers')
+                        ->where('campaign_id', $id)
+                        ->where('customer_id', $customer->customer_id)
+                        ->update(['status' => 'failed', 'error_message' => mb_substr($error, 0, 500)]);
+                    $results['failed']++;
+                    $results['errors'][] = ['customer_id' => $customer->customer_id, 'phone' => $phone, 'error' => $error];
+                }
+            }
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                ")
+                ->first();
+
+            return response()->json([
+                'success' => true,
+                'results' => $results,
+                'counts' => $counts,
+            ]);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Campaign bulk send failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }

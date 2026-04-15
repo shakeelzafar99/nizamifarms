@@ -201,6 +201,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/campaigns/{id}/refresh', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaign']);
     Route::post('/store/campaigns/{id}/end', [\App\Http\Controllers\API\RiderController::class, 'endCampaign']);
     Route::get('/store/campaigns/{id}/stats', [\App\Http\Controllers\API\RiderController::class, 'getCampaignStats']);
+    Route::post('/store/campaigns/{id}/send-bulk', [\App\Http\Controllers\API\RiderController::class, 'sendCampaignBulk']);
     Route::post('/store/campaigns/{id}/customers/{customerId}/mark-sent', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSent']);
     Route::post('/store/campaigns/{id}/customers/{customerId}/mark-skipped', [\App\Http\Controllers\API\RiderController::class, 'markCampaignCustomerSkipped']);
     

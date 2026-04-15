@@ -312,6 +312,21 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/send-invoice', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendInvoice'])->name('messages.sendInvoice');
     });
 
+    // Campaign Management Routes
+    Route::prefix('campaigns')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Web\CampaignWebController::class, 'index'])->name('campaigns.index');
+        Route::get('/list', [\App\Http\Controllers\Web\CampaignWebController::class, 'getCampaigns']);
+        Route::get('/templates', [\App\Http\Controllers\Web\CampaignWebController::class, 'getTemplates']);
+        Route::get('/cities', [\App\Http\Controllers\Web\CampaignWebController::class, 'getCities']);
+        Route::post('/preview', [\App\Http\Controllers\Web\CampaignWebController::class, 'preview']);
+        Route::post('/create', [\App\Http\Controllers\Web\CampaignWebController::class, 'create']);
+        Route::get('/{id}', [\App\Http\Controllers\Web\CampaignWebController::class, 'detail']);
+        Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBulk']);
+        Route::post('/{id}/end', [\App\Http\Controllers\Web\CampaignWebController::class, 'end']);
+        Route::post('/{id}/customers/{customerId}/skip', [\App\Http\Controllers\Web\CampaignWebController::class, 'skip']);
+        Route::get('/{id}/stats', [\App\Http\Controllers\Web\CampaignWebController::class, 'stats']);
+    });
+
     // Customer Management Routes
     Route::prefix('customers')->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index'])->name('customers.index');

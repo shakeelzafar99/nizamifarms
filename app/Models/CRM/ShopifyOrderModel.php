@@ -246,6 +246,11 @@ class ShopifyOrderModel extends BaseModel
         return $this->lineItems()->count();
     }
 
+    public function hasQurbaniItems(): bool
+    {
+        return false;
+    }
+
     public function getItemsSummaryAttribute(): string
     {
         // If line items are loaded, build summary
