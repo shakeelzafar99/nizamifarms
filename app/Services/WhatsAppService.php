@@ -378,6 +378,18 @@ class WhatsAppService
                 'status' => 'active',
             ]);
 
+            // Campaign reply tracking: if this conversation is linked to a known
+            // customer, stamp replied_at on any active campaign rows where the
+            // customer was already sent a message (within that campaign's
+            // tracking window). Non-fatal on any error.
+            try {
+                if ($conversation->customer_id) {
+                    $this->stampCampaignReplies((int) $conversation->customer_id);
+                }
+            } catch (\Exception $campaignErr) {
+                Log::debug('WhatsApp: Campaign reply tracking failed (non-fatal)', ['error' => $campaignErr->getMessage()]);
+            }
+
             // Send read receipt back to WhatsApp
             $this->markAsRead($waMessageId);
 
@@ -459,6 +471,37 @@ class WhatsAppService
                 'status_data' => $status,
             ]);
         }
+    }
+
+    /**
+     * For a customer who just sent us an inbound message, stamp replied_at
+     * on any t_crm_campaign_customers rows where:
+     *   - this customer was sent a campaign message (status='sent')
+     *   - replied_at is still null
+     *   - now() is within the campaign's tracking_window_days after sent_at
+     * This lets the campaign stats page compute reply rates.
+     */
+    protected function stampCampaignReplies(int $customerId): void
+    {
+        $now = now();
+
+        $rows = \DB::table('t_crm_campaign_customers as cc')
+            ->join('t_crm_campaigns as c', 'cc.campaign_id', '=', 'c.id')
+            ->where('cc.customer_id', $customerId)
+            ->where('cc.status', 'sent')
+            ->whereNull('cc.replied_at')
+            ->whereNotNull('cc.sent_at')
+            ->whereRaw('DATE_ADD(cc.sent_at, INTERVAL c.tracking_window_days DAY) >= ?', [$now])
+            ->select('cc.id')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return;
+        }
+
+        \DB::table('t_crm_campaign_customers')
+            ->whereIn('id', $rows->pluck('id')->all())
+            ->update(['replied_at' => $now]);
     }
 
     /**

@@ -33,26 +33,39 @@ class QurbaniSettingsController extends Controller
     public function storeOption(Request $request)
     {
         $validated = $request->validate([
-            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_delivery_type',
+            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_sub_region,qurbani_delivery_type',
             'option_value' => 'required|string|max:100',
             'parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',
+            'delivery_type_parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',
         ]);
 
         $maxOrder = DB::table('t_crm_qurbani_field_options')
             ->where('field_name', $validated['field_name'])
             ->max('display_order') ?? 0;
 
-        $existing = DB::table('t_crm_qurbani_field_options')
+        $query = DB::table('t_crm_qurbani_field_options')
             ->where('field_name', $validated['field_name'])
-            ->where('option_value', $validated['option_value'])
-            ->when(isset($validated['parent_id']), fn($q) => $q->where('parent_id', $validated['parent_id']))
-            ->first();
+            ->where('option_value', $validated['option_value']);
+
+        if (isset($validated['parent_id'])) {
+            $query->where('parent_id', $validated['parent_id']);
+        }
+        if (isset($validated['delivery_type_parent_id'])) {
+            $query->where('delivery_type_parent_id', $validated['delivery_type_parent_id']);
+        } else {
+            $query->whereNull('delivery_type_parent_id');
+        }
+
+        $existing = $query->first();
 
         if ($existing) {
             if (!$existing->is_active) {
+                $updateData = ['is_active' => 1, 'updated_at' => now()];
+                if (isset($validated['parent_id'])) $updateData['parent_id'] = $validated['parent_id'];
+                if (isset($validated['delivery_type_parent_id'])) $updateData['delivery_type_parent_id'] = $validated['delivery_type_parent_id'];
                 DB::table('t_crm_qurbani_field_options')
                     ->where('id', $existing->id)
-                    ->update(['is_active' => 1, 'parent_id' => $validated['parent_id'] ?? $existing->parent_id, 'updated_at' => now()]);
+                    ->update($updateData);
 
                 return response()->json(['success' => true, 'message' => 'Option re-activated', 'id' => $existing->id]);
             }
@@ -63,6 +76,7 @@ class QurbaniSettingsController extends Controller
             'field_name' => $validated['field_name'],
             'option_value' => $validated['option_value'],
             'parent_id' => $validated['parent_id'] ?? null,
+            'delivery_type_parent_id' => $validated['delivery_type_parent_id'] ?? null,
             'display_order' => $maxOrder + 1,
             'is_active' => 1,
             'is_default' => 0,
@@ -80,7 +94,9 @@ class QurbaniSettingsController extends Controller
             'display_order' => 'sometimes|integer|min:0',
             'is_active' => 'sometimes|boolean',
             'is_default' => 'sometimes|boolean',
+            'show_in_invoice' => 'sometimes|boolean',
             'parent_id' => 'sometimes|nullable|integer',
+            'delivery_type_parent_id' => 'sometimes|nullable|integer',
         ]);
 
         $option = DB::table('t_crm_qurbani_field_options')->where('id', $id)->first();
@@ -93,6 +109,7 @@ class QurbaniSettingsController extends Controller
         if (isset($validated['display_order'])) $update['display_order'] = $validated['display_order'];
         if (isset($validated['is_active'])) $update['is_active'] = $validated['is_active'] ? 1 : 0;
         if (array_key_exists('parent_id', $validated)) $update['parent_id'] = $validated['parent_id'];
+        if (array_key_exists('delivery_type_parent_id', $validated)) $update['delivery_type_parent_id'] = $validated['delivery_type_parent_id'];
 
         if (isset($validated['is_default'])) {
             $newDefault = $validated['is_default'] ? 1 : 0;
@@ -103,6 +120,14 @@ class QurbaniSettingsController extends Controller
                     ->update(['is_default' => 0, 'updated_at' => now()]);
             }
             $update['is_default'] = $newDefault;
+        }
+
+        if (isset($validated['show_in_invoice'])) {
+            $val = $validated['show_in_invoice'] ? 1 : 0;
+            DB::table('t_crm_qurbani_field_options')
+                ->where('field_name', $option->field_name)
+                ->update(['show_in_invoice' => $val, 'updated_at' => now()]);
+            $update['show_in_invoice'] = $val;
         }
 
         DB::table('t_crm_qurbani_field_options')->where('id', $id)->update($update);

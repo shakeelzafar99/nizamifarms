@@ -449,8 +449,9 @@ class OrderController extends Controller
     {
         try {
             $order = $this->findOrder($id);
+            $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
             
-            return view('pages.orders.invoice', compact('order'));
+            return view('pages.orders.invoice', compact('order', 'qurbaniInvoiceFields'));
         } catch (\Exception $e) {
             return redirect()->back()->with('error', 'Order not found');
         }
@@ -481,7 +482,8 @@ class OrderController extends Controller
             }
             
             // Return a clean, print-ready view that can be saved as image or PDF
-            return view('pages.orders.invoice-print', compact('order', 'filename'));
+            $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
+            return view('pages.orders.invoice-print', compact('order', 'filename', 'qurbaniInvoiceFields'));
             
         } catch (\Exception $e) {
             return redirect()->back()->with('error', 'Failed to generate invoice: ' . $e->getMessage());
@@ -499,7 +501,8 @@ class OrderController extends Controller
         ]);
         
         // Use the dedicated invoice-image template
-        $html = view('pages.orders.invoice-image', ['order' => $order])->render();
+        $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
+        $html = view('pages.orders.invoice-image', ['order' => $order, 'qurbaniInvoiceFields' => $qurbaniInvoiceFields])->render();
         
         // Try to use Puppeteer or wkhtmltoimage if available
         $imagePath = $this->createInvoiceImage($html, $filename);
@@ -519,7 +522,8 @@ class OrderController extends Controller
         ]);
         
         // Fallback: Return HTML view with auto-download instructions
-        return view('pages.orders.invoice-print', compact('order', 'filename'))
+        $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
+        return view('pages.orders.invoice-print', compact('order', 'filename', 'qurbaniInvoiceFields'))
                ->with('auto_download', true);
     }
     
@@ -590,7 +594,8 @@ class OrderController extends Controller
 
                 // Fallback: use dompdf with print-optimized template
                 try {
-                    $pdf = \PDF::loadView('pages.orders.invoice-pdf', ['order' => $order, 'filename' => $filename, 'isPdf' => true])
+                    $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
+                    $pdf = \PDF::loadView('pages.orders.invoice-pdf', ['order' => $order, 'filename' => $filename, 'isPdf' => true, 'qurbaniInvoiceFields' => $qurbaniInvoiceFields])
                         ->setOptions([
                             'isHtml5ParserEnabled' => true,
                             'isRemoteEnabled' => true,
@@ -629,7 +634,8 @@ class OrderController extends Controller
     {
         try {
             // Use the exact same web invoice view for pixel-perfect output
-            $html = view('pages.orders.invoice-pdf', ['order' => $order, 'isPdf' => true])->render();
+            $qurbaniInvoiceFields = $this->isQurbaniOrder($order) ? $this->getQurbaniInvoiceFields() : [];
+            $html = view('pages.orders.invoice-pdf', ['order' => $order, 'isPdf' => true, 'qurbaniInvoiceFields' => $qurbaniInvoiceFields])->render();
             
             $tempDir = storage_path('app/temp');
             if (!file_exists($tempDir)) {
@@ -733,6 +739,7 @@ class OrderController extends Controller
                 'items.*.qurbani_day' => 'nullable|string|max:50',
                 'items.*.qurbani_slot' => 'nullable|string|max:50',
                 'items.*.qurbani_region' => 'nullable|string|max:100',
+                'items.*.qurbani_sub_region' => 'nullable|string|max:100',
                 'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
                 'items.*.instructions' => 'nullable|string|max:500',
                 // Multiple discounts support
@@ -1126,6 +1133,7 @@ class OrderController extends Controller
                     if (!empty($itemData['qurbani_day'])) $updateLineItem['qurbani_day'] = $itemData['qurbani_day'];
                     if (!empty($itemData['qurbani_slot'])) $updateLineItem['qurbani_slot'] = $itemData['qurbani_slot'];
                     if (!empty($itemData['qurbani_region'])) $updateLineItem['qurbani_region'] = $itemData['qurbani_region'];
+                    if (!empty($itemData['qurbani_sub_region'])) $updateLineItem['qurbani_sub_region'] = $itemData['qurbani_sub_region'];
                     if (!empty($itemData['qurbani_delivery_type'])) $updateLineItem['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
                     if (array_key_exists('instructions', $itemData)) $updateLineItem['instructions'] = $itemData['instructions'];
 
@@ -1146,6 +1154,7 @@ class OrderController extends Controller
                     $order->qurbani_day = $firstQurbaniUpdateItem['qurbani_day'] ?? $order->qurbani_day;
                     $order->qurbani_slot = $firstQurbaniUpdateItem['qurbani_slot'] ?? $order->qurbani_slot;
                     $order->qurbani_region = $firstQurbaniUpdateItem['qurbani_region'] ?? $order->qurbani_region;
+                    $order->qurbani_sub_region = $firstQurbaniUpdateItem['qurbani_sub_region'] ?? $order->qurbani_sub_region;
                     $order->qurbani_delivery_type = $firstQurbaniUpdateItem['qurbani_delivery_type'] ?? $order->qurbani_delivery_type;
                     $order->save();
                 }
@@ -1322,6 +1331,13 @@ class OrderController extends Controller
                 }
             }
             
+            // Clear cached WhatsApp invoice image so next send uses fresh data
+            $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
+            $cachedPath = 'whatsapp-invoices/Invoice-' . $orderNum . '.png';
+            if (\Storage::disk('public')->exists($cachedPath)) {
+                \Storage::disk('public')->delete($cachedPath);
+            }
+
             // Prepare response based on whether a ledger adjustment was created or payment method changed
             if ($ledgerAdjustmentCreated) {
                 $message = 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.';
@@ -1386,6 +1402,7 @@ class OrderController extends Controller
                 'subtotal_price' => 'required|numeric',
                 'discount_total' => 'nullable|numeric',
                 'shipping_total' => 'nullable|numeric',
+                'tip_amount' => 'nullable|numeric|min:0',
                 'total_price' => 'required|numeric',
                 'coupon_code' => 'nullable|string',
                 'payment_method' => 'nullable|string',
@@ -1402,6 +1419,7 @@ class OrderController extends Controller
                 'items.*.qurbani_day' => 'nullable|string|max:50',
                 'items.*.qurbani_slot' => 'nullable|string|max:50',
                 'items.*.qurbani_region' => 'nullable|string|max:100',
+                'items.*.qurbani_sub_region' => 'nullable|string|max:100',
                 'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
                 'items.*.instructions' => 'nullable|string|max:500',
                 // Customer creation fields
@@ -1700,6 +1718,7 @@ class OrderController extends Controller
                     if (!empty($itemData['qurbani_day'])) $lineItemData['qurbani_day'] = $itemData['qurbani_day'];
                     if (!empty($itemData['qurbani_slot'])) $lineItemData['qurbani_slot'] = $itemData['qurbani_slot'];
                     if (!empty($itemData['qurbani_region'])) $lineItemData['qurbani_region'] = $itemData['qurbani_region'];
+                    if (!empty($itemData['qurbani_sub_region'])) $lineItemData['qurbani_sub_region'] = $itemData['qurbani_sub_region'];
                     if (!empty($itemData['qurbani_delivery_type'])) $lineItemData['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
                     if (array_key_exists('instructions', $itemData)) $lineItemData['instructions'] = $itemData['instructions'];
 
@@ -1728,6 +1747,7 @@ class OrderController extends Controller
                     'qurbani_day' => $firstQurbaniItem['qurbani_day'] ?? $order->qurbani_day,
                     'qurbani_slot' => $firstQurbaniItem['qurbani_slot'] ?? $order->qurbani_slot,
                     'qurbani_region' => $firstQurbaniItem['qurbani_region'] ?? $order->qurbani_region,
+                    'qurbani_sub_region' => $firstQurbaniItem['qurbani_sub_region'] ?? $order->qurbani_sub_region,
                     'qurbani_delivery_type' => $firstQurbaniItem['qurbani_delivery_type'] ?? $order->qurbani_delivery_type,
                 ]);
             }
@@ -2363,6 +2383,33 @@ class OrderController extends Controller
         }
         
         return $order;
+    }
+
+    private function getQurbaniInvoiceFields(): array
+    {
+        $fieldNames = DB::table('t_crm_qurbani_field_options')
+            ->where('show_in_invoice', 1)
+            ->groupBy('field_name')
+            ->pluck('field_name')
+            ->toArray();
+
+        $desiredOrder = ['qurbani_day', 'qurbani_delivery_type', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region'];
+        $ordered = [];
+        foreach ($desiredOrder as $f) {
+            if (in_array($f, $fieldNames)) $ordered[] = $f;
+        }
+        foreach ($fieldNames as $f) {
+            if (!in_array($f, $ordered)) $ordered[] = $f;
+        }
+        return $ordered;
+    }
+
+    private function isQurbaniOrder($order): bool
+    {
+        if (method_exists($order, 'hasQurbaniItems') && $order->hasQurbaniItems()) return true;
+        if (!empty($order->qurbani_day) || !empty($order->qurbani_region)) return true;
+        $orderNum = strtoupper($order->order_number ?? '');
+        return str_starts_with($orderNum, 'QUR');
     }
 
     public function filter(Request $request)
@@ -3158,7 +3205,8 @@ class OrderController extends Controller
                         \DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                         \DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
                         // ⭐ No longer calculating preparing_quantity - prepared items are now excluded from query
-                        \DB::raw('COUNT(DISTINCT li.id) as line_item_count')
+                        \DB::raw('COUNT(DISTINCT li.id) as line_item_count'),
+                        \DB::raw('GROUP_CONCAT(DISTINCT li.product_id) as product_ids'),
                     ])
                     ->groupBy('o.id', 'o.order_number', 'o.order_status', 'o.order_date', 'o.name', 'o.address_first_name', 'o.address_last_name', 'c.first_name', 'c.last_name')
                     ->orderBy('o.order_date', 'desc');

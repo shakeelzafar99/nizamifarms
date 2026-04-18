@@ -114,6 +114,7 @@ class WhatsAppWebController extends Controller
                     'content' => $msg->content,
                     'template_name' => $msg->template_name,
                     'media_url' => $msg->media_public_url,
+                    'media_mime_type' => $msg->media_mime_type,
                     'status' => $msg->status,
                     'error_message' => $msg->error_message,
                     'sender_name' => $msg->sender?->name ?? null,
@@ -208,14 +209,45 @@ class WhatsAppWebController extends Controller
             return response()->json(['success' => true, 'templates' => []]);
         }
         $query = \App\Models\WhatsApp\TemplateModel::where('status', 'approved');
-        if ($context = $request->query('context')) {
-            $contexts = explode(',', $context);
+
+        // Hide inactive templates from every picker (soft-disable). Settings
+        // page passes include_inactive=1 so the manager can still see/edit them.
+        $includeInactive = $request->boolean('include_inactive', false);
+        if (!$includeInactive && Schema::hasColumn('t_wa_templates', 'is_active')) {
+            $query->where('is_active', 1);
+        }
+
+        $context = $request->query('context');
+        if ($context) {
+            $contexts = array_map('trim', explode(',', $context));
             $query->where(function ($q) use ($contexts) {
                 foreach ($contexts as $ctx) {
-                    $q->orWhereRaw("FIND_IN_SET(?, show_in) > 0", [trim($ctx)]);
+                    if ($ctx === '') continue;
+                    $q->orWhereRaw("FIND_IN_SET(?, show_in) > 0", [$ctx]);
                 }
             });
+
+            // Scope filtering based on whether this picker is a Qurbani picker
+            // or a regular picker. Qurbani pages explicitly request contexts
+            // that start with "qurbani_" (or equal "qurbani").
+            //   - Non-qurbani picker → hide qurbani-only templates
+            //   - Qurbani picker     → hide regular-only templates
+            // Templates with both flags = 0 are "Common" and appear everywhere.
+            $isQurbaniCtx = false;
+            foreach ($contexts as $c) {
+                if ($c !== '' && (str_starts_with($c, 'qurbani_') || $c === 'qurbani')) {
+                    $isQurbaniCtx = true;
+                    break;
+                }
+            }
+            if (!$isQurbaniCtx && Schema::hasColumn('t_wa_templates', 'is_qurbani_only')) {
+                $query->where('is_qurbani_only', 0);
+            }
+            if ($isQurbaniCtx && Schema::hasColumn('t_wa_templates', 'is_regular_only')) {
+                $query->where('is_regular_only', 0);
+            }
         }
+
         $templates = $query->orderBy('display_name')->get();
         return response()->json(['success' => true, 'templates' => $templates]);
     }
@@ -235,7 +267,22 @@ class WhatsAppWebController extends Controller
             'footer_text' => 'nullable|string|max:60',
         ]);
 
-        $template = \App\Models\WhatsApp\TemplateModel::create([
+        $isDefault = $request->boolean('is_default', false);
+        $showIn = $request->show_in ?? 'messages,orders,customers,shopify';
+        $isActive = $request->boolean('is_active', true);
+        $isQurbaniOnly = $request->boolean('is_qurbani_only', false);
+        $isRegularOnly = $request->boolean('is_regular_only', false);
+        // Mutually exclusive: if both are sent as 1 (shouldn't happen with the
+        // radio UI, but be defensive), prefer qurbani-only and clear regular-only.
+        if ($isQurbaniOnly && $isRegularOnly) {
+            $isRegularOnly = false;
+        }
+
+        if ($isDefault) {
+            $this->clearDefaultsForContexts($showIn);
+        }
+
+        $attrs = [
             'name' => $request->name,
             'display_name' => $request->display_name,
             'body_text' => $request->body_text,
@@ -247,8 +294,14 @@ class WhatsAppWebController extends Controller
             'button_labels' => $request->button_labels ? json_encode($request->button_labels) : null,
             'header_text' => $request->header_text,
             'footer_text' => $request->footer_text,
-            'show_in' => $request->show_in ?? 'messages,orders,customers,shopify',
-        ]);
+            'show_in' => $showIn,
+            'is_default' => $isDefault,
+        ];
+        if (Schema::hasColumn('t_wa_templates', 'is_active')) $attrs['is_active'] = $isActive;
+        if (Schema::hasColumn('t_wa_templates', 'is_qurbani_only')) $attrs['is_qurbani_only'] = $isQurbaniOnly;
+        if (Schema::hasColumn('t_wa_templates', 'is_regular_only')) $attrs['is_regular_only'] = $isRegularOnly;
+
+        $template = \App\Models\WhatsApp\TemplateModel::create($attrs);
 
         return response()->json(['success' => true, 'template' => $template]);
     }
@@ -256,8 +309,66 @@ class WhatsAppWebController extends Controller
     public function updateTemplate(Request $request, $id)
     {
         $template = \App\Models\WhatsApp\TemplateModel::findOrFail($id);
-        $request->validate(['show_in' => 'required|string|max:100']);
-        $template->show_in = $request->show_in;
+
+        $request->validate([
+            'name' => 'sometimes|required|string|max:100',
+            'display_name' => 'sometimes|required|string|max:255',
+            'body_text' => 'sometimes|required|string',
+            'category' => 'sometimes|nullable|in:utility,marketing,authentication',
+            'variable_count' => 'sometimes|nullable|integer|min:0|max:10',
+            'has_buttons' => 'sometimes|nullable|boolean',
+            'button_labels' => 'sometimes|nullable|array',
+            'header_text' => 'sometimes|nullable|string|max:255',
+            'footer_text' => 'sometimes|nullable|string|max:60',
+            'show_in' => 'sometimes|required|string|max:100',
+        ]);
+
+        $isDefault = $request->has('is_default')
+            ? $request->boolean('is_default')
+            : (bool) $template->is_default;
+        $showIn = $request->has('show_in') ? $request->show_in : $template->show_in;
+
+        if ($isDefault) {
+            $this->clearDefaultsForContexts($showIn, $template->id);
+        }
+
+        if ($request->has('name')) $template->name = $request->name;
+        if ($request->has('display_name')) $template->display_name = $request->display_name;
+        if ($request->has('body_text')) $template->body_text = $request->body_text;
+        if ($request->has('category')) $template->category = $request->category ?? 'utility';
+        if ($request->has('variable_count')) $template->variable_count = (int) ($request->variable_count ?? 0);
+        if ($request->has('has_buttons')) $template->has_buttons = (bool) $request->has_buttons;
+        if ($request->has('button_labels')) {
+            $template->button_labels = $request->button_labels
+                ? json_encode($request->button_labels)
+                : null;
+        }
+        if ($request->has('header_text')) $template->header_text = $request->header_text;
+        if ($request->has('footer_text')) $template->footer_text = $request->footer_text;
+
+        $template->show_in = $showIn;
+        $template->is_default = $isDefault;
+
+        if (Schema::hasColumn('t_wa_templates', 'is_active') && $request->has('is_active')) {
+            $template->is_active = $request->boolean('is_active');
+        }
+        if (Schema::hasColumn('t_wa_templates', 'is_qurbani_only') && $request->has('is_qurbani_only')) {
+            $template->is_qurbani_only = $request->boolean('is_qurbani_only');
+        }
+        if (Schema::hasColumn('t_wa_templates', 'is_regular_only') && $request->has('is_regular_only')) {
+            $template->is_regular_only = $request->boolean('is_regular_only');
+        }
+        // Mutually exclusive flags: clearing one implicit when the other is set to 1.
+        if ((bool) $template->is_qurbani_only && (bool) ($template->is_regular_only ?? false)) {
+            // Prefer the one the user just toggled on. If only one of them was in
+            // the request, trust it; otherwise keep qurbani_only and clear regular_only.
+            if ($request->has('is_regular_only') && !$request->has('is_qurbani_only')) {
+                $template->is_qurbani_only = false;
+            } else {
+                $template->is_regular_only = false;
+            }
+        }
+
         $template->save();
         return response()->json(['success' => true, 'template' => $template]);
     }
@@ -267,6 +378,25 @@ class WhatsAppWebController extends Controller
         $template = \App\Models\WhatsApp\TemplateModel::findOrFail($id);
         $template->delete();
         return response()->json(['success' => true]);
+    }
+
+    private function clearDefaultsForContexts(string $showIn, ?int $excludeId = null)
+    {
+        $contexts = array_map('trim', explode(',', $showIn));
+        $invoiceContexts = array_intersect($contexts, ['invoice', 'qurbani_invoice']);
+        if (empty($invoiceContexts)) return;
+
+        $query = \App\Models\WhatsApp\TemplateModel::where('is_default', true);
+        if ($excludeId) $query->where('id', '!=', $excludeId);
+        $others = $query->get();
+
+        foreach ($others as $other) {
+            $otherContexts = array_map('trim', explode(',', $other->show_in));
+            if (!empty(array_intersect($otherContexts, $invoiceContexts))) {
+                $other->is_default = false;
+                $other->save();
+            }
+        }
     }
 
     /**

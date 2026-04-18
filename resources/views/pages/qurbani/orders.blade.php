@@ -18,7 +18,54 @@
 .pay-partial { background: #fef3c7; color: #92400e; }
 .pay-paid { background: #dcfce7; color: #166534; }
 .filter-select { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; background: white; min-width: 120px; }
+.filter-select.filter-dependent { border-left: 3px solid #FBBF24; background: #FFFBEB; }
+.filter-select.filter-dependent:focus { background: #FFF; }
 .chart-container { position: relative; height: 300px; }
+
+/* ===== Qurbani Stats Panel ===== */
+.qstats-wrap { margin-bottom: 16px; }
+.qstats-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.qstats-title { font-size:13px; font-weight:700; color:#374151; display:flex; align-items:center; gap:8px; }
+.qstats-title .qstats-badge { background:#fef3c7; color:#92400e; font-size:10px; font-weight:600; padding:2px 6px; border-radius:4px; letter-spacing:.3px; text-transform:uppercase; }
+.qstats-head-btns { display:flex; gap:6px; }
+.qstats-iconbtn { background:#fff; border:1px solid #e5e7eb; color:#6b7280; padding:4px 8px; border-radius:6px; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; }
+.qstats-iconbtn:hover { background:#f9fafb; color:#111827; }
+.qstats-cards { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.qstats-cards.single { grid-template-columns:1fr; }
+.qstats-card { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; }
+.qstats-card-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.qstats-card-title { font-size:13px; font-weight:700; color:#111827; display:flex; align-items:center; gap:6px; }
+.qstats-card-title .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.qstats-card-total { font-size:12px; color:#6b7280; }
+.qstats-card-total b { color:#d97706; font-weight:700; font-size:13px; }
+.qstats-card-actions { display:flex; gap:6px; }
+.qstats-ghostbtn { font-size:11px; padding:4px 10px; border-radius:6px; border:1px solid #d97706; background:#fff; color:#d97706; cursor:pointer; font-weight:600; }
+.qstats-ghostbtn:hover { background:#fef3c7; }
+.qstats-ghostbtn.secondary { border-color:#e5e7eb; color:#6b7280; }
+.qstats-ghostbtn.secondary:hover { background:#f9fafb; color:#111827; }
+.qstats-table { width:100%; border-collapse:collapse; font-size:12px; }
+.qstats-table th, .qstats-table td { padding:6px 8px; border:1px solid #f0f1f3; text-align:center; color:#111827; }
+.qstats-table thead th { background:#f9fafb; color:#6b7280; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.3px; }
+.qstats-table .row-label { background:#fafafa; font-weight:600; color:#374151; text-align:left; white-space:nowrap; }
+.qstats-table .zero { color:#d1d5db; }
+.qstats-table .total-row td { background:#fffbeb; font-weight:700; color:#92400e; }
+.qstats-table .total-col { background:#fffbeb; font-weight:700; color:#92400e; }
+.qstats-empty { text-align:center; padding:20px; color:#9ca3af; font-size:12px; font-style:italic; }
+
+.qstats-mini-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:10px; }
+.qstats-mini { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; }
+.qstats-mini-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; padding-bottom:6px; border-bottom:1px dashed #e5e7eb; }
+.qstats-mini-title { font-size:12px; font-weight:700; color:#111827; }
+.qstats-mini-total { font-size:11px; color:#d97706; font-weight:700; background:#fef3c7; padding:2px 6px; border-radius:4px; }
+.qstats-mini table { width:100%; border-collapse:collapse; font-size:11px; }
+.qstats-mini th, .qstats-mini td { padding:4px 6px; border:1px solid #f0f1f3; text-align:center; }
+.qstats-mini th { background:#f9fafb; color:#6b7280; font-weight:600; font-size:10px; text-transform:uppercase; }
+.qstats-mini .row-label { background:#fafafa; text-align:left; font-weight:600; color:#374151; }
+.qstats-mini .zero { color:#d1d5db; }
+
+@media (max-width: 768px) {
+    .qstats-cards { grid-template-columns:1fr; }
+}
 </style>
 @endpush
 
@@ -52,6 +99,25 @@
 
     <!-- ======= ORDERS TAB ======= -->
     <div id="ordersContent">
+        <!-- Stats Panel (summary + expandable breakdown) -->
+        <div id="qStatsWrap" class="qstats-wrap">
+            <div class="qstats-head">
+                <div class="qstats-title">
+                    <span>Qurbani Booked Summary</span>
+                    <span class="qstats-badge">All orders</span>
+                </div>
+                <div class="qstats-head-btns">
+                    <button type="button" class="qstats-iconbtn" onclick="loadQurbaniStats()" title="Refresh stats"><i class="ki-filled ki-arrows-circle"></i> Refresh</button>
+                    <button type="button" id="qStatsToggle" class="qstats-iconbtn" onclick="toggleQurbaniStats()" title="Hide stats"><i class="ki-filled ki-up"></i> Hide</button>
+                </div>
+            </div>
+            <div id="qStatsBody">
+                <div id="qStatsLoading" class="qstats-empty" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px;">Loading stats&hellip;</div>
+                <div id="qStatsSummary" class="qstats-cards" style="display:none;"></div>
+                <div id="qStatsBreakdown" style="display:none;"></div>
+            </div>
+        </div>
+
         <!-- Filters Row -->
         <div class="bg-white border border-gray-200 rounded-lg p-4 mb-4">
             <div class="flex flex-wrap items-center gap-3">
@@ -65,23 +131,10 @@
                     </select>
                 </div>
                 <div>
-                    <label class="text-xs font-medium text-gray-500 block mb-1">Slot</label>
-                    <select id="filterSlot" class="filter-select" onchange="loadOrders()">
-                        <option value="">All Slots</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-medium text-gray-500 block mb-1">Region</label>
-                    <select id="filterRegion" class="filter-select" onchange="loadOrders()">
-                        <option value="">All Regions</option>
-                        @foreach($regions as $r)
-                        <option value="{{ $r }}">{{ $r }}</option>
-                        @endforeach
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-medium text-gray-500 block mb-1">Delivery Type</label>
-                    <select id="filterDeliveryType" class="filter-select" onchange="loadOrders()">
+                    <label class="text-xs font-medium text-gray-500 block mb-1">
+                        Delivery Type
+                    </label>
+                    <select id="filterDeliveryType" class="filter-select" onchange="onDeliveryTypeFilterChange()">
                         <option value="">All Types</option>
                         @foreach($deliveryTypes as $dt)
                         <option value="{{ $dt }}">{{ $dt }}</option>
@@ -89,14 +142,46 @@
                     </select>
                 </div>
                 <div>
-                    <label class="text-xs font-medium text-gray-500 block mb-1">Status</label>
-                    <select id="filterStatus" class="filter-select" onchange="loadOrders()">
-                        <option value="">All Statuses</option>
-                        <option value="open">Open</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="in_progress">In Progress</option>
-                        <option value="delivered">Delivered</option>
-                        <option value="cancelled">Cancelled</option>
+                    <label class="text-xs font-medium text-gray-500 block mb-1" title="Slot options change based on the selected Day &amp; Delivery Type">
+                        Slot <span class="text-[10px] font-normal text-gray-400">(depends on Day/Type)</span>
+                    </label>
+                    <select id="filterSlot" class="filter-select filter-dependent" onchange="loadOrders()">
+                        <option value="">All Slots</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1">Region</label>
+                    <select id="filterRegion" class="filter-select" onchange="onRegionFilterChange()">
+                        <option value="">All Regions</option>
+                        @foreach($regions as $r)
+                        <option value="{{ $r }}">{{ $r }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1" title="Sub Regions change based on the selected Region">
+                        Sub Region <span class="text-[10px] font-normal text-gray-400">(depends on Region)</span>
+                    </label>
+                    <select id="filterSubRegion" class="filter-select filter-dependent" onchange="loadOrders()">
+                        <option value="">All Sub Regions</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1">Category</label>
+                    <select id="filterCategory" class="filter-select" onchange="onCategoryFilterChange()">
+                        <option value="">All Categories</option>
+                        @foreach(($categories ?? []) as $cat)
+                        <option value="{{ $cat }}">{{ $cat }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1">Payment</label>
+                    <select id="filterPaymentStatus" class="filter-select" onchange="loadOrders()">
+                        <option value="">All Payments</option>
+                        <option value="paid">Paid</option>
+                        <option value="partial">Partial</option>
+                        <option value="unpaid">Unpaid</option>
                     </select>
                 </div>
                 <div>
@@ -243,6 +328,7 @@ let hasItemFilters = false;
 let activeCategoryFilter = null;
 let currentRegion = '';
 const isTaimurOrMgmt = {{ $isTaimurOrMgmt ? 'true' : 'false' }};
+const canDeleteOrders = {{ ($isTaimur ?? false) && ($deleteEnabled ?? false) ? 'true' : 'false' }};
 const fieldOptions = @json($fieldOptions);
 window._qurbaniRiders = @json($riders);
 
@@ -269,8 +355,12 @@ function clearFilters() {
     document.getElementById('filterDay').value = '';
     document.getElementById('filterSlot').value = '';
     document.getElementById('filterRegion').value = '';
+    document.getElementById('filterSubRegion').value = '';
     document.getElementById('filterDeliveryType').value = '';
-    document.getElementById('filterStatus').value = '';
+    const payEl = document.getElementById('filterPaymentStatus');
+    if (payEl) payEl.value = '';
+    const catEl = document.getElementById('filterCategory');
+    if (catEl) catEl.value = '';
     document.getElementById('filterCustomer').value = '';
     currentRegion = '';
     activeCategoryFilter = null;
@@ -279,6 +369,9 @@ function clearFilters() {
             ? 'region-tab px-3 py-1.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800 border border-amber-300'
             : 'region-tab px-3 py-1.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200';
     });
+    // Re-render dependent dropdowns (they show full option sets once parents are cleared).
+    if (typeof updateSlotDropdown === 'function') updateSlotDropdown();
+    if (typeof updateSubRegionDropdown === 'function') updateSubRegionDropdown();
     loadOrders();
 }
 
@@ -301,29 +394,97 @@ function loadSlotOptions() {
 function updateSlotDropdown() {
     const slotSel = document.getElementById('filterSlot');
     const dayVal = document.getElementById('filterDay').value;
+    const dtVal = document.getElementById('filterDeliveryType').value;
     const currentSlot = slotSel.value;
     while (slotSel.options.length > 1) slotSel.remove(1);
 
     let slots = (qurbaniSlotOptionsCache || []).filter(o => o.is_active);
+
+    let dayObj = null, dtObj = null;
     if (dayVal && qurbaniDayOptionsCache) {
-        const dayObj = qurbaniDayOptionsCache.find(d => d.is_active && d.option_value === dayVal);
-        if (dayObj) {
-            const filtered = slots.filter(s => s.parent_id === dayObj.id);
-            if (filtered.length > 0) slots = filtered;
-        }
+        dayObj = qurbaniDayOptionsCache.find(d => d.is_active && d.option_value === dayVal);
+    }
+    if (dtVal) {
+        const dtOpts = (fieldOptions['qurbani_delivery_type'] || []);
+        dtObj = dtOpts.find(d => d.is_active && d.option_value === dtVal);
     }
 
+    if (dayObj && dtObj) {
+        const filtered = slots.filter(s => s.parent_id === dayObj.id && s.delivery_type_parent_id === dtObj.id);
+        if (filtered.length > 0) slots = filtered;
+        else if (dayObj) {
+            const dayOnly = slots.filter(s => s.parent_id === dayObj.id);
+            if (dayOnly.length > 0) slots = dayOnly;
+        }
+    } else if (dayObj) {
+        const filtered = slots.filter(s => s.parent_id === dayObj.id);
+        if (filtered.length > 0) slots = filtered;
+    }
+
+    // Dedupe by option_value so slots that exist for multiple Day/DT combos don't appear twice.
+    const seenSlot = new Set();
     slots.forEach(o => {
+        if (seenSlot.has(o.option_value)) return;
+        seenSlot.add(o.option_value);
         const opt = document.createElement('option');
         opt.value = o.option_value;
         opt.textContent = o.option_value;
         if (o.option_value === currentSlot) opt.selected = true;
         slotSel.appendChild(opt);
     });
+    // If the previously-selected slot is no longer a valid option, drop it so backend
+    // filtering isn't done against a stale invisible value.
+    if (currentSlot && !seenSlot.has(currentSlot)) slotSel.value = '';
+}
+
+function updateSubRegionDropdown() {
+    const subRegionSel = document.getElementById('filterSubRegion');
+    const regionVal = document.getElementById('filterRegion').value;
+    const currentSub = subRegionSel.value;
+    while (subRegionSel.options.length > 1) subRegionSel.remove(1);
+
+    let subRegions = (fieldOptions['qurbani_sub_region'] || []).filter(o => o.is_active);
+    if (regionVal) {
+        const regionOpts = fieldOptions['qurbani_region'] || [];
+        const regionObj = regionOpts.find(r => r.is_active && r.option_value === regionVal);
+        if (regionObj) {
+            const filtered = subRegions.filter(s => s.parent_id === regionObj.id);
+            if (filtered.length > 0) subRegions = filtered;
+        }
+    }
+
+    const seenSR = new Set();
+    subRegions.forEach(o => {
+        if (seenSR.has(o.option_value)) return;
+        seenSR.add(o.option_value);
+        const opt = document.createElement('option');
+        opt.value = o.option_value;
+        opt.textContent = o.option_value;
+        if (o.option_value === currentSub) opt.selected = true;
+        subRegionSel.appendChild(opt);
+    });
+    if (currentSub && !seenSR.has(currentSub)) subRegionSel.value = '';
 }
 
 function onDayFilterChange() {
     updateSlotDropdown();
+    loadOrders();
+}
+
+function onDeliveryTypeFilterChange() {
+    updateSlotDropdown();
+    loadOrders();
+}
+
+function onRegionFilterChange() {
+    updateSubRegionDropdown();
+    loadOrders();
+}
+
+function onCategoryFilterChange() {
+    const val = document.getElementById('filterCategory').value;
+    // Keep client-side category cards in sync with the dropdown so both UIs reflect the same state.
+    activeCategoryFilter = val || null;
     loadOrders();
 }
 
@@ -338,14 +499,18 @@ function loadOrders() {
     const day = document.getElementById('filterDay').value;
     const slot = document.getElementById('filterSlot').value;
     const region = document.getElementById('filterRegion').value;
+    const subRegion = document.getElementById('filterSubRegion').value;
     const dt = document.getElementById('filterDeliveryType').value;
-    const status = document.getElementById('filterStatus').value;
+    const paymentStatus = (document.getElementById('filterPaymentStatus') || {}).value || '';
+    const category = (document.getElementById('filterCategory') || {}).value || '';
     const customer = document.getElementById('filterCustomer').value.trim();
     if (day) params.set('day', day);
     if (slot) params.set('slot', slot);
     if (region) params.set('region', region);
+    if (subRegion) params.set('sub_region', subRegion);
     if (dt) params.set('delivery_type', dt);
-    if (status) params.set('status', status);
+    if (paymentStatus) params.set('payment_status', paymentStatus);
+    if (category) params.set('category', category);
     if (customer) params.set('customer', customer);
 
     document.getElementById('ordersBody').innerHTML = '<tr><td colspan="14" class="px-4 py-8 text-center text-gray-400">Loading...</td></tr>';
@@ -357,7 +522,11 @@ function loadOrders() {
     .then(data => {
         allOrders = data.orders || [];
         hasItemFilters = data.has_item_filters || false;
-        activeCategoryFilter = null;
+        // Respect the Category dropdown selection across reloads (user expectation: if they
+        // picked a category, it stays selected). Card clicks also update the dropdown, so
+        // reading from the dropdown is now the single source of truth for client-side filtering.
+        const catSel = document.getElementById('filterCategory');
+        activeCategoryFilter = (catSel && catSel.value) ? catSel.value : null;
         renderOrders(allOrders);
     })
     .catch(err => {
@@ -455,11 +624,27 @@ function renderOrders(orders) {
         }
         const dayHtml = formatItemField('qurbani_day');
         const slotHtml = formatItemField('qurbani_slot');
-        const regionHtml = formatItemField('qurbani_region');
+        const regionHtml = (() => {
+            if (items.length === 0) {
+                let r = o.qurbani_region || '-';
+                if (o.qurbani_sub_region) r += '<div class="text-xs text-gray-400">' + o.qurbani_sub_region + '</div>';
+                return r;
+            }
+            return items.map(i => {
+                let r = i.qurbani_region || '-';
+                if (i.qurbani_sub_region) r += ' <span style="color:#6b7280; font-size:10px;">(' + i.qurbani_sub_region + ')</span>';
+                return '<div class="text-xs" style="line-height:1.4;">' + r + '</div>';
+            }).join('');
+        })();
         const dtypeHtml = formatItemField('qurbani_delivery_type');
+        const hasOrderNote = o.note && o.note.trim();
+        const hasAnyNote = hasOrderNote || items.some(i => i.instructions && i.instructions.trim());
 
-        return `<tr class="order-row border-b border-gray-100 cursor-pointer" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
-            <td class="px-3 py-2 text-gray-900 font-medium">${o.order_number || o.id}</td>
+        return `<tr class="order-row border-b border-gray-100 cursor-pointer${hasAnyNote ? ' bg-yellow-50' : ''}" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
+            <td class="px-3 py-2 text-gray-900 font-medium">
+                ${o.order_number || o.id}
+                ${hasOrderNote ? '<div style="font-size:10px; color:#92400e; margin-top:2px;" title="' + o.note.replace(/"/g, '&quot;') + '">📝 Note</div>' : ''}
+            </td>
             <td class="px-3 py-2">
                 <div class="text-gray-900">${(o.customer_name || '').trim() || '-'}</div>
                 <div class="text-xs text-gray-400">${o.customer_phone || ''}</div>
@@ -487,6 +672,8 @@ function renderOrders(orders) {
                 <div style="display:flex; gap:4px; justify-content:center; flex-wrap:wrap;">
                     <button onclick="openQurbaniPaymentModal(${o.id}, ${Number(o.balance_remaining || 0)})" style="padding:3px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Add Payment">💰 Pay</button>
                     <button onclick="window.open('/orders/${o.id}/invoice', '_blank')" style="padding:3px 8px; background:#4F46E5; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="View Invoice">📄 Invoice</button>
+                    <button onclick="openWhatsAppInvoiceModal(${o.id}, '${(o.customer_name || '').replace(/'/g, "\\'")}', '${o.order_number || ''}', '${(o.customer_phone || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#25D366; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Send WhatsApp Invoice">📱 WA</button>
+                    ${canDeleteOrders ? `<button onclick="deleteQurbaniOrder(${o.id}, '${(o.order_number || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#DC2626; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Delete Order">🗑️ Del</button>` : ''}
                 </div>
             </td>
         </tr>`;
@@ -496,6 +683,18 @@ function renderOrders(orders) {
 
 function filterByCategory(cat) {
     activeCategoryFilter = (activeCategoryFilter === cat) ? null : cat;
+    // Keep the Category dropdown and the server-side fetch in sync with the quick-filter
+    // summary cards: if the category exists as a dropdown option we reload via the
+    // server so untoggling reveals the full set again; otherwise we fall back to a purely
+    // client-side re-render for ad-hoc categories that aren't in the dropdown.
+    const catSel = document.getElementById('filterCategory');
+    const target = activeCategoryFilter == null ? '' : activeCategoryFilter;
+    const optionExists = !!catSel && (target === '' || Array.from(catSel.options).some(o => o.value === target));
+    if (catSel && optionExists && catSel.value !== target) {
+        catSel.value = target;
+        loadOrders();
+        return;
+    }
     renderOrders(allOrders);
 }
 
@@ -597,6 +796,461 @@ function submitQurbaniPayment() {
         }
     })
     .catch(() => { alert('Error'); btn.disabled = false; btn.textContent = 'Record Payment'; });
+}
+
+// ======= WHATSAPP INVOICE =======
+var qurWaCurrentOrderId = null;
+var qurWaCurrentPhone = '';
+
+function openFullscreenImg(src) {
+    if (!src) return;
+    var overlay = document.getElementById('waImgOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'waImgOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+    overlay.innerHTML = '<img src="' + src + '" style="max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5);" /><button style="position:absolute;top:16px;right:24px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:28px;cursor:pointer;border-radius:50%;width:44px;height:44px;">&times;</button>';
+    overlay.addEventListener('click', function() { overlay.remove(); });
+    document.body.appendChild(overlay);
+}
+
+function captureQurbaniInvoiceImage(invoiceUrl, orderId) {
+    return new Promise(function(resolve, reject) {
+        var iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        document.body.appendChild(iframe);
+        iframe.src = invoiceUrl;
+        iframe.onload = function() {
+            try {
+                var iDoc = iframe.contentDocument || iframe.contentWindow.document;
+                var script = iDoc.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+                script.onload = function() {
+                    var node = iDoc.querySelector('.invoice-container');
+                    if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
+                    iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true}).then(function(canvas) {
+                        var dataUrl = canvas.toDataURL('image/png');
+                        iframe.remove();
+                        fetch('/messages/upload-invoice-image', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json'},
+                            body: JSON.stringify({ order_id: orderId, image_data: dataUrl })
+                        })
+                        .then(function(r) { return r.json(); })
+                        .then(function(uploadRes) {
+                            if (uploadRes.success) resolve(uploadRes);
+                            else reject(new Error(uploadRes.message || 'Upload failed'));
+                        })
+                        .catch(reject);
+                    }).catch(function(err) { iframe.remove(); reject(err); });
+                };
+                iDoc.head.appendChild(script);
+            } catch (err) { iframe.remove(); reject(err); }
+        };
+        iframe.onerror = function() { iframe.remove(); reject(new Error('Failed to load invoice')); };
+    });
+}
+
+// ---- WhatsApp modal (Qurbani) ----
+// Tabs: "Invoice" (default) and "Other Message".
+// - Invoice tab retains existing send-invoice flow + auto-preview on open.
+// - Other Message tab lets the user pick any non-invoice template allowed on
+//   this page (uses the shared template filter: qurbani-only + context orders).
+let qurWaCustomerName = '';
+let qurWaOrderNumber = '';
+
+function openWhatsAppInvoiceModal(orderId, customerName, orderNumber, customerPhone) {
+    var existing = document.getElementById('waInvoiceOverlay');
+    if (existing) existing.remove();
+
+    qurWaCurrentOrderId = orderId;
+    qurWaCurrentPhone = customerPhone;
+    qurWaCustomerName = customerName || '';
+    qurWaOrderNumber = orderNumber || '';
+
+    var overlay = document.createElement('div');
+    overlay.id = 'waInvoiceOverlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center;';
+    overlay.innerHTML = `
+        <div style="background:#fff; border-radius:12px; width:520px; max-width:95vw; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+            <div style="padding:16px 20px; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; justify-content:space-between;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:20px;">📱</span>
+                    <span style="font-weight:700; font-size:15px; color:#111827;">Send WhatsApp Message</span>
+                </div>
+                <button onclick="document.getElementById('waInvoiceOverlay').remove()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">&times;</button>
+            </div>
+            <div style="padding:16px 20px 6px;">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; margin-bottom:2px;">Customer</div>
+                        <div style="font-size:14px; font-weight:600; color:#111827;">${qstatsEscape(customerName || 'Unknown')}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:11px; color:#6b7280; margin-bottom:2px;">Order</div>
+                        <div style="font-size:14px; font-weight:600; color:#111827;">#${qstatsEscape(orderNumber)}</div>
+                    </div>
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Phone Number</label>
+                    <input id="waInvPhone" type="text" value="${qstatsEscape(customerPhone || '')}" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;" placeholder="923001234567" />
+                </div>
+
+                <!-- Tab bar -->
+                <div style="display:inline-flex; background:#f3f4f6; border-radius:8px; padding:3px; margin-bottom:14px;">
+                    <button id="qurWaTabInvoice" type="button" onclick="qurWaSwitchTab('invoice')" style="padding:6px 14px; border:none; background:#fff; color:#111827; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.08);">🧾 Invoice</button>
+                    <button id="qurWaTabOther" type="button" onclick="qurWaSwitchTab('other')" style="padding:6px 14px; border:none; background:transparent; color:#6b7280; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">💬 Other Message</button>
+                </div>
+
+                <!-- INVOICE TAB -->
+                <div id="qurWaInvoicePanel">
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Invoice Template</label>
+                        <select id="waTemplateName" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; background:#fff;" onchange="onQurbaniTemplateChange()">
+                            <option value="">Loading templates...</option>
+                        </select>
+                        <div style="font-size:11px; color:#9ca3af; margin-top:4px;">Templates tagged "Qurbani Invoice" / "Invoice" in Manage Templates</div>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Body Variables (comma-separated)</label>
+                        <input id="waBodyParams" type="text" value="${qstatsEscape(customerName || '')}, ${qstatsEscape(orderNumber || '')}" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+                        <div id="waVarHint" style="font-size:11px; color:#9ca3af; margin-top:4px;">Variables are passed to the template in order (e.g. 1=Name, 2=Order#)</div>
+                    </div>
+                    <div id="waInvPreviewArea" style="margin-bottom:12px; display:none;">
+                        <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Invoice Preview</label>
+                        <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; text-align:center; background:#f9fafb; padding:8px;">
+                            <img id="waInvPreviewImg" style="max-width:100%; max-height:300px; border-radius:4px; cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" />
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button id="waInvPreviewBtn" onclick="previewQurbaniInvoice()" style="flex:1; padding:10px; border:1px solid #25D366; color:#25D366; background:#fff; border-radius:8px; font-weight:600; cursor:pointer; font-size:13px;">Refresh Preview</button>
+                        <button id="waSendBtn" onclick="sendWhatsAppInvoice()" style="flex:1; padding:10px; background:#25D366; color:#fff; border:none; border-radius:8px; font-weight:600; cursor:pointer; font-size:13px;">Send Invoice</button>
+                    </div>
+                    <div id="waInvStatus" style="margin-top:10px; font-size:13px; text-align:center; display:none;"></div>
+                </div>
+
+                <!-- OTHER TAB -->
+                <div id="qurWaOtherPanel" style="display:none;">
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Message Template</label>
+                        <select id="qurWaOtherTpl" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; background:#fff;" onchange="onQurbaniOtherTemplateChange()">
+                            <option value="">Loading templates...</option>
+                        </select>
+                        <div style="font-size:11px; color:#9ca3af; margin-top:4px;">Shows only templates allowed on Qurbani orders (no invoice templates).</div>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px; color:#6b7280; display:block; margin-bottom:4px;">Body Variables (comma-separated)</label>
+                        <input id="qurWaOtherParams" type="text" value="${qstatsEscape(customerName || '')}" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+                        <div id="qurWaOtherHint" style="font-size:11px; color:#9ca3af; margin-top:4px;">Variables are passed to the template in order.</div>
+                    </div>
+                    <div id="qurWaOtherPreview" style="display:none; background:#f9fafb; border:1px dashed #e5e7eb; border-radius:6px; padding:10px; margin-bottom:12px; font-size:12px; color:#374151; white-space:pre-wrap;"></div>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="sendQurbaniOtherMessage()" style="flex:1; padding:10px; background:#25D366; color:#fff; border:none; border-radius:8px; font-weight:600; cursor:pointer; font-size:13px;">Send Message</button>
+                    </div>
+                    <div id="qurWaOtherStatus" style="margin-top:10px; font-size:13px; text-align:center; display:none;"></div>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+
+    qurWaLoadInvoiceTemplates();
+    qurWaLoadOtherTemplates();
+
+    // Kick off the invoice preview automatically so the user sees what they are
+    // sending without having to press the preview button first.
+    previewQurbaniInvoice();
+}
+
+function qurWaSwitchTab(tab) {
+    var invTab = document.getElementById('qurWaTabInvoice');
+    var othTab = document.getElementById('qurWaTabOther');
+    var invPanel = document.getElementById('qurWaInvoicePanel');
+    var othPanel = document.getElementById('qurWaOtherPanel');
+    if (!invTab || !othTab || !invPanel || !othPanel) return;
+    var activeStyle = 'padding:6px 14px; border:none; background:#fff; color:#111827; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.08);';
+    var inactiveStyle = 'padding:6px 14px; border:none; background:transparent; color:#6b7280; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;';
+    if (tab === 'other') {
+        invTab.setAttribute('style', inactiveStyle);
+        othTab.setAttribute('style', activeStyle);
+        invPanel.style.display = 'none';
+        othPanel.style.display = '';
+    } else {
+        invTab.setAttribute('style', activeStyle);
+        othTab.setAttribute('style', inactiveStyle);
+        invPanel.style.display = '';
+        othPanel.style.display = 'none';
+    }
+}
+
+function qurWaLoadInvoiceTemplates() {
+    window._qurInvoiceTemplates = [];
+    fetch('/messages/templates?context=qurbani_invoice,invoice', {
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var sel = document.getElementById('waTemplateName');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var tpls = (data.templates || []);
+        window._qurInvoiceTemplates = tpls;
+        if (tpls.length === 0) {
+            sel.innerHTML = '<option value="">No invoice templates found</option>';
+            return;
+        }
+        var defaultIdx = tpls.findIndex(function(t) { return t.is_default; });
+        if (defaultIdx < 0) defaultIdx = 0;
+        tpls.forEach(function(t, i) {
+            var opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.display_name + ' (' + t.variable_count + ' vars)' + (t.is_default ? ' ⭐' : '');
+            opt.dataset.varCount = t.variable_count;
+            opt.dataset.idx = i;
+            if (i === defaultIdx) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        onQurbaniTemplateChange();
+    })
+    .catch(function() {
+        var sel = document.getElementById('waTemplateName');
+        if (sel) sel.innerHTML = '<option value="">Failed to load templates</option>';
+    });
+}
+
+function qurWaLoadOtherTemplates() {
+    window._qurOtherTemplates = [];
+    // Non-invoice contexts that make sense for a qurbani order customer message.
+    fetch('/messages/templates?context=qurbani_orders,orders,messages,customers', {
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var sel = document.getElementById('qurWaOtherTpl');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var tpls = (data.templates || []).filter(function(t) {
+            // Exclude anything explicitly marked as an invoice template to avoid
+            // duplicating the invoice flow here (invoice templates go through
+            // the image-header sender, not /send-template).
+            var raw = t.show_in;
+            var showIn = Array.isArray(raw)
+                ? raw.map(function(x) { return String(x).toLowerCase().trim(); })
+                : String(raw || '').toLowerCase().split(',').map(function(x) { return x.trim(); });
+            if (showIn.indexOf('invoice') >= 0 || showIn.indexOf('qurbani_invoice') >= 0) return false;
+            return true;
+        });
+        window._qurOtherTemplates = tpls;
+        if (tpls.length === 0) {
+            sel.innerHTML = '<option value="">No templates available</option>';
+            return;
+        }
+        var defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = '-- Select a template --';
+        sel.appendChild(defaultOpt);
+        tpls.forEach(function(t, i) {
+            var opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.display_name + ' (' + t.variable_count + ' vars)';
+            opt.dataset.varCount = t.variable_count;
+            opt.dataset.idx = i;
+            sel.appendChild(opt);
+        });
+    })
+    .catch(function() {
+        var sel = document.getElementById('qurWaOtherTpl');
+        if (sel) sel.innerHTML = '<option value="">Failed to load templates</option>';
+    });
+}
+
+function onQurbaniTemplateChange() {
+    var sel = document.getElementById('waTemplateName');
+    var paramsInput = document.getElementById('waBodyParams');
+    var hintEl = document.getElementById('waVarHint');
+    if (!sel || !paramsInput) return;
+    var selectedOpt = sel.options[sel.selectedIndex];
+    var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
+    var custName = qurWaCustomerName;
+    var orderNum = qurWaOrderNumber;
+    if (varCount === 0) {
+        paramsInput.value = '';
+        if (hintEl) hintEl.textContent = 'This template has no variables';
+    } else if (varCount === 1) {
+        paramsInput.value = custName;
+        if (hintEl) hintEl.textContent = '1 variable: Name';
+    } else {
+        paramsInput.value = custName + ', ' + orderNum;
+        if (hintEl) hintEl.textContent = varCount + ' variables: e.g. Name, Order#' + (varCount > 2 ? ', ...' : '');
+    }
+}
+
+function onQurbaniOtherTemplateChange() {
+    var sel = document.getElementById('qurWaOtherTpl');
+    var paramsInput = document.getElementById('qurWaOtherParams');
+    var hintEl = document.getElementById('qurWaOtherHint');
+    var previewEl = document.getElementById('qurWaOtherPreview');
+    if (!sel || !paramsInput) return;
+    var selectedOpt = sel.options[sel.selectedIndex];
+    var idx = selectedOpt?.dataset?.idx;
+    var tpls = window._qurOtherTemplates || [];
+    var tpl = (idx != null) ? tpls[parseInt(idx)] : null;
+    var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
+
+    // Default variables: pre-fill customer name / order number as useful seeds.
+    if (varCount === 0) {
+        paramsInput.value = '';
+        if (hintEl) hintEl.textContent = 'This template has no variables';
+    } else if (varCount === 1) {
+        paramsInput.value = qurWaCustomerName;
+        if (hintEl) hintEl.textContent = '1 variable: Name';
+    } else {
+        paramsInput.value = qurWaCustomerName + ', ' + qurWaOrderNumber;
+        if (hintEl) hintEl.textContent = varCount + ' variables (e.g. Name, Order#)';
+    }
+
+    if (previewEl) {
+        if (tpl && tpl.body_text) {
+            previewEl.textContent = tpl.body_text;
+            previewEl.style.display = '';
+        } else {
+            previewEl.style.display = 'none';
+        }
+    }
+}
+
+function previewQurbaniInvoice() {
+    var btn = document.getElementById('waInvPreviewBtn');
+    if (!btn) return;
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+
+    fetch('/messages/invoice-image/' + qurWaCurrentOrderId, {
+        headers: {'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json'}
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Preview Invoice'; btn.disabled = false; return; }
+        if (d.needs_capture) {
+            captureQurbaniInvoiceImage(d.invoice_url, qurWaCurrentOrderId).then(function(uploadRes) {
+                var img = document.getElementById('waInvPreviewImg');
+                var area = document.getElementById('waInvPreviewArea');
+                if (img) img.src = uploadRes.image_url;
+                if (area) area.style.display = 'block';
+                btn.textContent = 'Refresh Preview'; btn.disabled = false;
+            }).catch(function(err) { alert('Failed to capture invoice: ' + err.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
+        } else {
+            var img = document.getElementById('waInvPreviewImg');
+            var area = document.getElementById('waInvPreviewArea');
+            if (img) img.src = d.image_url;
+            if (area) area.style.display = 'block';
+            btn.textContent = 'Refresh Preview'; btn.disabled = false;
+        }
+    })
+    .catch(function(e) { alert('Error: ' + e.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
+}
+
+function sendWhatsAppInvoice() {
+    var phone = document.getElementById('waInvPhone').value.trim();
+    var templateName = document.getElementById('waTemplateName').value.trim();
+    var bodyParamsStr = document.getElementById('waBodyParams').value.trim();
+    if (!phone) { alert('Please enter a phone number'); return; }
+    if (!templateName) { alert('Please enter the template name'); return; }
+    var params = bodyParamsStr ? bodyParamsStr.split(',').map(function(s) { return s.trim(); }) : [];
+    var btn = document.getElementById('waSendBtn');
+    var statusEl = document.getElementById('waInvStatus');
+    btn.textContent = 'Sending...'; btn.disabled = true;
+    statusEl.style.display = 'none';
+
+    // If preview image isn't ready yet (e.g. user hit Send before the auto-
+    // preview finished), force a capture first so the header image resolves.
+    var previewReady = document.getElementById('waInvPreviewArea')?.style.display === 'block';
+    var ensureReady = previewReady
+        ? Promise.resolve()
+        : new Promise(function(resolve) {
+            fetch('/messages/invoice-image/' + qurWaCurrentOrderId, { headers: {'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json'} })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d && d.success && d.needs_capture) {
+                        return captureQurbaniInvoiceImage(d.invoice_url, qurWaCurrentOrderId).then(function(uploadRes) {
+                            var img = document.getElementById('waInvPreviewImg');
+                            var area = document.getElementById('waInvPreviewArea');
+                            if (img) img.src = uploadRes.image_url;
+                            if (area) area.style.display = 'block';
+                            resolve();
+                        }).catch(function() { resolve(); });
+                    }
+                    if (d && d.success && d.image_url) {
+                        var img = document.getElementById('waInvPreviewImg');
+                        var area = document.getElementById('waInvPreviewArea');
+                        if (img) img.src = d.image_url;
+                        if (area) area.style.display = 'block';
+                    }
+                    resolve();
+                })
+                .catch(function() { resolve(); });
+        });
+
+    ensureReady.then(function() {
+        return fetch('/messages/send-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: JSON.stringify({ order_id: qurWaCurrentOrderId, phone: phone, template_name: templateName, body_params: params }),
+        });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            statusEl.style.display = 'block'; statusEl.style.color = '#16a34a';
+            statusEl.textContent = 'Invoice sent successfully!';
+            btn.textContent = 'Sent!';
+            setTimeout(function() { var el = document.getElementById('waInvoiceOverlay'); if (el) el.remove(); }, 2000);
+        } else {
+            statusEl.style.display = 'block'; statusEl.style.color = '#dc2626';
+            statusEl.textContent = data.message || 'Failed to send';
+            btn.textContent = 'Send Invoice'; btn.disabled = false;
+        }
+    })
+    .catch(function(e) { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
+}
+
+function sendQurbaniOtherMessage() {
+    var phone = document.getElementById('waInvPhone').value.trim();
+    var tplSel = document.getElementById('qurWaOtherTpl');
+    var templateName = tplSel ? tplSel.value.trim() : '';
+    var paramsStr = (document.getElementById('qurWaOtherParams').value || '').trim();
+    if (!phone) { alert('Please enter a phone number'); return; }
+    if (!templateName) { alert('Please pick a template'); return; }
+    var params = paramsStr ? paramsStr.split(',').map(function(s) { return s.trim(); }) : [];
+    var statusEl = document.getElementById('qurWaOtherStatus');
+    var btn = document.querySelector('#qurWaOtherPanel button[onclick="sendQurbaniOtherMessage()"]');
+    if (btn) { btn.textContent = 'Sending...'; btn.disabled = true; }
+    if (statusEl) statusEl.style.display = 'none';
+
+    fetch('/messages/send-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        body: JSON.stringify({ phone: phone, template_name: templateName, body_params: params }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!statusEl || !btn) return;
+        if (data.success) {
+            statusEl.style.display = 'block'; statusEl.style.color = '#16a34a';
+            statusEl.textContent = 'Message sent successfully!';
+            btn.textContent = 'Sent!';
+            setTimeout(function() { var el = document.getElementById('waInvoiceOverlay'); if (el) el.remove(); }, 1500);
+        } else {
+            statusEl.style.display = 'block'; statusEl.style.color = '#dc2626';
+            statusEl.textContent = data.message || 'Failed to send';
+            btn.textContent = 'Send Message'; btn.disabled = false;
+        }
+    })
+    .catch(function(e) {
+        if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; }
+        if (btn) { btn.textContent = 'Send Message'; btn.disabled = false; }
+    });
 }
 
 // ======= DASHBOARD =======
@@ -729,7 +1383,7 @@ function openEditFieldOptions(fieldName) {
     const modal = document.getElementById('editFieldOptionsModal');
     const title = document.getElementById('editFieldTitle');
     const body = document.getElementById('editFieldBody');
-    const labels = { qurbani_day: 'Qurbani Day', qurbani_slot: 'Qurbani Slot', qurbani_region: 'Qurbani Region', qurbani_delivery_type: 'Delivery Type' };
+    const labels = { qurbani_day: 'Qurbani Day', qurbani_slot: 'Qurbani Slot', qurbani_region: 'Qurbani Region', qurbani_sub_region: 'Sub Region', qurbani_delivery_type: 'Delivery Type' };
     title.textContent = 'Edit: ' + (labels[fieldName] || fieldName);
 
     fetch('/qurbani-settings/api/options?field=' + fieldName, {
@@ -815,15 +1469,276 @@ function addFieldOption(fieldName) {
 }
 @endif
 
+// ======= QURBANI STATS PANEL =======
+let qStatsData = null;                  // latest response from /qurbani/api/order-stats
+let qStatsBreakdownKey = null;          // currently expanded delivery_type, or null for summary view
+
+const QSTATS_COLLAPSED_KEY = 'qurbani_stats_collapsed_v1';
+
+function qstatsDotColor(dt) {
+    const k = String(dt || '').toLowerCase();
+    if (k.indexOf('self') >= 0) return '#6366f1';
+    if (k.indexOf('deliver') >= 0) return '#10b981';
+    if (k === 'unassigned') return '#9ca3af';
+    return '#d97706';
+}
+
+function qstatsSortDeliveryTypes(types) {
+    const pref = ['delivery', 'self collection', 'self-collection', 'self collect'];
+    const arr = types.slice();
+    arr.sort((a, b) => {
+        const ia = pref.findIndex(p => String(a).toLowerCase().indexOf(p) >= 0);
+        const ib = pref.findIndex(p => String(b).toLowerCase().indexOf(p) >= 0);
+        if (a === 'Unassigned') return 1;
+        if (b === 'Unassigned') return -1;
+        if (ia !== ib) {
+            if (ia < 0) return 1;
+            if (ib < 0) return -1;
+            return ia - ib;
+        }
+        return String(a).localeCompare(String(b));
+    });
+    return arr;
+}
+
+function qstatsEscape(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function loadQurbaniStats() {
+    const loading = document.getElementById('qStatsLoading');
+    const summary = document.getElementById('qStatsSummary');
+    const breakdown = document.getElementById('qStatsBreakdown');
+    if (loading) { loading.style.display = ''; loading.textContent = 'Loading stats…'; }
+    if (summary) summary.style.display = 'none';
+    if (breakdown) breakdown.style.display = 'none';
+
+    fetch('/qurbani/api/order-stats', {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data || !data.success) throw new Error('Bad response');
+        qStatsData = data;
+        if (qStatsBreakdownKey) renderQurbaniBreakdown(qStatsBreakdownKey);
+        else renderQurbaniSummary();
+    })
+    .catch(() => {
+        if (loading) loading.textContent = 'Failed to load stats. Try refreshing.';
+    });
+}
+
+function renderQurbaniSummary() {
+    qStatsBreakdownKey = null;
+    const loading = document.getElementById('qStatsLoading');
+    const summary = document.getElementById('qStatsSummary');
+    const breakdown = document.getElementById('qStatsBreakdown');
+    if (!qStatsData) return;
+
+    const days = qStatsData.days || [];
+    const categories = qStatsData.categories || [];
+    const summaryMap = qStatsData.summary || {};
+
+    const deliveryTypes = qstatsSortDeliveryTypes(Object.keys(summaryMap));
+
+    if (loading) loading.style.display = 'none';
+    if (breakdown) { breakdown.style.display = 'none'; breakdown.innerHTML = ''; }
+    if (!summary) return;
+    summary.style.display = '';
+    summary.className = 'qstats-cards';
+
+    if (deliveryTypes.length === 0 || days.length === 0) {
+        summary.innerHTML = '<div class="qstats-empty" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px; grid-column:1 / -1;">No qurbani orders booked yet.</div>';
+        return;
+    }
+
+    // Ensure Delivery and Self Collection are always rendered as separate cards
+    // even if one has no data yet (user requested the two fixed cards).
+    const knownTypes = ['Delivery', 'Self Collection'];
+    knownTypes.forEach(kt => {
+        const exists = deliveryTypes.some(dt => String(dt).toLowerCase() === kt.toLowerCase());
+        if (!exists) deliveryTypes.push(kt);
+    });
+    const sortedTypes = qstatsSortDeliveryTypes(deliveryTypes);
+
+    summary.innerHTML = sortedTypes.map(dt => qstatsBuildSummaryCard(dt, days, categories, summaryMap[dt] || {})).join('');
+}
+
+function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
+    // Compute row / col totals and grand total.
+    const colTotals = {};
+    let grandTotal = 0;
+    const rows = categories.map(cat => {
+        let rowTotal = 0;
+        const cells = days.map(day => {
+            const qty = ((byDayCat[day] || {})[cat]) || 0;
+            rowTotal += qty;
+            colTotals[day] = (colTotals[day] || 0) + qty;
+            return qty;
+        });
+        grandTotal += rowTotal;
+        return { cat, cells, rowTotal };
+    });
+
+    let tableHtml;
+    if (grandTotal === 0) {
+        tableHtml = '<div class="qstats-empty">No bookings yet for this type.</div>';
+    } else {
+        tableHtml = `
+            <table class="qstats-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        ${days.map(d => `<th>${qstatsEscape(d)}</th>`).join('')}
+                        <th class="total-col">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(r => `
+                        <tr>
+                            <td class="row-label">${qstatsEscape(r.cat)}</td>
+                            ${r.cells.map(v => `<td class="${v === 0 ? 'zero' : ''}">${v}</td>`).join('')}
+                            <td class="total-col">${r.rowTotal}</td>
+                        </tr>
+                    `).join('')}
+                    <tr class="total-row">
+                        <td class="row-label">Total</td>
+                        ${days.map(d => `<td>${colTotals[d] || 0}</td>`).join('')}
+                        <td>${grandTotal}</td>
+                    </tr>
+                </tbody>
+            </table>
+        `;
+    }
+
+    const dotColor = qstatsDotColor(deliveryType);
+    return `
+        <div class="qstats-card" data-dt="${qstatsEscape(deliveryType)}">
+            <div class="qstats-card-head">
+                <div class="qstats-card-title">
+                    <span class="dot" style="background:${dotColor};"></span>
+                    <span>${qstatsEscape(deliveryType)}</span>
+                </div>
+                <div class="qstats-card-total">Total <b>${grandTotal}</b></div>
+            </div>
+            ${tableHtml}
+            <div class="qstats-card-actions" style="justify-content:flex-end; margin-top:8px;">
+                <button class="qstats-ghostbtn" onclick="renderQurbaniBreakdown('${qstatsEscape(deliveryType).replace(/'/g, "\\'")}')" ${grandTotal === 0 ? 'disabled style=\"opacity:0.5; cursor:not-allowed;\"' : ''}>View breakdown &rarr;</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderQurbaniBreakdown(deliveryType) {
+    qStatsBreakdownKey = deliveryType;
+    const loading = document.getElementById('qStatsLoading');
+    const summary = document.getElementById('qStatsSummary');
+    const breakdown = document.getElementById('qStatsBreakdown');
+    if (!qStatsData || !breakdown) return;
+
+    const days = qStatsData.days || [];
+    const categories = qStatsData.categories || [];
+    const detail = (qStatsData.detail || {})[deliveryType] || {};
+    const summaryForType = (qStatsData.summary || {})[deliveryType] || {};
+
+    if (loading) loading.style.display = 'none';
+    if (summary) summary.style.display = 'none';
+    breakdown.style.display = '';
+
+    const dotColor = qstatsDotColor(deliveryType);
+
+    // Build mini-tables for every (day × category) combination that has data.
+    const miniHtml = [];
+    days.forEach(day => {
+        categories.forEach(cat => {
+            const qtyTotal = ((summaryForType[day] || {})[cat]) || 0;
+            if (qtyTotal === 0) return;   // skip empty buckets
+            const cellMap = (((detail[day] || {})[cat] || {}).cell) || {};
+            const slots = ((detail[day] || {})[cat] || {}).slots || [];
+            const regions = ((detail[day] || {})[cat] || {}).regions || [];
+            if (slots.length === 0 || regions.length === 0) return;
+
+            const rowsHtml = slots.map(slot => {
+                const cellsHtml = regions.map(region => {
+                    const v = ((cellMap[slot] || {})[region]) || 0;
+                    return `<td class="${v === 0 ? 'zero' : ''}">${v}</td>`;
+                }).join('');
+                return `<tr><td class="row-label">${qstatsEscape(slot)}</td>${cellsHtml}</tr>`;
+            }).join('');
+
+            miniHtml.push(`
+                <div class="qstats-mini">
+                    <div class="qstats-mini-head">
+                        <div class="qstats-mini-title">${qstatsEscape(day)} &middot; ${qstatsEscape(cat)}</div>
+                        <div class="qstats-mini-total">${qtyTotal}</div>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;">Slot \\ Region</th>
+                                ${regions.map(r => `<th>${qstatsEscape(r)}</th>`).join('')}
+                            </tr>
+                        </thead>
+                        <tbody>${rowsHtml}</tbody>
+                    </table>
+                </div>
+            `);
+        });
+    });
+
+    const body = miniHtml.length
+        ? `<div class="qstats-mini-grid">${miniHtml.join('')}</div>`
+        : '<div class="qstats-empty" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px;">No detailed breakdown yet.</div>';
+
+    breakdown.innerHTML = `
+        <div class="qstats-card">
+            <div class="qstats-card-head">
+                <div class="qstats-card-title">
+                    <span class="dot" style="background:${dotColor};"></span>
+                    <span>${qstatsEscape(deliveryType)} &mdash; detailed breakdown</span>
+                </div>
+                <div class="qstats-card-actions">
+                    <button class="qstats-ghostbtn secondary" onclick="renderQurbaniSummary()">&larr; Back to summary</button>
+                </div>
+            </div>
+            ${body}
+        </div>
+    `;
+}
+
+function toggleQurbaniStats() {
+    const body = document.getElementById('qStatsBody');
+    const btn = document.getElementById('qStatsToggle');
+    if (!body || !btn) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    btn.innerHTML = hidden ? '<i class="ki-filled ki-up"></i> Hide' : '<i class="ki-filled ki-down"></i> Show';
+    try { localStorage.setItem(QSTATS_COLLAPSED_KEY, hidden ? '0' : '1'); } catch (e) {}
+}
+
+function initQurbaniStatsPanel() {
+    let collapsed = '0';
+    try { collapsed = localStorage.getItem(QSTATS_COLLAPSED_KEY) || '0'; } catch (e) {}
+    const body = document.getElementById('qStatsBody');
+    const btn = document.getElementById('qStatsToggle');
+    if (collapsed === '1' && body && btn) {
+        body.style.display = 'none';
+        btn.innerHTML = '<i class="ki-filled ki-down"></i> Show';
+    }
+    loadQurbaniStats();
+}
+
 // ======= INIT =======
 document.addEventListener('DOMContentLoaded', () => {
     loadSlotOptions();
+    updateSubRegionDropdown();
     loadOrders();
+    initQurbaniStatsPanel();
 
     // Add edit icons to filter labels for Taimur role
     if (isTaimurOrMgmt) {
-        ['filterDay', 'filterSlot', 'filterRegion', 'filterDeliveryType'].forEach(id => {
-            const fieldMap = { filterDay: 'qurbani_day', filterSlot: 'qurbani_slot', filterRegion: 'qurbani_region', filterDeliveryType: 'qurbani_delivery_type' };
+        ['filterDay', 'filterSlot', 'filterRegion', 'filterSubRegion', 'filterDeliveryType'].forEach(id => {
+            const fieldMap = { filterDay: 'qurbani_day', filterSlot: 'qurbani_slot', filterRegion: 'qurbani_region', filterSubRegion: 'qurbani_sub_region', filterDeliveryType: 'qurbani_delivery_type' };
             const label = document.getElementById(id)?.previousElementSibling;
             if (label) {
                 const editBtn = document.createElement('button');
@@ -836,5 +1751,26 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+
+async function deleteQurbaniOrder(orderId, orderNumber) {
+    if (!confirm(`Are you sure you want to permanently delete order #${orderNumber}?\n\nThis will remove the order, all line items, payments, and ledger entries. This action cannot be undone.`)) return;
+    if (!confirm(`FINAL CONFIRMATION: Delete order #${orderNumber} permanently?`)) return;
+
+    try {
+        const response = await fetch(`/qurbani/api/orders/${orderId}`, {
+            method: 'DELETE',
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+        });
+        const data = await response.json();
+        if (data.success) {
+            alert(data.message);
+            loadOrders();
+        } else {
+            alert(data.message || 'Failed to delete order');
+        }
+    } catch (e) {
+        alert('Network error while deleting order');
+    }
+}
 </script>
 @endsection

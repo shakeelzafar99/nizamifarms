@@ -2648,7 +2648,7 @@ function openSendInvoiceWhatsApp() {
     if (!currentOrderId) { alert('No order selected'); return; }
 
     const order = window.currentOrder;
-    const custName = order?.customer_name || order?.address_first_name || (order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() : '') || '';
+    const custName = order?.customer_name || order?.name || ((order?.address_first_name || '') + ' ' + (order?.address_last_name || '')).trim() || (order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() : '') || '';
     const custPhone = order?.customer?.phone_normalized || order?.address_phone || order?.customer?.phone || '';
     const orderNum = order?.order_number || '';
 
@@ -2681,13 +2681,16 @@ function openSendInvoiceWhatsApp() {
                     <input id="waInvPhone" type="text" value="${custPhone}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="923001234567" />
                 </div>
                 <div style="margin-bottom:16px;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template Name (from WhatsApp Business)</label>
-                    <input id="waInvTemplate" type="text" value="" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="e.g. send_invoice" />
-                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Must match the approved template name in Meta Business Suite</div>
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template</label>
+                    <select id="waInvTemplate" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularInvoiceTemplateChange()">
+                        <option value="">Loading templates...</option>
+                    </select>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Templates tagged as "Invoice" in Manage Templates</div>
                 </div>
                 <div style="margin-bottom:16px;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated, e.g. customer name, order number)</label>
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated)</label>
                     <input id="waInvBodyParams" type="text" value="${custName}, ${orderNum}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
+                    <div id="waInvVarHint" style="font-size:11px;color:#9ca3af;margin-top:4px;">Variables are passed to the template in order (e.g. 1=Name, 2=Order#)</div>
                 </div>
                 <div id="waInvPreviewArea" style="margin-bottom:16px;display:none;">
                     <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
@@ -2705,14 +2708,58 @@ function openSendInvoiceWhatsApp() {
     document.body.appendChild(dialog);
     dialog.addEventListener('click', function(e) { if (e.target === dialog) dialog.remove(); });
 
+    window._regInvoiceTemplates = [];
     fetch('/messages/templates?context=invoice', {
         headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
     }).then(r => r.json()).then(d => {
-        if (d.success && d.templates && d.templates.length) {
-            const el = document.getElementById('waInvTemplate');
-            if (el && !el.value) el.value = d.templates[0].name;
+        var sel = document.getElementById('waInvTemplate');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var tpls = (d.templates || []);
+        window._regInvoiceTemplates = tpls;
+        if (tpls.length === 0) {
+            sel.innerHTML = '<option value="">No invoice templates found</option>';
+            return;
         }
-    }).catch(() => {});
+        var defaultIdx = tpls.findIndex(function(t) { return t.is_default; });
+        if (defaultIdx < 0) defaultIdx = 0;
+        tpls.forEach(function(t, i) {
+            var opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.display_name + ' (' + t.variable_count + ' vars)' + (t.is_default ? ' ⭐' : '');
+            opt.dataset.varCount = t.variable_count;
+            if (i === defaultIdx) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        onRegularInvoiceTemplateChange();
+    }).catch(function() {
+        var sel = document.getElementById('waInvTemplate');
+        if (sel) sel.innerHTML = '<option value="">Failed to load templates</option>';
+    });
+}
+
+function onRegularInvoiceTemplateChange() {
+    var sel = document.getElementById('waInvTemplate');
+    var paramsInput = document.getElementById('waInvBodyParams');
+    var hintEl = document.getElementById('waInvVarHint');
+    if (!sel || !paramsInput) return;
+    var selectedOpt = sel.options[sel.selectedIndex];
+    var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
+    var custName = '';
+    var orderNum = '';
+    var nameEls = document.querySelectorAll('#waInvoiceDialog [style*="font-weight:600"]');
+    if (nameEls.length >= 1) custName = nameEls[0].textContent.trim();
+    if (nameEls.length >= 2) orderNum = nameEls[1].textContent.replace(/^#/, '').split(' ')[0].trim();
+    if (varCount === 0) {
+        paramsInput.value = '';
+        if (hintEl) hintEl.textContent = 'This template has no variables';
+    } else if (varCount === 1) {
+        paramsInput.value = custName;
+        if (hintEl) hintEl.textContent = '1 variable: Name';
+    } else {
+        paramsInput.value = custName + ', ' + orderNum;
+        if (hintEl) hintEl.textContent = varCount + ' variables: e.g. Name, Order#' + (varCount > 2 ? ', ...' : '');
+    }
 }
 
 function captureInvoiceImageOrders(invoiceUrl, orderId) {
@@ -3631,6 +3678,7 @@ function loadEditForm(order) {
                     if (li.qurbani_day) chips.push('<span style="padding:2px 6px; background:#fef3c7; color:#92400e; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_day + '</span>');
                     if (li.qurbani_slot) chips.push('<span style="padding:2px 6px; background:#dbeafe; color:#1e40af; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_slot + '</span>');
                     if (li.qurbani_region) chips.push('<span style="padding:2px 6px; background:#d1fae5; color:#065f46; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_region + '</span>');
+                    if (li.qurbani_sub_region) chips.push('<span style="padding:2px 6px; background:#e0f2fe; color:#0369a1; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_sub_region + '</span>');
                     if (li.qurbani_delivery_type) chips.push('<span style="padding:2px 6px; background:#ede9fe; color:#5b21b6; border-radius:4px; font-size:10px; font-weight:600;">' + li.qurbani_delivery_type + '</span>');
                     return '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#fff; border-radius:6px; margin-bottom:4px; border:1px solid #e5e7eb;">' +
                         '<div style="display:flex; flex-direction:column; gap:2px;">' +
@@ -3806,8 +3854,8 @@ function loadEditForm(order) {
                                     ×
                                 </button>
                             </div>
-                            ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_delivery_type || order.is_qurbani) ? `
-                            <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
+                            ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_sub_region || item.qurbani_delivery_type || order.is_qurbani) ? `
+                            <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
                                 <div>
                                     <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
                                     <select name="items[${index}][qurbani_day]" class="qurbani-item-select" data-field="qurbani_day" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
@@ -3827,6 +3875,13 @@ function loadEditForm(order) {
                                     <select name="items[${index}][qurbani_region]" class="qurbani-item-select" data-field="qurbani_region" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
                                         <option value="">-</option>
                                         <option value="${item.qurbani_region || ''}" selected>${item.qurbani_region || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Sub Region</label>
+                                    <select name="items[${index}][qurbani_sub_region]" class="qurbani-item-select" data-field="qurbani_sub_region" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_sub_region || ''}" selected>${item.qurbani_sub_region || '-'}</option>
                                     </select>
                                 </div>
                                 <div>
@@ -3971,7 +4026,7 @@ function loadEditForm(order) {
     }
     
     // Populate qurbani field dropdowns if this is a qurbani order (check order-level, is_qurbani flag, and line items)
-    if (order.qurbani_day || order.qurbani_slot || order.qurbani_region || order.qurbani_delivery_type || order.is_qurbani || (order.line_items || []).some(li => li.qurbani_day || li.qurbani_slot || li.qurbani_region || li.qurbani_delivery_type)) {
+    if (order.qurbani_day || order.qurbani_slot || order.qurbani_region || order.qurbani_sub_region || order.qurbani_delivery_type || order.is_qurbani || (order.line_items || []).some(li => li.qurbani_day || li.qurbani_slot || li.qurbani_region || li.qurbani_sub_region || li.qurbani_delivery_type)) {
         try { populateQurbaniEditSelects(); } catch (e) { console.warn('Failed to populate qurbani selects', e); }
     }
     
@@ -5934,10 +5989,12 @@ function saveOrderChanges(orderId) {
             var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
             var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
             var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+            var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
             var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
             if (qDay) itemObj.qurbani_day = qDay;
             if (qSlot) itemObj.qurbani_slot = qSlot;
             if (qRegion) itemObj.qurbani_region = qRegion;
+            if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
             if (qDT) itemObj.qurbani_delivery_type = qDT;
             var instr = item.querySelector('input[name*="instructions"]')?.value;
             itemObj.instructions = instr || '';
@@ -6181,10 +6238,12 @@ function saveAndCloseOrder(orderId) {
             var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
             var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
             var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+            var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
             var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
             if (qDay) itemObj.qurbani_day = qDay;
             if (qSlot) itemObj.qurbani_slot = qSlot;
             if (qRegion) itemObj.qurbani_region = qRegion;
+            if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
             if (qDT) itemObj.qurbani_delivery_type = qDT;
             var instr = item.querySelector('input[name*="instructions"]')?.value;
             itemObj.instructions = instr || '';
@@ -6624,10 +6683,12 @@ function popoutOrder() {
                     var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
                     var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
                     var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
+                    var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
                     var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
                     if (qDay) itemObj.qurbani_day = qDay;
                     if (qSlot) itemObj.qurbani_slot = qSlot;
                     if (qRegion) itemObj.qurbani_region = qRegion;
+                    if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
                     if (qDT) itemObj.qurbani_delivery_type = qDT;
                     var instr = item.querySelector('input[name*="instructions"]')?.value;
                     itemObj.instructions = instr || '';
@@ -7102,7 +7163,9 @@ function searchProducts(input, index) {
     }
     
     productSearchTimeout = setTimeout(() => {
-        fetch(`/api/products/search?q=${encodeURIComponent(query)}&limit=20`, {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qurbaniParam = urlParams.get('qurbani_mode') === '1' ? '&qurbani=1' : '';
+        fetch(`/api/products/search?q=${encodeURIComponent(query)}&limit=20${qurbaniParam}`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
@@ -7200,8 +7263,9 @@ function showProductResults(products, index) {
             const variantId = product.id && product.id.startsWith('variant_') ? product.id.replace('variant_', '') : '';
             const sku = (product.sku || '').replace(/'/g, "\\'");
             const attr1 = (product.attribute_1 || '').replace(/'/g, "\\'");
+            const attr3 = (product.attribute_3 || '').replace(/'/g, "\\'");
             return `
-            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}', '${attr1}')" 
+            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}', '${attr1}', '${attr3}')" 
                  data-product-index="${idx}"
                  style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
                  onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
@@ -7216,8 +7280,7 @@ function showProductResults(products, index) {
     
     dropdown.style.display = 'block';
 }
-function selectProduct(index, productId, productName, price, sku = '', variantId = '', attribute1 = '') {
-    // Get the specific line item by data-index attribute to avoid selecting wrong row
+function selectProduct(index, productId, productName, price, sku = '', variantId = '', attribute1 = '', attribute3 = '') {
     const lineItem = document.querySelector(`.line-item[data-index="${index}"]`);
     if (!lineItem) {
         console.error('Line item not found for index:', index);
@@ -7283,18 +7346,48 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
         autoAddNextLineItem();
     }, 100);
 
-    // Check if a qurbani product was selected and add per-item qurbani fields
     if (attribute1 && attribute1.toLowerCase() === 'qurbani') {
         showQurbaniFields();
         addQurbaniFieldsToLineItem(lineItem, index);
+        if (attribute3) {
+            waitForDayOptionsAndAutoFill(lineItem, attribute3);
+        }
     }
+}
+
+function waitForDayOptionsAndAutoFill(lineItem, attribute3Value) {
+    var attempts = 0;
+    var maxAttempts = 30;
+    function tryFill() {
+        attempts++;
+        var fieldsDiv = lineItem.querySelector('.qurbani-item-fields');
+        if (!fieldsDiv) { if (attempts < maxAttempts) setTimeout(tryFill, 100); return; }
+        var daySel = fieldsDiv.querySelector('select[data-field="qurbani_day"]');
+        if (!daySel) { if (attempts < maxAttempts) setTimeout(tryFill, 100); return; }
+        if (daySel.options.length <= 1) {
+            if (attempts < maxAttempts) setTimeout(tryFill, 100);
+            return;
+        }
+        for (var i = 0; i < daySel.options.length; i++) {
+            if (daySel.options[i].value === attribute3Value) {
+                daySel.value = attribute3Value;
+                var slotSel = fieldsDiv.querySelector('select[data-field="qurbani_slot"]');
+                if (slotSel) {
+                    slotSel.value = '';
+                    populateItemSlotSelect(slotSel, 'qurbani_slot', qurbaniFieldOptionsCache);
+                }
+                return;
+            }
+        }
+    }
+    tryFill();
 }
 
 function addQurbaniFieldsToLineItem(lineItem, index) {
     if (lineItem.querySelector('.qurbani-item-fields')) return;
     var fieldsDiv = document.createElement('div');
     fieldsDiv.className = 'qurbani-item-fields';
-    fieldsDiv.style.cssText = 'grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;';
+    fieldsDiv.style.cssText = 'grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;';
     fieldsDiv.innerHTML = `
         <div>
             <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
@@ -7311,6 +7404,12 @@ function addQurbaniFieldsToLineItem(lineItem, index) {
         <div>
             <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Region</label>
             <select name="items[${index}][qurbani_region]" class="qurbani-item-select" data-field="qurbani_region" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Sub Region</label>
+            <select name="items[${index}][qurbani_sub_region]" class="qurbani-item-select" data-field="qurbani_sub_region" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
                 <option value="">-</option>
             </select>
         </div>
@@ -7753,7 +7852,7 @@ function showQurbaniFields() {
 }
 
 function populateQurbaniSelects(optionsGrouped) {
-    const fields = ['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type'];
+    const fields = ['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type'];
     fields.forEach(fieldKey => {
         const fieldOpts = optionsGrouped[fieldKey] || [];
         document.querySelectorAll(`select[name="${fieldKey}"]`).forEach(sel => {
@@ -7772,10 +7871,17 @@ function populateQurbaniSelects(optionsGrouped) {
             populateItemSlotSelect(sel, fieldKey, optionsGrouped);
         });
     });
-    // Attach day→slot dependency listeners
     document.querySelectorAll('select.qurbani-item-select[data-field="qurbani_day"]').forEach(daySel => {
         daySel.removeEventListener('change', handleDayChangeForSlots);
         daySel.addEventListener('change', handleDayChangeForSlots);
+    });
+    document.querySelectorAll('select.qurbani-item-select[data-field="qurbani_delivery_type"]').forEach(dtSel => {
+        dtSel.removeEventListener('change', handleDeliveryTypeChangeForSlots);
+        dtSel.addEventListener('change', handleDeliveryTypeChangeForSlots);
+    });
+    document.querySelectorAll('select.qurbani-item-select[data-field="qurbani_region"]').forEach(regionSel => {
+        regionSel.removeEventListener('change', handleRegionChangeForSubRegions);
+        regionSel.addEventListener('change', handleRegionChangeForSubRegions);
     });
 }
 
@@ -7789,12 +7895,42 @@ function populateItemSlotSelect(sel, fieldKey, optionsGrouped) {
     if (fieldKey === 'qurbani_slot') {
         const container = sel.closest('.qurbani-item-fields');
         const daySel = container ? container.querySelector('select[data-field="qurbani_day"]') : null;
+        const dtSel = container ? container.querySelector('select[data-field="qurbani_delivery_type"]') : null;
         const selectedDay = daySel ? daySel.value : '';
+        const selectedDT = dtSel ? dtSel.value : '';
+
+        let dayObj = null, dtObj = null;
         if (selectedDay) {
             const dayOpts = (optionsGrouped || qurbaniFieldOptionsCache)['qurbani_day'] || [];
-            const dayObj = dayOpts.find(o => o.option_value === selectedDay);
-            if (dayObj) {
-                const filtered = fieldOpts.filter(o => o.is_active && o.parent_id === dayObj.id);
+            dayObj = dayOpts.find(o => o.option_value === selectedDay);
+        }
+        if (selectedDT) {
+            const dtOpts = (optionsGrouped || qurbaniFieldOptionsCache)['qurbani_delivery_type'] || [];
+            dtObj = dtOpts.find(o => o.option_value === selectedDT);
+        }
+
+        if (dayObj && dtObj) {
+            const filtered = fieldOpts.filter(o => o.is_active && o.parent_id === dayObj.id && o.delivery_type_parent_id === dtObj.id);
+            if (filtered.length > 0) fieldOpts = filtered;
+            else if (dayObj) {
+                const dayOnly = fieldOpts.filter(o => o.is_active && o.parent_id === dayObj.id);
+                if (dayOnly.length > 0) fieldOpts = dayOnly;
+            }
+        } else if (dayObj) {
+            const filtered = fieldOpts.filter(o => o.is_active && o.parent_id === dayObj.id);
+            if (filtered.length > 0) fieldOpts = filtered;
+        }
+    }
+
+    if (fieldKey === 'qurbani_sub_region') {
+        const container = sel.closest('.qurbani-item-fields');
+        const regionSel = container ? container.querySelector('select[data-field="qurbani_region"]') : null;
+        const selectedRegion = regionSel ? regionSel.value : '';
+        if (selectedRegion) {
+            const regionOpts = (optionsGrouped || qurbaniFieldOptionsCache)['qurbani_region'] || [];
+            const regionObj = regionOpts.find(o => o.option_value === selectedRegion);
+            if (regionObj) {
+                const filtered = fieldOpts.filter(o => o.is_active && o.parent_id === regionObj.id);
                 if (filtered.length > 0) fieldOpts = filtered;
             }
         }
@@ -7823,6 +7959,26 @@ function handleDayChangeForSlots(e) {
     if (slotSel) {
         slotSel.value = '';
         populateItemSlotSelect(slotSel, 'qurbani_slot', qurbaniFieldOptionsCache);
+    }
+}
+
+function handleDeliveryTypeChangeForSlots(e) {
+    const container = e.target.closest('.qurbani-item-fields');
+    if (!container) return;
+    const slotSel = container.querySelector('select[data-field="qurbani_slot"]');
+    if (slotSel) {
+        slotSel.value = '';
+        populateItemSlotSelect(slotSel, 'qurbani_slot', qurbaniFieldOptionsCache);
+    }
+}
+
+function handleRegionChangeForSubRegions(e) {
+    const container = e.target.closest('.qurbani-item-fields');
+    if (!container) return;
+    const subRegionSel = container.querySelector('select[data-field="qurbani_sub_region"]');
+    if (subRegionSel) {
+        subRegionSel.value = '';
+        populateItemSlotSelect(subRegionSel, 'qurbani_sub_region', qurbaniFieldOptionsCache);
     }
 }
 
@@ -9213,7 +9369,7 @@ function getCellContent(order, columnId) {
                             <button onclick="event.stopPropagation(); viewOrderDetails(${order.id})" class="inline-flex items-center justify-center w-7 h-7 text-blue-600 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 hover:border-blue-300 transition-all duration-200" title="View Order Details">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                             </button>
-                            <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.customer_name||'').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
+                            <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
                                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
                             </button>
                         </div>`;
@@ -9244,7 +9400,7 @@ function getCellContent(order, columnId) {
                     <button onclick="event.stopPropagation(); openInBackground('/orders/${order.id}/invoice')" class="inline-flex items-center justify-center w-7 h-7 text-emerald-600 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 hover:border-emerald-300 transition-all duration-200" title="View Invoice (PDF)">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </button>
-                    <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.customer_name||'').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
+                    <button onclick="event.stopPropagation(); quickSendInvoiceWhatsApp(${order.id}, '${(order.order_number||'').replace(/'/g,"\\'")}', ${parseFloat(order.total_price||0)}, '${(order.name || (order.customer ? ((order.customer.first_name||'')+' '+(order.customer.last_name||'')).trim() : '') || ((order.address_first_name||'')+' '+(order.address_last_name||'')).trim() || '').replace(/'/g,"\\'")}', '${(order.customer_phone||order.address_phone||'').replace(/'/g,"\\'")}' )" class="inline-flex items-center justify-center w-7 h-7 text-green-600 bg-green-50 border border-green-200 rounded hover:bg-green-100 hover:border-green-300 transition-all duration-200" title="Send Invoice via WhatsApp">
                         <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2z"/></svg>
                     </button>
                 </div>`;
@@ -9821,6 +9977,10 @@ function createNewOrder() {
                         <div style="margin-bottom: 12px;">
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Shipping</label>
                             <input type="number" step="0.01" name="shipping_total" value="0" onchange="updateOrderTotal()" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
+                        </div>
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Tip</label>
+                            <input type="number" step="0.01" name="tip_amount" value="0" onchange="updateOrderTotal()" placeholder="Enter tip amount" style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;">
                         </div>
                         <div>
                             <label style="display: block; font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px;">Total</label>

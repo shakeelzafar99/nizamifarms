@@ -2035,6 +2035,8 @@ class ProductController extends Controller
                             'inventory' => $variant->inventory_quantity,
                             'vendor' => $product->vendor,
                             'attribute_1' => $product->attribute_1,
+                            'attribute_2' => $product->attribute_2,
+                            'attribute_3' => $product->attribute_3,
                         ];
                     }
                 }
@@ -2051,6 +2053,8 @@ class ProductController extends Controller
                         'inventory' => 0,
                         'vendor' => $product->vendor,
                         'attribute_1' => $product->attribute_1,
+                        'attribute_2' => $product->attribute_2,
+                        'attribute_3' => $product->attribute_3,
                     ];
                 }
             }

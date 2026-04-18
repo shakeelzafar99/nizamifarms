@@ -1165,7 +1165,7 @@ function renderTable(data, summary) {
             return `
                 <tr>
                     <td style="text-align: center;">
-                        <input type="checkbox" class="orderCheckbox" data-order-id="${item.order_id}" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="updateSelectedOrdersCount()">
+                        <input type="checkbox" class="orderCheckbox" data-order-id="${item.order_id}" data-product-ids="${item.product_ids || ''}" style="width: 18px; height: 18px; cursor: pointer; accent-color: #10b981;" onchange="updateSelectedOrdersCount()">
                     </td>
                     <td>
                         <span class="text-blue-600 hover:text-blue-800 font-semibold cursor-pointer" onclick="viewOrderDetails(${item.order_id})" title="Click to view order details">
@@ -1834,7 +1834,41 @@ function getSelectedOrderIds() {
     return ids;
 }
 
-// Mark selected orders as prepared (marks all line items in those orders)
+// Collect product_ids from selected order checkboxes for scoped mark-prepared
+function getSelectedProductIds() {
+    const checkboxes = document.querySelectorAll('.orderCheckbox:checked');
+    const allIds = new Set();
+    checkboxes.forEach(cb => {
+        const pids = cb.getAttribute('data-product-ids');
+        if (pids && pids.trim()) {
+            pids.split(',').forEach(id => {
+                const parsed = parseInt(id);
+                if (parsed) allIds.add(parsed);
+            });
+        }
+    });
+    return allIds.size > 0 ? Array.from(allIds).join(',') : null;
+}
+
+// Build the payload with product filters from either order data or navigation state
+function buildPreparedPayload(orderIds, status) {
+    const payload = {
+        order_ids: orderIds,
+        preparation_status: status
+    };
+    const productIdsFromData = getSelectedProductIds();
+    if (productIdsFromData) {
+        payload.product_ids = productIdsFromData;
+    } else if (window.openQtyState && window.openQtyState.filters) {
+        const f = window.openQtyState.filters;
+        if (f.product_ids) payload.product_ids = f.product_ids;
+        else if (f.product_id) payload.product_id = String(f.product_id);
+        if (f.product_name) payload.product_name = f.product_name;
+    }
+    return payload;
+}
+
+// Mark selected orders as prepared (marks filtered line items in those orders)
 function markSelectedOrdersAsPrepared() {
     const selectedIds = getSelectedOrderIds();
     if (selectedIds.length === 0) {
@@ -1842,7 +1876,7 @@ function markSelectedOrdersAsPrepared() {
         return;
     }
     
-    if (!confirm(`Mark all items in ${selectedIds.length} order(s) as prepared?`)) {
+    if (!confirm(`Mark filtered items in ${selectedIds.length} order(s) as prepared?`)) {
         return;
     }
     
@@ -1852,7 +1886,6 @@ function markSelectedOrdersAsPrepared() {
     button.innerHTML = '⏳ Updating...';
     button.disabled = true;
     
-    // Call API to bulk update (we'll update all line items for selected orders)
     fetch('/orders/bulk-mark-prepared', {
         method: 'POST',
         headers: {
@@ -1862,10 +1895,7 @@ function markSelectedOrdersAsPrepared() {
             'X-Requested-With': 'XMLHttpRequest'
         },
         credentials: 'same-origin',
-        body: JSON.stringify({
-            order_ids: selectedIds,
-            preparation_status: 'preparing'
-        })
+        body: JSON.stringify(buildPreparedPayload(selectedIds, 'preparing'))
     })
     .then(response => {
         if (!response.ok) {
@@ -1905,7 +1935,7 @@ function clearSelectedOrdersStatus() {
         return;
     }
     
-    if (!confirm(`Clear preparation status for all items in ${selectedIds.length} order(s)?`)) {
+    if (!confirm(`Clear preparation status for filtered items in ${selectedIds.length} order(s)?`)) {
         return;
     }
     
@@ -1915,7 +1945,6 @@ function clearSelectedOrdersStatus() {
     button.innerHTML = '⏳ Clearing...';
     button.disabled = true;
     
-    // Call API to bulk clear status
     fetch('/orders/bulk-mark-prepared', {
         method: 'POST',
         headers: {
@@ -1925,10 +1954,7 @@ function clearSelectedOrdersStatus() {
             'X-Requested-With': 'XMLHttpRequest'
         },
         credentials: 'same-origin',
-        body: JSON.stringify({
-            order_ids: selectedIds,
-            preparation_status: null
-        })
+        body: JSON.stringify(buildPreparedPayload(selectedIds, null))
     })
     .then(response => {
         if (!response.ok) {

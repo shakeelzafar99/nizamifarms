@@ -35,6 +35,7 @@ class OrderLineItemModel extends BaseModel
         'qurbani_day',
         'qurbani_slot',
         'qurbani_region',
+        'qurbani_sub_region',
         'qurbani_delivery_type',
         'instructions',
         'created_by',

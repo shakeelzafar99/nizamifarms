@@ -370,8 +370,23 @@
             </thead>
             <tbody>
                 @foreach($order->lineItems as $item)
-                <tr>
-                    <td>{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="font-size: 9px; font-weight: 700; color: #16a34a;">[FREE]</span>@endif</td>
+                @php $hasItemNote = !empty(trim((string)($item->instructions ?? ''))); @endphp
+                <tr{!! $hasItemNote ? ' style="background-color: #fefce8;"' : '' !!}>
+                    <td>{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="font-size: 9px; font-weight: 700; color: #16a34a;">[FREE]</span>@endif
+                        @if(!empty($qurbaniInvoiceFields ?? []))
+                        @php
+                            $attrParts = [];
+                            $fieldMap = ['qurbani_day' => 'Day', 'qurbani_delivery_type' => 'Type', 'qurbani_slot' => 'Slot', 'qurbani_region' => 'Region', 'qurbani_sub_region' => 'Sub Region'];
+                            foreach ($qurbaniInvoiceFields as $f) { $val = $item->{$f} ?? null; if ($val) $attrParts[] = ($fieldMap[$f] ?? $f) . ': ' . $val; }
+                        @endphp
+                        @if(count($attrParts) > 0)
+                        <div style="font-size: 10px; color: #92400e; font-weight: 500; line-height: 1.4; margin-top: 2px;">
+                            @foreach($attrParts as $attrPart)<div>{{ $attrPart }}</div>@endforeach
+                        </div>
+                        @endif
+                        @endif
+                        @if($hasItemNote)<br><span style="font-size: 8px; color: #92400e; font-style: italic;">📝 {{ $item->instructions }}</span>@endif
+                    </td>
                     <td class="text-center">{{ number_format($item->quantity, ($item->quantity == floor($item->quantity)) ? 0 : 3) }}</td>
                     <td class="text-center">@if($item->is_free)<s style="color:#aaa;">Rs&nbsp;{{ number_format($item->unit_price, 0) }}</s>@else Rs&nbsp;{{ number_format($item->unit_price, 0) }}@endif</td>
                     <td class="text-right">@if($item->is_free)<span style="color: #16a34a; font-weight: 700;">FREE</span>@else Rs&nbsp;{{ number_format($item->line_total ?: ($item->quantity * $item->unit_price), 0) }}@endif</td>
@@ -379,6 +394,13 @@
                 @endforeach
             </tbody>
         </table>
+
+        @if(!empty(trim((string)($order->note ?? ''))))
+        <div style="margin: 6px 0; padding: 6px 8px; background: #fefce8; border: 1px solid #fde68a; border-radius: 4px;">
+            <span style="font-size: 9px; color: #92400e; font-weight: 700;">📝 Order Notes:</span>
+            <span style="font-size: 9px; color: #78350f;"> {{ $order->note }}</span>
+        </div>
+        @endif
 
         <!-- Totals -->
         @php

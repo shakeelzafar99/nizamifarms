@@ -8800,6 +8800,7 @@ class RiderController extends Controller
                                 '_children_map' => [],
                                 '_order_ids' => [$row->order_id => true],
                                 '_product_ids' => [],
+                                '_li_product_ids' => [],
                             ];
 
                             $currentList[] = $orderNode;
@@ -8844,6 +8845,7 @@ class RiderController extends Controller
 
                         if ($row->line_item_product_id) {
                             $currentMap[$orderKey]['_product_ids'][(int) $row->line_item_product_id] = true;
+                            $currentMap[$orderKey]['_li_product_ids'][(int) $row->line_item_product_id] = true;
                         }
                         if ($row->product_id) {
                             $currentMap[$orderKey]['_product_ids'][(int) $row->product_id] = true;
@@ -8948,6 +8950,13 @@ class RiderController extends Controller
                     $productIds = array_keys($node['product_ids']);
                     sort($productIds);
                     $node['product_ids'] = $productIds;
+                }
+
+                if (isset($node['_li_product_ids'])) {
+                    if (!empty($node['_li_product_ids'])) {
+                        $node['product_ids'] = array_values(array_map('intval', array_keys($node['_li_product_ids'])));
+                    }
+                    unset($node['_li_product_ids']);
                 }
 
                 if (!empty($node['children'])) {
@@ -13976,44 +13985,12 @@ class RiderController extends Controller
 
             $filters = $request->input('filters', []);
 
-            $query = \App\Models\CRM\CustomerModel::query()
-                ->whereNull('merged_into_customer_id');
-
-            if (!empty($filters['search'])) {
-                $s = $filters['search'];
-                $query->where(function ($q) use ($s) {
-                    $q->where('first_name', 'LIKE', "%{$s}%")
-                      ->orWhere('last_name', 'LIKE', "%{$s}%")
-                      ->orWhere('phone', 'LIKE', "%{$s}%")
-                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
-                      ->orWhere('company', 'LIKE', "%{$s}%")
-                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
-                });
-            }
-            if (!empty($filters['city'])) {
-                $query->where('city', $filters['city']);
-            }
-            if (!empty($filters['activity'])) {
-                if ($filters['activity'] === '30day') {
-                    $query->where('last_order_date', '>=', now()->subDays(30));
-                } elseif ($filters['activity'] === '90day') {
-                    $query->where('last_order_date', '>=', now()->subDays(90));
-                }
-            }
-            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
-                $query->where('total_spent', '>=', (float) $filters['min_spend']);
-            }
-            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
-                $query->where('total_spent', '<=', (float) $filters['max_spend']);
-            }
-
-            $sortBy = $filters['sort_by'] ?? 'last_order_date';
-            $sortDir = $filters['sort_dir'] ?? 'desc';
-            if (!in_array($sortBy, ['last_order_date', 'total_spent', 'created_at'])) $sortBy = 'last_order_date';
-            if (!in_array($sortDir, ['asc', 'desc'])) $sortDir = 'desc';
-            $query->orderBy($sortBy, $sortDir);
-
-            $customerIds = $query->pluck('id')->toArray();
+            // Delegate all filter logic to the shared service so web + mobile
+            // stay in lockstep (multi-group filters, qurbani_year, excludes).
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $result = $filterService->buildCustomerIdSet($filters);
+            $customerIds = $result['customer_ids'];
+            $tagsById = $result['tags_by_id'] ?? [];
 
             $campaignId = DB::table('t_crm_campaigns')->insertGetId([
                 'name' => $request->input('name'),
@@ -14033,13 +14010,18 @@ class RiderController extends Controller
             ]);
 
             if (!empty($customerIds)) {
-                $rows = array_map(function ($cId) use ($campaignId) {
-                    return [
+                $hasTagsColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags');
+                $rows = array_map(function ($cId) use ($campaignId, $tagsById, $hasTagsColumn, $filterService) {
+                    $row = [
                         'campaign_id' => $campaignId,
                         'customer_id' => $cId,
                         'status' => 'pending',
                         'created_at' => now(),
                     ];
+                    if ($hasTagsColumn) {
+                        $row['match_tags'] = $filterService->matchTagsJson($tagsById, (int) $cId);
+                    }
+                    return $row;
                 }, $customerIds);
 
                 foreach (array_chunk($rows, 500) as $chunk) {
@@ -14064,40 +14046,14 @@ class RiderController extends Controller
     {
         try {
             $filters = $request->input('filters', []);
-
-            $query = \App\Models\CRM\CustomerModel::query()
-                ->whereNull('merged_into_customer_id');
-
-            if (!empty($filters['search'])) {
-                $s = $filters['search'];
-                $query->where(function ($q) use ($s) {
-                    $q->where('first_name', 'LIKE', "%{$s}%")
-                      ->orWhere('last_name', 'LIKE', "%{$s}%")
-                      ->orWhere('phone', 'LIKE', "%{$s}%")
-                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
-                      ->orWhere('company', 'LIKE', "%{$s}%")
-                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
-                });
-            }
-            if (!empty($filters['city'])) {
-                $query->where('city', $filters['city']);
-            }
-            if (!empty($filters['activity'])) {
-                if ($filters['activity'] === '30day') {
-                    $query->where('last_order_date', '>=', now()->subDays(30));
-                } elseif ($filters['activity'] === '90day') {
-                    $query->where('last_order_date', '>=', now()->subDays(90));
-                }
-            }
-            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
-                $query->where('total_spent', '>=', (float) $filters['min_spend']);
-            }
-            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
-                $query->where('total_spent', '<=', (float) $filters['max_spend']);
-            }
-
-            $count = $query->count();
-            return response()->json(['success' => true, 'count' => $count]);
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $result = $filterService->buildCustomerIdSet($filters);
+            return response()->json([
+                'success' => true,
+                'count' => count($result['customer_ids']),
+                'group_counts' => $result['group_counts'],
+                'excluded_count' => $result['excluded_count'],
+            ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -14140,6 +14096,14 @@ class RiderController extends Controller
                     'c.total_spent',
                     'c.last_order_date'
                 );
+
+            // New columns are optional so mobile builds against older DBs still work.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'replied_at')) {
+                $customersQuery->addSelect('cc.replied_at');
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags')) {
+                $customersQuery->addSelect('cc.match_tags');
+            }
 
             if ($statusFilter !== 'all') {
                 $customersQuery->where('cc.status', $statusFilter);
@@ -14269,21 +14233,32 @@ class RiderController extends Controller
                 'customer_ids' => 'required|array|min:1',
                 'customer_ids.*' => 'integer',
                 'body_params' => 'nullable|array',
+                'include_failed' => 'nullable|boolean',
             ]);
 
             $customerIds = $request->input('customer_ids');
             $language = $campaign->wa_template_language ?: 'en';
+            // Retry flow: when include_failed=true we also send to rows currently in `failed`.
+            $includeFailed = (bool) $request->input('include_failed', false);
+            $eligibleStatuses = $includeFailed ? ['pending', 'failed'] : ['pending'];
+
+            // Expected variable_count of the template — used to size body_params correctly.
+            // Without this, a 0-variable template (e.g. pure marketing copy) will be rejected
+            // by Meta with error 132000 when the caller sends any placeholder.
+            $templateMeta = DB::table('t_wa_templates')->where('name', $templateName)->first();
+            $expectedVarCount = $templateMeta ? (int) $templateMeta->variable_count : null;
 
             $customers = DB::table('t_crm_campaign_customers as cc')
                 ->join('t_crm_prod_customer as c', 'cc.customer_id', '=', 'c.id')
                 ->where('cc.campaign_id', $id)
-                ->where('cc.status', 'pending')
+                ->whereIn('cc.status', $eligibleStatuses)
                 ->whereIn('cc.customer_id', $customerIds)
                 ->select('cc.customer_id', 'c.first_name', 'c.last_name', 'c.phone', 'c.phone_normalized')
                 ->get();
 
             if ($customers->isEmpty()) {
-                return response()->json(['success' => false, 'message' => 'No pending customers found for the given IDs'], 422);
+                $label = $includeFailed ? 'pending or failed' : 'pending';
+                return response()->json(['success' => false, 'message' => "No {$label} customers found for the given IDs"], 422);
             }
 
             $whatsapp = app(\App\Services\WhatsAppService::class);
@@ -14309,6 +14284,17 @@ class RiderController extends Controller
                         return $p === '{{customer_name}}' ? $customerName : $p;
                     }, $bodyParams);
 
+                    // Resize to match the template's actual variable_count so we never
+                    // over-send (error 132000) or under-send placeholders.
+                    if ($expectedVarCount !== null) {
+                        if (count($resolvedParams) > $expectedVarCount) {
+                            $resolvedParams = array_slice($resolvedParams, 0, $expectedVarCount);
+                        }
+                        while (count($resolvedParams) < $expectedVarCount) {
+                            $resolvedParams[] = $customerName;
+                        }
+                    }
+
                     $response = $whatsapp->sendTemplateMessage($formattedPhone, $templateName, $language, $resolvedParams);
 
                     if ($response['success'] ?? false) {
@@ -14319,6 +14305,7 @@ class RiderController extends Controller
                                 'status' => 'sent',
                                 'sent_at' => now(),
                                 'sent_by' => $user->id,
+                                'error_message' => null,
                             ]);
                         DB::table('t_crm_campaigns')->where('id', $id)->increment('sent_count');
                         $results['sent']++;
@@ -14395,55 +14382,35 @@ class RiderController extends Controller
 
             $filters = json_decode($campaign->filters_json, true) ?: [];
 
-            $query = \App\Models\CRM\CustomerModel::query()
-                ->whereNull('merged_into_customer_id');
-
-            if (!empty($filters['search'])) {
-                $s = $filters['search'];
-                $query->where(function ($q) use ($s) {
-                    $q->where('first_name', 'LIKE', "%{$s}%")
-                      ->orWhere('last_name', 'LIKE', "%{$s}%")
-                      ->orWhere('phone', 'LIKE', "%{$s}%")
-                      ->orWhere('phone_normalized', 'LIKE', "%{$s}%")
-                      ->orWhere('company', 'LIKE', "%{$s}%")
-                      ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$s}%"]);
-                });
-            }
-            if (!empty($filters['city'])) {
-                $query->where('city', $filters['city']);
-            }
-            if (!empty($filters['activity'])) {
-                if ($filters['activity'] === '30day') {
-                    $query->where('last_order_date', '>=', now()->subDays(30));
-                } elseif ($filters['activity'] === '90day') {
-                    $query->where('last_order_date', '>=', now()->subDays(90));
-                }
-            }
-            if (isset($filters['min_spend']) && $filters['min_spend'] !== '' && $filters['min_spend'] !== null) {
-                $query->where('total_spent', '>=', (float) $filters['min_spend']);
-            }
-            if (isset($filters['max_spend']) && $filters['max_spend'] !== '' && $filters['max_spend'] !== null) {
-                $query->where('total_spent', '<=', (float) $filters['max_spend']);
-            }
-
-            $allMatchingIds = $query->pluck('id')->toArray();
+            // Use shared service so new multi-group + qurbani_year + excludes
+            // filter shapes are honoured. Legacy single-filter campaigns still
+            // work thanks to CampaignFilterService::extractGroups.
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $result = $filterService->buildCustomerIdSet($filters);
+            $allMatchingIds = $result['customer_ids'];
+            $tagsById = $result['tags_by_id'] ?? [];
 
             $existingIds = DB::table('t_crm_campaign_customers')
                 ->where('campaign_id', $id)
                 ->pluck('customer_id')
                 ->toArray();
 
-            $newIds = array_diff($allMatchingIds, $existingIds);
+            $newIds = array_values(array_diff($allMatchingIds, $existingIds));
 
             if (!empty($newIds)) {
-                $rows = array_map(function ($cId) use ($id) {
-                    return [
+                $hasTagsColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags');
+                $rows = array_map(function ($cId) use ($id, $tagsById, $hasTagsColumn, $filterService) {
+                    $row = [
                         'campaign_id' => $id,
                         'customer_id' => $cId,
                         'status' => 'pending',
                         'created_at' => now(),
                     ];
-                }, array_values($newIds));
+                    if ($hasTagsColumn) {
+                        $row['match_tags'] = $filterService->matchTagsJson($tagsById, (int) $cId);
+                    }
+                    return $row;
+                }, $newIds);
 
                 foreach (array_chunk($rows, 500) as $chunk) {
                     DB::table('t_crm_campaign_customers')->insert($chunk);
@@ -14460,6 +14427,100 @@ class RiderController extends Controller
                 'success' => true,
                 'new_customers_added' => count($newIds),
                 'total_customers' => $newTotal,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Add more customers to an existing active campaign from a filter payload.
+     * Mirrors CampaignWebController::addCustomers for parity with the web UI.
+     */
+    public function addCampaignCustomers(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+            if ($campaign->status !== 'active') {
+                return response()->json(['success' => false, 'message' => 'Cannot add customers to an ended campaign'], 422);
+            }
+
+            $request->validate(['filters' => 'required|array']);
+            $filters = $request->input('filters', []);
+
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $result = $filterService->buildCustomerIdSet($filters);
+            $candidateIds = $result['customer_ids'];
+            $tagsById = $result['tags_by_id'] ?? [];
+
+            if (empty($candidateIds)) {
+                return response()->json([
+                    'success' => true,
+                    'added' => 0,
+                    'already_in_campaign' => 0,
+                    'matched' => 0,
+                    'excluded_count' => $result['excluded_count'],
+                    'group_counts' => $result['group_counts'],
+                ]);
+            }
+
+            $existingIds = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->pluck('customer_id')
+                ->map(fn($v) => (int)$v)
+                ->all();
+            $existingSet = array_flip($existingIds);
+
+            $toInsert = [];
+            foreach ($candidateIds as $cId) {
+                if (!isset($existingSet[$cId])) $toInsert[] = $cId;
+            }
+
+            if (!empty($toInsert)) {
+                $hasTagsColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags');
+                $rows = array_map(function ($cId) use ($id, $tagsById, $hasTagsColumn, $filterService) {
+                    $row = [
+                        'campaign_id' => (int) $id,
+                        'customer_id' => $cId,
+                        'status' => 'pending',
+                        'created_at' => now(),
+                    ];
+                    if ($hasTagsColumn) {
+                        $row['match_tags'] = $filterService->matchTagsJson($tagsById, (int) $cId);
+                    }
+                    return $row;
+                }, $toInsert);
+
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    DB::table('t_crm_campaign_customers')->insert($chunk);
+                }
+
+                DB::table('t_crm_campaigns')
+                    ->where('id', $id)
+                    ->increment('total_customers', count($toInsert), ['updated_at' => now()]);
+            }
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->selectRaw("COUNT(*) as total, SUM(status='sent') as sent, SUM(status='pending') as pending, SUM(status='failed') as failed, SUM(status='skipped') as skipped")
+                ->first();
+
+            return response()->json([
+                'success' => true,
+                'added' => count($toInsert),
+                'already_in_campaign' => count($candidateIds) - count($toInsert),
+                'matched' => count($candidateIds),
+                'excluded_count' => $result['excluded_count'],
+                'group_counts' => $result['group_counts'],
+                'counts' => $counts,
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -14518,6 +14579,7 @@ class RiderController extends Controller
 
             $totalSent = $sentCustomers->count();
             $customersWhoOrdered = 0;
+            $customersWhoReplied = 0;
             $totalOrders = 0;
             $totalRevenue = 0;
             $customerDetails = [];
@@ -14554,6 +14616,9 @@ class RiderController extends Controller
                     ->select('first_name', 'last_name', 'phone_normalized')
                     ->first();
 
+                $replied = !empty($cc->replied_at ?? null);
+                if ($replied) $customersWhoReplied++;
+
                 $customerDetails[] = [
                     'customer_id' => $cc->customer_id,
                     'name' => $customer ? trim($customer->first_name . ' ' . $customer->last_name) : 'Unknown',
@@ -14562,6 +14627,8 @@ class RiderController extends Controller
                     'ordered' => $orderCount > 0,
                     'order_count' => $orderCount,
                     'revenue' => $revenue,
+                    'replied' => $replied,
+                    'replied_at' => $cc->replied_at ?? null,
                 ];
 
                 if ($trackingType === 'products' && !empty($trackedProducts) && $orderCount > 0) {
@@ -14598,6 +14665,8 @@ class RiderController extends Controller
                     'total_sent' => $totalSent,
                     'customers_who_ordered' => $customersWhoOrdered,
                     'conversion_rate' => $totalSent > 0 ? round(($customersWhoOrdered / $totalSent) * 100, 1) : 0,
+                    'customers_who_replied' => $customersWhoReplied,
+                    'reply_rate' => $totalSent > 0 ? round(($customersWhoReplied / $totalSent) * 100, 1) : 0,
                     'total_orders' => $totalOrders,
                     'total_revenue' => round($totalRevenue, 2),
                     'tracking_type' => $trackingType,
@@ -14606,6 +14675,53 @@ class RiderController extends Controller
                     'customer_details' => $customerDetails,
                 ],
             ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Get distinct Qurbani years for campaign year filter (mobile).
+     * Same definition as CampaignWebController::getQurbaniYears / Qurbani dashboard.
+     */
+    public function getCampaignQurbaniYears(Request $request)
+    {
+        try {
+            $years = collect();
+            $current = DB::table('t_crm_prod_order as o')
+                ->where(function ($q) {
+                    $q->whereNotNull('o.qurbani_day')
+                      ->orWhereExists(function ($sub) {
+                          $sub->select(DB::raw(1))
+                              ->from('t_crm_prod_order_line_item as li')
+                              ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                              ->whereColumn('li.order_id', 'o.id')
+                              ->whereRaw("LOWER(p.attribute_1) = 'qurbani'");
+                      });
+                })
+                ->select(DB::raw('DISTINCT YEAR(o.order_date) as year'))
+                ->pluck('year');
+            $years = $years->merge($current);
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_crm_history_order') && \Illuminate\Support\Facades\Schema::hasTable('t_crm_history_order_line_item')) {
+                $hist = DB::table('t_crm_history_order as ho')
+                    ->whereExists(function ($sub) {
+                        $sub->select(DB::raw(1))
+                            ->from('t_crm_history_order_line_item as hli')
+                            ->whereColumn('hli.order_id', 'ho.id')
+                            ->where(function ($q) {
+                                $q->whereRaw("LOWER(hli.name) LIKE '%qurbani%'")
+                                  ->orWhereRaw("LOWER(hli.name) LIKE '%hissa%'")
+                                  ->orWhereRaw("LOWER(COALESCE(hli.sku,'')) LIKE 'qur%'");
+                            });
+                    })
+                    ->select(DB::raw('DISTINCT YEAR(ho.order_date) as year'))
+                    ->pluck('year');
+                $years = $years->merge($hist);
+            }
+
+            $years = $years->filter()->unique()->sortDesc()->values();
+            return response()->json(['success' => true, 'years' => $years]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -16452,7 +16568,7 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type', 'instructions');
+                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'instructions');
                 }])
                 ->with(['lineItems.product' => function($q) {
                     $q->select('id', 'attribute_2');
@@ -16466,7 +16582,7 @@ class RiderController extends Controller
             }
 
             // Apply qurbani field filters (check both order-level and line-item-level)
-            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_delivery_type'] as $field) {
+            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type'] as $field) {
                 if ($request->get($field)) {
                     $filterVal = $request->get($field);
                     $query->where(function($q) use ($field, $filterVal) {
@@ -16578,6 +16694,7 @@ class RiderController extends Controller
                             'qurbani_day' => $item->qurbani_day,
                             'qurbani_slot' => $item->qurbani_slot,
                             'qurbani_region' => $item->qurbani_region,
+                            'qurbani_sub_region' => $item->qurbani_sub_region,
                             'qurbani_delivery_type' => $item->qurbani_delivery_type,
                             'category_level_2' => $item->product->attribute_2 ?? null,
                             'instructions' => $item->instructions,
@@ -16617,6 +16734,7 @@ class RiderController extends Controller
                 'qurbani_day' => 'nullable|string|max:50',
                 'qurbani_slot' => 'nullable|string|max:50',
                 'qurbani_region' => 'nullable|string|max:100',
+                'qurbani_sub_region' => 'nullable|string|max:100',
                 'qurbani_delivery_type' => 'nullable|string|max:50',
                 'instructions' => 'nullable|string|max:500',
                 'line_item_id' => 'nullable|integer|exists:t_crm_prod_order_line_item,id',
@@ -16627,6 +16745,7 @@ class RiderController extends Controller
                 'qurbani_day' => $validated['qurbani_day'] ?? null,
                 'qurbani_slot' => $validated['qurbani_slot'] ?? null,
                 'qurbani_region' => $validated['qurbani_region'] ?? null,
+                'qurbani_sub_region' => $validated['qurbani_sub_region'] ?? null,
                 'qurbani_delivery_type' => $validated['qurbani_delivery_type'] ?? null,
             ];
             if (array_key_exists('instructions', $validated)) {
@@ -16646,6 +16765,7 @@ class RiderController extends Controller
                     'qurbani_day' => $firstItem->qurbani_day,
                     'qurbani_slot' => $firstItem->qurbani_slot,
                     'qurbani_region' => $firstItem->qurbani_region,
+                    'qurbani_sub_region' => $firstItem->qurbani_sub_region,
                     'qurbani_delivery_type' => $firstItem->qurbani_delivery_type,
                 ]);
             }
@@ -16692,6 +16812,7 @@ class RiderController extends Controller
                     return $group->map(function ($item) {
                         $opt = ['id' => $item->id, 'value' => $item->option_value];
                         if ($item->parent_id) $opt['parent_id'] = $item->parent_id;
+                        if (isset($item->delivery_type_parent_id) && $item->delivery_type_parent_id) $opt['delivery_type_parent_id'] = $item->delivery_type_parent_id;
                         if ($item->is_default) $opt['is_default'] = true;
                         return $opt;
                     })->values();
@@ -16708,11 +16829,22 @@ class RiderController extends Controller
 
             $shippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
 
+            $rawInvoiceFields = \DB::table('t_crm_qurbani_field_options')
+                ->where('show_in_invoice', 1)
+                ->groupBy('field_name')
+                ->pluck('field_name')
+                ->toArray();
+            $desiredOrder = ['qurbani_day', 'qurbani_delivery_type', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region'];
+            $invoiceFields = [];
+            foreach ($desiredOrder as $f) { if (in_array($f, $rawInvoiceFields)) $invoiceFields[] = $f; }
+            foreach ($rawInvoiceFields as $f) { if (!in_array($f, $invoiceFields)) $invoiceFields[] = $f; }
+
             return response()->json([
                 'success' => true,
                 'options' => $options,
                 'categories' => $categories,
                 'qurbani_shipping_price' => $shippingPrice,
+                'invoice_fields' => $invoiceFields,
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);

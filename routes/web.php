@@ -277,8 +277,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'orders'])->name('qurbani.orders');
         Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
+        Route::get('/api/order-stats', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrderStats'])->name('qurbani.api.order-stats');
         Route::post('/api/toggle', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleQurbaniMode'])->name('qurbani.api.toggle');
         Route::post('/api/toggle-rider-delivered', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleRiderDelivered'])->name('qurbani.api.toggle-rider-delivered');
+        Route::post('/api/toggle-delete', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleDeleteEnabled'])->name('qurbani.api.toggle-delete');
+        Route::delete('/api/orders/{id}', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'deleteOrder'])->name('qurbani.api.delete-order');
     });
 
     // Bulk Status Update Routes (Admin only)
@@ -318,9 +321,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/list', [\App\Http\Controllers\Web\CampaignWebController::class, 'getCampaigns']);
         Route::get('/templates', [\App\Http\Controllers\Web\CampaignWebController::class, 'getTemplates']);
         Route::get('/cities', [\App\Http\Controllers\Web\CampaignWebController::class, 'getCities']);
+        Route::get('/qurbani-years', [\App\Http\Controllers\Web\CampaignWebController::class, 'getQurbaniYears']);
         Route::post('/preview', [\App\Http\Controllers\Web\CampaignWebController::class, 'preview']);
         Route::post('/create', [\App\Http\Controllers\Web\CampaignWebController::class, 'create']);
         Route::get('/{id}', [\App\Http\Controllers\Web\CampaignWebController::class, 'detail']);
+        Route::post('/{id}/add-customers', [\App\Http\Controllers\Web\CampaignWebController::class, 'addCustomers']);
         Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBulk']);
         Route::post('/{id}/end', [\App\Http\Controllers\Web\CampaignWebController::class, 'end']);
         Route::post('/{id}/customers/{customerId}/skip', [\App\Http\Controllers\Web\CampaignWebController::class, 'skip']);

@@ -851,6 +851,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
 }
 .wa-mgr-save:hover { background: #15803d; }
 
+/* Template-scope radio: highlight the selected segment */
+.tpl-scope-opt { transition: background .12s, border-color .12s, box-shadow .12s; }
+.tpl-scope-opt:hover { border-color: #cbd5e1; }
+.tpl-scope-opt.tpl-scope-selected[data-scope="common"]  { border-color: #94a3b8; background: #f1f5f9; box-shadow: 0 0 0 1px #94a3b8 inset; }
+.tpl-scope-opt.tpl-scope-selected[data-scope="regular"] { border-color: #2563eb; background: #eff6ff; box-shadow: 0 0 0 1px #2563eb inset; }
+.tpl-scope-opt.tpl-scope-selected[data-scope="qurbani"] { border-color: #d97706; background: #fffbeb; box-shadow: 0 0 0 1px #d97706 inset; }
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
     .wa-sidebar { width: 100%; min-width: auto; max-width: none; }
@@ -1009,7 +1016,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             </div>
             <div id="waExistingTemplates"></div>
             <div class="wa-mgr-divider">
-                <h4>Add New Template</h4>
+                <div id="tplFormBanner" style="display:none;margin-bottom:10px;padding:8px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;">
+                    You are editing an existing template. Click <b>Cancel</b> to discard changes.
+                </div>
+                <h4 id="tplFormHeading">Add New Template</h4>
                 <div class="wa-mgr-grid cols-2">
                     <div>
                         <label class="wa-mgr-label">Template Name (exact match from WhatsApp)</label>
@@ -1065,10 +1075,54 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplShowOrders" checked /> Open Orders</label>
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplShowCustomers" checked /> Customers</label>
                         <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplShowShopify" checked /> Shopify</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#fffbeb;padding:2px 6px;border-radius:4px;border:1px solid #fde68a;margin-top:4px;"><input type="checkbox" id="tplShowInvoice" /> 📄 Use for Invoices</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#fffbeb;padding:2px 6px;border-radius:4px;border:1px solid #fde68a;margin-top:4px;"><input type="checkbox" id="tplShowInvoice" /> 📄 Regular Invoice</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;background:#fef3c7;padding:2px 6px;border-radius:4px;border:1px solid #f59e0b;margin-top:4px;"><input type="checkbox" id="tplShowQurbaniInvoice" /> 🐄 Qurbani Invoice</label>
                     </div>
                 </div>
-                <button onclick="saveNewTemplate()" class="wa-mgr-save">Save Template</button>
+                <div style="margin-bottom:12px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;padding:8px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;">
+                        <input type="checkbox" id="tplIsActive" checked />
+                        <div>
+                            <div style="font-weight:600;color:#15803d;">✓ Active</div>
+                            <div style="font-size:11px;color:#64748b;">Uncheck to hide this template everywhere without deleting it</div>
+                        </div>
+                    </label>
+                </div>
+                <div style="margin-bottom:12px;padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                    <div style="font-weight:600;color:#334155;font-size:13px;margin-bottom:6px;">👥 Who can see this template?</div>
+                    <div style="font-size:11px;color:#64748b;margin-bottom:8px;">Pick where this template shows up. Marketing / broadcast messages should stay "Common".</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;" id="tplScopeGroup">
+                        <label class="tpl-scope-opt" data-scope="common" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border:2px solid #e5e7eb;border-radius:6px;">
+                            <input type="radio" name="tplScope" value="common" id="tplScopeCommon" checked style="margin:0;" />
+                            <div>
+                                <div style="font-weight:600;color:#334155;">🌐 Common</div>
+                                <div style="font-size:10px;color:#64748b;">Both Regular &amp; Qurbani</div>
+                            </div>
+                        </label>
+                        <label class="tpl-scope-opt" data-scope="regular" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border:2px solid #e5e7eb;border-radius:6px;">
+                            <input type="radio" name="tplScope" value="regular" id="tplScopeRegular" style="margin:0;" />
+                            <div>
+                                <div style="font-weight:600;color:#1e40af;">🛒 Regular only</div>
+                                <div style="font-size:10px;color:#64748b;">Hidden on Qurbani pages</div>
+                            </div>
+                        </label>
+                        <label class="tpl-scope-opt" data-scope="qurbani" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:8px;background:#fff;border:2px solid #e5e7eb;border-radius:6px;">
+                            <input type="radio" name="tplScope" value="qurbani" id="tplScopeQurbani" style="margin:0;" />
+                            <div>
+                                <div style="font-weight:600;color:#b45309;">🐄 Qurbani only</div>
+                                <div style="font-size:10px;color:#64748b;">Hidden on Regular pages</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;"><input type="checkbox" id="tplIsDefault" /> ⭐ Set as default invoice template</label>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Default template auto-selects when sending invoices</div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <button id="tplSaveBtn" onclick="saveTemplateForm()" class="wa-mgr-save" style="flex:1;">Save Template</button>
+                    <button id="tplCancelBtn" onclick="cancelTemplateEdit()" style="display:none;padding:11px 20px;background:#e5e7eb;color:#374151;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Cancel</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1286,7 +1340,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (m.type === 'image' && m.media_url) {
                 html += `<div class="wa-msg-image"><a href="${esc(m.media_url)}" target="_blank"><img src="${esc(m.media_url)}" alt="Image" style="max-width:260px;max-height:260px;border-radius:8px;display:block;cursor:pointer;" /></a></div>`;
             }
-            if (m.type === 'audio') html += '<div class="wa-msg-media">🎤 Voice Note</div>';
+            if (m.type === 'audio') {
+                if (m.media_url) {
+                    html += `<div class="wa-msg-media" style="min-width:220px;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="font-size:16px;">🎤</span><span style="font-weight:600;font-size:12px;color:#374151;">Voice Note</span></div><audio controls preload="metadata" style="width:100%;max-width:280px;height:36px;" src="${esc(m.media_url)}"></audio><div style="margin-top:4px;"><a href="${esc(m.media_url)}" target="_blank" style="font-size:11px;color:#2563eb;text-decoration:none;">Download ↗</a></div></div>`;
+                } else {
+                    html += '<div class="wa-msg-media">🎤 Voice Note (unavailable)</div>';
+                }
+            }
             if (m.type === 'video') {
                 if (m.media_url) html += `<div class="wa-msg-media"><a href="${esc(m.media_url)}" target="_blank" style="color:inherit;text-decoration:none;">🎬 Video (click to open)</a></div>`;
                 else html += '<div class="wa-msg-media">🎬 Video</div>';
@@ -1307,7 +1367,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 html += `<div style="font-size:12px;color:#2563EB;margin-top:2px;">Click to open in Maps</div>`;
                 html += '</div></div>';
             }
-            if (m.content && m.type !== 'location') {
+            if (m.content && m.type !== 'location' && m.type !== 'audio') {
                 const linked = esc(m.content).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" style="color:#2563EB;text-decoration:underline;">$1</a>');
                 html += `<div class="wa-msg-text">${linked}</div>`;
             }
@@ -1396,18 +1456,40 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     });
 
     // ── Template Picker ──
+    let tplCustomerOrders = [];
+
     window.openTemplatePicker = function() {
         document.getElementById('waTemplateModal').style.display = 'flex';
         document.getElementById('waTemplateList').innerHTML = '<div class="wa-loading">Loading...</div>';
-        apiFetch('/messages/templates').then(d => {
-            if (!d.success) return;
-            templates = d.templates || [];
+        tplCustomerOrders = [];
+
+        const fetchTpls = apiFetch('/messages/templates');
+        const fetchOrders = (activeConv && activeConv.customer_id)
+            ? apiFetch('/messages/customer-orders/' + activeConv.customer_id).catch(() => ({success:false}))
+            : Promise.resolve({success:false});
+
+        Promise.all([fetchTpls, fetchOrders]).then(([tplData, ordData]) => {
+            if (!tplData.success) return;
+            templates = tplData.templates || [];
+            tplCustomerOrders = (ordData.success && ordData.orders) ? ordData.orders : [];
             renderTemplates();
         });
     };
     window.closeTemplatePicker = function() {
         document.getElementById('waTemplateModal').style.display = 'none';
     };
+
+    function buildOrderDropdown(idx, varNum) {
+        let html = `<select class="wa-tpl-param-in" data-tpl="${idx}" data-var="${varNum}" style="padding:8px 10px;">`;
+        html += `<option value="">-- Select Order --</option>`;
+        tplCustomerOrders.forEach(o => {
+            const dt = o.order_date ? new Date(o.order_date).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '';
+            const label = `${o.order_number} — ${dt} — Rs ${Number(o.total||0).toLocaleString()} (${o.status||''})`;
+            html += `<option value="${esc(o.order_number)}">${esc(label)}</option>`;
+        });
+        html += `</select>`;
+        return html;
+    }
 
     function renderTemplates() {
         const el = document.getElementById('waTemplateList');
@@ -1427,8 +1509,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (t.variable_count > 0) {
                 html += '<div class="wa-tpl-params">';
                 for (let i = 1; i <= t.variable_count; i++) {
-                    const defaultVal = (i === 1 && activeConv) ? esc(activeConv.customer_name || '') : '';
-                    html += `<input class="wa-tpl-param-in" data-tpl="${idx}" data-var="${i}" placeholder="Variable {{${i}}}" value="${defaultVal}" />`;
+                    if (i >= 2 && tplCustomerOrders.length > 0) {
+                        html += `<label style="font-size:11px;color:#6b7280;margin-bottom:2px;display:block;">Variable {{${i}}} — Order Number</label>`;
+                        html += buildOrderDropdown(idx, i);
+                    } else {
+                        const defaultVal = (i === 1 && activeConv) ? esc(activeConv.customer_name || '') : '';
+                        html += `<input class="wa-tpl-param-in" data-tpl="${idx}" data-var="${i}" placeholder="Variable {{${i}}}" value="${defaultVal}" />`;
+                    }
                 }
                 html += '</div>';
             }
@@ -1443,7 +1530,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (!t || !activeConv) return;
         const params = [];
         for (let i = 1; i <= t.variable_count; i++) {
-            const val = document.querySelector(`input[data-tpl="${idx}"][data-var="${i}"]`)?.value?.trim() || '';
+            const el = document.querySelector(`[data-tpl="${idx}"][data-var="${i}"]`);
+            const val = el?.value?.trim() || '';
             if (!val) { alert('Please fill in all template variables.'); return; }
             params.push(val);
         }
@@ -1562,20 +1650,29 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     // ── Template Manager ──
     window.openTemplateManager = function() {
         document.getElementById('waTemplateManager').style.display = 'flex';
+        resetTemplateForm();
         loadExistingTemplates();
     };
     window.closeTemplateManager = function() {
         document.getElementById('waTemplateManager').style.display = 'none';
+        resetTemplateForm();
     };
 
     document.getElementById('tplHasButtons')?.addEventListener('change', function() {
         document.getElementById('tplButtonLabelsDiv').style.display = this.value === '1' ? 'block' : 'none';
     });
 
+    let _existingTemplatesById = {};
+    let editingTemplateId = null;
+
     function loadExistingTemplates() {
-        apiFetch('/messages/templates').then(d => {
+        // Pass include_inactive=1 so the manager can see + re-enable templates
+        // that are currently hidden from regular pickers.
+        apiFetch('/messages/templates?include_inactive=1').then(d => {
             const el = document.getElementById('waExistingTemplates');
             const tpls = d.templates || [];
+            _existingTemplatesById = {};
+            tpls.forEach(t => { _existingTemplatesById[t.id] = t; });
             if (!tpls.length) { el.innerHTML = '<p style="color:#9ca3af;font-size:13px;">No templates added yet.</p>'; return; }
             el.innerHTML = tpls.map(t => {
                 const si = (t.show_in || 'messages,orders,customers').split(',');
@@ -1585,22 +1682,161 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     {key:'orders',label:'Orders',bg:'#fef3c7',fg:'#92400e'},
                     {key:'customers',label:'Customers',bg:'#d1fae5',fg:'#065f46'},
                     {key:'shopify',label:'Shopify',bg:'#ede9fe',fg:'#5b21b6'},
-                    {key:'invoice',label:'📄 Invoice',bg:'#fff7ed',fg:'#9a3412'}
+                    {key:'invoice',label:'📄 Invoice',bg:'#fff7ed',fg:'#9a3412'},
+                    {key:'qurbani_invoice',label:'🐄 Qurbani Invoice',bg:'#fef3c7',fg:'#b45309'}
                 ].filter(x => si.includes(x.key)).map(x => `<span style="${tagStyle}background:${x.bg};color:${x.fg};">${x.label}</span>`).join('');
-                return `<div class="wa-mgr-item" style="flex-wrap:wrap;">
+                const defaultBadge = t.is_default ? `<span style="${tagStyle}background:#dcfce7;color:#166534;border:1px solid #86efac;">⭐ Default</span>` : '';
+                const qurbaniOnlyBadge = t.is_qurbani_only ? `<span style="${tagStyle}background:#fef3c7;color:#b45309;border:1px solid #fde68a;">🐄 Qurbani only</span>` : '';
+                const regularOnlyBadge = t.is_regular_only ? `<span style="${tagStyle}background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;">🛒 Regular only</span>` : '';
+                const commonBadge = (!t.is_qurbani_only && !t.is_regular_only) ? `<span style="${tagStyle}background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;">🌐 Common</span>` : '';
+                // Inactive templates are visually dimmed and get a prominent badge.
+                const isActive = (typeof t.is_active === 'undefined') ? true : !!t.is_active;
+                const inactiveBadge = !isActive ? `<span style="${tagStyle}background:#fee2e2;color:#991b1b;border:1px solid #fecaca;">⏸ Inactive</span>` : '';
+                const inactiveRowStyle = !isActive ? 'opacity:0.55;background:#fafafa;' : '';
+                const isEditingThis = editingTemplateId === t.id;
+                const editBtnStyle = isEditingThis
+                    ? 'padding:4px 10px;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600;'
+                    : 'padding:4px 10px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;font-size:11px;cursor:pointer;';
+                const toggleBtnStyle = isActive
+                    ? 'padding:4px 10px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:6px;font-size:11px;cursor:pointer;'
+                    : 'padding:4px 10px;background:#dcfce7;border:1px solid #86efac;color:#166534;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600;';
+                const toggleBtnLabel = isActive ? 'Disable' : 'Enable';
+                return `<div class="wa-mgr-item" style="flex-wrap:wrap;${inactiveRowStyle}${isEditingThis?'border-color:#f59e0b;background:#fffbeb;':''}">
                     <div style="flex:1;">
                         <div class="wa-mgr-item-name">${esc(t.display_name || t.name)}</div>
                         <div class="wa-mgr-item-meta">${esc(t.name)} · ${t.variable_count} vars · ${t.status}</div>
-                        <div style="margin-top:4px;">${tags}</div>
+                        <div style="margin-top:4px;">${inactiveBadge}${qurbaniOnlyBadge}${regularOnlyBadge}${commonBadge}${defaultBadge}${tags}</div>
                     </div>
                     <div style="display:flex;gap:6px;align-items:center;">
-                        <button onclick="editTemplateVisibility(${t.id}, '${esc(t.show_in || 'messages,orders,customers')}')" style="padding:4px 10px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;font-size:11px;cursor:pointer;">Edit</button>
+                        <button onclick="toggleTemplateActive(${t.id})" style="${toggleBtnStyle}" title="${isActive ? 'Hide this template from pickers' : 'Show this template in pickers again'}">${toggleBtnLabel}</button>
+                        <button onclick="editFullTemplate(${t.id})" style="${editBtnStyle}">${isEditingThis ? 'Editing…' : 'Edit'}</button>
                         <button onclick="deleteTemplate(${t.id})" class="wa-mgr-del">Delete</button>
                     </div>
                 </div>`;
             }).join('');
         });
     }
+
+    // Quick toggle for is_active right from the list (no need to open edit).
+    window.toggleTemplateActive = function(id) {
+        const t = _existingTemplatesById[id];
+        if (!t) return;
+        const next = !((typeof t.is_active === 'undefined') ? true : !!t.is_active);
+        apiFetch('/messages/templates/' + id, {
+            method: 'PUT',
+            body: JSON.stringify({ is_active: next ? 1 : 0 })
+        }).then(d => {
+            if (d.success) {
+                _cachedApiTemplates = null;
+                loadExistingTemplates();
+            } else {
+                alert(d.message || 'Failed to update template status');
+            }
+        });
+    };
+
+    window.editFullTemplate = function(id) {
+        const t = _existingTemplatesById[id];
+        if (!t) return;
+        editingTemplateId = id;
+
+        document.getElementById('tplName').value = t.name || '';
+        document.getElementById('tplDisplayName').value = t.display_name || '';
+        document.getElementById('tplBody').value = (t.body_text || '').replace(/\\n/g, '\n');
+        document.getElementById('tplCategory').value = t.category || 'utility';
+        document.getElementById('tplVarCount').value = t.variable_count ?? 0;
+        const hasBtns = t.has_buttons ? '1' : '0';
+        document.getElementById('tplHasButtons').value = hasBtns;
+        document.getElementById('tplButtonLabelsDiv').style.display = hasBtns === '1' ? 'block' : 'none';
+        try {
+            const labels = JSON.parse(t.button_labels || '[]');
+            document.getElementById('tplButtonLabels').value = Array.isArray(labels) ? labels.join(', ') : '';
+        } catch (e) { document.getElementById('tplButtonLabels').value = ''; }
+        document.getElementById('tplHeader').value = t.header_text || '';
+        document.getElementById('tplFooter').value = t.footer_text || '';
+
+        const si = (t.show_in || '').split(',').map(s => s.trim());
+        document.getElementById('tplShowMessages').checked = si.includes('messages');
+        document.getElementById('tplShowOrders').checked = si.includes('orders');
+        document.getElementById('tplShowCustomers').checked = si.includes('customers');
+        document.getElementById('tplShowShopify').checked = si.includes('shopify');
+        document.getElementById('tplShowInvoice').checked = si.includes('invoice');
+        document.getElementById('tplShowQurbaniInvoice').checked = si.includes('qurbani_invoice');
+        document.getElementById('tplIsDefault').checked = !!t.is_default;
+        document.getElementById('tplIsActive').checked = (typeof t.is_active === 'undefined') ? true : !!t.is_active;
+        setTemplateScope(
+            t.is_qurbani_only ? 'qurbani'
+            : (t.is_regular_only ? 'regular' : 'common')
+        );
+
+        document.getElementById('tplFormHeading').textContent = 'Edit Template: ' + (t.display_name || t.name);
+        document.getElementById('tplSaveBtn').textContent = 'Update Template';
+        document.getElementById('tplCancelBtn').style.display = 'inline-block';
+        document.getElementById('tplFormBanner').style.display = 'block';
+
+        loadExistingTemplates();
+
+        setTimeout(() => {
+            document.getElementById('tplFormBanner').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            document.getElementById('tplName').focus();
+        }, 50);
+    };
+
+    window.cancelTemplateEdit = function() {
+        resetTemplateForm();
+        loadExistingTemplates();
+    };
+
+    function resetTemplateForm() {
+        editingTemplateId = null;
+        ['tplName','tplDisplayName','tplBody','tplHeader','tplFooter','tplButtonLabels'].forEach(id => { var el = document.getElementById(id); if(el) el.value = ''; });
+        document.getElementById('tplVarCount').value = '0';
+        document.getElementById('tplHasButtons').value = '0';
+        document.getElementById('tplButtonLabelsDiv').style.display = 'none';
+        document.getElementById('tplCategory').value = 'utility';
+        document.getElementById('tplShowMessages').checked = true;
+        document.getElementById('tplShowOrders').checked = true;
+        document.getElementById('tplShowCustomers').checked = true;
+        document.getElementById('tplShowShopify').checked = true;
+        document.getElementById('tplShowInvoice').checked = false;
+        document.getElementById('tplShowQurbaniInvoice').checked = false;
+        document.getElementById('tplIsDefault').checked = false;
+        document.getElementById('tplIsActive').checked = true;
+        setTemplateScope('common');
+        document.getElementById('tplFormHeading').textContent = 'Add New Template';
+        document.getElementById('tplSaveBtn').textContent = 'Save Template';
+        document.getElementById('tplCancelBtn').style.display = 'none';
+        document.getElementById('tplFormBanner').style.display = 'none';
+    }
+
+    // --- Template scope (Common / Regular-only / Qurbani-only) ---------
+    // The three radio buttons map to two backend booleans:
+    //   common  → is_qurbani_only=0, is_regular_only=0   (shows everywhere)
+    //   regular → is_qurbani_only=0, is_regular_only=1   (hidden on Qurbani)
+    //   qurbani → is_qurbani_only=1, is_regular_only=0   (hidden on Regular)
+    function getTemplateScope() {
+        const r = document.querySelector('input[name="tplScope"]:checked');
+        return r ? r.value : 'common';
+    }
+    function setTemplateScope(scope) {
+        const valid = ['common','regular','qurbani'].includes(scope) ? scope : 'common';
+        const radio = document.querySelector('input[name="tplScope"][value="'+valid+'"]');
+        if (radio) radio.checked = true;
+        refreshTemplateScopeUI();
+    }
+    function refreshTemplateScopeUI() {
+        const selected = getTemplateScope();
+        document.querySelectorAll('.tpl-scope-opt').forEach(el => {
+            el.classList.toggle('tpl-scope-selected', el.getAttribute('data-scope') === selected);
+        });
+    }
+    // Attach listeners once the manager modal is rendered (the form exists at page load).
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('input[name="tplScope"]').forEach(r => {
+            r.addEventListener('change', refreshTemplateScopeUI);
+        });
+        refreshTemplateScopeUI();
+    });
 
     function getShowInValue() {
         const parts = [];
@@ -1609,91 +1845,62 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (document.getElementById('tplShowCustomers').checked) parts.push('customers');
         if (document.getElementById('tplShowShopify').checked) parts.push('shopify');
         if (document.getElementById('tplShowInvoice').checked) parts.push('invoice');
+        if (document.getElementById('tplShowQurbaniInvoice').checked) parts.push('qurbani_invoice');
         return parts.length ? parts.join(',') : 'messages';
     }
 
-    window.saveNewTemplate = function() {
+    window.saveTemplateForm = function() {
         const name = document.getElementById('tplName').value.trim();
         const displayName = document.getElementById('tplDisplayName').value.trim();
         const body = document.getElementById('tplBody').value.trim();
         if (!name || !displayName || !body) { alert('Please fill in Template Name, Display Name, and Body Text.'); return; }
 
         const hasButtons = document.getElementById('tplHasButtons').value === '1';
-        const buttonLabels = hasButtons ? document.getElementById('tplButtonLabels').value.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const buttonLabels = hasButtons
+            ? document.getElementById('tplButtonLabels').value.split(',').map(s => s.trim()).filter(Boolean)
+            : [];
 
-        apiFetch('/messages/templates', {
-            method: 'POST',
-            body: JSON.stringify({
-                name: name,
-                display_name: displayName,
-                body_text: body,
-                category: document.getElementById('tplCategory').value,
-                variable_count: parseInt(document.getElementById('tplVarCount').value) || 0,
-                has_buttons: hasButtons ? 1 : 0,
-                button_labels: buttonLabels,
-                header_text: document.getElementById('tplHeader').value.trim(),
-                footer_text: document.getElementById('tplFooter').value.trim(),
-                show_in: getShowInValue()
-            })
-        }).then(d => {
+        const payload = {
+            name: name,
+            display_name: displayName,
+            body_text: body,
+            category: document.getElementById('tplCategory').value,
+            variable_count: parseInt(document.getElementById('tplVarCount').value) || 0,
+            has_buttons: hasButtons ? 1 : 0,
+            button_labels: buttonLabels,
+            header_text: document.getElementById('tplHeader').value.trim(),
+            footer_text: document.getElementById('tplFooter').value.trim(),
+            show_in: getShowInValue(),
+            is_default: document.getElementById('tplIsDefault').checked ? 1 : 0,
+            is_active: document.getElementById('tplIsActive').checked ? 1 : 0,
+            is_qurbani_only: getTemplateScope() === 'qurbani' ? 1 : 0,
+            is_regular_only: getTemplateScope() === 'regular' ? 1 : 0
+        };
+
+        const isEdit = editingTemplateId !== null;
+        const url = isEdit ? '/messages/templates/' + editingTemplateId : '/messages/templates';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const btn = document.getElementById('tplSaveBtn');
+        const origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = isEdit ? 'Updating…' : 'Saving…';
+
+        apiFetch(url, { method: method, body: JSON.stringify(payload) }).then(d => {
+            btn.disabled = false;
+            btn.textContent = origText;
             if (d.success) {
-                ['tplName','tplDisplayName','tplBody','tplHeader','tplFooter','tplButtonLabels'].forEach(id => { var el = document.getElementById(id); if(el) el.value = ''; });
-                document.getElementById('tplVarCount').value = '0';
-                document.getElementById('tplHasButtons').value = '0';
-                document.getElementById('tplButtonLabelsDiv').style.display = 'none';
-                document.getElementById('tplShowMessages').checked = true;
-                document.getElementById('tplShowOrders').checked = true;
-                document.getElementById('tplShowCustomers').checked = true;
-                document.getElementById('tplShowShopify').checked = true;
-                document.getElementById('tplShowInvoice').checked = false;
                 _cachedApiTemplates = null;
+                resetTemplateForm();
                 loadExistingTemplates();
             } else {
                 alert(d.message || 'Failed to save template');
             }
-        }).catch(() => alert('Failed to save template'));
-    };
-
-    window.editTemplateVisibility = function(id, currentShowIn) {
-        const si = currentShowIn.split(',');
-        const m = si.includes('messages'), o = si.includes('orders'), c = si.includes('customers'), s = si.includes('shopify'), inv = si.includes('invoice');
-        const html = `<div style="padding:16px;">
-            <p style="font-size:14px;font-weight:600;margin:0 0 12px;">Where should this template appear?</p>
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="editShowMsg" ${m?'checked':''}/> Messages</label>
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="editShowOrd" ${o?'checked':''}/> Open Orders</label>
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="editShowCust" ${c?'checked':''}/> Customers</label>
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="editShowShop" ${s?'checked':''}/> Shopify</label>
-            <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:13px;cursor:pointer;background:#fffbeb;padding:4px 6px;border-radius:4px;border:1px solid #fde68a;"><input type="checkbox" id="editShowInv" ${inv?'checked':''}/> 📄 Use for Invoices <span style="font-size:10px;color:#92400e;">(auto-fills template name)</span></label>
-            <div style="display:flex;gap:8px;margin-top:12px;">
-                <button onclick="saveTemplateVisibility(${id})" style="padding:6px 16px;background:#16A34A;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Save</button>
-                <button onclick="document.getElementById('editVisDialog').remove()" style="padding:6px 16px;background:#e5e7eb;border:none;border-radius:6px;font-size:12px;cursor:pointer;">Cancel</button>
-            </div>
-        </div>`;
-        let dialog = document.getElementById('editVisDialog');
-        if (dialog) dialog.remove();
-        dialog = document.createElement('div');
-        dialog.id = 'editVisDialog';
-        dialog.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;box-shadow:0 25px 50px rgba(0,0,0,0.25);z-index:10100;min-width:260px;';
-        dialog.innerHTML = html;
-        document.body.appendChild(dialog);
-    };
-
-    window.saveTemplateVisibility = function(id) {
-        const parts = [];
-        if (document.getElementById('editShowMsg').checked) parts.push('messages');
-        if (document.getElementById('editShowOrd').checked) parts.push('orders');
-        if (document.getElementById('editShowCust').checked) parts.push('customers');
-        if (document.getElementById('editShowShop').checked) parts.push('shopify');
-        if (document.getElementById('editShowInv').checked) parts.push('invoice');
-        const showIn = parts.length ? parts.join(',') : 'messages';
-        apiFetch('/messages/templates/' + id, {
-            method: 'PUT',
-            body: JSON.stringify({show_in: showIn})
-        }).then(d => {
-            document.getElementById('editVisDialog')?.remove();
-            if (d.success) { _cachedApiTemplates = null; loadExistingTemplates(); }
-            else alert(d.message || 'Failed to update');
-        }).catch(() => alert('Failed to update'));
+        }).catch(() => {
+            btn.disabled = false;
+            btn.textContent = origText;
+            alert('Failed to save template');
+        });
     };
 
     window.deleteTemplate = function(id) {
@@ -1854,7 +2061,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             </div>
             <div style="display:flex;gap:8px;">
                 <button id="waInvPickerPrevBtn" onclick="previewInvPicker(${orderId})" style="flex:1;padding:9px;border:1px solid #d97706;color:#d97706;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Preview</button>
-                <button id="waInvPickerSendBtn" onclick="sendInvPicker(${orderId})" style="flex:1;padding:9px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;" disabled>Send Invoice</button>
+                <button id="waInvPickerSendBtn" onclick="sendInvPicker(${orderId})" style="flex:1;padding:9px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Send Invoice</button>
             </div>
             <div id="waInvPickerStatus" style="margin-top:8px;font-size:13px;text-align:center;display:none;"></div>`;
 
@@ -1864,6 +2071,12 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 if (el && !el.value) el.value = d.templates[0].name;
             }
         }).catch(() => {});
+
+        // Auto-generate the preview image on order select so the user sees
+        // the invoice immediately and the Send button activates. Without
+        // this, Send stays disabled (because the template has an image
+        // header that must be generated first) and it's not obvious why.
+        setTimeout(() => { try { previewInvPicker(orderId); } catch (e) {} }, 50);
     };
 
     function captureInvoiceImage(invoiceUrl, orderId) {
@@ -1932,10 +2145,34 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         const status = document.getElementById('waInvPickerStatus');
         btn.textContent = 'Sending...'; btn.disabled = true; status.style.display = 'none';
 
-        apiFetch('/messages/send-invoice', {
+        // Safety net: if the preview image hasn't been generated yet (the
+        // auto-preview may still be running, or it failed), run the capture
+        // flow synchronously before sending so we don't hit a silent
+        // "needs_capture" 422 from the backend.
+        const previewImg = document.getElementById('waInvPickerPreviewImg');
+        const previewReady = previewImg && previewImg.src && !previewImg.src.endsWith('#');
+        const ensurePreview = previewReady
+            ? Promise.resolve(true)
+            : apiFetch('/messages/invoice-image/' + orderId).then(d => {
+                if (!d.success) throw new Error(d.message || 'Failed to generate invoice image');
+                if (d.needs_capture) {
+                    return captureInvoiceImage(d.invoice_url, orderId).then(uploadRes => {
+                        if (previewImg) previewImg.src = uploadRes.image_url;
+                        const prevBox = document.getElementById('waInvPickerPreview');
+                        if (prevBox) prevBox.style.display = 'block';
+                        return true;
+                    });
+                }
+                if (previewImg) previewImg.src = d.image_url;
+                const prevBox = document.getElementById('waInvPickerPreview');
+                if (prevBox) prevBox.style.display = 'block';
+                return true;
+            });
+
+        ensurePreview.then(() => apiFetch('/messages/send-invoice', {
             method: 'POST',
             body: JSON.stringify({ order_id: orderId, phone: phone, template_name: tplName, body_params: bodyParams, conversation_id: activeConvId })
-        }).then(d => {
+        })).then(d => {
             if (d.success) {
                 status.style.display = 'block'; status.style.color = '#16a34a'; status.textContent = 'Invoice sent!';
                 btn.textContent = 'Sent!';
@@ -1945,7 +2182,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     loadConversations();
                 }, 1500);
             } else { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = d.message || 'Failed'; btn.textContent = 'Send Invoice'; btn.disabled = false; }
-        }).catch(e => { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
+        }).catch(e => { status.style.display = 'block'; status.style.color = '#dc2626'; status.textContent = e.message || 'Failed'; btn.textContent = 'Send Invoice'; btn.disabled = false; });
     };
 
     window.openFullscreenImg = function(src) {

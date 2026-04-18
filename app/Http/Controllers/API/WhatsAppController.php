@@ -480,13 +480,38 @@ class WhatsAppController extends Controller
             $query = DB::table('t_wa_templates')
                 ->where('status', 'approved');
 
-            if ($context = $request->query('context')) {
-                $contexts = explode(',', $context);
+            // Hide soft-disabled templates from every mobile picker.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_templates', 'is_active')) {
+                $query->where('is_active', 1);
+            }
+
+            $context = $request->query('context');
+            if ($context) {
+                $contexts = array_map('trim', explode(',', $context));
                 $query->where(function ($q) use ($contexts) {
                     foreach ($contexts as $ctx) {
-                        $q->orWhereRaw("FIND_IN_SET(?, show_in) > 0", [trim($ctx)]);
+                        if ($ctx === '') continue;
+                        $q->orWhereRaw("FIND_IN_SET(?, show_in) > 0", [$ctx]);
                     }
                 });
+
+                // Scope filtering:
+                //   - Non-qurbani picker → hide qurbani-only templates
+                //   - Qurbani picker     → hide regular-only templates
+                // Templates with both flags = 0 are "Common" and show in both.
+                $isQurbaniCtx = false;
+                foreach ($contexts as $c) {
+                    if ($c !== '' && (str_starts_with($c, 'qurbani_') || $c === 'qurbani')) {
+                        $isQurbaniCtx = true;
+                        break;
+                    }
+                }
+                if (!$isQurbaniCtx && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_templates', 'is_qurbani_only')) {
+                    $query->where('is_qurbani_only', 0);
+                }
+                if ($isQurbaniCtx && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_templates', 'is_regular_only')) {
+                    $query->where('is_regular_only', 0);
+                }
             }
 
             $templates = $query->orderBy('display_name')->get();
@@ -767,7 +792,8 @@ class WhatsAppController extends Controller
             'meatless_days' => "Dear {{1}},\n\nThank you for placing your order {{2}} with Nizami Farms! We confirm receipt of your order.\n\nPlease note that Tuesday and Wednesday are non-meat days, and our operations are closed. Your order will be delivered on Thursday.\n\nTo confirm, kindly reply to this message. We will process your order for Thursday delivery.\n\nBest regards,\nNizami Farms Team",
             'location_request' => "Dear {{1}},\n\nCould you please share your Google Maps location pin for delivery? Simply tap the attach icon > Location > Send your current location.\n\nThis helps our rider reach you without any delays.\n\nThank you,\nNizami Farms Team",
             'customer_greeting' => "Assalam-o-Alaikum {{1}},\n\nThis is Nizami Farms. How can we help you today?\n\nBest regards,\nNizami Farms Team",
-            'delivery_confirmation_online' => "Dear {{1}},\n\nWe are happy to confirm that your order #{{2}} has been successfully delivered on {{3}} by {{4}}.\n\nYour payment method is Bank Transfer.\n\nThank you for choosing Nizami Farms!",
+            'delivery_confirmation_online' => "Dear {{1}},\n\nWe are happy to confirm that your order #{{2}} has been successfully delivered on {{3}} by our rider {{4}}.\n\nYour payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\nAccount Title: \"Nizami Farms\"\n- Bank: Habib Bank Limited (HBL)\n   Account no: 23297901934403\n   IBAN: PK35HABB0023297901934403\n\n- Bank: Meezan Bank Limited\n   Account no: 03050106554237\n   IBAN: PK75MEZN0003050106554237\n\nThank you for choosing Nizami Farms!",
+            'delivery_confirmation' => "Dear {{1}},\n\nYour order {{2}} is now out for delivery! Our rider will contact you upon arrival at your location.\n\nPayment options:\n- Cash on delivery\n- Online transfer\n\nAccount Title: \"Nizami Farms\"\n• Bank: Habib Bank Limited (HBL)\n   Account no: 23297901934403\n   IBAN: PK35HABB0023297901934403\n\n• Bank: Meezan Bank Limited\n   Account no: 03050106554237\n   IBAN: PK75MEZN0003050106554237\n\n(Please share the transfer slip with us to ensure a smooth delivery process)\n\nThank you for choosing Nizami Farms!",
         ];
 
         $body = $templateBodies[$templateName] ?? "[Template: {$templateName}]";

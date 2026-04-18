@@ -732,18 +732,17 @@ function removeVariant(button) {
     variantRow.remove();
 }
 
-// Handle dropdown selection change
+var originalAttr3Options = null;
+
 function handleSelectChange(fieldName) {
     const selectElement = document.getElementById(fieldName + '_select');
     const inputElement = document.getElementById(fieldName + '_input');
     
     if (selectElement.value === '__custom__') {
-        // Show input field, hide select
         selectElement.style.display = 'none';
         inputElement.style.display = 'block';
         inputElement.focus();
         
-        // Add a button to go back to select
         if (!inputElement.nextElementSibling || !inputElement.nextElementSibling.classList.contains('back-to-select-btn')) {
             const backBtn = document.createElement('button');
             backBtn.type = 'button';
@@ -759,17 +758,78 @@ function handleSelectChange(fieldName) {
             inputElement.parentNode.insertBefore(backBtn, inputElement.nextSibling);
         }
     } else if (selectElement.value !== '') {
-        // Copy selected value to the actual input field
         inputElement.value = selectElement.value;
     } else {
-        // Clear the input if nothing selected
         inputElement.value = '';
+    }
+
+    if (fieldName === 'attribute_1') {
+        updateAttribute3ForQurbani();
     }
 }
 
-// Initialize on page load
+function updateAttribute3ForQurbani() {
+    var attr1Sel = document.getElementById('attribute_1_select');
+    var attr1Input = document.getElementById('attribute_1_input');
+    var attr3Sel = document.getElementById('attribute_3_select');
+    var attr3Input = document.getElementById('attribute_3_input');
+    if (!attr3Sel) return;
+
+    var attr1Val = '';
+    if (attr1Sel && attr1Sel.style.display !== 'none') {
+        attr1Val = attr1Sel.value;
+    } else if (attr1Input) {
+        attr1Val = attr1Input.value;
+    }
+
+    if (attr1Val.toLowerCase() === 'qurbani') {
+        if (!originalAttr3Options) {
+            originalAttr3Options = attr3Sel.innerHTML;
+        }
+        var currentVal = attr3Input ? attr3Input.value : '';
+        fetch('/qurbani-settings/api/options', {
+            headers: {'Accept': 'application/json'}
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.options || !data.options.qurbani_day) return;
+            var days = data.options.qurbani_day.filter(function(o) { return o.is_active; });
+            var html = '<option value="">-- Select Qurbani Day --</option>';
+            days.forEach(function(d) {
+                var sel = (currentVal === d.option_value) ? ' selected' : '';
+                html += '<option value="' + d.option_value + '"' + sel + '>' + d.option_value + '</option>';
+            });
+            attr3Sel.innerHTML = html;
+            attr3Sel.style.display = 'block';
+            if (attr3Input) attr3Input.style.display = 'none';
+            var backBtn = attr3Input ? attr3Input.nextElementSibling : null;
+            if (backBtn && backBtn.classList.contains('back-to-select-btn')) backBtn.remove();
+            if (currentVal) {
+                var match = days.find(function(d) { return d.option_value === currentVal; });
+                if (match) attr3Sel.value = currentVal;
+            }
+        })
+        .catch(function() {});
+    } else if (originalAttr3Options) {
+        attr3Sel.innerHTML = originalAttr3Options;
+        originalAttr3Options = null;
+        var currentVal = attr3Input ? attr3Input.value : '';
+        if (currentVal) {
+            var optExists = Array.from(attr3Sel.options).some(function(o) { return o.value === currentVal; });
+            if (optExists) {
+                attr3Sel.value = currentVal;
+                attr3Sel.style.display = 'block';
+                if (attr3Input) attr3Input.style.display = 'none';
+            } else if (currentVal) {
+                attr3Sel.value = '__custom__';
+                attr3Sel.style.display = 'none';
+                if (attr3Input) attr3Input.style.display = 'block';
+            }
+        }
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-    // Initialize: If there's a value that doesn't match any option, show custom input
     ['vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3'].forEach(fieldName => {
         const selectElement = document.getElementById(fieldName + '_select');
         const inputElement = document.getElementById(fieldName + '_input');
@@ -777,13 +837,14 @@ document.addEventListener('DOMContentLoaded', function() {
         if (inputElement && inputElement.value && selectElement) {
             const optionExists = Array.from(selectElement.options).some(option => option.value === inputElement.value);
             if (!optionExists && inputElement.value !== '') {
-                // Value exists but not in dropdown, show custom input
                 selectElement.value = '__custom__';
                 selectElement.style.display = 'none';
                 inputElement.style.display = 'block';
             }
         }
     });
+
+    updateAttribute3ForQurbani();
 });
 </script>
 @endsection

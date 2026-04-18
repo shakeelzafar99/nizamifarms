@@ -1003,36 +1003,75 @@ function sendOnlineWhatsApp(orderId, customerName, customerPhone, orderNumber, r
     }
 
     var timeStr = deliveryTime ? ' at ' + deliveryTime : '';
-    var msg = 'Dear ' + customerName + ',\n\n'
-        + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryDate + timeStr + ' by ' + riderName + '.\n\n'
-        + 'Your payment method is Bank Transfer.\n\n'
-        + 'Thank you for choosing Nizami Farms!';
-
-    var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
-    window.open(waUrl, '_blank');
+    var deliveryInfo = deliveryDate + timeStr;
 
     var csrfToken = document.querySelector('meta[name="csrf-token"]');
-    fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', orderId), {
+    var csrfVal = csrfToken ? csrfToken.getAttribute('content') : '';
+
+    fetch('/messages/send-template', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': csrfToken ? csrfToken.getAttribute('content') : '',
+            'X-CSRF-TOKEN': csrfVal,
             'Accept': 'application/json'
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({
+            phone: formatted,
+            template_name: 'delivery_confirmation_online',
+            body_params: [customerName, orderNumber, deliveryInfo, riderName]
+        })
     })
     .then(function(resp) { return resp.json(); })
-    .then(function(data) {
-        if (data.success) {
-            var row = document.getElementById('msg-order-' + orderId);
-            if (row) {
-                row.style.backgroundColor = '#f0fdf4';
-                row.querySelector('button').outerHTML = '<span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent ' + (data.sent_at || 'now') + '</span>';
-            }
+    .then(function(apiData) {
+        var apiSent = apiData && apiData.success;
+
+        if (!apiSent) {
+            var msg = 'Dear ' + customerName + ',\n\n'
+                + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryInfo + ' by our rider ' + riderName + '.\n\n'
+                + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
+                + 'Account Title: "Nizami Farms"\n'
+                + '- Bank: Habib Bank Limited (HBL)\n'
+                + '   Account no: 23297901934403\n'
+                + '   IBAN: PK35HABB0023297901934403\n\n'
+                + '- Bank: Meezan Bank Limited\n'
+                + '   Account no: 03050106554237\n'
+                + '   IBAN: PK75MEZN0003050106554237\n\n'
+                + 'Thank you for choosing Nizami Farms!';
+            var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
+            window.open(waUrl, '_blank');
         }
+
+        fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', orderId), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfVal,
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({})
+        })
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+            if (data.success) {
+                var row = document.getElementById('msg-order-' + orderId);
+                if (row) {
+                    row.style.backgroundColor = '#f0fdf4';
+                    row.querySelector('button').outerHTML = '<span class="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-medium">Sent ' + (data.sent_at || 'now') + '</span>';
+                }
+            }
+        })
+        .catch(function(err) {
+            console.error('Failed to mark message sent:', err);
+        });
     })
     .catch(function(err) {
-        console.error('Failed to mark message sent:', err);
+        console.error('API template send failed, falling back to wa.me:', err);
+        var msg = 'Dear ' + customerName + ',\n\n'
+            + 'We are happy to confirm that your order #' + orderNumber + ' has been successfully delivered on ' + deliveryDate + (deliveryTime ? ' at ' + deliveryTime : '') + ' by our rider ' + riderName + '.\n\n'
+            + 'Your payment method is Online Bank Transfer. Please share a screenshot of the transfer here once the transaction has been made.\n\n'
+            + 'Thank you for choosing Nizami Farms!';
+        var waUrl = 'https://wa.me/' + formatted.replace('+', '') + '?text=' + encodeURIComponent(msg);
+        window.open(waUrl, '_blank');
     });
 }
 

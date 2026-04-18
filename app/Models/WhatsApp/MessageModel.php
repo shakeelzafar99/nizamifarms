@@ -45,7 +45,13 @@ class MessageModel extends Model
     }
 
     /**
-     * Get a public URL for the media file
+     * Get a public URL for the media file.
+     *
+     * On shared hosting the /storage symlink is often unavailable, so we route
+     * through the FileController::publicStorage endpoint (registered at
+     * /public-storage/{path}) which streams the file straight from
+     * storage/app/public. This is the same fallback the attendance meter
+     * pictures use.
      */
     public function getMediaPublicUrlAttribute(): ?string
     {
@@ -53,7 +59,7 @@ class MessageModel extends Model
             return null;
         }
 
-        return asset('storage/' . $this->media_url);
+        return url('public-storage/' . ltrim($this->media_url, '/'));
     }
 
     public function scopeInbound($query)

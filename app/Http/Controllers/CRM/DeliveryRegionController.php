@@ -634,26 +634,49 @@ class DeliveryRegionController extends Controller
         }
 
         $excludedStatuses = ['delivered', 'completed', 'cancelled', 'refunded', 'out_for_delivery'];
-        $nonShopifyScope = function ($q) {
-            $q->where('external_source', '!=', 'shopify')
-              ->orWhereNull('external_source');
+
+        // Qurbani orders have their own rider-assignment workflow (Qurbani Orders
+        // page). They must NEVER be touched by the regular region-based
+        // auto-assign. An order counts as "qurbani" if any qurbani_* field is set
+        // on the order OR any of its line items references a product tagged
+        // attribute_1='qurbani' (covers legacy rows without order-level fields).
+        $excludeQurbaniScope = function ($q, string $alias = 'o') {
+            $q->whereNull($alias . '.qurbani_day')
+              ->whereNull($alias . '.qurbani_slot')
+              ->whereNull($alias . '.qurbani_region')
+              ->whereNull($alias . '.qurbani_delivery_type')
+              ->whereNotExists(function ($sub) use ($alias) {
+                  $sub->select(DB::raw(1))
+                      ->from('t_crm_prod_order_line_item as li_qur')
+                      ->join('t_crm_prod_product as p_qur', 'p_qur.id', '=', 'li_qur.product_id')
+                      ->whereColumn('li_qur.order_id', $alias . '.id')
+                      ->whereRaw("LOWER(COALESCE(p_qur.attribute_1, '')) = 'qurbani'");
+              });
         };
 
-        $totalOpen = DB::table('t_crm_prod_order')
-            ->whereNotIn('order_status', $excludedStatuses)
-            ->where($nonShopifyScope)
+        $nonShopifyScope = function ($q, string $alias = 'o') {
+            $q->where($alias . '.external_source', '!=', 'shopify')
+              ->orWhereNull($alias . '.external_source');
+        };
+
+        $totalOpen = DB::table('t_crm_prod_order as o')
+            ->whereNotIn('o.order_status', $excludedStatuses)
+            ->where(function ($q) use ($nonShopifyScope) { $nonShopifyScope($q, 'o'); })
+            ->where(function ($q) use ($excludeQurbaniScope) { $excludeQurbaniScope($q, 'o'); })
             ->count();
 
-        $alreadyAssigned = DB::table('t_crm_prod_order')
-            ->whereNotIn('order_status', $excludedStatuses)
-            ->where($nonShopifyScope)
-            ->whereNotNull('assigned_rider_user_id')
+        $alreadyAssigned = DB::table('t_crm_prod_order as o')
+            ->whereNotIn('o.order_status', $excludedStatuses)
+            ->where(function ($q) use ($nonShopifyScope) { $nonShopifyScope($q, 'o'); })
+            ->where(function ($q) use ($excludeQurbaniScope) { $excludeQurbaniScope($q, 'o'); })
+            ->whereNotNull('o.assigned_rider_user_id')
             ->count();
 
         $noRegion = DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
             ->whereNotIn('o.order_status', $excludedStatuses)
-            ->where(function ($q) { $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source'); })
+            ->where(function ($q) use ($nonShopifyScope) { $nonShopifyScope($q, 'o'); })
+            ->where(function ($q) use ($excludeQurbaniScope) { $excludeQurbaniScope($q, 'o'); })
             ->where(function ($q) use ($regionToRider) {
                 $q->whereNull('c.delivery_region_id')
                   ->orWhereNotIn('c.delivery_region_id', array_keys($regionToRider));
@@ -663,7 +686,8 @@ class DeliveryRegionController extends Controller
         $query = DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
             ->whereNotIn('o.order_status', $excludedStatuses)
-            ->where(function ($q) { $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source'); })
+            ->where(function ($q) use ($nonShopifyScope) { $nonShopifyScope($q, 'o'); })
+            ->where(function ($q) use ($excludeQurbaniScope) { $excludeQurbaniScope($q, 'o'); })
             ->whereNotNull('c.delivery_region_id')
             ->whereIn('c.delivery_region_id', array_keys($regionToRider));
 

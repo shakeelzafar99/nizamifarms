@@ -197,7 +197,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/campaigns', [\App\Http\Controllers\API\RiderController::class, 'createCampaign']);
     Route::post('/store/campaigns/preview', [\App\Http\Controllers\API\RiderController::class, 'previewCampaign']);
     Route::get('/store/campaigns/cities', [\App\Http\Controllers\API\RiderController::class, 'getCampaignCities']);
+    Route::get('/store/campaigns/qurbani-years', [\App\Http\Controllers\API\RiderController::class, 'getCampaignQurbaniYears']);
     Route::get('/store/campaigns/{id}', [\App\Http\Controllers\API\RiderController::class, 'getCampaignDetail']);
+    Route::post('/store/campaigns/{id}/add-customers', [\App\Http\Controllers\API\RiderController::class, 'addCampaignCustomers']);
     Route::post('/store/campaigns/{id}/refresh', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaign']);
     Route::post('/store/campaigns/{id}/end', [\App\Http\Controllers\API\RiderController::class, 'endCampaign']);
     Route::get('/store/campaigns/{id}/stats', [\App\Http\Controllers\API\RiderController::class, 'getCampaignStats']);
