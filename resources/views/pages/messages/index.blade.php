@@ -899,7 +899,17 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             <div class="wa-filters">
                 <button class="wa-filter-btn active" data-filter="all">All</button>
                 <button class="wa-filter-btn" data-filter="unread">Unread</button>
+                <button class="wa-filter-btn" data-filter="qurbani" id="waFilterQurbani" style="display:none;" title="Conversations auto-flagged as Qurbani">🐐 Qurbani</button>
+                @if(!(($waIsLimited ?? false)))
+                <button class="wa-btn wa-btn-gray" onclick="openQurbaniSettings()" title="Qurbani tab settings" style="margin-left:auto;padding:3px 10px;font-size:12px;">⚙</button>
+                @endif
             </div>
+            @if(($waIsLimited ?? false))
+            <div style="margin-top:8px;padding:7px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#92400e;display:flex;align-items:center;gap:6px;line-height:1.35;" title="Your account has Limited Messages access. Older conversations are hidden.">
+                <span>⚠</span>
+                <span><strong>Limited view</strong> — showing messages from today and yesterday only.</span>
+            </div>
+            @endif
         </div>
 
         <!-- New message panel -->
@@ -987,6 +997,59 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         </div>
         <h3>Start a conversation</h3>
         <p>Select a customer from the left or tap <strong>+ New</strong> to begin</p>
+    </div>
+</div>
+
+<!-- ═══ MODAL: Qurbani Tab Settings ═══ -->
+<div class="wa-modal-overlay" id="waQurbaniSettingsModal" style="display:none;" onclick="if(event.target===this)closeQurbaniSettings()">
+    <div class="wa-modal" style="width:560px;max-width:94vw;">
+        <div class="wa-modal-hdr">
+            <h3>🐐 Qurbani Tab Settings</h3>
+            <button class="wa-modal-x" onclick="closeQurbaniSettings()">✕</button>
+        </div>
+        <div class="wa-modal-body" style="padding:18px;">
+            <p style="font-size:13px;color:#6b7280;margin-top:0;">
+                Conversations are auto-tagged as Qurbani when the customer has a Qurbani
+                order for the active year, a Qurbani-only template was sent to them, or
+                any of the last few inbound messages contains a keyword below.
+            </p>
+
+            <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;margin-bottom:14px;cursor:pointer;">
+                <input type="checkbox" id="qcfgEnabled" style="transform:scale(1.2);" />
+                <span style="font-weight:600;color:#166534;">Enable Qurbani tab &amp; goat badge</span>
+            </label>
+
+            <div id="qcfgFields">
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Keywords (comma-separated)</label>
+                    <textarea id="qcfgKeywords" rows="3" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;" placeholder="qurbani, eid, bakra, goat, hissa, ..."></textarea>
+                    <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Case-insensitive, matched anywhere in the message body. "beef" is deliberately excluded because it overlaps with regular meat orders.</div>
+                </div>
+
+                <div style="display:flex;gap:12px;margin-bottom:12px;">
+                    <div style="flex:1;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Messages to scan</label>
+                        <input type="number" id="qcfgLookback" min="1" max="20" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                        <div style="font-size:11px;color:#9ca3af;margin-top:3px;">How many recent inbound messages to check per customer (1–20).</div>
+                    </div>
+                    <div style="flex:1;">
+                        <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Active Qurbani year</label>
+                        <input type="number" id="qcfgYear" min="2000" max="2100" placeholder="{{ date('Y') }}" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                        <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Leave blank to use the current year.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb;">
+                <button onclick="rescanQurbani()" id="qcfgRescanBtn" class="wa-btn wa-btn-gray" style="padding:8px 14px;" title="Re-classify all existing conversations using the current settings">🔄 Rescan all conversations</button>
+                <div style="display:flex;gap:8px;">
+                    <button onclick="closeQurbaniSettings()" class="wa-btn wa-btn-gray" style="padding:8px 16px;">Cancel</button>
+                    <button onclick="saveQurbaniSettings()" id="qcfgSaveBtn" class="wa-btn wa-btn-green" style="padding:8px 16px;">Save</button>
+                </div>
+            </div>
+
+            <div id="qcfgStatus" style="margin-top:10px;font-size:12px;color:#6b7280;min-height:16px;"></div>
+        </div>
     </div>
 </div>
 
@@ -1144,6 +1207,94 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     let templates = [];
     var _cachedApiTemplates = null;
 
+    // Qurbani tab / badge master switch. Refreshed from the backend on init
+    // and after the settings drawer is saved.
+    let waQurbaniEnabled = true;
+    let waQurbaniSettings = null;
+
+    function loadQurbaniSettings() {
+        return apiFetch('/messages/qurbani-settings').then(d => {
+            if (d.success && d.settings) {
+                waQurbaniSettings = d.settings;
+                waQurbaniEnabled = !!d.settings.enabled;
+                const tabBtn = document.getElementById('waFilterQurbani');
+                if (tabBtn) tabBtn.style.display = waQurbaniEnabled ? '' : 'none';
+                if (!waQurbaniEnabled && currentFilter === 'qurbani') {
+                    currentFilter = 'all';
+                    document.querySelectorAll('.wa-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
+                    loadConversations();
+                }
+            }
+        }).catch(() => {});
+    }
+
+    window.openQurbaniSettings = function() {
+        document.getElementById('waQurbaniSettingsModal').style.display = 'flex';
+        document.getElementById('qcfgStatus').textContent = '';
+        // Hydrate from whatever is already cached; refresh in the background.
+        if (waQurbaniSettings) hydrateQurbaniForm(waQurbaniSettings);
+        loadQurbaniSettings().then(() => { if (waQurbaniSettings) hydrateQurbaniForm(waQurbaniSettings); });
+    };
+    window.closeQurbaniSettings = function() {
+        document.getElementById('waQurbaniSettingsModal').style.display = 'none';
+    };
+
+    function hydrateQurbaniForm(s) {
+        document.getElementById('qcfgEnabled').checked = !!s.enabled;
+        document.getElementById('qcfgKeywords').value = Array.isArray(s.keywords) ? s.keywords.join(', ') : (s.keywords || '');
+        document.getElementById('qcfgLookback').value = s.lookback || 5;
+        document.getElementById('qcfgYear').value = s.year || '';
+    }
+
+    window.saveQurbaniSettings = function() {
+        const btn = document.getElementById('qcfgSaveBtn');
+        const status = document.getElementById('qcfgStatus');
+        btn.disabled = true; status.textContent = 'Saving...';
+        const payload = {
+            enabled: document.getElementById('qcfgEnabled').checked,
+            keywords: document.getElementById('qcfgKeywords').value,
+            lookback: parseInt(document.getElementById('qcfgLookback').value, 10) || 5,
+            year: document.getElementById('qcfgYear').value || null,
+        };
+        apiFetch('/messages/qurbani-settings', { method: 'POST', body: JSON.stringify(payload) })
+            .then(d => {
+                btn.disabled = false;
+                if (d.success) {
+                    waQurbaniSettings = d.settings;
+                    waQurbaniEnabled = !!d.settings.enabled;
+                    const tabBtn = document.getElementById('waFilterQurbani');
+                    if (tabBtn) tabBtn.style.display = waQurbaniEnabled ? '' : 'none';
+                    status.style.color = '#16a34a';
+                    status.textContent = 'Saved. Settings apply to new messages automatically. Use "Rescan" below to re-evaluate existing conversations.';
+                    loadConversations();
+                } else {
+                    status.style.color = '#ef4444';
+                    status.textContent = d.message || 'Failed to save settings.';
+                }
+            })
+            .catch(e => { btn.disabled = false; status.style.color = '#ef4444'; status.textContent = 'Failed to save settings.'; });
+    };
+
+    window.rescanQurbani = function() {
+        if (!confirm('Re-evaluate every conversation with the current keyword / lookback / year settings? This may take a few seconds.')) return;
+        const btn = document.getElementById('qcfgRescanBtn');
+        const status = document.getElementById('qcfgStatus');
+        btn.disabled = true; status.style.color = '#6b7280'; status.textContent = 'Rescanning...';
+        apiFetch('/messages/qurbani-rescan', { method: 'POST' })
+            .then(d => {
+                btn.disabled = false;
+                if (d.success) {
+                    status.style.color = '#16a34a';
+                    status.textContent = `Done. Scanned ${d.total} · newly flagged ${d.flagged} · cleared ${d.cleared}.`;
+                    loadConversations();
+                } else {
+                    status.style.color = '#ef4444';
+                    status.textContent = d.message || 'Rescan failed.';
+                }
+            })
+            .catch(() => { btn.disabled = false; status.style.color = '#ef4444'; status.textContent = 'Rescan failed.'; });
+    };
+
     function apiFetch(url, opts = {}) {
         opts.headers = { ...(opts.headers || {}), 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json', 'Content-Type': 'application/json' };
         return fetch(url, opts).then(r => r.json());
@@ -1245,11 +1396,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             let cls = 'wa-conv-item';
             if (isActive) cls += ' active';
             if (isUnread) cls += ' unread';
+            // Only show the goat badge when the Qurbani feature is enabled
+            // (master switch in settings drawer); we hide the badge otherwise.
+            const qBadge = (waQurbaniEnabled && c.is_qurbani) ? '<span title="Qurbani conversation" style="margin-right:4px;font-size:14px;">🐐</span>' : '';
             return `<div class="${cls}" onclick="openConv(${c.id})" data-id="${c.id}">
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
                 <div class="wa-conv-info">
                     <div class="wa-conv-top">
-                        <div class="wa-conv-name">${esc(c.customer_name || c.wa_phone)}</div>
+                        <div class="wa-conv-name">${qBadge}${esc(c.customer_name || c.wa_phone)}</div>
                         <div class="wa-conv-time">${fmtTime(c.last_message_at)}</div>
                     </div>
                     <div class="wa-conv-bottom">
@@ -1277,7 +1431,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (!d.success) return;
             activeConv = d.conversation;
             const name = d.conversation.customer_name || d.conversation.wa_phone;
-            document.getElementById('waChatName').textContent = name;
+            const qPrefix = (waQurbaniEnabled && d.conversation.is_qurbani) ? '🐐 ' : '';
+            document.getElementById('waChatName').textContent = qPrefix + name;
             document.getElementById('waChatAvatar').textContent = (name || '?')[0].toUpperCase();
             let sub = d.conversation.wa_phone;
             if (d.conversation.customer_city) sub += ' · ' + d.conversation.customer_city;
@@ -1324,7 +1479,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             html += '<div class="wa-loading">No messages in this conversation</div>';
         }
         let lastDateKey = null;
-        msgs.forEach(m => {
+        // Identify the LAST outbound message so we can anchor the
+        // "Seen by" indicator below it (matching WhatsApp/iMessage UX).
+        let lastOutIdx = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].direction === 'outbound') { lastOutIdx = i; break; }
+        }
+
+        msgs.forEach((m, idx) => {
             if (m.created_at) {
                 const md = new Date(m.created_at);
                 const dateKey = md.getFullYear() + '-' + md.getMonth() + '-' + md.getDate();
@@ -1378,6 +1540,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             html += '</div>';
             if (m.status === 'failed' && m.error_message) html += `<div class="wa-msg-error">${esc(m.error_message)}</div>`;
             html += '</div>';
+
+            // "Seen by" row directly under the last outbound message — lets
+            // a team member see which colleagues have already opened this
+            // thread, avoiding double-replies.
+            if (idx === lastOutIdx && activeConv && Array.isArray(activeConv.seen_by) && activeConv.seen_by.length > 0) {
+                const names = activeConv.seen_by.map(s => esc(s.name)).slice(0, 3);
+                let suffix = '';
+                if (activeConv.seen_by.length > 3) suffix = ' +' + (activeConv.seen_by.length - 3);
+                html += `<div style="display:flex;justify-content:flex-end;margin:2px 4px 6px 0;font-size:10.5px;color:#6b7280;font-style:italic;">👀 Seen by ${names.join(', ')}${suffix}</div>`;
+            }
         });
         el.innerHTML = html;
         el.scrollTop = el.scrollHeight;
@@ -2198,6 +2370,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     };
 
     // ── Init ──
+    loadQurbaniSettings();
     loadConversations();
     convPollTimer = setInterval(() => {
         loadConversations();

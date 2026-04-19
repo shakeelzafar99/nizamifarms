@@ -4,13 +4,16 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\WhatsApp\ConversationModel;
+use App\Models\WhatsApp\ConversationReadModel;
 use App\Models\WhatsApp\MessageModel;
 use App\Models\CRM\OrderModel;
+use App\Services\QurbaniClassifier;
 use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class WhatsAppController extends Controller
@@ -20,6 +23,26 @@ class WhatsAppController extends Controller
     public function __construct(WhatsAppService $whatsapp)
     {
         $this->whatsapp = $whatsapp;
+    }
+
+    /**
+     * Resolve the authenticated user's WhatsApp-view access level.
+     *   - allowed: has full OR limited view permission
+     *   - limited: has ONLY the limited permission (restricted to today+day-1)
+     *   - cutoff : start of yesterday, the earliest timestamp visible to limited users
+     *
+     * Mirrors Web\WhatsAppWebController::resolveWhatsAppAccess so behaviour
+     * between web and mobile stays consistent.
+     */
+    protected function resolveWhatsAppAccess($user): array
+    {
+        $hasFull    = $user && $user->hasMobilePermission('view_whatsapp_messages');
+        $hasLimited = $user && $user->hasMobilePermission('view_whatsapp_messages_limited');
+        return [
+            'allowed' => $hasFull || $hasLimited,
+            'limited' => !$hasFull && $hasLimited,
+            'cutoff'  => now()->subDay()->startOfDay(),
+        ];
     }
 
     // =========================================================================
@@ -33,20 +56,31 @@ class WhatsAppController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_whatsapp_messages')) {
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
                 return response()->json(['success' => false, 'message' => 'No permission'], 403);
             }
 
-            $filter = $request->get('filter', 'all'); // all, unread, mine
+            $filter = $request->get('filter', 'all'); // all, unread, mine, qurbani
             $search = $request->get('search', '');
+
+            $userId = $user->id;
+            $hasReadsTable = Schema::hasTable('t_wa_conversation_reads');
+            $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
 
             $query = ConversationModel::with(['customer:id,first_name,last_name,phone_normalized,city'])
                 ->where('status', '!=', 'closed');
 
-            if ($filter === 'unread') {
-                $query->where('unread_count', '>', 0);
-            } elseif ($filter === 'mine') {
+            // Limited users only see conversations whose most recent activity
+            // is within the last two days (today + yesterday). Matches the web.
+            if ($access['limited']) {
+                $query->where('last_message_at', '>=', $access['cutoff']);
+            }
+
+            if ($filter === 'mine') {
                 $query->where('assigned_to', $user->id);
+            } elseif ($filter === 'qurbani' && $hasQurbaniCol) {
+                $query->where('is_qurbani', 1);
             }
 
             if ($search) {
@@ -63,10 +97,9 @@ class WhatsAppController extends Controller
             }
 
             $conversations = $query->orderByDesc('last_message_at')
-                ->limit(100)
+                ->limit(150)
                 ->get();
 
-            // Get last message for each conversation
             $conversationIds = $conversations->pluck('id')->toArray();
             $lastMessages = MessageModel::whereIn('conversation_id', $conversationIds)
                 ->whereIn('id', function ($q) use ($conversationIds) {
@@ -78,7 +111,45 @@ class WhatsAppController extends Controller
                 ->get()
                 ->keyBy('conversation_id');
 
-            $result = $conversations->map(function ($conv) use ($lastMessages) {
+            // Per-user unread counts (see web controller for rule details).
+            $unreadByConv = [];
+            if ($hasReadsTable && !empty($conversationIds)) {
+                $unreadQ = DB::table('t_wa_messages as m')
+                    ->selectRaw('m.conversation_id, COUNT(*) as cnt')
+                    ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($userId) {
+                        $j->on('r.conversation_id', '=', 'm.conversation_id')
+                          ->where('r.user_id', '=', $userId);
+                    })
+                    ->whereIn('m.conversation_id', $conversationIds)
+                    ->where('m.direction', 'inbound')
+                    ->where(function ($w) {
+                        $w->whereNull('r.last_read_at')
+                          ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+                    })
+                    ->whereRaw('NOT EXISTS (
+                        SELECT 1 FROM t_wa_messages m2
+                        WHERE m2.conversation_id = m.conversation_id
+                          AND m2.direction = \'outbound\'
+                          AND m2.created_at > m.created_at
+                    )');
+
+                // Limited users shouldn't see unread counts for messages they
+                // aren't allowed to read.
+                if ($access['limited']) {
+                    $unreadQ->where('m.created_at', '>=', $access['cutoff']);
+                }
+
+                $rows = $unreadQ->groupBy('m.conversation_id')->get();
+                foreach ($rows as $r) {
+                    $unreadByConv[$r->conversation_id] = (int) $r->cnt;
+                }
+            } else {
+                foreach ($conversations as $c) {
+                    $unreadByConv[$c->id] = (int) $c->unread_count;
+                }
+            }
+
+            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol) {
                 $lastMsg = $lastMessages->get($conv->id);
                 return [
                     'id' => $conv->id,
@@ -87,17 +158,28 @@ class WhatsAppController extends Controller
                     'customer_city' => $conv->customer?->city,
                     'wa_phone' => $conv->wa_phone,
                     'wa_contact_name' => $conv->wa_contact_name,
-                    'unread_count' => $conv->unread_count,
+                    'unread_count' => $unreadByConv[$conv->id] ?? 0,
+                    'is_qurbani' => $hasQurbaniCol ? (bool) $conv->is_qurbani : false,
+                    'qurbani_flag_reason' => $hasQurbaniCol ? ($conv->qurbani_flag_reason ?? null) : null,
                     'session_active' => $conv->isSessionActive(),
                     'last_message_at' => $conv->last_message_at?->toIso8601String(),
-                    'last_message_preview' => $lastMsg ? mb_substr($lastMsg->content, 0, 80) : null,
+                    'last_message_preview' => $lastMsg ? mb_substr($lastMsg->content ?? '', 0, 80) : null,
                     'last_message_direction' => $lastMsg?->direction,
                     'last_message_type' => $lastMsg?->type,
                     'assigned_to' => $conv->assigned_to,
                 ];
             });
 
-            return response()->json(['success' => true, 'conversations' => $result]);
+            if ($filter === 'unread') {
+                $result = $result->filter(fn($c) => ($c['unread_count'] ?? 0) > 0)->values();
+            }
+
+            return response()->json([
+                'success' => true,
+                'conversations' => $result,
+                'is_limited' => $access['limited'],
+                'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+            ]);
 
         } catch (\Exception $e) {
             Log::error('WhatsApp: Failed to get conversations', ['error' => $e->getMessage()]);
@@ -112,7 +194,8 @@ class WhatsAppController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_whatsapp_messages')) {
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
                 return response()->json(['success' => false, 'message' => 'No permission'], 403);
             }
 
@@ -123,12 +206,25 @@ class WhatsAppController extends Controller
                 return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
             }
 
+            // Limited users cannot reach conversations whose most recent
+            // activity is older than the cutoff. 404 so the mobile app treats
+            // them as "not visible" (same as the list filter).
+            if ($access['limited'] && $conversation->last_message_at && $conversation->last_message_at->lt($access['cutoff'])) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
             $before = $request->get('before'); // for pagination - load older messages
             $limit = $request->get('limit', 50);
 
             $query = MessageModel::where('conversation_id', $conversationId)
                 ->orderByDesc('created_at')
                 ->orderByDesc('id');
+
+            // Limited users see only today + yesterday messages within an
+            // otherwise-allowed conversation.
+            if ($access['limited']) {
+                $query->where('created_at', '>=', $access['cutoff']);
+            }
 
             if ($before) {
                 $query->where('id', '<', $before);
@@ -155,6 +251,25 @@ class WhatsAppController extends Controller
                 ];
             })->reverse()->values(); // Reverse so oldest is first in the array
 
+            $seenBy = [];
+            if (Schema::hasTable('t_wa_conversation_reads')) {
+                $seenBy = ConversationReadModel::where('conversation_id', $conversation->id)
+                    ->where('user_id', '!=', $user->id)
+                    ->orderByDesc('last_read_at')
+                    ->limit(10)
+                    ->get()
+                    ->map(function ($r) {
+                        $u = \App\Models\User::find($r->user_id);
+                        return [
+                            'user_id' => $r->user_id,
+                            'name' => $u?->name ?? ('User #' . $r->user_id),
+                            'last_read_at' => $r->last_read_at?->toIso8601String(),
+                        ];
+                    })->all();
+            }
+
+            $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
+
             return response()->json([
                 'success' => true,
                 'conversation' => [
@@ -165,14 +280,19 @@ class WhatsAppController extends Controller
                     'customer_orders' => $conversation->customer?->total_orders,
                     'customer_spent' => $conversation->customer?->total_spent,
                     'wa_phone' => $conversation->wa_phone,
+                    'is_qurbani' => $hasQurbaniCol ? (bool) $conversation->is_qurbani : false,
+                    'qurbani_flag_reason' => $hasQurbaniCol ? ($conversation->qurbani_flag_reason ?? null) : null,
                     'session_active' => $conversation->isSessionActive(),
                     'session_expires_at' => $conversation->last_customer_message_at
                         ? $conversation->last_customer_message_at->addHours(24)->toIso8601String()
                         : null,
                     'assigned_to' => $conversation->assigned_to,
+                    'seen_by' => $seenBy,
                 ],
                 'messages' => $result,
                 'has_more' => $messages->count() === $limit,
+                'is_limited' => $access['limited'],
+                'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
             ]);
 
         } catch (\Exception $e) {
@@ -302,17 +422,33 @@ class WhatsAppController extends Controller
     }
 
     /**
-     * Mark a conversation as read
+     * Mark a conversation as read for this user and send blue-tick receipts
+     * to the customer.
      */
     public function markRead(Request $request, $conversationId)
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_whatsapp_messages')) {
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
                 return response()->json(['success' => false, 'message' => 'No permission'], 403);
             }
 
+            $now = now();
+            if (Schema::hasTable('t_wa_conversation_reads')) {
+                ConversationReadModel::updateOrCreate(
+                    ['user_id' => $user->id, 'conversation_id' => $conversationId],
+                    ['last_read_at' => $now]
+                );
+            }
+
             ConversationModel::where('id', $conversationId)->update(['unread_count' => 0]);
+
+            try {
+                $this->whatsapp->markInboundAsReadOnWhatsApp((int) $conversationId);
+            } catch (\Exception $e) {
+                Log::debug('markRead: WA receipt failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
 
             return response()->json(['success' => true]);
 
@@ -322,24 +458,95 @@ class WhatsAppController extends Controller
     }
 
     /**
-     * Get total unread count (for badge display)
+     * Total unread for THIS user across all conversations. Mobile badge.
      */
     public function getUnreadCount(Request $request)
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_whatsapp_messages')) {
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
                 return response()->json(['success' => true, 'unread_count' => 0]);
             }
 
-            $count = ConversationModel::where('unread_count', '>', 0)
-                ->where('status', '!=', 'closed')
-                ->sum('unread_count');
+            if (!Schema::hasTable('t_wa_conversation_reads')) {
+                $count = ConversationModel::where('unread_count', '>', 0)
+                    ->where('status', '!=', 'closed')
+                    ->sum('unread_count');
+                return response()->json(['success' => true, 'unread_count' => (int) $count]);
+            }
 
-            return response()->json(['success' => true, 'unread_count' => $count]);
+            $countQ = DB::table('t_wa_messages as m')
+                ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($user) {
+                    $j->on('r.conversation_id', '=', 'm.conversation_id')
+                      ->where('r.user_id', '=', $user->id);
+                })
+                ->where('m.direction', 'inbound')
+                ->where(function ($w) {
+                    $w->whereNull('r.last_read_at')
+                      ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+                })
+                ->whereRaw('NOT EXISTS (
+                    SELECT 1 FROM t_wa_messages m2
+                    WHERE m2.conversation_id = m.conversation_id
+                      AND m2.direction = \'outbound\'
+                      AND m2.created_at > m.created_at
+                )');
+
+            // Limited users' badge only counts messages inside their window.
+            if ($access['limited']) {
+                $countQ->where('m.created_at', '>=', $access['cutoff']);
+            }
+
+            $count = $countQ->count();
+
+            return response()->json(['success' => true, 'unread_count' => (int) $count]);
 
         } catch (\Exception $e) {
             return response()->json(['success' => true, 'unread_count' => 0]);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Qurbani tab settings (mobile-accessible)
+    // ─────────────────────────────────────────────────────────────────
+
+    public function getQurbaniSettings(Request $request, QurbaniClassifier $classifier)
+    {
+        try {
+            return response()->json([
+                'success' => true,
+                'settings' => $classifier->getSettings(),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function updateQurbaniSettings(Request $request, QurbaniClassifier $classifier)
+    {
+        try {
+            $request->validate([
+                'enabled'  => 'sometimes|boolean',
+                'keywords' => 'sometimes',
+                'lookback' => 'sometimes|integer|min:1|max:20',
+                'year'     => 'sometimes|nullable|integer|min:2000|max:2100',
+            ]);
+
+            $settings = $classifier->updateSettings($request->only(['enabled', 'keywords', 'lookback', 'year']));
+            return response()->json(['success' => true, 'settings' => $settings]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function rescanQurbani(Request $request, QurbaniClassifier $classifier)
+    {
+        try {
+            $stats = $classifier->rescanAll();
+            return response()->json(['success' => true] + $stats);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
@@ -350,7 +557,11 @@ class WhatsAppController extends Controller
     {
         try {
             $user = Auth::user();
-            if (!$user->hasMobilePermission('view_whatsapp_messages')) {
+            // Allow both full and limited view users. getMessages() is called
+            // below, which in turn applies the limited-view date cutoff itself,
+            // so we don't need to re-enforce it here.
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
                 return response()->json(['success' => false, 'message' => 'No permission'], 403);
             }
 
@@ -594,6 +805,65 @@ class WhatsAppController extends Controller
 
         } catch (\Exception $e) {
             Log::error('FCM: Failed to register device', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Deactivate a device's FCM token so the backend stops sending pushes
+     * to it. Called by the mobile app on logout (before the auth token is
+     * cleared) so that push notifications immediately stop for a logged-out
+     * device without waiting for the token to expire.
+     *
+     * Behaviour:
+     *  - If a specific fcm_token is provided: only that token is marked
+     *    inactive, and only when it currently belongs to the authenticated
+     *    user (prevents one user from deactivating another user's device
+     *    tokens on a shared device).
+     *  - If no fcm_token is provided: ALL tokens for the current user are
+     *    marked inactive (safe fallback when the mobile app can't resolve
+     *    its current token, e.g. Firebase is mid-refresh).
+     *
+     * Tokens are marked is_active = 0 rather than deleted so that (a) we
+     * retain history and (b) a fresh registerDevice call re-activates the
+     * row cleanly via updateOrInsert on next login.
+     */
+    public function unregisterDevice(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Not authenticated'], 401);
+            }
+
+            $request->validate([
+                'fcm_token' => 'nullable|string|max:500',
+            ]);
+
+            $token = $request->input('fcm_token');
+
+            $query = DB::table('t_wa_device_tokens')->where('user_id', $user->id);
+            if (!empty($token)) {
+                $query->where('fcm_token', $token);
+            }
+
+            $affected = $query->update([
+                'is_active' => 0,
+                'updated_at' => now(),
+            ]);
+
+            Log::info('FCM: Device token(s) unregistered on logout', [
+                'user_id' => $user->id,
+                'scoped_to_token' => !empty($token),
+                'rows_updated' => $affected,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'deactivated' => $affected,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('FCM: Failed to unregister device', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }

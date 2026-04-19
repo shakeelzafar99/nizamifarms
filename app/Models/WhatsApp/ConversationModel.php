@@ -20,12 +20,17 @@ class ConversationModel extends Model
         'last_customer_message_at',
         'unread_count',
         'assigned_to',
+        'is_qurbani',
+        'qurbani_flagged_at',
+        'qurbani_flag_reason',
     ];
 
     protected $casts = [
         'last_message_at' => 'datetime',
         'last_customer_message_at' => 'datetime',
         'unread_count' => 'integer',
+        'is_qurbani' => 'boolean',
+        'qurbani_flagged_at' => 'datetime',
     ];
 
     public function customer()
@@ -41,6 +46,11 @@ class ConversationModel extends Model
     public function assignedUser()
     {
         return $this->belongsTo(\App\Models\User::class, 'assigned_to');
+    }
+
+    public function reads()
+    {
+        return $this->hasMany(ConversationReadModel::class, 'conversation_id');
     }
 
     /**

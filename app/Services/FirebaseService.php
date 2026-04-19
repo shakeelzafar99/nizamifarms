@@ -20,11 +20,16 @@ class FirebaseService
     }
 
     /**
-     * Send a push notification to all active devices of users who have the WhatsApp view permission
+     * Send a push notification to all active devices of users who have the
+     * WhatsApp view permission — either full (view_whatsapp_messages) or
+     * limited (view_whatsapp_messages_limited). Limited users are included
+     * because the push is always about a fresh (today) inbound message, which
+     * falls inside their "today + yesterday" visibility window, so opening
+     * the conversation will show the message fine.
      */
     public function notifyNewWhatsAppMessage(string $senderName, string $preview, ?int $conversationId = null): void
     {
-        $this->sendToPermissionGroup('view_whatsapp_messages', [
+        $this->sendToPermissionGroups(['view_whatsapp_messages', 'view_whatsapp_messages_limited'], [
             'title' => "New message from {$senderName}",
             'body' => mb_substr($preview, 0, 200),
         ], [
@@ -56,13 +61,23 @@ class FirebaseService
      */
     protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages'): void
     {
+        $this->sendToPermissionGroups([$permissionCode], $notification, $data, $channelId);
+    }
+
+    /**
+     * Generic: send notifications to all users that hold ANY of the given
+     * mobile permissions. Used e.g. for WhatsApp messages where either a
+     * full or limited viewer should receive the push.
+     */
+    protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages'): void
+    {
         if (!$this->projectId || !file_exists($this->credentialsPath)) {
             Log::debug('Firebase: Skipping push notification (not configured)');
             return;
         }
 
         try {
-            $tokens = $this->getActiveTokensForPermission($permissionCode);
+            $tokens = $this->getActiveTokensForPermissions($permissionCodes);
 
             if (empty($tokens)) {
                 return;
@@ -87,11 +102,22 @@ class FirebaseService
      */
     protected function getActiveTokensForPermission(string $permissionCode): array
     {
+        return $this->getActiveTokensForPermissions([$permissionCode]);
+    }
+
+    /**
+     * Get all active FCM tokens for users who hold ANY of the given
+     * mobile permissions (distinct by device token).
+     */
+    protected function getActiveTokensForPermissions(array $permissionCodes): array
+    {
+        if (empty($permissionCodes)) return [];
+
         return DB::table('t_wa_device_tokens as dt')
             ->join('t_sys_user_role as ur', 'ur.user_id', '=', 'dt.user_id')
             ->join('t_sys_role_mobile_permission as rmp', 'rmp.role_id', '=', 'ur.role_id')
             ->join('t_sys_mobile_permission as mp', 'mp.id', '=', 'rmp.mobile_permission_id')
-            ->where('mp.permission_code', $permissionCode)
+            ->whereIn('mp.permission_code', $permissionCodes)
             ->where('dt.is_active', 1)
             ->select('dt.fcm_token', 'dt.user_id')
             ->distinct()

@@ -161,7 +161,7 @@
                           </div>
                       </a>
                   </div>
-                  @if(auth()->user()->hasMobilePermission('view_whatsapp_messages'))
+                  @if(auth()->user()->hasMobilePermission('view_whatsapp_messages') || auth()->user()->hasMobilePermission('view_whatsapp_messages_limited'))
                   <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                       <a href="/messages">
                           <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">

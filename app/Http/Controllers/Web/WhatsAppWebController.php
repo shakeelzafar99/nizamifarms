@@ -4,19 +4,56 @@ namespace App\Http\Controllers\Web;
 
 use App\Http\Controllers\Controller;
 use App\Models\WhatsApp\ConversationModel;
+use App\Models\WhatsApp\ConversationReadModel;
 use App\Models\WhatsApp\MessageModel;
 use App\Models\CRM\OrderModel;
+use App\Services\QurbaniClassifier;
 use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 
 class WhatsAppWebController extends Controller
 {
+    /**
+     * Resolve the current user's WhatsApp-view access:
+     *   - 'allowed'  : true when either full or limited view permission is granted
+     *   - 'limited'  : true when ONLY the limited permission is granted
+     *                  (full permission overrides limited)
+     *   - 'cutoff'   : Carbon timestamp; inbound data older than this must be
+     *                  hidden from limited users. Start of yesterday.
+     *
+     * The "limited" flavour restricts the user to conversations / messages
+     * from today and day-1 only. This is enforced in every read endpoint
+     * below so the restriction cannot be bypassed by crafting requests.
+     */
+    protected function resolveWhatsAppAccess(): array
+    {
+        $user = auth()->user();
+        $hasFull = $user && $user->hasMobilePermission('view_whatsapp_messages');
+        $hasLimited = $user && $user->hasMobilePermission('view_whatsapp_messages_limited');
+
+        return [
+            'allowed' => $hasFull || $hasLimited,
+            'limited' => !$hasFull && $hasLimited,
+            // Start of yesterday (local app timezone): this is the earliest
+            // message/conversation timestamp limited users are allowed to see.
+            'cutoff'  => now()->subDay()->startOfDay(),
+        ];
+    }
+
     public function index()
     {
-        return view('pages.messages.index');
+        $access = $this->resolveWhatsAppAccess();
+        if (!$access['allowed']) {
+            abort(403, 'You do not have permission to view WhatsApp Messages.');
+        }
+        return view('pages.messages.index', [
+            'waIsLimited' => $access['limited'],
+            'waCutoffAt'  => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+        ]);
     }
 
     public function getConversations(Request $request)
@@ -25,11 +62,28 @@ class WhatsAppWebController extends Controller
             return response()->json(['success' => true, 'conversations' => []]);
         }
 
+        $access = $this->resolveWhatsAppAccess();
+        if (!$access['allowed']) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+
+        $userId = auth()->id();
+        $hasReadsTable = Schema::hasTable('t_wa_conversation_reads');
+        $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
+
         $query = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city')
             ->orderByDesc('last_message_at');
 
-        if ($request->filter === 'unread') {
-            $query->where('unread_count', '>', 0);
+        // Limited view: only conversations whose most recent activity is within
+        // the last two days (today + yesterday). Older conversations are
+        // invisible and their messages cannot be fetched (see getMessages).
+        if ($access['limited']) {
+            $query->where('last_message_at', '>=', $access['cutoff']);
+        }
+
+        // Qurbani tab shows only conversations auto-flagged as qurbani.
+        if ($request->filter === 'qurbani' && $hasQurbaniCol) {
+            $query->where('is_qurbani', 1);
         }
 
         if ($search = $request->search) {
@@ -45,9 +99,90 @@ class WhatsAppWebController extends Controller
             });
         }
 
-        $conversations = $query->limit(100)->get()->map(function ($conv) {
-            $lastMsg = MessageModel::where('conversation_id', $conv->id)
-                ->orderByDesc('created_at')->first();
+        // Fetch conversations + last-read timestamps for this user in one shot.
+        $lastReadMap = [];
+        $convs = $query->limit(150)->get();
+        $convIds = $convs->pluck('id')->all();
+
+        if ($hasReadsTable && $userId && !empty($convIds)) {
+            $lastReadMap = ConversationReadModel::where('user_id', $userId)
+                ->whereIn('conversation_id', $convIds)
+                ->pluck('last_read_at', 'conversation_id')
+                ->map(fn($v) => $v ? \Carbon\Carbon::parse($v) : null)
+                ->all();
+        }
+
+        // Unread-for-this-user count = inbound messages created after my last_read_at.
+        // Batched with one grouped query to avoid N+1.
+        $unreadByConv = [];
+        if (!empty($convIds)) {
+            $msgQ = DB::table('t_wa_messages')
+                ->selectRaw('conversation_id, COUNT(*) as cnt')
+                ->whereIn('conversation_id', $convIds)
+                ->where('direction', 'inbound')
+                ->groupBy('conversation_id');
+
+            // Per-conversation unread for THIS user. Two rules:
+            //   1. Inbound message is newer than my last_read_at for this convo.
+            //   2. No staff has replied AFTER this inbound message. Any outbound
+            //      (by anyone) effectively marks prior inbounds as "handled" for
+            //      all staff — this is the "reply = read for everyone" rule.
+            if ($hasReadsTable && $userId) {
+                $msgQuery = DB::table('t_wa_messages as m')
+                    ->selectRaw('m.conversation_id, COUNT(*) as cnt')
+                    ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($userId) {
+                        $j->on('r.conversation_id', '=', 'm.conversation_id')
+                          ->where('r.user_id', '=', $userId);
+                    })
+                    ->whereIn('m.conversation_id', $convIds)
+                    ->where('m.direction', 'inbound')
+                    ->where(function ($w) {
+                        $w->whereNull('r.last_read_at')
+                          ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+                    })
+                    ->whereRaw('NOT EXISTS (
+                        SELECT 1 FROM t_wa_messages m2
+                        WHERE m2.conversation_id = m.conversation_id
+                          AND m2.direction = \'outbound\'
+                          AND m2.created_at > m.created_at
+                    )');
+
+                // Limited users shouldn't see unread counts for messages they
+                // aren't allowed to read. Mirror the visible-window filter.
+                if ($access['limited']) {
+                    $msgQuery->where('m.created_at', '>=', $access['cutoff']);
+                }
+
+                $rows = $msgQuery->groupBy('m.conversation_id')->get();
+                foreach ($rows as $r) {
+                    $unreadByConv[$r->conversation_id] = (int) $r->cnt;
+                }
+            } else {
+                // Fallback: legacy unread_count column per conversation.
+                foreach ($convs as $c) {
+                    $unreadByConv[$c->id] = (int) $c->unread_count;
+                }
+            }
+        }
+
+        // Last message preview per conversation in one grouped query.
+        $lastMsgByConv = [];
+        if (!empty($convIds)) {
+            $latestIds = DB::table('t_wa_messages')
+                ->selectRaw('MAX(id) as id, conversation_id')
+                ->whereIn('conversation_id', $convIds)
+                ->groupBy('conversation_id')
+                ->pluck('id');
+            if ($latestIds->isNotEmpty()) {
+                $lastMsgByConv = MessageModel::whereIn('id', $latestIds)
+                    ->get()
+                    ->keyBy('conversation_id');
+            }
+        }
+
+        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol) {
+            $lastMsg = $lastMsgByConv[$conv->id] ?? null;
+            $unread = $unreadByConv[$conv->id] ?? 0;
 
             return [
                 'id' => $conv->id,
@@ -56,7 +191,9 @@ class WhatsAppWebController extends Controller
                 'customer_city' => $conv->customer?->city ?? '',
                 'wa_phone' => $conv->wa_phone,
                 'status' => $conv->status,
-                'unread_count' => $conv->unread_count,
+                'unread_count' => $unread,
+                'is_qurbani' => $hasQurbaniCol ? (bool) $conv->is_qurbani : false,
+                'qurbani_flag_reason' => $hasQurbaniCol ? ($conv->qurbani_flag_reason ?? null) : null,
                 'last_message_at' => $conv->last_message_at,
                 'last_message_preview' => $lastMsg?->content ? \Illuminate\Support\Str::limit($lastMsg->content, 80) : ($lastMsg?->type ?? ''),
                 'last_message_direction' => $lastMsg?->direction ?? '',
@@ -67,15 +204,43 @@ class WhatsAppWebController extends Controller
             ];
         });
 
-        return response()->json(['success' => true, 'conversations' => $conversations]);
+        // "Unread" filter applied after compute so it uses per-user counts.
+        if ($request->filter === 'unread') {
+            $conversations = $conversations->filter(fn($c) => ($c['unread_count'] ?? 0) > 0)->values();
+        }
+
+        return response()->json([
+            'success' => true,
+            'conversations' => $conversations,
+            'is_limited' => $access['limited'],
+            'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+        ]);
     }
 
     public function getMessages(Request $request, $conversationId)
     {
+        $access = $this->resolveWhatsAppAccess();
+        if (!$access['allowed']) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+
         $conversation = ConversationModel::with('customer:id,first_name,last_name,phone_normalized,city')->findOrFail($conversationId);
+
+        // Limited users cannot access conversations whose most recent activity
+        // is older than the cutoff. Returning 404 (not 403) so the UI treats
+        // them as "not visible" consistently with the list-level filter above.
+        if ($access['limited'] && $conversation->last_message_at && $conversation->last_message_at->lt($access['cutoff'])) {
+            return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+        }
 
         $query = MessageModel::where('conversation_id', $conversationId)
             ->orderBy('created_at', 'asc');
+
+        // And within an allowed conversation, limited users still only see
+        // messages from today + yesterday.
+        if ($access['limited']) {
+            $query->where('created_at', '>=', $access['cutoff']);
+        }
 
         if ($request->before) {
             $query->where('id', '<', $request->before);
@@ -90,6 +255,27 @@ class WhatsAppWebController extends Controller
             ? \App\Models\CRM\OrderModel::where('customer_id', $conversation->customer_id)->count()
             : 0;
 
+        // Build "seen by" list: who has read this conversation (excluding me) + when.
+        $seenBy = [];
+        if (Schema::hasTable('t_wa_conversation_reads')) {
+            $currentUserId = auth()->id();
+            $seenBy = ConversationReadModel::where('conversation_id', $conversation->id)
+                ->when($currentUserId, fn($q) => $q->where('user_id', '!=', $currentUserId))
+                ->orderByDesc('last_read_at')
+                ->limit(10)
+                ->get()
+                ->map(function ($r) {
+                    $user = \App\Models\User::find($r->user_id);
+                    return [
+                        'user_id' => $r->user_id,
+                        'name' => $user?->name ?? ('User #' . $r->user_id),
+                        'last_read_at' => $r->last_read_at?->toIso8601String(),
+                    ];
+                })->all();
+        }
+
+        $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
+
         return response()->json([
             'success' => true,
             'conversation' => [
@@ -101,10 +287,13 @@ class WhatsAppWebController extends Controller
                 'wa_phone' => $conversation->wa_phone,
                 'status' => $conversation->status,
                 'unread_count' => $conversation->unread_count,
+                'is_qurbani' => $hasQurbaniCol ? (bool) $conversation->is_qurbani : false,
+                'qurbani_flag_reason' => $hasQurbaniCol ? ($conversation->qurbani_flag_reason ?? null) : null,
                 'session_active' => $conversation->isSessionActive(),
                 'session_expires_at' => $conversation->last_customer_message_at
                     ? $conversation->last_customer_message_at->addHours(24)->toIso8601String()
                     : null,
+                'seen_by' => $seenBy,
             ],
             'messages' => $messages->map(function ($msg) {
                 return [
@@ -123,6 +312,8 @@ class WhatsAppWebController extends Controller
                 ];
             })->values(),
             'has_more' => $hasMore,
+            'is_limited' => $access['limited'],
+            'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
         ]);
     }
 
@@ -188,19 +379,116 @@ class WhatsAppWebController extends Controller
         return response()->json(['success' => true]);
     }
 
-    public function markRead($conversationId)
+    public function markRead(Request $request, $conversationId)
     {
+        $userId = auth()->id();
+        $now = now();
+
+        // Per-user read state (new model).
+        if ($userId && Schema::hasTable('t_wa_conversation_reads')) {
+            ConversationReadModel::updateOrCreate(
+                ['user_id' => $userId, 'conversation_id' => $conversationId],
+                ['last_read_at' => $now]
+            );
+        }
+
+        // Legacy column is still zeroed out so global badge sums stay sane.
+        // (Push notifications and the mobile badge use this to avoid loading
+        // the full per-user matrix.)
         ConversationModel::where('id', $conversationId)->update(['unread_count' => 0]);
+
+        // Push blue-ticks to the customer — now that a human actually saw it.
+        try {
+            app(WhatsAppService::class)->markInboundAsReadOnWhatsApp((int) $conversationId);
+        } catch (\Exception $e) {
+            Log::debug('markRead: WA receipt failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+
         return response()->json(['success' => true]);
     }
 
+    /**
+     * Global unread badge. Counts "any conversation with any unread
+     * inbound message for the current user". This is exposed for the
+     * top-bar badge in the layout.
+     */
     public function getUnreadCount()
     {
         if (!Schema::hasTable('t_wa_conversations')) {
             return response()->json(['success' => true, 'unread_count' => 0]);
         }
-        $count = ConversationModel::where('unread_count', '>', 0)->sum('unread_count');
-        return response()->json(['success' => true, 'unread_count' => (int) $count]);
+
+        $access = $this->resolveWhatsAppAccess();
+        if (!$access['allowed']) {
+            // No view permission → badge is always 0.
+            return response()->json(['success' => true, 'unread_count' => 0]);
+        }
+
+        $userId = auth()->id();
+        if (!$userId || !Schema::hasTable('t_wa_conversation_reads')) {
+            // Fallback: legacy summed column.
+            $count = ConversationModel::where('unread_count', '>', 0)->sum('unread_count');
+            return response()->json(['success' => true, 'unread_count' => (int) $count]);
+        }
+
+        $query = DB::table('t_wa_messages as m')
+            ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($userId) {
+                $j->on('r.conversation_id', '=', 'm.conversation_id')
+                  ->where('r.user_id', '=', $userId);
+            })
+            ->where('m.direction', 'inbound')
+            ->where(function ($w) {
+                $w->whereNull('r.last_read_at')
+                  ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+            })
+            ->whereRaw('NOT EXISTS (
+                SELECT 1 FROM t_wa_messages m2
+                WHERE m2.conversation_id = m.conversation_id
+                  AND m2.direction = \'outbound\'
+                  AND m2.created_at > m.created_at
+            )');
+
+        // Limited users' badge only counts messages inside their visible window.
+        if ($access['limited']) {
+            $query->where('m.created_at', '>=', $access['cutoff']);
+        }
+
+        return response()->json(['success' => true, 'unread_count' => (int) $query->count()]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Qurbani Messages tab – settings & rescan
+    // ─────────────────────────────────────────────────────────────────
+
+    public function getQurbaniSettings(QurbaniClassifier $classifier)
+    {
+        return response()->json([
+            'success' => true,
+            'settings' => $classifier->getSettings(),
+        ]);
+    }
+
+    public function updateQurbaniSettings(Request $request, QurbaniClassifier $classifier)
+    {
+        $request->validate([
+            'enabled'  => 'sometimes|boolean',
+            'keywords' => 'sometimes',
+            'lookback' => 'sometimes|integer|min:1|max:20',
+            'year'     => 'sometimes|nullable|integer|min:2000|max:2100',
+        ]);
+
+        $settings = $classifier->updateSettings($request->only(['enabled', 'keywords', 'lookback', 'year']));
+        return response()->json(['success' => true, 'settings' => $settings]);
+    }
+
+    public function rescanQurbani(QurbaniClassifier $classifier)
+    {
+        try {
+            $stats = $classifier->rescanAll();
+            return response()->json(['success' => true] + $stats);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
     }
 
     public function getTemplates(Request $request)

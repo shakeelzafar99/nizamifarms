@@ -2644,6 +2644,15 @@ function quickSendInvoiceWhatsApp(orderId, orderNum, total, custName, custPhone)
     openSendInvoiceWhatsApp();
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Send WhatsApp Message modal for regular Open Orders.
+// Dual-tab: "Invoice" (existing send-invoice flow with auto-preview) and
+// "Other Message" (any non-invoice regular template via /messages/send-template).
+// Mirrors the Qurbani orders implementation to keep UX consistent.
+// ──────────────────────────────────────────────────────────────────────────
+let _regWaCustName = '';
+let _regWaOrderNum = '';
+
 function openSendInvoiceWhatsApp() {
     if (!currentOrderId) { alert('No order selected'); return; }
 
@@ -2651,63 +2660,130 @@ function openSendInvoiceWhatsApp() {
     const custName = order?.customer_name || order?.name || ((order?.address_first_name || '') + ' ' + (order?.address_last_name || '')).trim() || (order?.customer ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() : '') || '';
     const custPhone = order?.customer?.phone_normalized || order?.address_phone || order?.customer?.phone || '';
     const orderNum = order?.order_number || '';
+    _regWaCustName = custName;
+    _regWaOrderNum = orderNum;
 
     let existing = document.getElementById('waInvoiceDialog');
     if (existing) existing.remove();
+
+    const escHtml = function(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); };
 
     const dialog = document.createElement('div');
     dialog.id = 'waInvoiceDialog';
     dialog.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
     dialog.innerHTML = `
-        <div style="background:#fff;border-radius:12px;width:500px;max-width:95vw;max-height:85vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
             <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
                 <div style="display:flex;align-items:center;gap:8px;">
                     <span style="font-size:20px;">📱</span>
-                    <span style="font-weight:700;font-size:15px;color:#111827;">Send Invoice via WhatsApp</span>
+                    <span style="font-weight:700;font-size:15px;color:#111827;">Send WhatsApp Message</span>
                 </div>
                 <button onclick="document.getElementById('waInvoiceDialog').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;">&times;</button>
             </div>
-            <div style="padding:20px;">
-                <div style="margin-bottom:16px;">
-                    <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Customer</div>
-                    <div style="font-size:14px;font-weight:600;color:#111827;">${custName || 'Unknown'}</div>
-                </div>
-                <div style="margin-bottom:16px;">
-                    <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Order</div>
-                    <div style="font-size:14px;font-weight:600;color:#111827;">#${orderNum} — Rs. ${parseFloat(order?.total_price || 0).toLocaleString()}</div>
-                </div>
-                <div style="margin-bottom:16px;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Phone Number</label>
-                    <input id="waInvPhone" type="text" value="${custPhone}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="923001234567" />
-                </div>
-                <div style="margin-bottom:16px;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template</label>
-                    <select id="waInvTemplate" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularInvoiceTemplateChange()">
-                        <option value="">Loading templates...</option>
-                    </select>
-                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Templates tagged as "Invoice" in Manage Templates</div>
-                </div>
-                <div style="margin-bottom:16px;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated)</label>
-                    <input id="waInvBodyParams" type="text" value="${custName}, ${orderNum}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
-                    <div id="waInvVarHint" style="font-size:11px;color:#9ca3af;margin-top:4px;">Variables are passed to the template in order (e.g. 1=Name, 2=Order#)</div>
-                </div>
-                <div id="waInvPreviewArea" style="margin-bottom:16px;display:none;">
-                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
-                    <div id="waInvPreviewBox" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;text-align:center;background:#f9fafb;padding:8px;">
-                        <img id="waInvPreviewImg" style="max-width:100%;max-height:300px;border-radius:4px;cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" />
+            <div style="padding:16px 20px 6px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+                    <div>
+                        <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Customer</div>
+                        <div style="font-size:14px;font-weight:600;color:#111827;">${escHtml(custName || 'Unknown')}</div>
+                    </div>
+                    <div>
+                        <div style="font-size:11px;color:#6b7280;margin-bottom:2px;">Order</div>
+                        <div style="font-size:14px;font-weight:600;color:#111827;">#${escHtml(orderNum)} — Rs. ${parseFloat(order?.total_price || 0).toLocaleString()}</div>
                     </div>
                 </div>
-                <div style="display:flex;gap:10px;">
-                    <button id="waInvPreviewBtn" onclick="previewInvoiceWhatsApp()" style="flex:1;padding:10px;border:1px solid #25D366;color:#25D366;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Preview Invoice</button>
-                    <button id="waInvSendBtn" onclick="sendInvoiceWhatsApp()" style="flex:1;padding:10px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;" disabled>Send Invoice</button>
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Phone Number</label>
+                    <input id="waInvPhone" type="text" value="${escHtml(custPhone)}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" placeholder="923001234567" />
                 </div>
-                <div id="waInvStatus" style="margin-top:10px;font-size:13px;text-align:center;display:none;"></div>
+
+                <!-- Tab bar -->
+                <div style="display:inline-flex;background:#f3f4f6;border-radius:8px;padding:3px;margin-bottom:14px;">
+                    <button id="regWaTabInvoice" type="button" onclick="regWaSwitchTab('invoice')" style="padding:6px 14px;border:none;background:#fff;color:#111827;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,0.08);">🧾 Invoice</button>
+                    <button id="regWaTabOther" type="button" onclick="regWaSwitchTab('other')" style="padding:6px 14px;border:none;background:transparent;color:#6b7280;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">💬 Other Message</button>
+                </div>
+
+                <!-- INVOICE TAB -->
+                <div id="regWaInvoicePanel">
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Template</label>
+                        <select id="waInvTemplate" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularInvoiceTemplateChange()">
+                            <option value="">Loading templates...</option>
+                        </select>
+                        <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Templates tagged as "Invoice" in Manage Templates</div>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated)</label>
+                        <input id="waInvBodyParams" type="text" value="${escHtml(custName)}, ${escHtml(orderNum)}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;" />
+                        <div id="waInvVarHint" style="font-size:11px;color:#9ca3af;margin-top:4px;">Variables are passed to the template in order (e.g. 1=Name, 2=Order#)</div>
+                    </div>
+                    <div id="waInvPreviewArea" style="margin-bottom:12px;display:none;">
+                        <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Invoice Preview</label>
+                        <div id="waInvPreviewBox" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;text-align:center;background:#f9fafb;padding:8px;">
+                            <img id="waInvPreviewImg" style="max-width:100%;max-height:300px;border-radius:4px;cursor:pointer;" onclick="openFullscreenImg(this.src)" title="Click to view full size" />
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button id="waInvPreviewBtn" onclick="previewInvoiceWhatsApp()" style="flex:1;padding:10px;border:1px solid #25D366;color:#25D366;background:#fff;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Refresh Preview</button>
+                        <button id="waInvSendBtn" onclick="sendInvoiceWhatsApp()" style="flex:1;padding:10px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Send Invoice</button>
+                    </div>
+                    <div id="waInvStatus" style="margin-top:10px;font-size:13px;text-align:center;display:none;"></div>
+                </div>
+
+                <!-- OTHER TAB -->
+                <div id="regWaOtherPanel" style="display:none;">
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Message Template</label>
+                        <select id="regWaOtherTpl" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;background:#fff;" onchange="onRegularOtherTemplateChange()">
+                            <option value="">Loading templates...</option>
+                        </select>
+                        <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Shows templates allowed on regular orders (no invoice templates).</div>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <label style="font-size:12px;color:#6b7280;display:block;margin-bottom:4px;">Body Variables (comma-separated)</label>
+                        <input id="regWaOtherParams" type="text" value="${escHtml(custName)}" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;">
+                        <div id="regWaOtherHint" style="font-size:11px;color:#9ca3af;margin-top:4px;">Variables are passed to the template in order.</div>
+                    </div>
+                    <div id="regWaOtherPreview" style="display:none;background:#f9fafb;border:1px dashed #e5e7eb;border-radius:6px;padding:10px;margin-bottom:12px;font-size:12px;color:#374151;white-space:pre-wrap;"></div>
+                    <div style="display:flex;gap:8px;">
+                        <button onclick="sendRegularOtherMessage()" style="flex:1;padding:10px;background:#25D366;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;">Send Message</button>
+                    </div>
+                    <div id="regWaOtherStatus" style="margin-top:10px;font-size:13px;text-align:center;display:none;"></div>
+                </div>
             </div>
         </div>`;
     document.body.appendChild(dialog);
     dialog.addEventListener('click', function(e) { if (e.target === dialog) dialog.remove(); });
 
+    regWaLoadInvoiceTemplates();
+    regWaLoadOtherTemplates();
+
+    // Auto-preview invoice on open so users always see what they're sending,
+    // even if they jump straight to "Send Invoice" without pressing preview.
+    previewInvoiceWhatsApp();
+}
+
+function regWaSwitchTab(tab) {
+    var invTab = document.getElementById('regWaTabInvoice');
+    var othTab = document.getElementById('regWaTabOther');
+    var invPanel = document.getElementById('regWaInvoicePanel');
+    var othPanel = document.getElementById('regWaOtherPanel');
+    if (!invTab || !othTab || !invPanel || !othPanel) return;
+    var activeStyle = 'padding:6px 14px;border:none;background:#fff;color:#111827;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,0.08);';
+    var inactiveStyle = 'padding:6px 14px;border:none;background:transparent;color:#6b7280;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;';
+    if (tab === 'other') {
+        invTab.setAttribute('style', inactiveStyle);
+        othTab.setAttribute('style', activeStyle);
+        invPanel.style.display = 'none';
+        othPanel.style.display = '';
+    } else {
+        invTab.setAttribute('style', activeStyle);
+        othTab.setAttribute('style', inactiveStyle);
+        invPanel.style.display = '';
+        othPanel.style.display = 'none';
+    }
+}
+
+function regWaLoadInvoiceTemplates() {
     window._regInvoiceTemplates = [];
     fetch('/messages/templates?context=invoice', {
         headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
@@ -2738,6 +2814,123 @@ function openSendInvoiceWhatsApp() {
     });
 }
 
+// Load non-invoice templates that are allowed on regular order pages. The
+// getTemplates endpoint already:
+//   - hides inactive templates,
+//   - hides qurbani-only templates for non-qurbani contexts,
+// so we just need to exclude invoice templates ourselves.
+function regWaLoadOtherTemplates() {
+    window._regOtherTemplates = [];
+    fetch('/messages/templates?context=orders,messages,customers', {
+        headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+        var sel = document.getElementById('regWaOtherTpl');
+        if (!sel) return;
+        sel.innerHTML = '';
+        var tpls = (data.templates || []).filter(function(t) {
+            var raw = t.show_in;
+            var showIn = Array.isArray(raw)
+                ? raw.map(function(x) { return String(x).toLowerCase().trim(); })
+                : String(raw || '').toLowerCase().split(',').map(function(x) { return x.trim(); });
+            if (showIn.indexOf('invoice') >= 0 || showIn.indexOf('qurbani_invoice') >= 0) return false;
+            return true;
+        });
+        window._regOtherTemplates = tpls;
+        if (tpls.length === 0) {
+            sel.innerHTML = '<option value="">No templates available</option>';
+            return;
+        }
+        var defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = '-- Select a template --';
+        sel.appendChild(defaultOpt);
+        tpls.forEach(function(t, i) {
+            var opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.display_name + ' (' + t.variable_count + ' vars)';
+            opt.dataset.varCount = t.variable_count;
+            opt.dataset.idx = i;
+            sel.appendChild(opt);
+        });
+    })
+    .catch(function() {
+        var sel = document.getElementById('regWaOtherTpl');
+        if (sel) sel.innerHTML = '<option value="">Failed to load templates</option>';
+    });
+}
+
+function onRegularOtherTemplateChange() {
+    var sel = document.getElementById('regWaOtherTpl');
+    var paramsInput = document.getElementById('regWaOtherParams');
+    var hintEl = document.getElementById('regWaOtherHint');
+    var previewEl = document.getElementById('regWaOtherPreview');
+    if (!sel || !paramsInput) return;
+    var selectedOpt = sel.options[sel.selectedIndex];
+    var idx = selectedOpt?.dataset?.idx;
+    var tpls = window._regOtherTemplates || [];
+    var tpl = (idx != null) ? tpls[parseInt(idx)] : null;
+    var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
+
+    if (varCount === 0) {
+        paramsInput.value = '';
+        if (hintEl) hintEl.textContent = 'This template has no variables';
+    } else if (varCount === 1) {
+        paramsInput.value = _regWaCustName;
+        if (hintEl) hintEl.textContent = '1 variable: Name';
+    } else {
+        paramsInput.value = _regWaCustName + ', ' + _regWaOrderNum;
+        if (hintEl) hintEl.textContent = varCount + ' variables (e.g. Name, Order#)';
+    }
+
+    if (previewEl) {
+        if (tpl && tpl.body_text) {
+            previewEl.textContent = tpl.body_text;
+            previewEl.style.display = '';
+        } else {
+            previewEl.style.display = 'none';
+        }
+    }
+}
+
+function sendRegularOtherMessage() {
+    var phone = document.getElementById('waInvPhone').value.trim();
+    var tplSel = document.getElementById('regWaOtherTpl');
+    var templateName = tplSel ? tplSel.value.trim() : '';
+    var paramsStr = (document.getElementById('regWaOtherParams').value || '').trim();
+    if (!phone) { alert('Please enter a phone number'); return; }
+    if (!templateName) { alert('Please pick a template'); return; }
+    var params = paramsStr ? paramsStr.split(',').map(function(s) { return s.trim(); }) : [];
+    var statusEl = document.getElementById('regWaOtherStatus');
+    var btn = document.querySelector('#regWaOtherPanel button[onclick="sendRegularOtherMessage()"]');
+    if (btn) { btn.textContent = 'Sending...'; btn.disabled = true; }
+    if (statusEl) statusEl.style.display = 'none';
+
+    fetch('/messages/send-template', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''},
+        body: JSON.stringify({phone: phone, template_name: templateName, body_params: params}),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!statusEl || !btn) return;
+        if (data.success) {
+            statusEl.style.display = 'block'; statusEl.style.color = '#16a34a';
+            statusEl.textContent = 'Message sent successfully!';
+            btn.textContent = 'Sent!';
+            setTimeout(function() { var el = document.getElementById('waInvoiceDialog'); if (el) el.remove(); }, 1500);
+        } else {
+            statusEl.style.display = 'block'; statusEl.style.color = '#dc2626';
+            statusEl.textContent = data.message || 'Failed to send';
+            btn.textContent = 'Send Message'; btn.disabled = false;
+        }
+    })
+    .catch(function(e) {
+        if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; }
+        if (btn) { btn.textContent = 'Send Message'; btn.disabled = false; }
+    });
+}
+
 function onRegularInvoiceTemplateChange() {
     var sel = document.getElementById('waInvTemplate');
     var paramsInput = document.getElementById('waInvBodyParams');
@@ -2745,11 +2938,8 @@ function onRegularInvoiceTemplateChange() {
     if (!sel || !paramsInput) return;
     var selectedOpt = sel.options[sel.selectedIndex];
     var varCount = parseInt(selectedOpt?.dataset?.varCount || '0');
-    var custName = '';
-    var orderNum = '';
-    var nameEls = document.querySelectorAll('#waInvoiceDialog [style*="font-weight:600"]');
-    if (nameEls.length >= 1) custName = nameEls[0].textContent.trim();
-    if (nameEls.length >= 2) orderNum = nameEls[1].textContent.replace(/^#/, '').split(' ')[0].trim();
+    var custName = _regWaCustName || '';
+    var orderNum = _regWaOrderNum || '';
     if (varCount === 0) {
         paramsInput.value = '';
         if (hintEl) hintEl.textContent = 'This template has no variables';
@@ -2795,6 +2985,7 @@ function captureInvoiceImageOrders(invoiceUrl, orderId) {
 
 function previewInvoiceWhatsApp() {
     const btn = document.getElementById('waInvPreviewBtn');
+    if (!btn) return;
     btn.textContent = 'Loading...';
     btn.disabled = true;
 
@@ -2803,23 +2994,21 @@ function previewInvoiceWhatsApp() {
     })
     .then(r => r.json())
     .then(d => {
-        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Preview Invoice'; btn.disabled = false; return; }
+        if (!d.success) { alert(d.message || 'Failed'); btn.textContent = 'Refresh Preview'; btn.disabled = false; return; }
 
         if (d.needs_capture) {
             captureInvoiceImageOrders(d.invoice_url, currentOrderId).then(uploadRes => {
                 document.getElementById('waInvPreviewImg').src = uploadRes.image_url;
                 document.getElementById('waInvPreviewArea').style.display = 'block';
-                document.getElementById('waInvSendBtn').disabled = false;
                 btn.textContent = 'Refresh Preview'; btn.disabled = false;
-            }).catch(err => { alert('Failed to capture invoice: ' + err.message); btn.textContent = 'Preview Invoice'; btn.disabled = false; });
+            }).catch(err => { alert('Failed to capture invoice: ' + err.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
         } else {
             document.getElementById('waInvPreviewImg').src = d.image_url;
             document.getElementById('waInvPreviewArea').style.display = 'block';
-            document.getElementById('waInvSendBtn').disabled = false;
             btn.textContent = 'Refresh Preview'; btn.disabled = false;
         }
     })
-    .catch(e => { alert('Error: ' + e.message); btn.textContent = 'Preview Invoice'; btn.disabled = false; });
+    .catch(e => { alert('Error: ' + e.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
 }
 
 function sendInvoiceWhatsApp() {
@@ -2828,7 +3017,7 @@ function sendInvoiceWhatsApp() {
     const bodyParamsStr = document.getElementById('waInvBodyParams').value.trim();
 
     if (!phone) { alert('Please enter a phone number'); return; }
-    if (!templateName) { alert('Please enter the template name'); return; }
+    if (!templateName) { alert('Please select an invoice template'); return; }
 
     const bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
     const btn = document.getElementById('waInvSendBtn');
@@ -2837,10 +3026,41 @@ function sendInvoiceWhatsApp() {
     btn.disabled = true;
     statusEl.style.display = 'none';
 
-    fetch('/messages/send-invoice', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json'},
-        body: JSON.stringify({ order_id: currentOrderId, phone: phone, template_name: templateName, body_params: bodyParams })
+    // If the auto-preview hasn't finished yet (user pressed Send quickly),
+    // ensure the invoice image is captured first so the API has a header to
+    // attach. Mirrors the Qurbani flow to avoid "missing image" errors.
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const previewReady = document.getElementById('waInvPreviewArea')?.style.display === 'block';
+    const ensureReady = previewReady ? Promise.resolve() : new Promise(function(resolve) {
+        fetch('/messages/invoice-image/' + currentOrderId, {headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'}})
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d && d.success && d.needs_capture) {
+                    return captureInvoiceImageOrders(d.invoice_url, currentOrderId).then(function(uploadRes) {
+                        var img = document.getElementById('waInvPreviewImg');
+                        var area = document.getElementById('waInvPreviewArea');
+                        if (img) img.src = uploadRes.image_url;
+                        if (area) area.style.display = 'block';
+                        resolve();
+                    }).catch(function() { resolve(); });
+                }
+                if (d && d.success && d.image_url) {
+                    var img = document.getElementById('waInvPreviewImg');
+                    var area = document.getElementById('waInvPreviewArea');
+                    if (img) img.src = d.image_url;
+                    if (area) area.style.display = 'block';
+                }
+                resolve();
+            })
+            .catch(function() { resolve(); });
+    });
+
+    ensureReady.then(function() {
+        return fetch('/messages/send-invoice', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'},
+            body: JSON.stringify({order_id: currentOrderId, phone: phone, template_name: templateName, body_params: bodyParams})
+        });
     })
     .then(r => r.json())
     .then(d => {

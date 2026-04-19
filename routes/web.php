@@ -313,6 +313,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/invoice-image/{orderId}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getInvoiceImageUrl'])->name('messages.invoiceImage');
         Route::post('/upload-invoice-image', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'uploadInvoiceImage'])->name('messages.uploadInvoiceImage');
         Route::post('/send-invoice', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendInvoice'])->name('messages.sendInvoice');
+
+        // Qurbani tab — feature toggle, keywords, active year, rescan.
+        Route::get('/qurbani-settings', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getQurbaniSettings'])->name('messages.qurbaniSettings');
+        Route::post('/qurbani-settings', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'updateQurbaniSettings'])->name('messages.updateQurbaniSettings');
+        Route::post('/qurbani-rescan', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'rescanQurbani'])->name('messages.qurbaniRescan');
     });
 
     // Campaign Management Routes

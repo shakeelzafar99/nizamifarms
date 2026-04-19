@@ -484,8 +484,8 @@
 
         @if(!empty(trim((string)($order->note ?? ''))))
         <div style="margin: 6px 0; padding: 6px 10px; background: #fefce8; border: 1px solid #fde68a; border-radius: 4px;">
-            <div style="font-size: 10px; color: #92400e; font-weight: 600;">📝 Order Notes:</div>
-            <div style="font-size: 10px; color: #78350f; margin-top: 2px;">{{ $order->note }}</div>
+            <div style="font-size: 11px; color: #92400e; font-weight: 600;">📝 Order Notes:</div>
+            <div style="font-size: 11px; color: #78350f; margin-top: 2px;">{{ $order->note }}</div>
         </div>
         @endif
         

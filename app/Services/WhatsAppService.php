@@ -390,8 +390,20 @@ class WhatsAppService
                 Log::debug('WhatsApp: Campaign reply tracking failed (non-fatal)', ['error' => $campaignErr->getMessage()]);
             }
 
-            // Send read receipt back to WhatsApp
-            $this->markAsRead($waMessageId);
+            // Qurbani auto-classification runs AFTER the inbound message is
+            // persisted so the new message is part of the lookback window.
+            // Non-fatal on any error.
+            try {
+                app(\App\Services\QurbaniClassifier::class)->classify($conversation->fresh());
+            } catch (\Exception $classifyErr) {
+                Log::debug('WhatsApp: Qurbani classify failed (non-fatal)', ['error' => $classifyErr->getMessage()]);
+            }
+
+            // NOTE: Read receipts are NO LONGER sent automatically on webhook
+            // receipt. They are sent only when a team member actually reads the
+            // message in the UI (web or mobile). This prevents customers from
+            // seeing the blue double-tick the instant their message hits our
+            // server. The send is triggered from markConversationReadForUser().
 
             // Send push notification to staff
             try {
@@ -567,7 +579,76 @@ class WhatsAppService
             'last_message_at' => now(),
         ]);
 
+        // When a qurbani-flagged template is sent, the conversation immediately
+        // qualifies for the Qurbani tab. Re-classify so the UI picks it up on
+        // the very next poll.
+        if ($type === 'template' && $templateName) {
+            try {
+                $conv = ConversationModel::find($conversationId);
+                if ($conv) {
+                    app(\App\Services\QurbaniClassifier::class)->classify($conv);
+                }
+            } catch (\Exception $e) {
+                Log::debug('WhatsApp: Qurbani re-classify on outbound failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
+        }
+
         return $message;
+    }
+
+    /**
+     * Called when a staff member opens/polls a conversation in the UI.
+     * Sends read receipts (blue ticks) to the customer for ALL inbound
+     * messages we haven't already marked as read.
+     *
+     * Unlike the old behaviour (firing on webhook receipt), this only
+     * happens when a human actually sees the thread. Safe to call repeatedly;
+     * we track which WhatsApp message IDs have been reported via the
+     * `read_reported_at` column on t_wa_messages.
+     */
+    public function markInboundAsReadOnWhatsApp(int $conversationId): int
+    {
+        $reported = 0;
+
+        $query = MessageModel::where('conversation_id', $conversationId)
+            ->where('direction', 'inbound')
+            ->whereNotNull('wa_message_id');
+
+        // Only consider columns that exist (new install vs. existing upgrade).
+        if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
+            $query->whereNull('read_reported_at');
+        } else {
+            // Fallback: if column doesn't exist yet, cap lookback to the last
+            // 50 inbound messages to avoid hammering the API after a big
+            // backlog. Once the migration runs, this branch won't be hit.
+            $query->orderByDesc('id')->limit(50);
+        }
+
+        $messages = $query->get(['id', 'wa_message_id']);
+        if ($messages->isEmpty()) {
+            return 0;
+        }
+
+        foreach ($messages as $m) {
+            try {
+                $result = $this->markAsRead($m->wa_message_id);
+                if (!empty($result['success'])) {
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
+                        MessageModel::where('id', $m->id)->update(['read_reported_at' => now()]);
+                    }
+                    $reported++;
+                }
+            } catch (\Exception $e) {
+                // Most common: message too old (Meta rejects >7 days).
+                // Still stamp so we don't retry forever.
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'read_reported_at')) {
+                    MessageModel::where('id', $m->id)->update(['read_reported_at' => now()]);
+                }
+                Log::debug('WhatsApp: markAsRead failed', ['wa_message_id' => $m->wa_message_id, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return $reported;
     }
 
     /**

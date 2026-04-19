@@ -501,11 +501,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/cost-summary', [WhatsAppController::class, 'getCostSummary']);
         Route::post('/send-to-customer', [WhatsAppController::class, 'sendToPhone']);
         Route::post('/register-device', [WhatsAppController::class, 'registerDevice']);
+        Route::post('/unregister-device', [WhatsAppController::class, 'unregisterDevice']);
         Route::post('/test-notification', [WhatsAppController::class, 'testNotification']);
         Route::get('/customer-orders/{customerId}', [WhatsAppController::class, 'getCustomerOrders']);
         Route::get('/invoice-image/{orderId}', [WhatsAppController::class, 'getInvoiceImageUrl']);
         Route::post('/upload-invoice-image', [WhatsAppController::class, 'uploadInvoiceImage']);
         Route::post('/send-invoice', [WhatsAppController::class, 'sendInvoice']);
+
+        // Qurbani tab settings (mirror web).
+        Route::get('/qurbani-settings', [WhatsAppController::class, 'getQurbaniSettings']);
+        Route::post('/qurbani-settings', [WhatsAppController::class, 'updateQurbaniSettings']);
+        Route::post('/qurbani-rescan', [WhatsAppController::class, 'rescanQurbani']);
     });
 
     // WhatsApp per-customer (nested under customers)
