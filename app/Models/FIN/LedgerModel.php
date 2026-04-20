@@ -66,6 +66,9 @@ class LedgerModel extends BaseModel
         'settlement_metadata',
         'bill_image',
         'receiving_account_id', // ⭐ FK to t_fin_online_receiving_accounts - which bank received online payment
+        // Customer-side transaction reference captured at approval time
+        // (e.g. the transaction ID from the customer's banking app).
+        'transaction_reference',
         'posted_date',
         'balance_updated', // Tracks whether account balances were applied (for L1-early-balance flow)
         'created_by',

@@ -402,13 +402,19 @@
         </div>
         @endif
 
-        <!-- Totals -->
+        <!-- Totals + PAID stamp (stamp renders only when fully paid) -->
         @php
             $discountBreakdown = $order->getDiscountBreakdown();
             $totalDiscounts = $discountBreakdown->sum('discount_amount');
             $subtotal = $order->lineItems->sum(function($item) { return $item->is_free ? 0 : ($item->line_total ?: ($item->quantity * $item->unit_price)); });
+            $__paidStampData = $order->getPaidStampData();
         @endphp
-        <div class="totals-wrapper">
+        <div class="totals-wrapper" style="position:relative;">
+            @if ($__paidStampData['show'])
+                <div class="paid-stamp-wrap" style="float:left; padding-left:20px; padding-top:10px; max-width:45%;">
+                    @include('pages.orders.partials.paid-stamp', ['order' => $order, 'paidStamp' => $__paidStampData])
+                </div>
+            @endif
             <div class="totals">
                 @if($totalDiscounts > 0)
                 <div class="totals-row">
@@ -448,6 +454,7 @@
                     <div class="totals-amount">Rs&nbsp;{{ number_format($displayTotal, 0) }}</div>
                 </div>
             </div>
+            <div style="clear:both;"></div>
         </div>
 
         <div class="footer">

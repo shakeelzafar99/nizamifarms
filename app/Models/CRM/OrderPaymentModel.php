@@ -19,6 +19,9 @@ class OrderPaymentModel extends BaseModel
         'order_id',
         'amount',
         'payment_method',
+        // Which of our banks received the money (only set for online payments).
+        // FK to t_fin_online_receiving_accounts.id.
+        'receiving_account_id',
         'payment_date',
         'reference',
         'notes',
@@ -46,6 +49,14 @@ class OrderPaymentModel extends BaseModel
     public function createdByUser(): BelongsTo
     {
         return $this->belongsTo(\App\Models\SysAdmin\UserModel::class, 'created_by');
+    }
+
+    // Which of OUR receiving banks the money landed in. Nullable by design:
+    // cash payments have no bank, and older rows from before Apr 2026 won't
+    // have it populated.
+    public function receivingAccount(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\FIN\OnlineReceivingAccountModel::class, 'receiving_account_id');
     }
 
     public function scopeActive($query)

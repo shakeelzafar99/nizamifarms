@@ -152,6 +152,13 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}/event-history', [OrderController::class, 'getOrderEventHistory'])->name('orders.event-history');
     Route::get('/orders/{id}/qurbani-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.qurbani-payments');
     Route::post('/orders/{id}/qurbani-payments', [OrderController::class, 'addQurbaniPayment'])->name('orders.qurbani-payments.add');
+    // Void a previously-added payment. Soft-deletes the row and reverses the
+    // paired ledger/account-balance entries so finance stays consistent.
+    Route::delete('/orders/{id}/qurbani-payments/{paymentId}', [OrderController::class, 'deleteQurbaniPayment'])->name('orders.qurbani-payments.delete');
+    // Save PAID-stamp overrides (sending bank, stamp date, ref mode) without
+    // touching any payment row. Used by the "✏️ Edit stamp" popover on
+    // invoice.blade.
+    Route::post('/orders/{id}/paid-stamp', [OrderController::class, 'updatePaidStamp'])->name('orders.paid-stamp.update');
     Route::post('/operations/rider-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importRiderAssignments'])->name('operations.rider-import');
     Route::post('/operations/attendance-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importAttendance'])->name('operations.attendance-import');
     Route::post('/operations/history-import', [\App\Http\Controllers\CRM\OperationsController::class, 'importHistoryOrders'])->name('operations.history-import');

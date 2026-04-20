@@ -342,6 +342,12 @@ class RiderController extends Controller
                     'total_paid' => (float)($order->total_paid ?? 0),
                     'payment_status' => $order->payment_status ?? 'unpaid',
                     'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                    // Fully computed PAID stamp — shared source of truth for
+                    // the mobile InvoiceTemplate. Uses the exact same rules
+                    // as the server-side blade partial (getPaidStampData),
+                    // so mobile doesn't need to duplicate the cash/online
+                    // bank fallback logic.
+                    'paid_stamp' => $order->getPaidStampData(),
                     'qurbani_rider_delivered_enabled' => \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1',
                 ],
             ]);
@@ -16643,6 +16649,11 @@ class RiderController extends Controller
                     'payment_status' => $order->payment_status ?? 'unpaid',
                     'total_paid' => (float) ($order->total_paid ?? 0),
                     'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
+                    // Mirrors server-side PAID stamp (bank / date / ref).
+                    // The mobile InvoiceTemplate reads this as-is; without it
+                    // older clients fall back to hardcoded "CASH" which is
+                    // wrong for online-paid orders.
+                    'paid_stamp' => $order->getPaidStampData(),
                     'qurbani_day' => $order->qurbani_day,
                     'qurbani_slot' => $order->qurbani_slot,
                     'qurbani_region' => $order->qurbani_region,
@@ -16864,6 +16875,7 @@ class RiderController extends Controller
             $payments = \DB::table('t_crm_order_payments as p')
                 ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
                 ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                ->leftJoin('t_fin_online_receiving_accounts as b', 'p.receiving_account_id', '=', 'b.id')
                 ->where('p.order_id', $orderId)
                 ->where('p.status', 'active')
                 ->orderBy('p.payment_date', 'desc')
@@ -16872,7 +16884,11 @@ class RiderController extends Controller
                     'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
                     'p.reference', 'p.notes', 'p.status', 'p.ledger_transaction_id',
                     'p.created_by', 'p.created_at',
+                    'p.receiving_account_id',
                     'u.fullname as created_by_name',
+                    'b.name as receiving_account_name',
+                    'b.short_code as receiving_account_code',
+                    'b.color_hex as receiving_account_color',
                     'l.approval_status as ledger_approval_status',
                     'l.settlement_status as ledger_settlement_status',
                 ])
@@ -16887,6 +16903,20 @@ class RiderController extends Controller
                 'payment_status' => $order->payment_status ?? 'unpaid',
                 'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
                 'payments' => $payments,
+                // Ship PAID-stamp overrides + list of receiving banks so the
+                // mobile Add Payment sheet has everything it needs in one
+                // round-trip (no need to call /online-receiving-accounts
+                // separately).
+                'paid_stamp' => [
+                    'sending_bank' => $order->paid_stamp_sending_bank,
+                    'date'         => $order->paid_stamp_date
+                        ? \Carbon\Carbon::parse($order->paid_stamp_date)->format('Y-m-d')
+                        : null,
+                    'ref_mode'     => $order->paid_stamp_ref_mode ?: 'reference',
+                ],
+                'receiving_accounts' => \App\Models\FIN\OnlineReceivingAccountModel::active()
+                    ->ordered()
+                    ->get(['id', 'name', 'short_code', 'color_hex']),
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get order payments', ['order_id' => $orderId, 'error' => $e->getMessage()]);
@@ -16910,9 +16940,18 @@ class RiderController extends Controller
             $validated = $request->validate([
                 'amount' => 'required|numeric|min:0.01',
                 'payment_method' => 'required|string|in:cash,cash_on_delivery,online,bank_transfer',
-                'payment_date' => 'nullable|date',
+                // Allow backdating but never future-date — matches web modal.
+                'payment_date' => 'nullable|date|before_or_equal:today',
                 'reference' => 'nullable|string|max:255',
                 'notes' => 'nullable|string|max:1000',
+                // Which of our banks received the online payment. Old APKs
+                // that don't know about this field will leave it null which
+                // is exactly the legacy behaviour.
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+                // Invoice PAID-stamp display overrides — all optional.
+                'sending_bank'    => 'nullable|string|max:100',
+                'stamp_date'      => 'nullable|date',
+                'stamp_ref_mode'  => 'nullable|string|in:reference,customer_name,blank',
             ]);
 
             $amount = (float) $validated['amount'];
@@ -16943,17 +16982,45 @@ class RiderController extends Controller
 
             \DB::beginTransaction();
 
+            // Receiving bank only applies to online/bank_transfer — cash has
+            // no bank. If the caller sent a receiving_account_id with a cash
+            // payment, quietly ignore it rather than erroring out (old +
+            // new APKs can both send the same payload shape).
+            $receivingAccountId = $isOnline ? ($validated['receiving_account_id'] ?? null) : null;
+
             // Create payment record
             $payment = \App\Models\CRM\OrderPaymentModel::create([
                 'order_id' => $order->id,
                 'amount' => $amount,
                 'payment_method' => $paymentMethod,
+                'receiving_account_id' => $receivingAccountId,
                 'payment_date' => $paymentDate,
                 'reference' => $validated['reference'] ?? null,
                 'notes' => $validated['notes'] ?? null,
                 'status' => 'active',
                 'created_by' => $user->id,
             ]);
+
+            // Merge PAID-stamp metadata onto the order. Skip any key the
+            // client didn't send so old APKs don't wipe stamp overrides a
+            // user set previously on web.
+            $stampUpdates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $stampUpdates['paid_stamp_sending_bank'] = $validated['sending_bank'];
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $stampUpdates['paid_stamp_date'] = $validated['stamp_date'];
+            } else {
+                // Auto-advance stamp date with the newest payment when no
+                // explicit override was supplied.
+                $stampUpdates['paid_stamp_date'] = $paymentDate;
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $stampUpdates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'];
+            }
+            if (!empty($stampUpdates)) {
+                $order->fill($stampUpdates)->save();
+            }
 
             // --- Ledger entry ---
             $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
@@ -17071,6 +17138,142 @@ class RiderController extends Controller
             \DB::rollBack();
             \Log::error('Failed to add order payment', ['order_id' => $orderId, 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
             return response()->json(['success' => false, 'message' => 'Failed to record payment: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Mobile counterpart of OrderController@deleteQurbaniPayment — voids a
+     * single payment on an order and reverses its ledger + account-balance
+     * impact. Keeps the row (status='voided') for audit but hides it from
+     * every "active" query the rest of the app uses.
+     */
+    public function deleteOrderPayment(Request $request, $orderId, $paymentId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = OrderModel::findOrFail($orderId);
+            $payment = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+                ->where('id', $paymentId)
+                ->first();
+
+            if (!$payment) {
+                return response()->json(['success' => false, 'message' => 'Payment not found'], 404);
+            }
+            if ($payment->status !== 'active') {
+                return response()->json(['success' => false, 'message' => 'Payment is not active'], 422);
+            }
+
+            \DB::beginTransaction();
+            try {
+                $amount = (float) $payment->amount;
+
+                $ledger = $payment->ledger_transaction_id
+                    ? \App\Models\FIN\LedgerModel::find($payment->ledger_transaction_id)
+                    : null;
+
+                if ($ledger) {
+                    $toAccount = \App\Models\FIN\AccountModel::find($ledger->to_account_id);
+                    if ($toAccount) {
+                        $toAccount->current_balance = (float) $toAccount->current_balance - $amount;
+                        $toAccount->save();
+                    }
+                    $fromAccount = \App\Models\FIN\AccountModel::find($ledger->from_account_id);
+                    if ($fromAccount) {
+                        $fromAccount->current_balance = (float) $fromAccount->current_balance + $amount;
+                        $fromAccount->save();
+                    }
+                    $ledger->delete();
+                }
+
+                $payment->status = 'voided';
+                $payment->updated_by = $user->id;
+                $payment->save();
+
+                $order->recalculatePaymentStatus();
+
+                \DB::commit();
+            } catch (\Exception $inner) {
+                \DB::rollBack();
+                throw $inner;
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment voided',
+                'order'   => [
+                    'total_paid'        => (float) $order->total_paid,
+                    'payment_status'    => $order->payment_status,
+                    'balance_remaining' => max(0, (float) $order->total_price - (float) $order->total_paid),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to void order payment (mobile)', [
+                'order_id' => $orderId,
+                'payment_id' => $paymentId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Display-only edit of the invoice PAID stamp. Mirrors
+     * OrderController@updatePaidStamp so mobile can let the team tweak
+     * the sending bank / stamp date / third-line reference mode AFTER
+     * a payment has already been recorded — without creating, editing
+     * or voiding any payment row. Financial state is untouched.
+     */
+    public function updatePaidStamp(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+            $order = OrderModel::findOrFail($id);
+
+            $validated = $request->validate([
+                'sending_bank'   => 'nullable|string|max:100',
+                'stamp_date'     => 'nullable|date',
+                'stamp_ref_mode' => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+
+            $updates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $updates['paid_stamp_sending_bank'] = $validated['sending_bank'] !== '' ? $validated['sending_bank'] : null;
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $updates['paid_stamp_date'] = $validated['stamp_date'] !== '' ? $validated['stamp_date'] : null;
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $updates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'] ?: 'reference';
+            }
+
+            if (!empty($updates)) {
+                $updates['updated_by'] = $user->id;
+                $order->fill($updates)->save();
+            }
+
+            return response()->json([
+                'success'    => true,
+                'message'    => 'Invoice stamp updated',
+                'paid_stamp' => [
+                    'sending_bank' => $order->paid_stamp_sending_bank,
+                    'date'         => $order->paid_stamp_date
+                        ? \Carbon\Carbon::parse($order->paid_stamp_date)->format('Y-m-d')
+                        : null,
+                    'ref_mode'     => $order->paid_stamp_ref_mode ?: 'reference',
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to update paid stamp (mobile)', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 }

@@ -251,6 +251,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);
+    // Void a previously-recorded payment (soft delete + ledger reversal).
+    Route::delete('/orders/{orderId}/payments/{paymentId}', [\App\Http\Controllers\API\RiderController::class, 'deleteOrderPayment']);
+    // Display-only edits of the invoice PAID stamp (mirrors the web
+    // POST /orders/{id}/paid-stamp). Lets the team tweak sending bank /
+    // stamp date / third-line mode after a payment was already recorded
+    // without touching any payment or ledger row.
+    Route::post('/orders/{id}/paid-stamp', [\App\Http\Controllers\API\RiderController::class, 'updatePaidStamp']);
 
     // Assets (Store Mode - requires view_assets permission)
     Route::get('/nf-ledger/assets', [\App\Http\Controllers\FIN\AssetController::class, 'apiIndex']);

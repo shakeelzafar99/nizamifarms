@@ -564,6 +564,9 @@ class LedgerController extends Controller
             'force_full_approval' => 'nullable|boolean', // ⭐ Allow bypassing L2 if user has L2 rights
             'proof_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // ⭐ Optional proof of payment image (max 5MB)
             'receiving_account_id' => 'nullable|exists:t_fin_online_receiving_accounts,id', // ⭐ Which bank received this payment
+            // Optional customer-side transaction ID (e.g. from their banking
+            // app). Not part of finance logic — purely for audit / recall.
+            'transaction_reference' => 'nullable|string|max:255',
         ]);
 
         try {
@@ -682,7 +685,14 @@ class LedgerController extends Controller
             if ($request->receiving_account_id) {
                 $ledger->receiving_account_id = $request->receiving_account_id;
             }
-            
+
+            // Save customer-side transaction reference if provided. Only
+            // overwrite when the caller actually sent a value, so repeat
+            // approvals (e.g. L1 then L2) don't wipe what L1 captured.
+            if ($request->filled('transaction_reference')) {
+                $ledger->transaction_reference = trim($request->input('transaction_reference'));
+            }
+
             $ledger->save();
 
             // Reload accounts (in case they were changed)
@@ -835,6 +845,7 @@ class LedgerController extends Controller
             'approval_notes' => 'nullable|string|max:500',
             'proof_image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:5120', // ⭐ Optional proof of payment image
             'receiving_account_id' => 'nullable|exists:t_fin_online_receiving_accounts,id', // ⭐ Which bank received this payment
+            'transaction_reference' => 'nullable|string|max:255',
         ]);
 
         try {
@@ -900,6 +911,11 @@ class LedgerController extends Controller
             // ⭐ Save receiving bank account if provided
             if ($request->receiving_account_id) {
                 $ledger->receiving_account_id = $request->receiving_account_id;
+            }
+
+            // Save optional customer-side transaction reference on L1-only.
+            if ($request->filled('transaction_reference')) {
+                $ledger->transaction_reference = trim($request->input('transaction_reference'));
             }
 
             $ledger->save();

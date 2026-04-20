@@ -3933,11 +3933,17 @@ function loadEditForm(order) {
                 ${(order.qurbani_payments && order.qurbani_payments.length > 0) ? order.qurbani_payments.map(function(p) {
                     var mBg = p.payment_method === 'cash' ? '#d1fae5' : '#dbeafe';
                     var mColor = p.payment_method === 'cash' ? '#065f46' : '#1e40af';
+                    // Per-row ❌ voids the payment + reverses its ledger/account
+                    // movements. We use a data attribute so the handler has the
+                    // payment + order ids without string-escaping gymnastics.
                     return '<div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:#f9fafb; border-radius:6px; margin-bottom:4px; font-size:12px;">' +
                         '<span style="font-weight:600; color:#059669;">Rs. ' + Number(p.amount).toLocaleString() + '</span>' +
                         '<span style="padding:2px 8px; background:' + mBg + '; color:' + mColor + '; border-radius:8px; font-weight:600;">' + (p.payment_method || '') + '</span>' +
                         '<span style="color:#6b7280;">' + (p.payment_date || '') + '</span>' +
                         '<span style="color:#374151; font-weight:500;">' + (p.created_by_name || '') + '</span>' +
+                        '<button type="button" onclick="deleteQurbaniPayment(' + order.id + ',' + p.id + ',' + Number(p.amount) + ')" ' +
+                            'title="Void this payment" ' +
+                            'style="background:none; border:none; color:#dc2626; cursor:pointer; font-size:14px; padding:2px 6px; border-radius:4px;">🗑️</button>' +
                     '</div>';
                 }).join('') : '<div style="text-align:center; color:#9ca3af; font-size:12px; padding:8px;">No payments recorded yet</div>'}
             </div>
@@ -8314,6 +8320,39 @@ function submitQurbaniPayment() {
         alert('Error: ' + err.message);
         btn.disabled = false; btn.textContent = 'Submit Payment';
     });
+}
+
+// Void a qurbani payment and reverse its ledger + account movements.
+// Soft-delete (status='voided') so audits are preserved but the payment
+// no longer counts toward paid totals or the PAID stamp.
+function deleteQurbaniPayment(orderId, paymentId, amount) {
+    if (!confirm('Void this payment of Rs. ' + Number(amount || 0).toLocaleString()
+        + '?\n\nThe ledger entry and account balance will be reversed. '
+        + 'Voided payments stay on file for audit but no longer count.')) {
+        return;
+    }
+
+    fetch('/orders/' + orderId + '/qurbani-payments/' + paymentId, {
+        method: 'DELETE',
+        headers: {
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.success) {
+            // Reload the edit form so totals, remaining, payments list, and
+            // the invoice preview all reflect the reversal.
+            if (typeof loadEditForm === 'function') {
+                loadEditForm(orderId);
+            }
+        } else {
+            alert((data && data.message) || 'Failed to void payment');
+        }
+    })
+    .catch(function (err) { alert('Error: ' + err.message); });
 }
 
 // Create new order with preloaded customer

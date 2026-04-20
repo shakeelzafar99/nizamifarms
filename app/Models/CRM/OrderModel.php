@@ -65,6 +65,11 @@ class OrderModel extends BaseModel
         'qurbani_delivery_type',
         'payment_status',
         'total_paid',
+        // Invoice PAID-stamp metadata — display-only, edited without
+        // mutating payment history rows. See getPaidStampData().
+        'paid_stamp_sending_bank',
+        'paid_stamp_date',
+        'paid_stamp_ref_mode',
         'created_by',
         'updated_by'
     ];
@@ -84,7 +89,8 @@ class OrderModel extends BaseModel
         'actual_packets' => 'integer',
         'online_message_sent_at' => 'datetime',
         'online_message_sent_by' => 'integer',
-        'total_paid' => 'decimal:2'
+        'total_paid' => 'decimal:2',
+        'paid_stamp_date' => 'date'
     ];
 
     // Ensure relationships are included when converting to array/JSON
@@ -153,7 +159,76 @@ class OrderModel extends BaseModel
 
     public function payments(): HasMany
     {
-        return $this->hasMany(OrderPaymentModel::class, 'order_id')->where('status', 'active')->orderBy('payment_date', 'desc');
+        // Tiebreak by id DESC so when two payments share the same
+        // payment_date the most recently-created row is considered "the
+        // latest" — matters for the PAID-stamp fallback (bank, reference,
+        // date) which uses the top row here.
+        return $this->hasMany(OrderPaymentModel::class, 'order_id')
+            ->where('status', 'active')
+            ->orderBy('payment_date', 'desc')
+            ->orderBy('id', 'desc');
+    }
+
+    /**
+     * Build the dataset used by the PAID stamp on every invoice view
+     * (web, print, image, PDF, and mobile's local share-as-image). Centralised
+     * here so all five templates stay in sync and fallback rules live in one
+     * place.
+     *
+     * Returns an associative array suitable for use directly in Blade:
+     *   - show       (bool)   → whether to render the stamp at all
+     *   - bank       (string) → sending bank label ("HBL", "CASH", "—")
+     *   - date       (string) → formatted payment date ("17 Apr 2026")
+     *   - ref        (?string)→ third line (reference/customer name/null-hides)
+     *   - ref_label  (string) → "ref" | "to" depending on ref_mode
+     */
+    public function getPaidStampData(): array
+    {
+        // Fully paid only — per product decision (partial stamps not shown).
+        if (($this->payment_status ?? '') !== 'paid') {
+            return ['show' => false, 'bank' => '', 'date' => '', 'ref' => null, 'ref_label' => 'ref'];
+        }
+
+        // Latest active payment gives us fallbacks for anything the user
+        // didn't explicitly set on the stamp override fields.
+        $latest = $this->payments()->first(); // payments() already filters active + DESC by date
+
+        // Sending bank — order override wins; else infer from payment method.
+        $sendingBank = $this->paid_stamp_sending_bank;
+        if (!$sendingBank) {
+            $sendingBank = ($latest && $latest->payment_method === 'cash') ? 'CASH' : '—';
+        }
+
+        // Stamp date — order override wins; else latest payment date; else
+        // today as a last resort (shouldn't happen for a paid order).
+        $stampDate = $this->paid_stamp_date ?? ($latest?->payment_date);
+        $stampDateFormatted = $stampDate
+            ? \Carbon\Carbon::parse($stampDate)->format('d M Y')
+            : now()->format('d M Y');
+
+        // Third-line ref — respects user's explicit choice at payment time.
+        $refMode = $this->paid_stamp_ref_mode ?: 'reference';
+        $ref = null;
+        $refLabel = 'ref';
+        if ($refMode === 'reference') {
+            $ref = $latest?->reference ?: null;
+            $refLabel = 'ref';
+        } elseif ($refMode === 'customer_name') {
+            // Pull name from customer relation, or fall back to address name
+            // on the order itself (same rules the rest of the app uses).
+            $ref = ($this->customer?->full_name)
+                ?: trim(($this->address_first_name ?? '') . ' ' . ($this->address_last_name ?? ''))
+                ?: ($this->name ?? null);
+            $refLabel = 'to';
+        } // 'blank' → $ref stays null so the line isn't rendered
+
+        return [
+            'show'      => true,
+            'bank'      => $sendingBank,
+            'date'      => $stampDateFormatted,
+            'ref'       => $ref ?: null,
+            'ref_label' => $refLabel,
+        ];
     }
 
     public function hasQurbaniItems(): bool

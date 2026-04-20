@@ -523,13 +523,21 @@
             </div>
         </div>
         <!-- ⭐ Proof of Payment Image Upload -->
-        <div style="padding: 0 24px 16px 24px;">
+        <div style="padding: 0 24px 12px 24px;">
             <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px;">📷 Proof of Payment (optional)</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="file" id="proofImageInput" accept="image/*" onchange="previewProofImage(this)" style="font-size: 13px; color: #6B7280;">
                 <button id="clearProofBtn" onclick="clearProofImage()" style="display: none; background: #FEE2E2; color: #DC2626; border: 1px solid #FCA5A5; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;">✕ Remove</button>
             </div>
             <img id="proofImagePreview" src="" style="display: none; margin-top: 8px; max-height: 120px; border-radius: 8px; border: 1px solid #E5E7EB;">
+        </div>
+
+        <!-- ⭐ Transaction Reference (Apr 2026) — customer-side txn ID for
+             audit / recall. Purely informational; not part of finance logic. -->
+        <div style="padding: 0 24px 16px 24px;">
+            <label style="display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px;">🔗 Transaction Reference (optional)</label>
+            <input type="text" id="transactionReferenceInput" placeholder="e.g. TX-9871231 or banking app reference"
+                   style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
         </div>
         <div style="padding: 20px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 12px;">
             <button id="modalApproveBtn" onclick="confirmApprove()" style="flex: 1; background: #16a34a; color: white; font-weight: 600; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; transition: background 0.2s;">
@@ -1041,6 +1049,10 @@ function closeModal() {
     window.pendingApprovalItem = null;
     window.selectedBankAccountId = '';
     clearProofImage();
+    // Also reset the txn-reference input so stale text doesn't bleed into
+    // the next approval the user opens.
+    const txnRefInput = document.getElementById('transactionReferenceInput');
+    if (txnRefInput) txnRefInput.value = '';
 }
 
 function previewProofImage(input) {
@@ -1121,6 +1133,11 @@ async function doApprove(ledgerId, approvalType) {
         let fetchOptions;
         const bankId = window.selectedBankAccountId || '';
         
+        // ⭐ Grab the optional transaction reference once — reused for both
+        // the FormData and JSON code paths.
+        const txnRefInput = document.getElementById('transactionReferenceInput');
+        const txnRef = (txnRefInput && txnRefInput.value) ? txnRefInput.value.trim() : '';
+
         if (hasProofImage) {
             // Use FormData for multipart upload
             const formData = new FormData();
@@ -1130,6 +1147,9 @@ async function doApprove(ledgerId, approvalType) {
             }
             if (bankId) {
                 formData.append('receiving_account_id', bankId);
+            }
+            if (txnRef) {
+                formData.append('transaction_reference', txnRef);
             }
             formData.append('proof_image', proofInput.files[0]);
             
@@ -1148,6 +1168,9 @@ async function doApprove(ledgerId, approvalType) {
                 : { approval_notes: 'Approved from Online Approvals web', force_full_approval: true };
             if (bankId) {
                 body.receiving_account_id = parseInt(bankId);
+            }
+            if (txnRef) {
+                body.transaction_reference = txnRef;
             }
             
             fetchOptions = {
@@ -1170,6 +1193,9 @@ async function doApprove(ledgerId, approvalType) {
         if (data.success) {
             showToast(data.message || 'Approved successfully!', 'success');
             clearProofImage(); // ⭐ Reset image after success
+            // Reset txn-reference input too so the next approval starts clean.
+            const _txnRefInput = document.getElementById('transactionReferenceInput');
+            if (_txnRefInput) _txnRefInput.value = '';
             loadData(); // Refresh data
             refreshStats(); // Refresh counts
         } else {

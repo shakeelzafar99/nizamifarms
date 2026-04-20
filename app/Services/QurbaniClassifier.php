@@ -190,6 +190,28 @@ class QurbaniClassifier
             }
         }
 
+        // 2b) The linked customer was sent a message from a QURBANI campaign.
+        //     A qurbani campaign is one whose filters_json references the
+        //     `qurbani_year` filter — the same signal CampaignFilterService
+        //     uses. This catches the common case where we blast an "Eid
+        //     bookings" template (not tagged qurbani-only, so it's reusable)
+        //     to a qurbani-filtered audience: a reply from any of those
+        //     recipients should land in the Qurbani tab even if their
+        //     message text doesn't contain a keyword.
+        if ($conv->customer_id
+            && Schema::hasTable('t_crm_campaign_customers')
+            && Schema::hasTable('t_crm_campaigns')) {
+            $sentQurbaniCampaign = DB::table('t_crm_campaign_customers as cc')
+                ->join('t_crm_campaigns as c', 'cc.campaign_id', '=', 'c.id')
+                ->where('cc.customer_id', (int) $conv->customer_id)
+                ->where('cc.status', 'sent')
+                ->where('c.filters_json', 'LIKE', '%qurbani_year%')
+                ->exists();
+            if ($sentQurbaniCampaign) {
+                return [true, 'qurbani_campaign_sent'];
+            }
+        }
+
         // 3) Recent inbound message text contains a configured keyword.
         $keywords = $this->getKeywords();
         if (!empty($keywords)) {

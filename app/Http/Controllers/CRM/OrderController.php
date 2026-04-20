@@ -278,16 +278,25 @@ class OrderController extends Controller
             }
             $qurbaniPayments = [];
             if ($isQurbani) {
+                // Join in the receiving bank so the UI can display "HBL",
+                // "Meezan", etc. on the payment history cards without
+                // another round-trip. Left join keeps legacy payments
+                // (no receiving bank captured) visible.
                 $qurbaniPayments = \DB::table('t_crm_order_payments as p')
                     ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
                     ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                    ->leftJoin('t_fin_online_receiving_accounts as b', 'p.receiving_account_id', '=', 'b.id')
                     ->where('p.order_id', $order->id)
                     ->where('p.status', 'active')
                     ->orderBy('p.payment_date', 'desc')
                     ->select([
                         'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
                         'p.reference', 'p.notes', 'p.created_by', 'p.created_at',
+                        'p.receiving_account_id',
                         'u.fullname as created_by_name',
+                        'b.name as receiving_account_name',
+                        'b.short_code as receiving_account_code',
+                        'b.color_hex as receiving_account_color',
                         'l.approval_status as ledger_approval_status',
                         'l.settlement_status as ledger_settlement_status',
                     ])
@@ -327,13 +336,18 @@ class OrderController extends Controller
             $payments = \DB::table('t_crm_order_payments as p')
                 ->leftJoin('t_sys_user as u', 'p.created_by', '=', 'u.id')
                 ->leftJoin('t_fin_ledger as l', 'p.ledger_transaction_id', '=', 'l.id')
+                ->leftJoin('t_fin_online_receiving_accounts as b', 'p.receiving_account_id', '=', 'b.id')
                 ->where('p.order_id', $id)
                 ->where('p.status', 'active')
                 ->orderBy('p.payment_date', 'desc')
                 ->select([
                     'p.id', 'p.amount', 'p.payment_method', 'p.payment_date',
                     'p.reference', 'p.notes', 'p.created_by', 'p.created_at',
+                    'p.receiving_account_id',
                     'u.fullname as created_by_name',
+                    'b.name as receiving_account_name',
+                    'b.short_code as receiving_account_code',
+                    'b.color_hex as receiving_account_color',
                     'l.approval_status as ledger_approval_status',
                     'l.settlement_status as ledger_settlement_status',
                 ])
@@ -347,6 +361,16 @@ class OrderController extends Controller
                 'payment_status' => $order->payment_status ?? 'unpaid',
                 'balance_remaining' => max(0, (float)$order->total_price - (float)($order->total_paid ?? 0)),
                 'payments' => $payments,
+                // Ship the stamp overrides so the mobile app + web can
+                // pre-fill the Add Payment / Edit Stamp dialogs instead of
+                // re-typing everything on the next payment.
+                'paid_stamp' => [
+                    'sending_bank' => $order->paid_stamp_sending_bank,
+                    'date'         => $order->paid_stamp_date
+                        ? \Carbon\Carbon::parse($order->paid_stamp_date)->format('Y-m-d')
+                        : null,
+                    'ref_mode'     => $order->paid_stamp_ref_mode ?: 'reference',
+                ],
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -362,8 +386,19 @@ class OrderController extends Controller
             $validated = $request->validate([
                 'amount' => 'required|numeric|min:0.01',
                 'payment_method' => 'required|string|in:cash,online',
+                // Optional; defaults to today. Bounded to "not in the future"
+                // because a forward-dated payment breaks ledger reporting.
+                'payment_date'   => 'nullable|date|before_or_equal:today',
                 'reference' => 'nullable|string|max:255',
                 'notes' => 'nullable|string|max:1000',
+                // Receiving bank — only meaningful for online payments (cash
+                // has no bank). Silently ignored if payment_method is cash.
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+                // PAID-stamp overrides. All optional; stamp logic has
+                // sensible fallbacks (see OrderModel::getPaidStampData).
+                'sending_bank'    => 'nullable|string|max:100',
+                'stamp_date'      => 'nullable|date',
+                'stamp_ref_mode'  => 'nullable|string|in:reference,customer_name,blank',
             ]);
 
             $amount = (float) $validated['amount'];
@@ -376,18 +411,49 @@ class OrderController extends Controller
             }
 
             $paymentMethod = $validated['payment_method'];
-            $paymentDate = now()->toDateString();
+            // User-selected date wins over "today" so the team can backdate a
+            // cash payment that arrived yesterday without editing the DB.
+            $paymentDate = !empty($validated['payment_date'])
+                ? \Carbon\Carbon::parse($validated['payment_date'])->toDateString()
+                : now()->toDateString();
+            $receivingAccountId = $paymentMethod === 'online'
+                ? ($validated['receiving_account_id'] ?? null)
+                : null;
 
             $payment = \App\Models\CRM\OrderPaymentModel::create([
                 'order_id' => $order->id,
                 'amount' => $amount,
                 'payment_method' => $paymentMethod,
+                'receiving_account_id' => $receivingAccountId,
                 'payment_date' => $paymentDate,
                 'reference' => $validated['reference'] ?? null,
                 'notes' => $validated['notes'] ?? null,
                 'status' => 'active',
                 'created_by' => $user->id,
             ]);
+
+            // Merge PAID-stamp metadata onto the order. We only overwrite
+            // existing stamp fields when the caller actually sent a value —
+            // an older client that doesn't know about these fields will not
+            // wipe the user's previous choices.
+            $stampUpdates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $stampUpdates['paid_stamp_sending_bank'] = $validated['sending_bank'];
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $stampUpdates['paid_stamp_date'] = $validated['stamp_date'];
+            } else {
+                // Auto-advance the stamp date to the newest payment when the
+                // caller didn't explicitly override it — matches the "auto
+                // filled based on last payment date" behaviour requested.
+                $stampUpdates['paid_stamp_date'] = $paymentDate;
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $stampUpdates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'];
+            }
+            if (!empty($stampUpdates)) {
+                $order->fill($stampUpdates)->save();
+            }
 
             $salesAccount = \App\Models\FIN\ConfigModel::getSalesRevenueAccount();
             if (!$salesAccount) {
@@ -441,6 +507,160 @@ class OrderController extends Controller
             return response()->json(['success' => false, 'message' => $e->errors()], 422);
         } catch (\Exception $e) {
             \Log::error('Failed to add qurbani payment', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Void (soft-delete) a Qurbani payment and reverse its financial impact.
+     *
+     * This is the inverse of addQurbaniPayment:
+     *   1. Mark the payment row as 'voided' (we keep the row for audit).
+     *   2. Reverse the receiving-account balance bump (subtract the amount).
+     *   3. Reverse the sales-revenue debit (add the amount back).
+     *   4. Delete the paired ledger entry so reports don't double count.
+     *   5. Recalculate the order's total_paid + payment_status.
+     *
+     * Hard-deleting the payment row would break audit trails; voiding keeps
+     * an immutable history while `scopeActive` + `payments()` both filter it
+     * out so the stamp / totals / mobile listings all ignore voided rows.
+     */
+    public function deleteQurbaniPayment($id, $paymentId)
+    {
+        try {
+            $user = \Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = $this->findOrder($id);
+            $payment = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+                ->where('id', $paymentId)
+                ->first();
+
+            if (!$payment) {
+                return response()->json(['success' => false, 'message' => 'Payment not found'], 404);
+            }
+            if ($payment->status !== 'active') {
+                return response()->json(['success' => false, 'message' => 'Payment is not active and cannot be voided again'], 422);
+            }
+
+            \DB::beginTransaction();
+            try {
+                $amount = (float) $payment->amount;
+
+                // Reverse the matching ledger row's account movements before
+                // we drop it. We mirror addQurbaniPayment's post logic so
+                // balance columns end up exactly where they started.
+                $ledger = $payment->ledger_transaction_id
+                    ? \App\Models\FIN\LedgerModel::find($payment->ledger_transaction_id)
+                    : null;
+
+                if ($ledger) {
+                    $toAccount = \App\Models\FIN\AccountModel::find($ledger->to_account_id);
+                    if ($toAccount) {
+                        $toAccount->current_balance = (float) $toAccount->current_balance - $amount;
+                        $toAccount->save();
+                    }
+                    $fromAccount = \App\Models\FIN\AccountModel::find($ledger->from_account_id);
+                    if ($fromAccount) {
+                        $fromAccount->current_balance = (float) $fromAccount->current_balance + $amount;
+                        $fromAccount->save();
+                    }
+                    // Drop the ledger row so reports (and the daily closing
+                    // sheet) stop counting the voided payment.
+                    $ledger->delete();
+                }
+
+                $payment->status = 'voided';
+                $payment->updated_by = $user->id;
+                $payment->save();
+
+                $order->recalculatePaymentStatus();
+
+                \DB::commit();
+            } catch (\Exception $inner) {
+                \DB::rollBack();
+                throw $inner;
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment voided',
+                'order'   => [
+                    'total_paid'        => (float) $order->total_paid,
+                    'payment_status'    => $order->payment_status,
+                    'balance_remaining' => max(0, (float) $order->total_price - (float) $order->total_paid),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to void qurbani payment', [
+                'order_id' => $id,
+                'payment_id' => $paymentId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Update PAID-stamp display overrides on an order.
+     *
+     * This only touches paid_stamp_* columns on t_crm_prod_order — no payment
+     * row is modified, no ledger entry is created. That separation is
+     * intentional: the stamp is display metadata, not financial truth, so
+     * fixing a typo in "sending bank" on the invoice must never ripple into
+     * finance reports.
+     *
+     * Any authenticated web user can tweak stamp fields; we don't gate this
+     * behind a role because it's non-destructive and every admin already has
+     * full order edit rights.
+     */
+    public function updatePaidStamp(\Illuminate\Http\Request $request, $id)
+    {
+        try {
+            $user = \Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = $this->findOrder($id);
+
+            $validated = $request->validate([
+                'sending_bank'   => 'nullable|string|max:100',
+                'stamp_date'     => 'nullable|date',
+                'stamp_ref_mode' => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+
+            $updates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $updates['paid_stamp_sending_bank'] = $validated['sending_bank'] !== '' ? $validated['sending_bank'] : null;
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $updates['paid_stamp_date'] = $validated['stamp_date'] !== '' ? $validated['stamp_date'] : null;
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $updates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'] ?: 'reference';
+            }
+
+            if (!empty($updates)) {
+                $updates['updated_by'] = $user->id;
+                $order->fill($updates)->save();
+            }
+
+            return response()->json([
+                'success'    => true,
+                'message'    => 'Invoice stamp updated',
+                'paid_stamp' => [
+                    'sending_bank' => $order->paid_stamp_sending_bank,
+                    'date'         => $order->paid_stamp_date?->format('Y-m-d'),
+                    'ref_mode'     => $order->paid_stamp_ref_mode ?: 'reference',
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to update paid stamp', ['order_id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }

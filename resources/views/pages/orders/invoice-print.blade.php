@@ -579,8 +579,14 @@
         </div>
         @endif
         
-        <!-- Totals -->
-        <div class="totals-section">
+        <!-- Totals + PAID stamp (stamp renders only when fully paid) -->
+        @php $__paidStampData = $order->getPaidStampData(); @endphp
+        <div class="totals-section" style="position:relative;">
+            @if ($__paidStampData['show'])
+                <div class="paid-stamp-wrap" style="float:left; padding-left:40px; padding-top:10px; max-width:45%;">
+                    @include('pages.orders.partials.paid-stamp', ['order' => $order, 'paidStamp' => $__paidStampData])
+                </div>
+            @endif
             <table class="totals-table">
                 @php
                     $discountBreakdown = $order->getDiscountBreakdown();
@@ -631,6 +637,7 @@
                     <td class="amount">Rs {{ number_format($displayTotal, 0) }}</td>
                 </tr>
             </table>
+            <div style="clear:both;"></div>
         </div>
         
         <!-- Footer -->

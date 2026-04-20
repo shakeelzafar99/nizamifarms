@@ -671,6 +671,7 @@ function renderOrders(orders) {
             <td class="px-3 py-2 text-center" onclick="event.stopPropagation()">
                 <div style="display:flex; gap:4px; justify-content:center; flex-wrap:wrap;">
                     <button onclick="openQurbaniPaymentModal(${o.id}, ${Number(o.balance_remaining || 0)})" style="padding:3px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Add Payment">💰 Pay</button>
+                    ${(o.payment_status === 'paid') ? `<button onclick="openStampEditorModal(${o.id})" style="padding:3px 8px; background:#7C2D12; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Edit invoice PAID stamp (display only)">📜 Stamp</button>` : ''}
                     <button onclick="window.open('/orders/${o.id}/invoice', '_blank')" style="padding:3px 8px; background:#4F46E5; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="View Invoice">📄 Invoice</button>
                     <button onclick="openWhatsAppInvoiceModal(${o.id}, '${(o.customer_name || '').replace(/'/g, "\\'")}', '${o.order_number || ''}', '${(o.customer_phone || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#25D366; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Send WhatsApp Invoice">📱 WA</button>
                     ${canDeleteOrders ? `<button onclick="deleteQurbaniOrder(${o.id}, '${(o.order_number || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#DC2626; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Delete Order">🗑️ Del</button>` : ''}
@@ -725,47 +726,256 @@ function assignRiderFromTable(sel) {
     .catch(() => { sel.disabled = false; alert('Error assigning rider'); });
 }
 
+// Receiving-bank list (HBL, MBL, EP, JC, …) rendered as chips inside the
+// Add Payment modal when payment_method = online. Server-side seeded from
+// t_fin_online_receiving_accounts so the list stays in sync with what
+// Online Approvals uses.
+const QURBANI_RECEIVING_ACCOUNTS = @json($receivingAccounts ?? []);
+
 var _qurbaniPaymentOrderId = null;
+var _qurbaniPaymentReceivingId = null; // currently-selected receiving bank id
 function openQurbaniPaymentModal(orderId, balanceRemaining) {
     _qurbaniPaymentOrderId = orderId;
+    _qurbaniPaymentReceivingId = null;
     var existing = document.getElementById('qurbaniPayOverlay');
     if (existing) existing.remove();
 
     var overlay = document.createElement('div');
     overlay.id = 'qurbaniPayOverlay';
-    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center;';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px; overflow-y:auto;';
     const defaultAmt = balanceRemaining > 0 ? balanceRemaining : '';
+    const todayIso = new Date().toISOString().split('T')[0];
+
+    // Build the bank-chip strip from the server-rendered list.
+    let bankChipsHtml = '<button type="button" class="qpay-bank-chip qpay-bank-chip-active" data-bank-id="" onclick="selectQurbaniBankChip(this, null)" '
+        + 'style="padding:5px 12px; border-radius:16px; border:1px solid #CBD5E1; background:#3B82F6; color:#fff; font-size:12px; font-weight:600; cursor:pointer;">None</button>';
+    (QURBANI_RECEIVING_ACCOUNTS || []).forEach(function (acc) {
+        bankChipsHtml += '<button type="button" class="qpay-bank-chip" data-bank-id="' + acc.id + '" onclick="selectQurbaniBankChip(this, ' + acc.id + ')" '
+            + 'style="padding:5px 12px; border-radius:16px; border:1px solid #CBD5E1; background:#fff; color:#334155; font-size:12px; font-weight:600; cursor:pointer;">'
+            + (acc.short_code || acc.name) + '</button>';
+    });
+
     overlay.innerHTML = `
-        <div style="background:#fff; border-radius:12px; padding:24px; width:400px; max-width:90vw; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+        <div style="background:#fff; border-radius:12px; padding:24px; width:440px; max-width:92vw; max-height:92vh; overflow-y:auto; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                 <h3 style="margin:0; font-size:18px; font-weight:700;">Add Payment</h3>
                 <button onclick="document.getElementById('qurbaniPayOverlay').remove()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">✕</button>
             </div>
+
             <div style="margin-bottom:12px;">
                 <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Amount *</label>
                 <input type="number" id="qPayAmount" value="${defaultAmt}" placeholder="Enter amount" step="0.01" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
                 ${balanceRemaining > 0 ? '<div style="font-size:11px; color:#6b7280; margin-top:2px;">Remaining: PKR ' + Number(balanceRemaining).toLocaleString() + '</div>' : ''}
             </div>
-            <div style="margin-bottom:12px;">
-                <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Method</label>
-                <select id="qPayMethod" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
-                    <option value="cash">Cash</option>
-                    <option value="online">Online</option>
-                </select>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+                <div>
+                    <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Method</label>
+                    <select id="qPayMethod" onchange="onQurbaniMethodChange()" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+                        <option value="cash">Cash</option>
+                        <option value="online">Online</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Payment Date *</label>
+                    {{-- Defaults to today but can be backdated. The server uses this for
+                         the payment + ledger row; it also seeds the PAID-stamp date
+                         when the user doesn't explicitly override the stamp date below. --}}
+                    <input type="date" id="qPayPaymentDate" value="${todayIso}" max="${todayIso}" style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+                </div>
             </div>
-            <div style="margin-bottom:12px;">
-                <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Reference (optional)</label>
-                <input type="text" id="qPayRef" placeholder="Transaction reference" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+
+            <div id="qPayBankRow" style="display:none; margin-bottom:12px;">
+                <label style="display:block; font-size:13px; font-weight:600; color:#0369A1; margin-bottom:6px;">🏦 Received in Bank (optional)</label>
+                <div id="qPayBankChips" style="display:flex; flex-wrap:wrap; gap:6px;">${bankChipsHtml}</div>
             </div>
+
+            <div style="margin-bottom:12px;">
+                <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Transaction Reference (optional)</label>
+                <input type="text" id="qPayRef" placeholder="e.g. TX-9871231" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
+            </div>
+
             <div style="margin-bottom:16px;">
                 <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Notes (optional)</label>
                 <input type="text" id="qPayNotes" placeholder="Notes" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
             </div>
+
+            <!-- PAID-stamp metadata — purely display. Finance (amount, method,
+                 bank, reference) stays untouched if the user ignores this. -->
+            <div style="border-top:1px dashed #e5e7eb; padding-top:12px; margin-bottom:12px;">
+                <div style="font-size:12px; font-weight:700; color:#7C2D12; margin-bottom:8px; letter-spacing:.3px;">📜 INVOICE PAID STAMP (OPTIONAL)</div>
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:#374151;">Customer's Sending Bank</label>
+                        <input type="text" id="qPayStampBank" placeholder="e.g. HBL" style="width:100%; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:#374151;">Stamp Date</label>
+                        <input type="date" id="qPayStampDate" value="${todayIso}" style="width:100%; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
+                    </div>
+                </div>
+
+                <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px; color:#374151;">Show on Stamp</label>
+                <select id="qPayStampRefMode" style="width:100%; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
+                    <option value="reference">Reference (default)</option>
+                    <option value="customer_name">Customer name</option>
+                    <option value="blank">Blank (hide this line)</option>
+                </select>
+            </div>
+
             <button id="qPaySubmitBtn" onclick="submitQurbaniPayment()" style="width:100%; padding:10px; background:#D97706; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer;">Record Payment</button>
         </div>
     `;
     document.body.appendChild(overlay);
     document.getElementById('qPayAmount').focus();
+
+    // When the user changes the payment date, propagate it to the stamp
+    // date UNLESS they already customised the stamp date. We track
+    // "customised" with a data flag set on user input.
+    const payDateEl = document.getElementById('qPayPaymentDate');
+    const stampDateEl = document.getElementById('qPayStampDate');
+    if (payDateEl && stampDateEl) {
+        stampDateEl.addEventListener('input', function () {
+            stampDateEl.dataset.userEdited = '1';
+        });
+        payDateEl.addEventListener('change', function () {
+            if (stampDateEl.dataset.userEdited !== '1') {
+                stampDateEl.value = payDateEl.value;
+            }
+        });
+    }
+
+    // Pre-fill the stamp fields from whatever was saved on the order last
+    // time (so a second payment doesn't require re-typing the bank).
+    prefillQurbaniStampFields(orderId);
+}
+
+function onQurbaniMethodChange() {
+    const method = document.getElementById('qPayMethod').value;
+    const row = document.getElementById('qPayBankRow');
+    if (row) row.style.display = (method === 'online') ? 'block' : 'none';
+    if (method !== 'online') {
+        // Clear the selection so we don't send a stale id on a cash payment.
+        _qurbaniPaymentReceivingId = null;
+        document.querySelectorAll('.qpay-bank-chip').forEach(function (c) {
+            const isNone = c.getAttribute('data-bank-id') === '';
+            c.classList.toggle('qpay-bank-chip-active', isNone);
+            c.style.background = isNone ? '#3B82F6' : '#fff';
+            c.style.color = isNone ? '#fff' : '#334155';
+        });
+    }
+}
+
+function selectQurbaniBankChip(el, bankId) {
+    _qurbaniPaymentReceivingId = bankId || null;
+    document.querySelectorAll('.qpay-bank-chip').forEach(function (c) {
+        c.classList.remove('qpay-bank-chip-active');
+        c.style.background = '#fff';
+        c.style.color = '#334155';
+    });
+    el.classList.add('qpay-bank-chip-active');
+    el.style.background = '#3B82F6';
+    el.style.color = '#fff';
+}
+
+// Standalone stamp editor — lets the team adjust what the invoice PAID
+// stamp shows (sending bank / date / third-line ref) without touching any
+// payment row. Hits the same POST /orders/{id}/paid-stamp endpoint the
+// invoice view uses. Payment history (amounts, methods, ledger) is
+// completely untouched.
+function openStampEditorModal(orderId) {
+    var existing = document.getElementById('stampEditorOverlay');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'stampEditorOverlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10001; display:flex; align-items:center; justify-content:center; padding:20px; overflow-y:auto;';
+    overlay.innerHTML = `
+        <div style="background:#fff; border-radius:12px; padding:22px; width:420px; max-width:92vw; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <h3 style="margin:0; font-size:17px; font-weight:700; color:#7C2D12;">📜 Edit Invoice Stamp</h3>
+                <button onclick="document.getElementById('stampEditorOverlay').remove()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">✕</button>
+            </div>
+            <div style="font-size:11px; color:#6b7280; margin-bottom:12px;">Display only — payment records stay untouched.</div>
+
+            <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Customer's Sending Bank</label>
+            <input type="text" id="stampEditBank" placeholder="e.g. HBL (leave blank for CASH)" style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; margin-bottom:12px;">
+
+            <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Stamp Date</label>
+            <input type="date" id="stampEditDate" style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; margin-bottom:12px;">
+
+            <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Show on Stamp</label>
+            <select id="stampEditRefMode" style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; margin-bottom:16px;">
+                <option value="reference">Reference (default)</option>
+                <option value="customer_name">Customer name</option>
+                <option value="blank">Blank (hide this line)</option>
+            </select>
+
+            <button id="stampEditSaveBtn" onclick="submitStampEdit(${orderId})" style="width:100%; padding:10px; background:#7C2D12; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer;">Save</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Pre-fill from saved values (if any) using the existing qurbani
+    // payments endpoint which already returns the paid_stamp block.
+    fetch('/orders/' + orderId + '/qurbani-payments', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (!data || !data.success) return;
+        const s = data.paid_stamp || {};
+        if (s.sending_bank) document.getElementById('stampEditBank').value = s.sending_bank;
+        if (s.date)         document.getElementById('stampEditDate').value = s.date;
+        document.getElementById('stampEditRefMode').value = s.ref_mode || 'reference';
+    })
+    .catch(function () { /* non-fatal; blank form is still valid */ });
+}
+
+function submitStampEdit(orderId) {
+    const btn = document.getElementById('stampEditSaveBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
+    const payload = {
+        sending_bank:   (document.getElementById('stampEditBank').value  || '').trim(),
+        stamp_date:     document.getElementById('stampEditDate').value    || '',
+        stamp_ref_mode: document.getElementById('stampEditRefMode').value || 'reference',
+    };
+    fetch('/orders/' + orderId + '/paid-stamp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        body: JSON.stringify(payload),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data.success) {
+            document.getElementById('stampEditorOverlay').remove();
+        } else {
+            alert((typeof data.message === 'string') ? data.message : 'Failed to save');
+            btn.disabled = false; btn.textContent = 'Save';
+        }
+    })
+    .catch(function () { alert('Error'); btn.disabled = false; btn.textContent = 'Save'; });
+}
+
+function prefillQurbaniStampFields(orderId) {
+    fetch('/orders/' + orderId + '/qurbani-payments', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (!data || !data.success || !data.paid_stamp) return;
+        const s = data.paid_stamp;
+        const bankInput = document.getElementById('qPayStampBank');
+        const dateInput = document.getElementById('qPayStampDate');
+        const refModeSel = document.getElementById('qPayStampRefMode');
+        if (bankInput && s.sending_bank) bankInput.value = s.sending_bank;
+        if (dateInput && s.date)         dateInput.value = s.date;
+        if (refModeSel && s.ref_mode)    refModeSel.value = s.ref_mode;
+    })
+    .catch(function () { /* non-fatal — defaults apply */ });
 }
 
 function submitQurbaniPayment() {
@@ -774,16 +984,35 @@ function submitQurbaniPayment() {
     const btn = document.getElementById('qPaySubmitBtn');
     btn.disabled = true; btn.textContent = 'Saving...';
 
+    const method = document.getElementById('qPayMethod').value;
+    const paymentDateEl = document.getElementById('qPayPaymentDate');
+    const paymentDate = (paymentDateEl && paymentDateEl.value)
+        ? paymentDateEl.value
+        : new Date().toISOString().split('T')[0];
+    const payload = {
+        amount: amount,
+        payment_method: method,
+        payment_date: paymentDate,
+        reference: document.getElementById('qPayRef').value || null,
+        notes: document.getElementById('qPayNotes').value || null,
+        // New: receiving bank (only for online) + stamp overrides. Keys are
+        // omitted when empty so the server "don't wipe what's already set"
+        // logic works (see addQurbaniPayment).
+    };
+    if (method === 'online' && _qurbaniPaymentReceivingId) {
+        payload.receiving_account_id = _qurbaniPaymentReceivingId;
+    }
+    const stampBank = (document.getElementById('qPayStampBank').value || '').trim();
+    if (stampBank) payload.sending_bank = stampBank;
+    const stampDate = document.getElementById('qPayStampDate').value;
+    if (stampDate) payload.stamp_date = stampDate;
+    const refMode = document.getElementById('qPayStampRefMode').value;
+    if (refMode) payload.stamp_ref_mode = refMode;
+
     fetch('/orders/' + _qurbaniPaymentOrderId + '/qurbani-payments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-        body: JSON.stringify({
-            amount: amount,
-            payment_method: document.getElementById('qPayMethod').value,
-            payment_date: new Date().toISOString().split('T')[0],
-            reference: document.getElementById('qPayRef').value || null,
-            notes: document.getElementById('qPayNotes').value || null,
-        }),
+        body: JSON.stringify(payload),
     })
     .then(r => r.json())
     .then(data => {

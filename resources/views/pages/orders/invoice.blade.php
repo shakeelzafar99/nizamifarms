@@ -679,7 +679,10 @@
             line-height: 1.6;
         }
         
+        /* Hide UI-only chrome (edit stamp link, modal) from print/PNG captures */
+        .no-print { /* keep visible on screen; hidden below */ }
         @media print {
+            .no-print { display: none !important; }
             body {
                 padding: 0;
                 background-color: white !important;
@@ -943,8 +946,25 @@ $hideUnitPrice = request('hide_unit_price') == '1';
         </div>
         @endif
         
-        <!-- Totals -->
-        <div class="totals-section">
+        <!-- Totals + PAID stamp (stamp renders only when fully paid) -->
+        @php
+            $__paidStampData = $order->getPaidStampData();
+            $__canEditStamp  = auth()->check(); // stamp is a display toggle, any logged-in user can tweak it
+        @endphp
+        <div class="totals-section" style="position:relative;">
+            @if ($__paidStampData['show'])
+                <div class="paid-stamp-wrap" style="float:left; padding-left:40px; padding-top:10px; max-width:45%;">
+                    @include('pages.orders.partials.paid-stamp', ['order' => $order, 'paidStamp' => $__paidStampData])
+                    @if ($__canEditStamp)
+                        <div class="paid-stamp-edit-link no-print" style="margin-top:8px; transform:rotate(-8deg); text-align:center;">
+                            <a href="#" onclick="openPaidStampEditor(event)"
+                               style="font-size:11px; color:#7F1D1D; text-decoration:none; font-family:Arial,Helvetica,sans-serif;">
+                                ✏️ Edit stamp
+                            </a>
+                        </div>
+                    @endif
+                </div>
+            @endif
             <table class="totals-table">
                 @php
                     $discountBreakdown = $order->getDiscountBreakdown();
@@ -995,6 +1015,7 @@ $hideUnitPrice = request('hide_unit_price') == '1';
                     <td class="amount">Rs {{ number_format($displayTotal, 0) }}</td>
                 </tr>
             </table>
+            <div style="clear:both;"></div>
         </div>
         
         
@@ -1061,7 +1082,11 @@ $hideUnitPrice = request('hide_unit_price') == '1';
         await addScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
       }
       const node = document.querySelector('.invoice-container');
+      // Hide edit-stamp chrome before rasterising
+      const hideEls = node.querySelectorAll('.no-print');
+      hideEls.forEach(el => el.style.visibility = 'hidden');
       const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
+      hideEls.forEach(el => el.style.visibility = '');
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/png');
       const firstName = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->first_name ?? "") ?: "Unknown" }}';
@@ -1087,7 +1112,10 @@ $hideUnitPrice = request('hide_unit_price') == '1';
         await addScript('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
       }
       const node = document.querySelector('.invoice-container');
+      const hideEls = node.querySelectorAll('.no-print');
+      hideEls.forEach(el => el.style.visibility = 'hidden');
       const canvas = await window.html2canvas(node, {scale: 2, useCORS: true});
+      hideEls.forEach(el => el.style.visibility = '');
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/png');
       const firstName = '{{ preg_replace("/[^a-zA-Z0-9]/", "", $order->customer->first_name ?? "") ?: "Unknown" }}';
@@ -1105,5 +1133,138 @@ $hideUnitPrice = request('hide_unit_price') == '1';
 })();
 
 </script>
+
+@if ($__paidStampData['show'] && $__canEditStamp)
+{{-- =============================================================
+    PAID-STAMP EDITOR MODAL
+    Only loaded when the stamp is visible AND user is logged in.
+    Saves display-only overrides to t_crm_prod_order.paid_stamp_*
+    via POST /orders/{id}/paid-stamp. No payment row is touched.
+============================================================= --}}
+<div id="paidStampEditorBackdrop" class="no-print"
+     style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9998;"
+     onclick="closePaidStampEditor(event)"></div>
+
+<div id="paidStampEditorModal" class="no-print"
+     style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+            background:#fff; border-radius:12px; width:440px; max-width:92vw;
+            box-shadow:0 20px 50px rgba(0,0,0,.3); z-index:9999;
+            font-family:Arial,Helvetica,sans-serif;">
+    <div style="padding:16px 20px; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; justify-content:space-between;">
+        <div style="font-size:15px; font-weight:700; color:#7F1D1D;">✏️ Edit Invoice PAID Stamp</div>
+        <button type="button" onclick="closePaidStampEditor()"
+                style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">×</button>
+    </div>
+    <div style="padding:16px 20px;">
+        <div style="background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:8px 10px; margin-bottom:12px; font-size:11px; color:#78350f;">
+            These changes only affect how the stamp is displayed on this invoice.
+            Actual payment records are not modified.
+        </div>
+
+        <div style="margin-bottom:12px;">
+            <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:4px;">
+                Customer's Sending Bank
+            </label>
+            <input type="text" id="stampEditSendingBank"
+                   value="{{ $order->paid_stamp_sending_bank ?? '' }}"
+                   placeholder="e.g. Meezan Bank, HBL, JazzCash... (leave blank for CASH)"
+                   style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
+            <div style="font-size:11px; color:#6b7280; margin-top:3px;">
+                Shown as <em>via: ...</em> on the stamp. Leave blank for cash payments (stamp shows "via: CASH").
+            </div>
+        </div>
+
+        <div style="margin-bottom:12px;">
+            <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:4px;">
+                Stamp Date
+            </label>
+            <input type="date" id="stampEditDate"
+                   value="{{ $order->paid_stamp_date?->format('Y-m-d') ?? '' }}"
+                   style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;">
+            <div style="font-size:11px; color:#6b7280; margin-top:3px;">
+                Defaults to last payment date. Overriding here does not affect payment records.
+            </div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+            <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:4px;">
+                Show on Stamp (third line)
+            </label>
+            <select id="stampEditRefMode"
+                    style="width:100%; padding:8px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; background:#fff;">
+                @php $__rm = $order->paid_stamp_ref_mode ?: 'reference'; @endphp
+                <option value="reference"      {{ $__rm === 'reference' ? 'selected' : '' }}>Transaction reference (from payment)</option>
+                <option value="customer_name"  {{ $__rm === 'customer_name' ? 'selected' : '' }}>Customer name</option>
+                <option value="blank"          {{ $__rm === 'blank' ? 'selected' : '' }}>Blank / hide line</option>
+            </select>
+        </div>
+
+        <div id="stampEditStatus" style="font-size:12px; margin-bottom:8px; min-height:16px;"></div>
+    </div>
+    <div style="padding:12px 20px; border-top:1px solid #e5e7eb; display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="closePaidStampEditor()"
+                style="padding:8px 14px; border:1px solid #d1d5db; background:#fff; border-radius:6px; font-size:13px; cursor:pointer;">
+            Cancel
+        </button>
+        <button type="button" onclick="savePaidStamp()" id="stampEditSaveBtn"
+                style="padding:8px 14px; border:none; background:#7F1D1D; color:#fff; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">
+            Save Stamp
+        </button>
+    </div>
+</div>
+
+<script>
+function openPaidStampEditor(ev) {
+    if (ev) ev.preventDefault();
+    document.getElementById('paidStampEditorBackdrop').style.display = 'block';
+    document.getElementById('paidStampEditorModal').style.display = 'block';
+    document.getElementById('stampEditStatus').textContent = '';
+}
+function closePaidStampEditor(ev) {
+    if (ev && ev.target && ev.target.id !== 'paidStampEditorBackdrop' && ev.currentTarget !== ev.target) return;
+    document.getElementById('paidStampEditorBackdrop').style.display = 'none';
+    document.getElementById('paidStampEditorModal').style.display = 'none';
+}
+async function savePaidStamp() {
+    const btn = document.getElementById('stampEditSaveBtn');
+    const status = document.getElementById('stampEditStatus');
+    const payload = {
+        sending_bank:   document.getElementById('stampEditSendingBank').value || '',
+        stamp_date:     document.getElementById('stampEditDate').value || '',
+        stamp_ref_mode: document.getElementById('stampEditRefMode').value || 'reference',
+    };
+    btn.disabled = true;
+    const oldLabel = btn.textContent;
+    btn.textContent = 'Saving...';
+    status.style.color = '#6b7280';
+    status.textContent = '';
+    try {
+        const res = await fetch('/orders/{{ $order->id }}/paid-stamp', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': '{{ csrf_token() }}',
+            },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error((data && data.message) ? (typeof data.message === 'string' ? data.message : 'Validation error') : ('HTTP ' + res.status));
+        }
+        status.style.color = '#059669';
+        status.textContent = '✓ Saved. Reloading invoice...';
+        setTimeout(() => { window.location.reload(); }, 600);
+    } catch (e) {
+        status.style.color = '#b91c1c';
+        status.textContent = '✗ ' + (e.message || 'Failed to save');
+        btn.disabled = false;
+        btn.textContent = oldLabel;
+    }
+}
+</script>
+@endif
+
 </body>
 </html>

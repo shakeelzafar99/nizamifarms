@@ -52,7 +52,18 @@ class QurbaniWebController extends Controller
             ->exists();
         $deleteEnabled = ConfigModel::get('qurbani_delete_enabled', '0') === '1';
 
-        return view('pages.qurbani.orders', compact('regions', 'subRegions', 'days', 'slots', 'deliveryTypes', 'categories', 'riders', 'fieldOptions', 'isTaimur', 'deleteEnabled'));
+        // Receiving bank list (HBL / MBL / EP / JC …) for the Add Payment
+        // modal chip row. Reuses the same lookup that powers Online Approvals
+        // so the two flows stay in sync if the finance team edits the list.
+        $receivingAccounts = \App\Models\FIN\OnlineReceivingAccountModel::active()
+            ->ordered()
+            ->get(['id', 'name', 'short_code', 'color_hex']);
+
+        return view('pages.qurbani.orders', compact(
+            'regions', 'subRegions', 'days', 'slots', 'deliveryTypes',
+            'categories', 'riders', 'fieldOptions', 'isTaimur',
+            'deleteEnabled', 'receivingAccounts'
+        ));
     }
 
     public function getOrders(Request $request)
