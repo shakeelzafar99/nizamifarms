@@ -259,10 +259,13 @@ class WhatsAppController extends Controller
                     ->limit(10)
                     ->get()
                     ->map(function ($r) {
+                        // t_sys_user uses `fullname` (not `name`) for the display
+                        // column — `->name` would always be null and we'd show
+                        // "User #<id>" on the mobile seen-by badge.
                         $u = \App\Models\User::find($r->user_id);
                         return [
                             'user_id' => $r->user_id,
-                            'name' => $u?->name ?? ('User #' . $r->user_id),
+                            'name' => $u?->fullname ?? $u?->email ?? ('User #' . $r->user_id),
                             'last_read_at' => $r->last_read_at?->toIso8601String(),
                         ];
                     })->all();

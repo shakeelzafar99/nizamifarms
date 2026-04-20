@@ -1479,12 +1479,22 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             html += '<div class="wa-loading">No messages in this conversation</div>';
         }
         let lastDateKey = null;
-        // Identify the LAST outbound message so we can anchor the
-        // "Seen by" indicator below it (matching WhatsApp/iMessage UX).
-        let lastOutIdx = -1;
+        // Anchor the "Seen by" indicator under the LAST INBOUND message
+        // (i.e. the customer's most recent note). That way the team can see
+        // at a glance which colleagues have already opened the chat since
+        // that message arrived — useful to avoid double-replies when the
+        // customer is waiting on us.
+        let lastInIdx = -1;
         for (let i = msgs.length - 1; i >= 0; i--) {
-            if (msgs[i].direction === 'outbound') { lastOutIdx = i; break; }
+            if (msgs[i].direction === 'inbound') { lastInIdx = i; break; }
         }
+        const lastInTs = lastInIdx >= 0 ? new Date(msgs[lastInIdx].created_at).getTime() : 0;
+        // Only count a teammate as "seen" if they opened the thread AFTER
+        // the customer's latest message — an old read timestamp from last
+        // week doesn't mean they've seen the new incoming note.
+        const seenSince = (activeConv && Array.isArray(activeConv.seen_by))
+            ? activeConv.seen_by.filter(s => s.last_read_at && new Date(s.last_read_at).getTime() >= lastInTs)
+            : [];
 
         msgs.forEach((m, idx) => {
             if (m.created_at) {
@@ -1541,14 +1551,14 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (m.status === 'failed' && m.error_message) html += `<div class="wa-msg-error">${esc(m.error_message)}</div>`;
             html += '</div>';
 
-            // "Seen by" row directly under the last outbound message — lets
-            // a team member see which colleagues have already opened this
-            // thread, avoiding double-replies.
-            if (idx === lastOutIdx && activeConv && Array.isArray(activeConv.seen_by) && activeConv.seen_by.length > 0) {
-                const names = activeConv.seen_by.map(s => esc(s.name)).slice(0, 3);
+            // "Seen by" row under the last inbound message, left-aligned so
+            // it sits below the customer's bubble. Only renders teammates
+            // whose read timestamp is newer than that incoming message.
+            if (idx === lastInIdx && seenSince.length > 0) {
+                const names = seenSince.map(s => esc(s.name)).slice(0, 3);
                 let suffix = '';
-                if (activeConv.seen_by.length > 3) suffix = ' +' + (activeConv.seen_by.length - 3);
-                html += `<div style="display:flex;justify-content:flex-end;margin:2px 4px 6px 0;font-size:10.5px;color:#6b7280;font-style:italic;">👀 Seen by ${names.join(', ')}${suffix}</div>`;
+                if (seenSince.length > 3) suffix = ' +' + (seenSince.length - 3);
+                html += `<div style="display:flex;justify-content:flex-start;margin:2px 0 6px 4px;font-size:10.5px;color:#6b7280;font-style:italic;">👀 Seen by ${names.join(', ')}${suffix}</div>`;
             }
         });
         el.innerHTML = html;

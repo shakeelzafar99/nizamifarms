@@ -265,10 +265,14 @@ class WhatsAppWebController extends Controller
                 ->limit(10)
                 ->get()
                 ->map(function ($r) {
+                    // Our custom User model lives on `t_sys_user` where the
+                    // display column is `fullname` (not Laravel's default `name`),
+                    // so `$user->name` is always null — falling back to
+                    // "User #<id>" which looked awful in the UI.
                     $user = \App\Models\User::find($r->user_id);
                     return [
                         'user_id' => $r->user_id,
-                        'name' => $user?->name ?? ('User #' . $r->user_id),
+                        'name' => $user?->fullname ?? $user?->email ?? ('User #' . $r->user_id),
                         'last_read_at' => $r->last_read_at?->toIso8601String(),
                     ];
                 })->all();
