@@ -152,6 +152,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/{id}/event-history', [OrderController::class, 'getOrderEventHistory'])->name('orders.event-history');
     Route::get('/orders/{id}/qurbani-payments', [OrderController::class, 'getQurbaniPayments'])->name('orders.qurbani-payments');
     Route::post('/orders/{id}/qurbani-payments', [OrderController::class, 'addQurbaniPayment'])->name('orders.qurbani-payments.add');
+    // Amend non-financial metadata on an existing payment (receiving bank,
+    // reference, notes). Deliberately cannot change amount/method/date — those
+    // require the void-and-readd flow because of ledger reconciliation.
+    Route::put('/orders/{id}/qurbani-payments/{paymentId}', [OrderController::class, 'updateQurbaniPayment'])->name('orders.qurbani-payments.update');
     // Void a previously-added payment. Soft-deletes the row and reverses the
     // paired ledger/account-balance entries so finance stays consistent.
     Route::delete('/orders/{id}/qurbani-payments/{paymentId}', [OrderController::class, 'deleteQurbaniPayment'])->name('orders.qurbani-payments.delete');
@@ -339,6 +343,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/{id}', [\App\Http\Controllers\Web\CampaignWebController::class, 'detail']);
         Route::post('/{id}/add-customers', [\App\Http\Controllers\Web\CampaignWebController::class, 'addCustomers']);
         Route::post('/{id}/send-bulk', [\App\Http\Controllers\Web\CampaignWebController::class, 'sendBulk']);
+        Route::post('/{id}/refresh-dedup', [\App\Http\Controllers\Web\CampaignWebController::class, 'refreshDedup']);
         Route::post('/{id}/end', [\App\Http\Controllers\Web\CampaignWebController::class, 'end']);
         Route::post('/{id}/customers/{customerId}/skip', [\App\Http\Controllers\Web\CampaignWebController::class, 'skip']);
         Route::get('/{id}/stats', [\App\Http\Controllers\Web\CampaignWebController::class, 'stats']);

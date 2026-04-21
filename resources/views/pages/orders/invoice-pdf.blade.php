@@ -426,12 +426,39 @@
                     <div class="totals-label">SUB TOTAL</div>
                     <div class="totals-amount">Rs&nbsp;{{ number_format($subtotal, 0) }}</div>
                 </div>
+                @php
+                    // Qurbani self-collection rule — see invoice.blade.php
+                    // for the detailed reasoning. Kept inline here rather
+                    // than pulled into a helper because every invoice
+                    // variant renders independently (no shared partial)
+                    // and we want zero behaviour change if one of them
+                    // ever gets templated differently.
+                    $qSelfCollect = function ($v) {
+                        $s = strtolower(trim((string)($v ?? '')));
+                        return $s !== '' && str_contains($s, 'self');
+                    };
+                    $hasAnyQurbaniDT = false;
+                    $allQurbaniDTSelfCollect = true;
+                    foreach (($order->lineItems ?? []) as $__li) {
+                        $__dt = $__li->qurbani_delivery_type ?? null;
+                        if ($__dt) {
+                            $hasAnyQurbaniDT = true;
+                            if (!$qSelfCollect($__dt)) { $allQurbaniDTSelfCollect = false; }
+                        }
+                    }
+                    if (!$hasAnyQurbaniDT && !empty($order->qurbani_delivery_type)) {
+                        $hasAnyQurbaniDT = true;
+                        $allQurbaniDTSelfCollect = $qSelfCollect($order->qurbani_delivery_type);
+                    }
+                    $hideShippingRow = $hasAnyQurbaniDT && $allQurbaniDTSelfCollect
+                                       && (float)($order->shipping_total ?? 0) <= 0;
+                @endphp
                 @if($order->shipping_total && $order->shipping_total > 0)
                 <div class="totals-row">
                     <div class="totals-label">SHIPPING</div>
                     <div class="totals-amount">Rs&nbsp;{{ number_format($order->shipping_total, 0) }}</div>
                 </div>
-                @else
+                @elseif(!$hideShippingRow)
                 <div class="totals-row">
                     <div class="totals-label">SHIPPING</div>
                     <div class="totals-amount" style="color: #059669; font-weight: 600;">Free Delivery</div>

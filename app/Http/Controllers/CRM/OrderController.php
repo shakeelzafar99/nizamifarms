@@ -26,6 +26,42 @@ class OrderController extends Controller
         $this->wooCommerce = $wooCommerce;
     }
 
+    /**
+     * NF: Exclude Qurbani orders from an Eloquent OrderModel query.
+     * Mirrors the list-side filter in index() (see "Exclude qurbani orders from regular open orders view"),
+     * so tab badges, "All Open" card and verified/unverified sub-counts stay in sync with the rows shown.
+     * An order is considered qurbani if it has qurbani_day set, OR any of its line items uses a product
+     * whose attribute_1 = 'qurbani' (case-insensitive).
+     */
+    private function applyNonQurbaniFilter($query)
+    {
+        return $query->where(function ($q) {
+            $q->whereNull('qurbani_day')
+              ->whereDoesntHave('lineItems', function ($li) {
+                  $li->whereHas('product', function ($p) {
+                      $p->whereRaw("LOWER(attribute_1) = 'qurbani'");
+                  });
+              });
+        });
+    }
+
+    /**
+     * NF: Same non-qurbani filter, expressed for a raw Query Builder on t_crm_prod_order
+     * (because the status-counts endpoint uses DB::table instead of Eloquent).
+     * $orderAlias is the alias used for t_crm_prod_order in the outer query.
+     */
+    private function applyNonQurbaniFilterDb($query, string $orderAlias = 'o')
+    {
+        return $query->whereNull($orderAlias . '.qurbani_day')
+            ->whereNotExists(function ($sub) use ($orderAlias) {
+                $sub->select(\DB::raw(1))
+                    ->from('t_crm_prod_order_line_item as li')
+                    ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                    ->whereColumn('li.order_id', $orderAlias . '.id')
+                    ->whereRaw("LOWER(p.attribute_1) = 'qurbani'");
+            });
+    }
+
     public function index(Request $request)
     {
         $user = auth()->user();
@@ -180,6 +216,8 @@ class OrderController extends Controller
             if (!$canViewAllOrders) {
                 $openCountQuery->where('assigned_rider_user_id', auth()->id());
             }
+            // NF: keep badge in sync with the Open Orders list (which already hides qurbani).
+            $this->applyNonQurbaniFilter($openCountQuery);
             $openCount = $openCountQuery->count();
         }
 
@@ -507,6 +545,108 @@ class OrderController extends Controller
             return response()->json(['success' => false, 'message' => $e->errors()], 422);
         } catch (\Exception $e) {
             \Log::error('Failed to add qurbani payment', ['order_id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Amend non-financial metadata on an existing qurbani payment.
+     *
+     * Deliberately narrow: this only lets the caller edit the receiving
+     * bank (online only), the reference, and the notes — plus the separate
+     * invoice PAID-stamp fields on the parent order. Amount / method /
+     * payment_date cannot be changed here because any of those would
+     * require reversing the paired ledger entry and rebuilding it, which
+     * is what the existing void-and-readd flow is for.
+     *
+     * Voided payments cannot be edited — they're frozen for audit. Callers
+     * that need to "fix" a voided row should void it (no-op if already
+     * voided) and add a new payment instead.
+     */
+    public function updateQurbaniPayment(\Illuminate\Http\Request $request, $id, $paymentId)
+    {
+        try {
+            $user = \Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = $this->findOrder($id);
+            $payment = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+                ->where('id', $paymentId)
+                ->first();
+
+            if (!$payment) {
+                return response()->json(['success' => false, 'message' => 'Payment not found'], 404);
+            }
+            if ($payment->status !== 'active') {
+                return response()->json(['success' => false, 'message' => 'Voided payments cannot be edited'], 422);
+            }
+
+            $validated = $request->validate([
+                'reference' => 'nullable|string|max:255',
+                'notes' => 'nullable|string|max:1000',
+                // Only meaningful for online payments. If the payment row
+                // itself is cash we silently ignore this to match the add
+                // flow (old clients send the same payload shape either way).
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+                // Invoice PAID-stamp display overrides — same semantics as
+                // on add / the standalone stamp editor. Purely cosmetic.
+                'sending_bank'    => 'nullable|string|max:100',
+                'stamp_date'      => 'nullable|date',
+                'stamp_ref_mode'  => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+
+            $updates = [];
+            if (array_key_exists('reference', $validated)) {
+                $updates['reference'] = $validated['reference'];
+            }
+            if (array_key_exists('notes', $validated)) {
+                $updates['notes'] = $validated['notes'];
+            }
+            // Only persist the receiving bank on online payments. Cash rows
+            // have no bank so we don't want to store a stale id against them.
+            if ($payment->payment_method === 'online' && array_key_exists('receiving_account_id', $validated)) {
+                $updates['receiving_account_id'] = $validated['receiving_account_id'];
+            }
+
+            if (!empty($updates)) {
+                $payment->fill($updates)->save();
+            }
+
+            // Stamp metadata lives on the order, not the payment row, so we
+            // apply it in a second narrow update. Only keys the caller sent
+            // are touched — avoids wiping a previous choice.
+            $stampUpdates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $stampUpdates['paid_stamp_sending_bank'] = $validated['sending_bank'];
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $stampUpdates['paid_stamp_date'] = $validated['stamp_date'];
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $stampUpdates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'];
+            }
+            if (!empty($stampUpdates)) {
+                $order->fill($stampUpdates)->save();
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment updated',
+                'payment' => [
+                    'id' => $payment->id,
+                    'reference' => $payment->reference,
+                    'notes' => $payment->notes,
+                    'receiving_account_id' => $payment->receiving_account_id,
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to update qurbani payment', [
+                'order_id' => $id, 'payment_id' => $paymentId, 'error' => $e->getMessage(),
+            ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -2863,10 +3003,13 @@ class OrderController extends Controller
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
             })->count();
-            $openCountAll = \App\Models\CRM\OrderModel::where(function($q) {
+            // NF: same non-qurbani exclusion as the tab badge, so live filter responses don't re-inflate the count.
+            $openCountAllQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
-            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded'])->count();
+            })->whereNotIn('order_status', ['delivered', 'completed', 'cancelled', 'refunded']);
+            $this->applyNonQurbaniFilter($openCountAllQuery);
+            $openCountAll = $openCountAllQuery->count();
             
             return response()->json([
                 'success' => true,
@@ -2940,10 +3083,13 @@ class OrderController extends Controller
                 ]);
 
             // Calculate total open orders count
-            $totalOpenCount = \App\Models\CRM\OrderModel::where(function($q) {
+            // NF: exclude qurbani so this matches the per-status counts above and the list view.
+            $totalOpenCountQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
-            })->whereNotIn('order_status', $excludedStatuses)->count();
+            })->whereNotIn('order_status', $excludedStatuses);
+            $this->applyNonQurbaniFilter($totalOpenCountQuery);
+            $totalOpenCount = $totalOpenCountQuery->count();
 
             // Delivered today (from history), non-shopify orders only
             $deliveredTodayCount = \DB::table('t_crm_order_status_history as h')
@@ -2957,7 +3103,8 @@ class OrderController extends Controller
                 ->count();
 
             // Calculate verified/unverified address counts for all open orders
-            $allOpenVerifiedCount = \DB::table('t_crm_prod_order as o')
+            // NF: exclude qurbani to stay consistent with $totalOpenCount / the list view.
+            $allOpenVerifiedQuery = \DB::table('t_crm_prod_order as o')
                 ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where(function($q){
                     $q->where('o.external_source', '!=', 'shopify')
@@ -2970,13 +3117,15 @@ class OrderController extends Controller
                           $q2->whereNotNull('c.latitude')
                              ->whereNotNull('c.longitude');
                       });
-                })
-                ->count();
-            
+                });
+            $this->applyNonQurbaniFilterDb($allOpenVerifiedQuery, 'o');
+            $allOpenVerifiedCount = $allOpenVerifiedQuery->count();
+
             $allOpenUnverifiedCount = $totalOpenCount - $allOpenVerifiedCount;
 
             // Calculate verified/unverified address counts for "out_for_delivery" status
-            $outForDeliveryTotal = \DB::table('t_crm_prod_order as o')
+            // NF: exclude qurbani to stay consistent with the Out For Delivery status card count.
+            $outForDeliveryTotalQuery = \DB::table('t_crm_prod_order as o')
                 ->where(function($q){
                     $q->where('o.external_source', '!=', 'shopify')
                       ->orWhereNull('o.external_source');
@@ -2985,10 +3134,11 @@ class OrderController extends Controller
                     $q->where('o.order_status', 'out_for_delivery')
                       ->orWhere('o.order_status', 'out-for-delivery')
                       ->orWhere('o.order_status', 'out for delivery');
-                })
-                ->count();
-            
-            $outForDeliveryVerifiedCount = \DB::table('t_crm_prod_order as o')
+                });
+            $this->applyNonQurbaniFilterDb($outForDeliveryTotalQuery, 'o');
+            $outForDeliveryTotal = $outForDeliveryTotalQuery->count();
+
+            $outForDeliveryVerifiedQuery = \DB::table('t_crm_prod_order as o')
                 ->join('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where(function($q){
                     $q->where('o.external_source', '!=', 'shopify')
@@ -3005,9 +3155,10 @@ class OrderController extends Controller
                           $q2->whereNotNull('c.latitude')
                              ->whereNotNull('c.longitude');
                       });
-                })
-                ->count();
-            
+                });
+            $this->applyNonQurbaniFilterDb($outForDeliveryVerifiedQuery, 'o');
+            $outForDeliveryVerifiedCount = $outForDeliveryVerifiedQuery->count();
+
             $outForDeliveryUnverifiedCount = $outForDeliveryTotal - $outForDeliveryVerifiedCount;
 
             return response()->json([
@@ -3092,19 +3243,23 @@ class OrderController extends Controller
             $ridersArray = array_values($ridersData);
 
             // Total open orders count
-            $totalOpenCount = \App\Models\CRM\OrderModel::where(function($q) {
+            // NF: exclude qurbani so the Riders tab totals match the Open Orders list.
+            $totalOpenCountQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
-            })->whereNotIn('order_status', $excludedStatuses)->count();
+            })->whereNotIn('order_status', $excludedStatuses);
+            $this->applyNonQurbaniFilter($totalOpenCountQuery);
+            $totalOpenCount = $totalOpenCountQuery->count();
 
             // Assigned orders count
-            $assignedCount = \App\Models\CRM\OrderModel::where(function($q) {
+            $assignedCountQuery = \App\Models\CRM\OrderModel::where(function($q) {
                 $q->where('external_source', '!=', 'shopify')
                   ->orWhereNull('external_source');
             })
             ->whereNotNull('assigned_rider_user_id')
-            ->whereNotIn('order_status', $excludedStatuses)
-            ->count();
+            ->whereNotIn('order_status', $excludedStatuses);
+            $this->applyNonQurbaniFilter($assignedCountQuery);
+            $assignedCount = $assignedCountQuery->count();
 
             return response()->json([
                 'success' => true,

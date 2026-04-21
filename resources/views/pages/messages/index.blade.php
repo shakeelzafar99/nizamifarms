@@ -122,6 +122,50 @@
     border-color: #86efac;
 }
 
+/* Search-mode toggle (Names / Chats). Minimal, pill-shaped, picks up
+   the same green accent as filters when active so the UI stays cohesive. */
+.wa-searchmode-btn {
+    flex: 1;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #6b7280;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.wa-searchmode-btn:hover { background: #f9fafb; }
+.wa-searchmode-btn.active {
+    background: #eef2ff;
+    color: #4338ca;
+    border-color: #c7d2fe;
+}
+
+/* Chat-content match snippet shown under a conversation when the
+   sidebar is in "Chats" search mode. Slight indigo tint so it reads as
+   "matched content" rather than "latest message". */
+.wa-conv-match {
+    font-size: 11.5px;
+    color: #4b5563;
+    background: #eef2ff;
+    border-left: 2px solid #6366f1;
+    padding: 3px 6px;
+    border-radius: 4px;
+    margin-top: 3px;
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.wa-conv-match mark {
+    background: #fde68a;
+    color: #78350f;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
 /* New Message Panel */
 .wa-new-panel {
     display: none;
@@ -894,7 +938,16 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             </div>
             <div class="wa-search-wrap">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.868-3.834zm-5.44.856a4.8 4.8 0 1 1 0-9.6 4.8 4.8 0 0 1 0 9.6z"/></svg>
-                <input type="text" class="wa-search" id="waSearch" placeholder="Search conversations..." />
+                <input type="text" class="wa-search" id="waSearch" placeholder="Search name, phone or city..." />
+            </div>
+            {{-- Search-mode toggle. Defaults to "Names" for backward-compat
+                 with how the search has always worked; "Chats" searches the
+                 actual message content (see WhatsAppWebController@getConversations
+                 with search_mode=chats). Kept tiny so it doesn't steal space
+                 from the filter row below. --}}
+            <div class="wa-search-mode" role="tablist" aria-label="Search mode" style="display:flex;gap:4px;margin-top:6px;">
+                <button type="button" class="wa-searchmode-btn active" data-mode="customers" role="tab" aria-selected="true">👤 Names</button>
+                <button type="button" class="wa-searchmode-btn" data-mode="chats" role="tab" aria-selected="false" title="Search inside message contents">💬 Chats</button>
             </div>
             <div class="wa-filters">
                 <button class="wa-filter-btn active" data-filter="all">All</button>
@@ -1201,6 +1254,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     let activeConvId = null;
     let activeConv = null;
     let currentFilter = 'all';
+    // 'customers' (legacy behaviour, searches name/phone/city) or 'chats'
+    // (searches inside message content via the backend's search_mode param).
+    // Toggled by the small pill row underneath the search input.
+    let currentSearchMode = 'customers';
     let searchTimeout = null;
     let convPollTimer = null;
     let msgPollTimer = null;
@@ -1377,17 +1434,25 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     function loadConversations() {
         const search = document.getElementById('waSearch').value.trim();
         let url = '/messages/conversations?filter=' + currentFilter;
-        if (search) url += '&search=' + encodeURIComponent(search);
+        if (search) {
+            url += '&search=' + encodeURIComponent(search);
+            // Only meaningful when there's an actual search term; saves us
+            // sending the mode on every no-search refresh.
+            url += '&search_mode=' + encodeURIComponent(currentSearchMode);
+        }
         apiFetch(url).then(d => {
             if (!d.success) return;
-            renderConversations(d.conversations);
+            renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
         });
     }
 
-    function renderConversations(convs) {
+    function renderConversations(convs, opts = {}) {
         const el = document.getElementById('waConvList');
+        const inChatSearch = opts.searchMode === 'chats' && (opts.searchTerm || '').length > 0;
         if (!convs.length) {
-            el.innerHTML = '<div class="wa-loading">No conversations found</div>';
+            el.innerHTML = inChatSearch
+                ? '<div class="wa-loading">No messages match “' + esc(opts.searchTerm) + '”.<br><span style="font-size:12px;color:#9ca3af;">Try a shorter word or switch back to Names.</span></div>'
+                : '<div class="wa-loading">No conversations found</div>';
             return;
         }
         el.innerHTML = convs.map(c => {
@@ -1399,6 +1464,15 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             // Only show the goat badge when the Qurbani feature is enabled
             // (master switch in settings drawer); we hide the badge otherwise.
             const qBadge = (waQurbaniEnabled && c.is_qurbani) ? '<span title="Qurbani conversation" style="margin-right:4px;font-size:14px;">🐐</span>' : '';
+            // Chat-search mode: append a snippet of the matched message
+            // under the last-message preview, with the query highlighted.
+            // We still show the last-message line above so operators keep
+            // their usual context of "where is this conversation at now".
+            const matchBlock = (inChatSearch && c.match_snippet)
+                ? `<div class="wa-conv-match" title="Matched message content">
+                        ${c.match_direction === 'outbound' ? '✓ ' : ''}${highlightMatch(c.match_snippet, opts.searchTerm)}${c.match_count > 1 ? ` <span style="color:#6366f1;font-weight:600;">+${c.match_count - 1} more</span>` : ''}
+                   </div>`
+                : '';
             return `<div class="${cls}" onclick="openConv(${c.id})" data-id="${c.id}">
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
                 <div class="wa-conv-info">
@@ -1410,10 +1484,21 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         <div class="wa-conv-preview">${c.last_message_direction==='outbound'?'✓ ':''}${esc(c.last_message_preview||'No messages yet')}</div>
                         ${isUnread ? `<div class="wa-unread-badge">${c.unread_count}</div>` : ''}
                     </div>
+                    ${matchBlock}
                     ${c.customer_city ? `<div class="wa-conv-city">${esc(c.customer_city)}</div>` : ''}
                 </div>
             </div>`;
         }).join('');
+    }
+
+    // Escape-and-highlight helper for chat-search snippets. Escapes the
+    // whole snippet first, then wraps case-insensitive occurrences of the
+    // search term in <mark>. Operates on text (not HTML) so XSS is safe.
+    function highlightMatch(snippet, term) {
+        const safe = esc(snippet);
+        if (!term) return safe;
+        const pattern = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return safe.replace(new RegExp('(' + pattern + ')', 'ig'), '<mark>$1</mark>');
     }
 
     // ── Open Conversation ──
@@ -1625,6 +1710,33 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     document.getElementById('waSearch').addEventListener('input', function() {
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(loadConversations, 400);
+    });
+
+    // Search-mode toggle (Names ↔ Chats). Refresh on switch only when
+    // there's actually a query to re-run, otherwise flipping the mode on
+    // an empty search would hit the conversations endpoint for nothing.
+    document.querySelectorAll('.wa-searchmode-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            if (this.dataset.mode === currentSearchMode) return;
+            document.querySelectorAll('.wa-searchmode-btn').forEach(b => {
+                b.classList.remove('active');
+                b.setAttribute('aria-selected', 'false');
+            });
+            this.classList.add('active');
+            this.setAttribute('aria-selected', 'true');
+            currentSearchMode = this.dataset.mode;
+            // Update placeholder so the user can immediately see what the
+            // input now does. Keeping the typed text is intentional — they
+            // often toggle to re-check the same word in the other mode.
+            const input = document.getElementById('waSearch');
+            input.placeholder = currentSearchMode === 'chats'
+                ? 'Search inside message contents…'
+                : 'Search name, phone or city…';
+            if ((input.value || '').trim().length > 0) {
+                clearTimeout(searchTimeout);
+                loadConversations();
+            }
+        });
     });
 
     // ── Filters ──

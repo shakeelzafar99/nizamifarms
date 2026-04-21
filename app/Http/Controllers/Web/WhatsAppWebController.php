@@ -86,17 +86,71 @@ class WhatsAppWebController extends Controller
             $query->where('is_qurbani', 1);
         }
 
+        // Two search modes, driven by the UI toggle next to the input:
+        //   - 'customers' (default, legacy behaviour): matches name / phone /
+        //     WA contact name on the conversation + linked customer row.
+        //   - 'chats':    full-text-ish LIKE over t_wa_messages.content, so the
+        //                 user can find a conversation by something that was
+        //                 actually said ("cuts", "refund", etc.). We pre-fetch
+        //                 matching message rows so we can surface a highlighted
+        //                 snippet back to the UI and only return conversations
+        //                 that actually matched.
+        //
+        // For chat-mode we also honour the limited-access cutoff so a limited
+        // user can never peek at old messages via a content search.
+        $searchMode = $request->input('search_mode', 'customers');
+        $matchByConvId = []; // conversation_id => [snippet, match_count]
         if ($search = $request->search) {
-            $query->where(function ($q) use ($search) {
-                $q->where('wa_phone', 'like', "%{$search}%")
-                  ->orWhere('wa_contact_name', 'like', "%{$search}%")
-                  ->orWhereHas('customer', function ($cq) use ($search) {
-                      $cq->where('first_name', 'like', "%{$search}%")
-                         ->orWhere('last_name', 'like', "%{$search}%")
-                         ->orWhere('phone_normalized', 'like', "%{$search}%")
-                         ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$search}%"]);
-                  });
-            });
+            if ($searchMode === 'chats') {
+                $msgQuery = DB::table('t_wa_messages')
+                    ->select('conversation_id', 'content', 'created_at', 'direction')
+                    ->where('content', 'like', "%{$search}%")
+                    ->orderByDesc('created_at');
+                if ($access['limited']) {
+                    $msgQuery->where('created_at', '>=', $access['cutoff']);
+                }
+                // Cap the scan so a pathological query (e.g. "a") can't
+                // blow up memory. 600 rows is plenty to populate the 150
+                // conversation list on the left with previews.
+                $matches = $msgQuery->limit(600)->get();
+
+                foreach ($matches as $m) {
+                    if (!isset($matchByConvId[$m->conversation_id])) {
+                        $matchByConvId[$m->conversation_id] = [
+                            'snippet' => $this->buildChatSnippet((string) $m->content, (string) $search),
+                            'snippet_at' => $m->created_at,
+                            'snippet_direction' => $m->direction,
+                            'count' => 1,
+                        ];
+                    } else {
+                        $matchByConvId[$m->conversation_id]['count']++;
+                    }
+                }
+                $matchedConvIds = array_keys($matchByConvId);
+                if (empty($matchedConvIds)) {
+                    // Short-circuit: no content match → empty list. Skip
+                    // the expensive downstream queries entirely.
+                    return response()->json([
+                        'success' => true,
+                        'conversations' => [],
+                        'is_limited' => $access['limited'],
+                        'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+                        'search_mode' => 'chats',
+                    ]);
+                }
+                $query->whereIn('id', $matchedConvIds);
+            } else {
+                $query->where(function ($q) use ($search) {
+                    $q->where('wa_phone', 'like', "%{$search}%")
+                      ->orWhere('wa_contact_name', 'like', "%{$search}%")
+                      ->orWhereHas('customer', function ($cq) use ($search) {
+                          $cq->where('first_name', 'like', "%{$search}%")
+                             ->orWhere('last_name', 'like', "%{$search}%")
+                             ->orWhere('phone_normalized', 'like', "%{$search}%")
+                             ->orWhereRaw("CONCAT(first_name, ' ', last_name) LIKE ?", ["%{$search}%"]);
+                      });
+                });
+            }
         }
 
         // Fetch conversations + last-read timestamps for this user in one shot.
@@ -180,9 +234,14 @@ class WhatsAppWebController extends Controller
             }
         }
 
-        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol) {
+        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId) {
             $lastMsg = $lastMsgByConv[$conv->id] ?? null;
             $unread = $unreadByConv[$conv->id] ?? 0;
+
+            // Chat-mode extras: when this conversation was pulled in by a
+            // content search we ship back the matched snippet + how many
+            // messages matched so the UI can render it inline.
+            $match = $matchByConvId[$conv->id] ?? null;
 
             return [
                 'id' => $conv->id,
@@ -197,6 +256,9 @@ class WhatsAppWebController extends Controller
                 'last_message_at' => $conv->last_message_at,
                 'last_message_preview' => $lastMsg?->content ? \Illuminate\Support\Str::limit($lastMsg->content, 80) : ($lastMsg?->type ?? ''),
                 'last_message_direction' => $lastMsg?->direction ?? '',
+                'match_snippet' => $match['snippet'] ?? null,
+                'match_count' => $match['count'] ?? null,
+                'match_direction' => $match['snippet_direction'] ?? null,
                 'session_active' => $conv->isSessionActive(),
                 'session_expires_at' => $conv->last_customer_message_at
                     ? $conv->last_customer_message_at->addHours(24)->toIso8601String()
@@ -214,7 +276,34 @@ class WhatsAppWebController extends Controller
             'conversations' => $conversations,
             'is_limited' => $access['limited'],
             'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+            'search_mode' => $searchMode,
         ]);
+    }
+
+    /**
+     * Build a short, UI-friendly snippet around the first occurrence of the
+     * search term inside a message body. Returned unescaped — the frontend
+     * escapes + highlights the match span. Keeps ~40 chars of context on
+     * either side so operators can recognise the conversation at a glance
+     * without leaking the whole message into the sidebar.
+     */
+    private function buildChatSnippet(string $content, string $needle): string
+    {
+        $content = trim(preg_replace('/\s+/', ' ', $content));
+        if ($needle === '' || $content === '') {
+            return \Illuminate\Support\Str::limit($content, 90);
+        }
+        $pos = mb_stripos($content, $needle);
+        if ($pos === false) {
+            return \Illuminate\Support\Str::limit($content, 90);
+        }
+        $padding = 40;
+        $start = max(0, $pos - $padding);
+        $length = mb_strlen($needle) + ($padding * 2);
+        $slice = mb_substr($content, $start, $length);
+        $prefix = $start > 0 ? '…' : '';
+        $suffix = ($start + $length) < mb_strlen($content) ? '…' : '';
+        return $prefix . $slice . $suffix;
     }
 
     public function getMessages(Request $request, $conversationId)

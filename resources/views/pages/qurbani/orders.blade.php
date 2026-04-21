@@ -232,7 +232,7 @@
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Slot</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Region</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Payment Type</th>
                             <th class="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Rider</th>
@@ -639,8 +639,32 @@ function renderOrders(orders) {
         const dtypeHtml = formatItemField('qurbani_delivery_type');
         const hasOrderNote = o.note && o.note.trim();
         const hasAnyNote = hasOrderNote || items.some(i => i.instructions && i.instructions.trim());
+        // NF: tint fully-paid rows green for easier scanning. If the row also
+        // has notes (yellow) we keep the yellow tint so the note signal isn't
+        // lost — notes are actionable; "paid" is just informational. A thick
+        // dark-green left bar still marks the row as paid even when yellow
+        // wins. Bumped the green tint from emerald-50 (#ECFDF5) to emerald-100
+        // (#D1FAE5) and the bar from 3px/#10B981 to 5px/#059669 so the signal
+        // actually pops across a dense grid.
+        const isPaid = o.payment_status === 'paid';
+        const rowBgClass = hasAnyNote ? ' bg-yellow-50' : '';
+        const paidInline = isPaid
+            ? (hasAnyNote ? 'border-left:5px solid #059669;' : 'background-color:#D1FAE5; border-left:5px solid #059669;')
+            : '';
+        const rowInlineStyle = paidInline ? ` style="${paidInline}"` : '';
 
-        return `<tr class="order-row border-b border-gray-100 cursor-pointer${hasAnyNote ? ' bg-yellow-50' : ''}" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
+        // Payment-type badge (replaces the old order_status column). We keep
+        // `statusClass` computed above so any downstream consumer isn't broken,
+        // but the visible cell now shows cash / online.
+        const rawPayMethod = (o.payment_method || '').toLowerCase();
+        const payMethodLabel = rawPayMethod === 'online'
+            ? 'Online'
+            : (rawPayMethod === 'cash' ? 'Cash' : '-');
+        const payMethodStyle = rawPayMethod === 'online'
+            ? 'background:#CFFAFE; color:#155E75;'
+            : (rawPayMethod === 'cash' ? 'background:#E5E7EB; color:#374151;' : 'background:#F3F4F6; color:#6B7280;');
+
+        return `<tr class="order-row border-b border-gray-100 cursor-pointer${rowBgClass}"${rowInlineStyle} onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
             <td class="px-3 py-2 text-gray-900 font-medium">
                 ${o.order_number || o.id}
                 ${hasOrderNote ? '<div style="font-size:10px; color:#92400e; margin-top:2px;" title="' + o.note.replace(/"/g, '&quot;') + '">📝 Note</div>' : ''}
@@ -655,7 +679,7 @@ function renderOrders(orders) {
             <td class="px-3 py-2">${slotHtml}</td>
             <td class="px-3 py-2">${regionHtml}</td>
             <td class="px-3 py-2">${dtypeHtml}</td>
-            <td class="px-3 py-2"><span class="status-badge ${statusClass}">${(o.order_status || 'open').replace(/_/g,' ')}</span></td>
+            <td class="px-3 py-2"><span class="status-badge" style="${payMethodStyle}">${payMethodLabel}</span></td>
             <td class="px-3 py-2 text-right font-medium">PKR ${Number(o.total_price || 0).toLocaleString()}</td>
             <td class="px-3 py-2">
                 <span class="status-badge ${payClass}">${o.payment_status || 'unpaid'}</span>
@@ -670,7 +694,8 @@ function renderOrders(orders) {
             <td class="px-3 py-2 text-gray-500 text-xs">${dateStr}</td>
             <td class="px-3 py-2 text-center" onclick="event.stopPropagation()">
                 <div style="display:flex; gap:4px; justify-content:center; flex-wrap:wrap;">
-                    <button onclick="openQurbaniPaymentModal(${o.id}, ${Number(o.balance_remaining || 0)})" style="padding:3px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Add Payment">💰 Pay</button>
+                    <button onclick="openQurbaniPaymentModal(${o.id}, ${Number(o.balance_remaining || 0)}, '${rawPayMethod}')" style="padding:3px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Add Payment">💰 Pay</button>
+                    ${(Number(o.total_paid) > 0 || o.payment_status === 'paid' || o.payment_status === 'partial') ? `<button onclick="openQurbaniPaymentsHistoryModal(${o.id})" style="padding:3px 8px; background:#0EA5E9; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="View / edit payments">💳 Payments</button>` : ''}
                     ${(o.payment_status === 'paid') ? `<button onclick="openStampEditorModal(${o.id})" style="padding:3px 8px; background:#7C2D12; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Edit invoice PAID stamp (display only)">📜 Stamp</button>` : ''}
                     <button onclick="window.open('/orders/${o.id}/invoice', '_blank')" style="padding:3px 8px; background:#4F46E5; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="View Invoice">📄 Invoice</button>
                     <button onclick="openWhatsAppInvoiceModal(${o.id}, '${(o.customer_name || '').replace(/'/g, "\\'")}', '${o.order_number || ''}', '${(o.customer_phone || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#25D366; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Send WhatsApp Invoice">📱 WA</button>
@@ -729,14 +754,21 @@ function assignRiderFromTable(sel) {
 // Receiving-bank list (HBL, MBL, EP, JC, …) rendered as chips inside the
 // Add Payment modal when payment_method = online. Server-side seeded from
 // t_fin_online_receiving_accounts so the list stays in sync with what
-// Online Approvals uses.
-const QURBANI_RECEIVING_ACCOUNTS = @json($receivingAccounts ?? []);
+// Online Approvals uses. `let` (not `const`) because the quick-add-bank
+// feature below appends new accounts on the fly and we re-render from
+// this list. The backing DB stays authoritative — next page load we'll
+// get a fresh copy seeded by QurbaniWebController::index.
+let QURBANI_RECEIVING_ACCOUNTS = @json($receivingAccounts ?? []);
 
 var _qurbaniPaymentOrderId = null;
 var _qurbaniPaymentReceivingId = null; // currently-selected receiving bank id
-function openQurbaniPaymentModal(orderId, balanceRemaining) {
+function openQurbaniPaymentModal(orderId, balanceRemaining, orderPaymentMethod) {
     _qurbaniPaymentOrderId = orderId;
     _qurbaniPaymentReceivingId = null;
+    // Normalise the order's payment method so the dropdown opens on the
+    // right option. Orders store either 'cash' or 'online'; anything else
+    // falls back to cash (the historical default).
+    var defaultMethod = (orderPaymentMethod === 'online') ? 'online' : 'cash';
     var existing = document.getElementById('qurbaniPayOverlay');
     if (existing) existing.remove();
 
@@ -746,14 +778,13 @@ function openQurbaniPaymentModal(orderId, balanceRemaining) {
     const defaultAmt = balanceRemaining > 0 ? balanceRemaining : '';
     const todayIso = new Date().toISOString().split('T')[0];
 
-    // Build the bank-chip strip from the server-rendered list.
-    let bankChipsHtml = '<button type="button" class="qpay-bank-chip qpay-bank-chip-active" data-bank-id="" onclick="selectQurbaniBankChip(this, null)" '
-        + 'style="padding:5px 12px; border-radius:16px; border:1px solid #CBD5E1; background:#3B82F6; color:#fff; font-size:12px; font-weight:600; cursor:pointer;">None</button>';
-    (QURBANI_RECEIVING_ACCOUNTS || []).forEach(function (acc) {
-        bankChipsHtml += '<button type="button" class="qpay-bank-chip" data-bank-id="' + acc.id + '" onclick="selectQurbaniBankChip(this, ' + acc.id + ')" '
-            + 'style="padding:5px 12px; border-radius:16px; border:1px solid #CBD5E1; background:#fff; color:#334155; font-size:12px; font-weight:600; cursor:pointer;">'
-            + (acc.short_code || acc.name) + '</button>';
-    });
+    // Bank row starts open when the order itself is an online order so the
+    // team sees the bank choices immediately; for cash orders the row stays
+    // hidden (same as before) and only reveals if the user changes the
+    // method dropdown.
+    const bankRowInitialDisplay = (defaultMethod === 'online') ? 'block' : 'none';
+    const cashSelected   = defaultMethod === 'cash'   ? ' selected' : '';
+    const onlineSelected = defaultMethod === 'online' ? ' selected' : '';
 
     overlay.innerHTML = `
         <div style="background:#fff; border-radius:12px; padding:24px; width:440px; max-width:92vw; max-height:92vh; overflow-y:auto; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
@@ -772,8 +803,8 @@ function openQurbaniPaymentModal(orderId, balanceRemaining) {
                 <div>
                     <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">Method</label>
                     <select id="qPayMethod" onchange="onQurbaniMethodChange()" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px;">
-                        <option value="cash">Cash</option>
-                        <option value="online">Online</option>
+                        <option value="cash"${cashSelected}>Cash</option>
+                        <option value="online"${onlineSelected}>Online</option>
                     </select>
                 </div>
                 <div>
@@ -785,9 +816,24 @@ function openQurbaniPaymentModal(orderId, balanceRemaining) {
                 </div>
             </div>
 
-            <div id="qPayBankRow" style="display:none; margin-bottom:12px;">
-                <label style="display:block; font-size:13px; font-weight:600; color:#0369A1; margin-bottom:6px;">🏦 Received in Bank (optional)</label>
-                <div id="qPayBankChips" style="display:flex; flex-wrap:wrap; gap:6px;">${bankChipsHtml}</div>
+            <div id="qPayBankRow" style="display:${bankRowInitialDisplay}; margin-bottom:12px;">
+                <label style="display:block; font-size:13px; font-weight:600; color:#0369A1; margin-bottom:6px;">🏦 Received in Bank <span style="color:#DC2626;">*</span></label>
+                <div id="qPayBankChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                <!-- Quick inline form for adding a new receiving bank without
+                     leaving this modal. Hits POST /online-receiving-accounts
+                     (same endpoint Online Approvals uses) and appends the
+                     result to the local chip list + auto-selects it. -->
+                <div id="qPayAddBankForm" style="display:none; margin-top:8px; padding:10px; border:1px dashed #93C5FD; border-radius:8px; background:#F8FAFC;">
+                    <div style="display:grid; grid-template-columns:1.4fr 1fr 42px; gap:6px; margin-bottom:6px;">
+                        <input type="text" id="qPayNewBankName" placeholder="Bank name (e.g. Habib Bank)" style="padding:6px 8px; border:1px solid #CBD5E1; border-radius:5px; font-size:12px;">
+                        <input type="text" id="qPayNewBankCode" placeholder="Short (e.g. HBL)" maxlength="20" style="padding:6px 8px; border:1px solid #CBD5E1; border-radius:5px; font-size:12px; text-transform:uppercase;">
+                        <input type="color" id="qPayNewBankColor" value="#3B82F6" title="Chip colour" style="width:100%; height:32px; padding:1px; border:1px solid #CBD5E1; border-radius:5px; cursor:pointer;">
+                    </div>
+                    <div style="display:flex; gap:6px; justify-content:flex-end;">
+                        <button type="button" id="qPayAddBankCancelBtn" onclick="toggleQurbaniAddBankForm(false)" style="padding:5px 10px; background:#E5E7EB; color:#374151; border:none; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">Cancel</button>
+                        <button type="button" id="qPayAddBankSaveBtn" onclick="submitQurbaniAddBank()" style="padding:5px 10px; background:#16A34A; color:#fff; border:none; border-radius:5px; font-size:11px; font-weight:600; cursor:pointer;">Save Bank</button>
+                    </div>
+                </div>
             </div>
 
             <div style="margin-bottom:12px;">
@@ -828,6 +874,10 @@ function openQurbaniPaymentModal(orderId, balanceRemaining) {
         </div>
     `;
     document.body.appendChild(overlay);
+    // Render the bank-chip row once the DOM is in place. We render via a
+    // helper (instead of baking chips into innerHTML) so the quick-add
+    // flow below can simply re-render after appending a new account.
+    renderQurbaniBankChips();
     document.getElementById('qPayAmount').focus();
 
     // When the user changes the payment date, propagate it to the stamp
@@ -858,25 +908,123 @@ function onQurbaniMethodChange() {
     if (method !== 'online') {
         // Clear the selection so we don't send a stale id on a cash payment.
         _qurbaniPaymentReceivingId = null;
-        document.querySelectorAll('.qpay-bank-chip').forEach(function (c) {
-            const isNone = c.getAttribute('data-bank-id') === '';
-            c.classList.toggle('qpay-bank-chip-active', isNone);
-            c.style.background = isNone ? '#3B82F6' : '#fff';
-            c.style.color = isNone ? '#fff' : '#334155';
-        });
+        renderQurbaniBankChips();
+        // Also fold the quick-add form if it was open, just to keep the
+        // modal tidy on method toggles.
+        toggleQurbaniAddBankForm(false);
     }
+}
+
+// Renders the bank chip row into #qPayBankChips. Builds from the current
+// QURBANI_RECEIVING_ACCOUNTS array (which the quick-add flow appends to)
+// and highlights whichever id is in _qurbaniPaymentReceivingId. A "+ Add
+// new" chip at the end opens the inline form. The former "None" chip was
+// removed — receiving bank is now mandatory for online payments.
+function renderQurbaniBankChips() {
+    const host = document.getElementById('qPayBankChips');
+    if (!host) return;
+    let html = '';
+    (QURBANI_RECEIVING_ACCOUNTS || []).forEach(function (acc) {
+        const active = _qurbaniPaymentReceivingId && String(_qurbaniPaymentReceivingId) === String(acc.id);
+        const bg = active ? '#3B82F6' : '#fff';
+        const fg = active ? '#fff'    : '#334155';
+        html += '<button type="button" class="qpay-bank-chip' + (active ? ' qpay-bank-chip-active' : '') + '" data-bank-id="' + acc.id + '" onclick="selectQurbaniBankChip(this, ' + acc.id + ')" '
+            + 'style="padding:5px 12px; border-radius:16px; border:1px solid #CBD5E1; background:' + bg + '; color:' + fg + '; font-size:12px; font-weight:600; cursor:pointer;">'
+            + escapeQurbaniHtml(acc.short_code || acc.name) + '</button>';
+    });
+    // "+ Add new" chip always last. Kept visually distinct (dashed border,
+    // green text) so nobody confuses it with a real bank.
+    html += '<button type="button" onclick="toggleQurbaniAddBankForm(true)" '
+        + 'style="padding:5px 12px; border-radius:16px; border:1px dashed #16A34A; background:#F0FDF4; color:#166534; font-size:12px; font-weight:600; cursor:pointer;" title="Add a new receiving bank">+ Add new</button>';
+    host.innerHTML = html;
 }
 
 function selectQurbaniBankChip(el, bankId) {
     _qurbaniPaymentReceivingId = bankId || null;
-    document.querySelectorAll('.qpay-bank-chip').forEach(function (c) {
-        c.classList.remove('qpay-bank-chip-active');
-        c.style.background = '#fff';
-        c.style.color = '#334155';
+    renderQurbaniBankChips();
+}
+
+// Tiny local escape for rendering bank short codes / names into chip text.
+// We deliberately avoid touching any of the existing `esc` helpers used
+// elsewhere in the file — those are for different contexts.
+function escapeQurbaniHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function toggleQurbaniAddBankForm(show) {
+    const form = document.getElementById('qPayAddBankForm');
+    if (!form) return;
+    form.style.display = show ? 'block' : 'none';
+    if (show) {
+        const nameEl = document.getElementById('qPayNewBankName');
+        if (nameEl) nameEl.focus();
+    } else {
+        // Clear fields on close so re-opening is always a fresh form.
+        ['qPayNewBankName', 'qPayNewBankCode'].forEach(function (id) {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        const colorEl = document.getElementById('qPayNewBankColor');
+        if (colorEl) colorEl.value = '#3B82F6';
+    }
+}
+
+// Create a new receiving bank from inside the Add Payment modal. On
+// success we push the new account onto QURBANI_RECEIVING_ACCOUNTS, re-
+// render the chips, auto-select the new bank, and close the form. Uses
+// the same endpoint as the Online Approvals bank manager so the two
+// sources of truth never drift.
+function submitQurbaniAddBank() {
+    const nameEl  = document.getElementById('qPayNewBankName');
+    const codeEl  = document.getElementById('qPayNewBankCode');
+    const colorEl = document.getElementById('qPayNewBankColor');
+    const saveBtn = document.getElementById('qPayAddBankSaveBtn');
+    const name  = (nameEl && nameEl.value || '').trim();
+    const code  = (codeEl && codeEl.value || '').trim();
+    const color = (colorEl && colorEl.value) || '#3B82F6';
+
+    if (!name)  { alert('Bank name is required');  if (nameEl) nameEl.focus(); return; }
+    if (!code)  { alert('Short code is required'); if (codeEl) codeEl.focus(); return; }
+
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+    fetch('/online-receiving-accounts', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': csrfToken,
+        },
+        body: JSON.stringify({ name: name, short_code: code, color_hex: color }),
+    })
+    .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+    .then(function (res) {
+        if (res.ok && res.data && res.data.success && res.data.data) {
+            const acc = res.data.data;
+            // Make sure we don't end up with duplicate ids if the user
+            // clicks Save twice somehow — dedupe by id.
+            QURBANI_RECEIVING_ACCOUNTS = (QURBANI_RECEIVING_ACCOUNTS || [])
+                .filter(function (a) { return String(a.id) !== String(acc.id); });
+            QURBANI_RECEIVING_ACCOUNTS.push({
+                id: acc.id,
+                name: acc.name,
+                short_code: acc.short_code,
+                color_hex: acc.color_hex,
+            });
+            _qurbaniPaymentReceivingId = acc.id;
+            renderQurbaniBankChips();
+            toggleQurbaniAddBankForm(false);
+        } else {
+            const msg = (res.data && (res.data.message || (res.data.errors && JSON.stringify(res.data.errors))))
+                || 'Failed to add bank';
+            alert(msg);
+        }
+    })
+    .catch(function () { alert('Network error while adding bank'); })
+    .finally(function () {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Bank'; }
     });
-    el.classList.add('qpay-bank-chip-active');
-    el.style.background = '#3B82F6';
-    el.style.color = '#fff';
 }
 
 // Standalone stamp editor — lets the team adjust what the invoice PAID
@@ -978,13 +1126,227 @@ function prefillQurbaniStampFields(orderId) {
     .catch(function () { /* non-fatal — defaults apply */ });
 }
 
+// ---------------------------------------------------------------------------
+// Payment history + metadata editor (web). Lets the team amend non-financial
+// fields (receiving bank, reference, notes) on an already-recorded payment
+// without touching the ledger. Amount / method / date stay locked — those
+// still go through the existing void-and-readd flow.
+// ---------------------------------------------------------------------------
+var _qurbaniHistoryOrderId = null;
+var _qurbaniHistoryEditingId = null;
+
+function openQurbaniPaymentsHistoryModal(orderId) {
+    _qurbaniHistoryOrderId = orderId;
+    _qurbaniHistoryEditingId = null;
+
+    var existing = document.getElementById('qurbaniHistoryOverlay');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'qurbaniHistoryOverlay';
+    overlay.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:10002; display:flex; align-items:center; justify-content:center; padding:20px; overflow-y:auto;';
+    overlay.innerHTML = `
+        <div style="background:#fff; border-radius:12px; padding:22px; width:640px; max-width:96vw; max-height:92vh; overflow-y:auto; box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <h3 style="margin:0; font-size:17px; font-weight:700; color:#075985;">💳 Payment History</h3>
+                <button onclick="document.getElementById('qurbaniHistoryOverlay').remove()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">✕</button>
+            </div>
+            <div style="font-size:11px; color:#6b7280; margin-bottom:14px;">
+                Amount, method and date are locked (use void + re-add if those need changing). You can add the receiving bank, reference or notes later.
+            </div>
+            <div id="qurbaniHistoryList" style="font-size:13px; color:#374151;">
+                <div style="text-align:center; padding:24px; color:#94a3b8;">Loading…</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    fetch('/orders/' + orderId + '/qurbani-payments', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (!data || !data.success) {
+            document.getElementById('qurbaniHistoryList').innerHTML = '<div style="text-align:center; padding:24px; color:#dc2626;">Failed to load</div>';
+            return;
+        }
+        renderQurbaniHistoryList(data.payments || []);
+    })
+    .catch(function () {
+        document.getElementById('qurbaniHistoryList').innerHTML = '<div style="text-align:center; padding:24px; color:#dc2626;">Network error</div>';
+    });
+}
+
+function renderQurbaniHistoryList(payments) {
+    var el = document.getElementById('qurbaniHistoryList');
+    if (!el) return;
+    if (!payments.length) {
+        el.innerHTML = '<div style="text-align:center; padding:24px; color:#94a3b8;">No payments yet.</div>';
+        return;
+    }
+
+    // Render each payment as a row. If this row is being edited we swap it
+    // for an inline edit form (receiving bank chips + reference + notes).
+    // Amount / method / date are read-only inside the form too.
+    var html = '';
+    payments.forEach(function (p) {
+        var isEditing = String(_qurbaniHistoryEditingId) === String(p.id);
+        var dateStr = p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '-';
+        var methodLabel = (p.payment_method || '').toUpperCase();
+        var bankHtml = p.receiving_account_code
+            ? '<span style="background:' + (p.receiving_account_color || '#DBEAFE') + '; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600;">' + p.receiving_account_code + '</span>'
+            : '<span style="color:#94a3b8; font-size:11px;">— no bank —</span>';
+
+        if (!isEditing) {
+            html += '<div style="border:1px solid #e5e7eb; border-radius:10px; padding:12px; margin-bottom:10px;">'
+                + '<div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">'
+                +   '<div><div style="font-weight:700; color:#111827;">PKR ' + Number(p.amount || 0).toLocaleString() + '</div>'
+                +     '<div style="font-size:11px; color:#6b7280;">' + methodLabel + ' • ' + dateStr + '</div></div>'
+                +   '<div style="text-align:right;">' + bankHtml + '</div>'
+                + '</div>'
+                + '<div style="margin-top:6px; font-size:12px; color:#374151;">'
+                +   '<div><b>Reference:</b> ' + (p.reference ? escapeHtmlQ(p.reference) : '<span style="color:#94a3b8;">—</span>') + '</div>'
+                +   (p.notes ? '<div><b>Notes:</b> ' + escapeHtmlQ(p.notes) + '</div>' : '')
+                + '</div>'
+                + '<div style="margin-top:8px; display:flex; gap:6px;">'
+                +   '<button onclick="editQurbaniHistoryRow(' + p.id + ')" style="padding:4px 10px; background:#0369A1; color:#fff; border:none; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer;">✏️ Edit details</button>'
+                + '</div>'
+                + '</div>';
+        } else {
+            var chips = '<button type="button" class="qpay-hist-bank-chip" data-bank-id="" onclick="selectQurbaniHistoryBank(this, null)" '
+                + 'style="padding:4px 10px; border-radius:14px; border:1px solid #CBD5E1; background:' + (p.receiving_account_id ? '#fff' : '#3B82F6') + '; color:' + (p.receiving_account_id ? '#334155' : '#fff') + '; font-size:11px; font-weight:600; cursor:pointer;">None</button>';
+            (QURBANI_RECEIVING_ACCOUNTS || []).forEach(function (acc) {
+                var active = String(acc.id) === String(p.receiving_account_id);
+                chips += '<button type="button" class="qpay-hist-bank-chip" data-bank-id="' + acc.id + '" onclick="selectQurbaniHistoryBank(this, ' + acc.id + ')" '
+                    + 'style="padding:4px 10px; border-radius:14px; border:1px solid #CBD5E1; background:' + (active ? '#3B82F6' : '#fff') + '; color:' + (active ? '#fff' : '#334155') + '; font-size:11px; font-weight:600; cursor:pointer;">'
+                    + (acc.short_code || acc.name) + '</button>';
+            });
+
+            var isOnlineMethod = (p.payment_method === 'online');
+            html += '<div style="border:1px solid #0EA5E9; border-radius:10px; padding:12px; margin-bottom:10px; background:#F0F9FF;">'
+                + '<div style="font-size:11px; color:#6b7280; margin-bottom:8px;">Editing payment of <b>PKR ' + Number(p.amount || 0).toLocaleString() + '</b> (' + methodLabel + ' on ' + dateStr + ')</div>'
+                + (isOnlineMethod ? ('<div style="margin-bottom:10px;"><label style="display:block; font-size:12px; font-weight:600; color:#0369A1; margin-bottom:6px;">🏦 Received in Bank</label><div id="qHistBankChips" style="display:flex; flex-wrap:wrap; gap:6px;">' + chips + '</div></div>') : '<div style="font-size:11px; color:#6b7280; margin-bottom:10px;">Cash payment — no receiving bank.</div>')
+                + '<div style="margin-bottom:10px;"><label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Reference</label>'
+                +   '<input type="text" id="qHistRef" value="' + escapeHtmlQ(p.reference || '') + '" placeholder="e.g. TX-9871231" style="width:100%; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;"></div>'
+                + '<div style="margin-bottom:10px;"><label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Notes</label>'
+                +   '<input type="text" id="qHistNotes" value="' + escapeHtmlQ(p.notes || '') + '" placeholder="Notes" style="width:100%; padding:7px 10px; border:1px solid #d1d5db; border-radius:6px; font-size:13px;"></div>'
+                + '<div style="display:flex; gap:8px; justify-content:flex-end;">'
+                +   '<button id="qHistCancelBtn" onclick="cancelQurbaniHistoryEdit()" style="padding:7px 14px; background:#f1f5f9; color:#475569; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">Cancel</button>'
+                +   '<button id="qHistSaveBtn" onclick="submitQurbaniHistoryEdit(' + p.id + ', \'' + p.payment_method + '\')" style="padding:7px 14px; background:#0369A1; color:#fff; border:none; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">Save</button>'
+                + '</div>'
+                + '</div>';
+
+            // Seed the in-flight editing bank id from what the server returned
+            // so a no-op save doesn't wipe the existing bank.
+            _qurbaniHistoryEditingBankId = p.receiving_account_id || null;
+        }
+    });
+    el.innerHTML = html;
+}
+
+var _qurbaniHistoryEditingBankId = null;
+
+function escapeHtmlQ(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function editQurbaniHistoryRow(paymentId) {
+    _qurbaniHistoryEditingId = paymentId;
+    fetch('/orders/' + _qurbaniHistoryOrderId + '/qurbani-payments', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.success) renderQurbaniHistoryList(data.payments || []);
+    });
+}
+
+function cancelQurbaniHistoryEdit() {
+    _qurbaniHistoryEditingId = null;
+    fetch('/orders/' + _qurbaniHistoryOrderId + '/qurbani-payments', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.success) renderQurbaniHistoryList(data.payments || []);
+    });
+}
+
+function selectQurbaniHistoryBank(el, bankId) {
+    _qurbaniHistoryEditingBankId = bankId || null;
+    document.querySelectorAll('.qpay-hist-bank-chip').forEach(function (c) {
+        c.style.background = '#fff';
+        c.style.color = '#334155';
+    });
+    el.style.background = '#3B82F6';
+    el.style.color = '#fff';
+}
+
+function submitQurbaniHistoryEdit(paymentId, paymentMethod) {
+    var btn = document.getElementById('qHistSaveBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+    var payload = {
+        reference: (document.getElementById('qHistRef') && document.getElementById('qHistRef').value) || null,
+        notes:     (document.getElementById('qHistNotes') && document.getElementById('qHistNotes').value) || null,
+    };
+    // Only send receiving_account_id for online payments; the server would
+    // ignore it for cash anyway but keeping the payload tight makes logs
+    // easier to read.
+    if (paymentMethod === 'online') {
+        payload.receiving_account_id = _qurbaniHistoryEditingBankId || null;
+    }
+
+    fetch('/orders/' + _qurbaniHistoryOrderId + '/qurbani-payments/' + paymentId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        body: JSON.stringify(payload),
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.success) {
+            _qurbaniHistoryEditingId = null;
+            // Reload the list so the saved row renders in read mode.
+            fetch('/orders/' + _qurbaniHistoryOrderId + '/qurbani-payments', {
+                method: 'GET',
+                headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken }
+            })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (d && d.success) renderQurbaniHistoryList(d.payments || []);
+            });
+        } else {
+            alert((data && data.message) ? (typeof data.message === 'string' ? data.message : 'Validation failed') : 'Failed to save');
+            if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+        }
+    })
+    .catch(function () {
+        alert('Network error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    });
+}
+
 function submitQurbaniPayment() {
     const amount = parseFloat(document.getElementById('qPayAmount').value);
     if (!amount || amount <= 0) { alert('Enter a valid amount'); return; }
-    const btn = document.getElementById('qPaySubmitBtn');
-    btn.disabled = true; btn.textContent = 'Saving...';
 
     const method = document.getElementById('qPayMethod').value;
+    // Receiving bank is mandatory for online payments — this keeps the
+    // ledger clean so finance always knows which account received the
+    // money. Server-side the column is still nullable (for historical
+    // rows + cash payments), so we enforce here at the UI boundary.
+    if (method === 'online' && !_qurbaniPaymentReceivingId) {
+        alert('Please select the receiving bank for this online payment.');
+        return;
+    }
+
+    const btn = document.getElementById('qPaySubmitBtn');
+    btn.disabled = true; btn.textContent = 'Saving...';
     const paymentDateEl = document.getElementById('qPayPaymentDate');
     const paymentDate = (paymentDateEl && paymentDateEl.value)
         ? paymentDateEl.value

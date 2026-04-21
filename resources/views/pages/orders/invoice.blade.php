@@ -984,12 +984,40 @@ $hideUnitPrice = request('hide_unit_price') == '1';
                     <td class="amount">Rs {{ number_format($subtotal, 0) }}</td>
                 </tr>
                 
+                @php
+                    // Qurbani self-collection rule: when the customer is
+                    // picking up (not delivery) AND no shipping amount was
+                    // entered, suppress the row entirely. Showing
+                    // "Free Delivery" in that case wrongly implies we are
+                    // offering free delivery on a self-pickup order.
+                    // Otherwise behaviour is unchanged: positive shipping
+                    // shows the amount, zero shipping shows "Free Delivery".
+                    $qSelfCollect = function ($v) {
+                        $s = strtolower(trim((string)($v ?? '')));
+                        return $s !== '' && str_contains($s, 'self');
+                    };
+                    $hasAnyQurbaniDT = false;
+                    $allQurbaniDTSelfCollect = true;
+                    foreach (($order->lineItems ?? []) as $__li) {
+                        $__dt = $__li->qurbani_delivery_type ?? null;
+                        if ($__dt) {
+                            $hasAnyQurbaniDT = true;
+                            if (!$qSelfCollect($__dt)) { $allQurbaniDTSelfCollect = false; }
+                        }
+                    }
+                    if (!$hasAnyQurbaniDT && !empty($order->qurbani_delivery_type)) {
+                        $hasAnyQurbaniDT = true;
+                        $allQurbaniDTSelfCollect = $qSelfCollect($order->qurbani_delivery_type);
+                    }
+                    $hideShippingRow = $hasAnyQurbaniDT && $allQurbaniDTSelfCollect
+                                       && (float)($order->shipping_total ?? 0) <= 0;
+                @endphp
                 @if($order->shipping_total && $order->shipping_total > 0)
                 <tr>
                     <td class="label">Shipping</td>
                     <td class="amount">Rs {{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
-                @else
+                @elseif(!$hideShippingRow)
                 <tr>
                     <td class="label">Shipping</td>
                     <td class="amount" style="color: #059669; font-weight: 600;">Free Delivery</td>

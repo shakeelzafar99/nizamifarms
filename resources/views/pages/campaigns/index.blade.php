@@ -213,10 +213,17 @@
 .camp-status-failed { background: #fee2e2; color: #dc2626; }
 .camp-status-skipped { background: #f1f5f9; color: #64748b; }
 .camp-status-pending { background: #fef3c7; color: #92400e; }
+.camp-status-excluded { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
 .camp-error-text {
     font-size: 10px;
     color: #dc2626;
     margin-top: 2px;
+}
+.camp-excluded-reason {
+    font-size: 10px;
+    color: #92400e;
+    margin-top: 2px;
+    font-style: italic;
 }
 
 /* Empty state */
@@ -462,6 +469,17 @@
     border-radius: 8px;
     margin-left: 4px;
 }
+.camp-shopify-badge {
+    background: #dcfce7;
+    color: #166534;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 8px;
+    margin-left: 4px;
+    border: 1px solid #86efac;
+    white-space: nowrap;
+}
 .camp-match-tags {
     display: flex;
     flex-wrap: wrap;
@@ -606,6 +624,24 @@
                 </div>
             </div>
 
+            {{-- Template-dedup guard. When > 0, customers who already
+                 received the selected template in the last N days get
+                 inserted as 'skipped' instead of 'pending' so they don't
+                 get the same message twice in a short window. Set to 0
+                 to turn the guard off and send to everyone regardless
+                 of prior sends. --}}
+            <div class="camp-form-row" style="margin-top:6px;">
+                <div class="camp-form-group" style="flex:1;">
+                    <label title="Skip customers who already received the selected template within this many days. 0 disables the check.">
+                        🚫 Don't re-send if template sent within (days)
+                    </label>
+                    <input type="number" id="filterDedupDays" value="30" min="0" max="365" placeholder="30">
+                    <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                        Uses WhatsApp send history. Set to <b>0</b> to disable.
+                    </div>
+                </div>
+            </div>
+
             <div style="display:flex;gap:10px;align-items:center;margin-top:12px;">
                 <button class="camp-btn camp-btn-secondary" onclick="previewCount()" id="previewBtn">
                     Preview Count
@@ -646,6 +682,19 @@
                 <label>Skip customers sent in these earlier campaigns</label>
                 <div id="excludeCampaignsBox_addMore" style="border:1px solid #d1d5db;border-radius:6px;padding:6px;max-height:120px;overflow-y:auto;background:#fafbfc;">
                     <div style="font-size:12px;color:#94a3b8;padding:6px;">Loading campaigns...</div>
+                </div>
+            </div>
+
+            {{-- Same dedup-window control as the Create modal so the user
+                 can refresh the rule when extending an existing campaign.
+                 The campaign already knows which template it uses — we
+                 just need the window value. --}}
+            <div class="camp-form-row" style="margin-top:12px;">
+                <div class="camp-form-group" style="flex:1;">
+                    <label title="Skip customers who already received this campaign's template within this many days. 0 disables the check.">
+                        🚫 Don't re-send if template sent within (days)
+                    </label>
+                    <input type="number" id="filterDedupDays_addMore" value="30" min="0" max="365" placeholder="30">
                 </div>
             </div>
 
@@ -707,6 +756,15 @@ let activeCampaign = null;
 let campaignCustomers = [];
 let campaignCounts = null;
 let customerStatusFilter = 'pending';
+// Client-side in-tab filters that narrow the currently-loaded campaign
+// customer list. Live search across name + phone + city, plus a Shopify
+// quick-filter chip. Both reset when switching tabs or campaigns so a user
+// never sees a mysteriously-empty list because they forgot they had a
+// filter on. Nothing here changes what the backend returns — we only
+// hide rows in the DOM — so selection, counts and retry-all are
+// unaffected unless we explicitly use the filtered set.
+let detailSearch = '';
+let detailSourceFilter = 'any'; // 'any' | 'shopify' | 'non_shopify'
 let selectedCustomerIds = [];
 let waTemplates = [];
 let selectedTemplateName = '';
@@ -744,6 +802,8 @@ async function loadCampaignDetail(id, statusFilter) {
     activeCampaignId = id;
     customerStatusFilter = statusFilter || 'pending';
     selectedCustomerIds = [];
+    detailSearch = '';
+    detailSourceFilter = 'any';
 
     const data = await apiFetch(`/campaigns/${id}?status=${customerStatusFilter}`);
     if (data.success) {
@@ -813,6 +873,45 @@ function renderCampaignList() {
     el.innerHTML = html;
 }
 
+// Apply the in-tab search + source chip to the currently-loaded
+// customer list. Runs purely in the browser over `campaignCustomers`,
+// which already reflects the selected status tab, so we never show
+// rows that don't belong to the active tab. Search is a case-insensitive
+// substring match against name, phone and city — the three things a user
+// is most likely to remember. Source chip uses the `is_shopify` flag
+// already supplied by the backend.
+function getFilteredCampaignCustomers() {
+    const src = (campaignCustomers || []);
+    const q = (detailSearch || '').trim().toLowerCase();
+    const source = detailSourceFilter || 'any';
+    if (!q && source === 'any') return src;
+    return src.filter(cu => {
+        if (source === 'shopify' && !Number(cu.is_shopify)) return false;
+        if (source === 'non_shopify' && Number(cu.is_shopify)) return false;
+        if (!q) return true;
+        const name = ((cu.first_name || '') + ' ' + (cu.last_name || '')).trim().toLowerCase();
+        const phone = (cu.phone || cu.phone_normalized || '').toLowerCase();
+        const city = (cu.city || '').toLowerCase();
+        return name.includes(q) || phone.includes(q) || city.includes(q);
+    });
+}
+
+function handleDetailSearch(val) {
+    detailSearch = val || '';
+    renderCampaignDetail();
+}
+
+function setDetailSourceFilter(val) {
+    detailSourceFilter = val || 'any';
+    renderCampaignDetail();
+}
+
+function clearDetailFilters() {
+    detailSearch = '';
+    detailSourceFilter = 'any';
+    renderCampaignDetail();
+}
+
 function renderCampaignDetail() {
     const el = document.getElementById('campDetail');
     if (!activeCampaign) {
@@ -820,12 +919,36 @@ function renderCampaignDetail() {
         return;
     }
 
+    // NF: preserve the customer-list scroll position across re-renders.
+    // Every checkbox toggle calls renderCampaignDetail() which replaces the
+    // entire inner HTML of #campDetail — including #campCustomersList — so the
+    // scroll position was resetting to 0 on every click, yanking the user
+    // back to the top. We snapshot the scrollTop here and restore it after
+    // the new DOM is in place (see end of function).
+    const _prevList = document.getElementById('campCustomersList');
+    const _prevScrollTop = _prevList ? _prevList.scrollTop : 0;
+
+    // NF: preserve focus + caret on the in-tab search input. The whole
+    // detail panel is re-rendered on every keystroke, so without this the
+    // input would lose focus after typing the first character.
+    const _prevSearchEl = document.getElementById('campDetailSearch');
+    const _searchWasFocused = _prevSearchEl && document.activeElement === _prevSearchEl;
+    const _searchCaret = _prevSearchEl ? _prevSearchEl.selectionStart : null;
+
     const c = activeCampaign;
     const counts = campaignCounts || {};
     const isEnded = c.status === 'ended';
-    const filterBtns = ['pending','sent','failed','skipped','all'].map(f => {
+    // "Excluded" is only rendered when there's actually someone to show —
+    // stops it from cluttering the tab strip for campaigns created before
+    // the dedup feature existed (they'll always have excluded=0).
+    const hasExcluded = (counts.excluded || 0) > 0 || customerStatusFilter === 'excluded';
+    const filterKeys = ['pending','sent','failed','skipped'];
+    if (hasExcluded) filterKeys.push('excluded');
+    filterKeys.push('all');
+    const filterBtns = filterKeys.map(f => {
         const count = f === 'all' ? (counts.total || 0) : (counts[f] || 0);
-        return `<button class="camp-filter-btn${customerStatusFilter === f ? ' active' : ''}" onclick="loadCampaignDetail(${c.id},'${f}')">${f.charAt(0).toUpperCase() + f.slice(1)} (${count})</button>`;
+        const label = f.charAt(0).toUpperCase() + f.slice(1);
+        return `<button class="camp-filter-btn${customerStatusFilter === f ? ' active' : ''}" onclick="loadCampaignDetail(${c.id},'${f}')">${label} (${count})</button>`;
     }).join('');
 
     let html = `
@@ -835,8 +958,9 @@ function renderCampaignDetail() {
                 <h3>${esc(c.name)} <span class="camp-badge ${c.status}">${c.status}</span></h3>
                 ${c.wa_template_name ? `<div class="camp-template-badge" style="margin-top:4px;"><i class="ki-filled ki-message-text" style="font-size:12px;"></i> Template: ${esc(c.wa_template_name)}</div>` : ''}
             </div>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button class="camp-btn camp-btn-secondary" onclick="openStatsModal(${c.id})"><i class="ki-filled ki-chart-line-up-2" style="font-size:14px;"></i> Stats</button>
+                ${(!isEnded && (c.dedup_window_days || 0) > 0 && c.wa_template_name) ? `<button class="camp-btn camp-btn-secondary" onclick="refreshDedup()" title="Re-check pending customers against recent template sends from other campaigns. Newly-matching customers move to the Excluded tab; nothing is sent."><i class="ki-filled ki-arrows-circle" style="font-size:14px;"></i> Refresh Dedup</button>` : ''}
                 ${!isEnded ? `<button class="camp-btn camp-btn-purple" onclick="openAddCustomersModal(${c.id}, '${esc(c.name).replace(/'/g, "\\'")}')">+ Add Customers</button>` : ''}
                 ${!isEnded ? `<button class="camp-btn camp-btn-danger" onclick="endCampaign(${c.id})">End Campaign</button>` : ''}
             </div>
@@ -847,18 +971,34 @@ function renderCampaignDetail() {
             <div class="camp-stat" style="color:#d97706;">Pending: <b>${counts.pending || 0}</b></div>
             <div class="camp-stat" style="color:#dc2626;">Failed: <b>${counts.failed || 0}</b></div>
             <div class="camp-stat">Skipped: <b>${counts.skipped || 0}</b></div>
+            ${(counts.excluded || 0) > 0 ? `<div class="camp-stat" style="color:#92400e;">Excluded: <b>${counts.excluded}</b></div>` : ''}
         </div>
     </div>
     <div class="camp-actions-bar">
         ${filterBtns}
     </div>`;
 
+    // Info strip shown only while the Excluded tab is active, so the
+    // operator immediately understands why these rows exist and that
+    // the system won't try to send to them.
+    if (customerStatusFilter === 'excluded') {
+        html += `<div style="margin:0 0 10px 0;padding:10px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5;">
+            <b>These customers matched your filter but were not queued</b> because they already received this template recently (shown per-row below). They will <b>not</b> be sent to — this tab is for audit only.
+        </div>`;
+    }
+
+    // While a chunked send is in-flight we build a short "(45/180)" suffix to
+    // reassure the user the batch is still progressing.
+    const progressSuffix = bulkProgress
+        ? ` (${bulkProgress.done}/${bulkProgress.total})`
+        : '';
+
     if (selectedCustomerIds.length > 0 && customerStatusFilter === 'pending' && !isEnded) {
         html += `
         <div class="camp-bulk-bar">
             <span>${selectedCustomerIds.length} selected</span>
             <button class="camp-btn camp-btn-primary camp-btn-lg" onclick="bulkSend()" ${bulkSending ? 'disabled' : ''}>
-                ${bulkSending ? '<span class="camp-spinner"></span> Sending...' : `Send (${selectedCustomerIds.length})`}
+                ${bulkSending ? `<span class="camp-spinner"></span> Sending...${progressSuffix}` : `Send (${selectedCustomerIds.length})`}
             </button>
             <button class="camp-btn camp-btn-secondary" onclick="clearSelection()">Clear</button>
         </div>`;
@@ -871,7 +1011,7 @@ function renderCampaignDetail() {
         <div class="camp-bulk-bar">
             <span>${campaignCustomers.length} failed</span>
             <button class="camp-btn camp-btn-primary camp-btn-lg" onclick="retryAllFailed()" ${bulkSending ? 'disabled' : ''}>
-                ${bulkSending ? '<span class="camp-spinner"></span> Retrying...' : `Retry All (${campaignCustomers.length})`}
+                ${bulkSending ? `<span class="camp-spinner"></span> Retrying...${progressSuffix}` : `Retry All (${campaignCustomers.length})`}
             </button>
             ${selectedCustomerIds.length > 0 ? `
                 <span style="margin-left:8px;">${selectedCustomerIds.length} selected</span>
@@ -883,21 +1023,58 @@ function renderCampaignDetail() {
 
     html += `<div class="camp-customers-list" id="campCustomersList">`;
 
+    // In-tab toolbar: live search + Shopify source chips. Only shown when
+    // the tab actually has customers loaded, so we don't clutter the
+    // empty state. Counts shown as "filtered / total" only when a filter
+    // is actually narrowing the list, so honest unfiltered counts stay
+    // visible the rest of the time.
+    const filteredCustomers = getFilteredCampaignCustomers();
+    const hasAnyDetailFilter = (detailSearch && detailSearch.trim() !== '') || (detailSourceFilter && detailSourceFilter !== 'any');
+    if (campaignCustomers.length > 0) {
+        const qEsc = esc(detailSearch || '');
+        const chip = (val, label) => `<button type="button" class="camp-filter-btn${detailSourceFilter === val ? ' active' : ''}" style="padding:4px 10px;font-size:12px;" onclick="setDetailSourceFilter('${val}')">${label}</button>`;
+        html += `
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:0 14px;">
+            <div style="position:relative;flex:1;min-width:200px;max-width:340px;">
+                <input type="text" id="campDetailSearch" value="${qEsc}" oninput="handleDetailSearch(this.value)" placeholder="Search name, phone or city..." style="width:100%;padding:6px 28px 6px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:13px;">
+                ${detailSearch ? `<span onclick="handleDetailSearch('')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;color:#94a3b8;font-size:14px;line-height:1;" title="Clear search">×</span>` : ''}
+            </div>
+            <div style="display:flex;gap:4px;">
+                ${chip('any', 'All')}
+                ${chip('shopify', '🛍 Shopify')}
+                ${chip('non_shopify', 'Non-Shopify')}
+            </div>
+            ${hasAnyDetailFilter ? `
+                <span style="font-size:11px;color:#64748b;">Showing <b>${filteredCustomers.length}</b> / ${campaignCustomers.length}</span>
+                <button type="button" class="camp-btn camp-btn-secondary" style="padding:3px 8px;font-size:11px;" onclick="clearDetailFilters()">Clear</button>
+            ` : ''}
+        </div>`;
+    }
+
     const selectableTab = (customerStatusFilter === 'pending' || customerStatusFilter === 'failed') && !isEnded;
-    if (selectableTab && campaignCustomers.length > 0) {
+    if (selectableTab && filteredCustomers.length > 0) {
+        // "Select All" targets the currently-visible (filtered) rows so it
+        // matches what the user actually sees. When no filter is active
+        // this collapses to the previous behaviour (select every row).
+        const selectableVisibleIds = filteredCustomers
+            .filter(c => c.campaign_status === (customerStatusFilter === 'failed' ? 'failed' : 'pending'))
+            .map(c => c.customer_id);
+        const allVisibleSelected = selectableVisibleIds.length > 0 && selectableVisibleIds.every(id => selectedCustomerIds.includes(id));
         html += `
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:0 14px;">
             <label class="camp-select-all">
-                <input type="checkbox" id="selectAllCb" onchange="toggleSelectAll(this.checked)" ${selectedCustomerIds.length === campaignCustomers.length && campaignCustomers.length > 0 ? 'checked' : ''}>
-                Select All (${campaignCustomers.length})
+                <input type="checkbox" id="selectAllCb" onchange="toggleSelectAll(this.checked)" ${allVisibleSelected ? 'checked' : ''}>
+                Select All (${selectableVisibleIds.length})
             </label>
         </div>`;
     }
 
-    if (!campaignCustomers.length) {
-        html += '<div style="text-align:center;padding:30px;color:#94a3b8;font-size:13px;">No customers in this filter</div>';
+    if (!filteredCustomers.length) {
+        html += hasAnyDetailFilter
+            ? `<div style="text-align:center;padding:30px;color:#94a3b8;font-size:13px;">No customers match your filters. <a href="#" onclick="clearDetailFilters();return false;" style="color:#7f56d9;">Clear filters</a></div>`
+            : '<div style="text-align:center;padding:30px;color:#94a3b8;font-size:13px;">No customers in this filter</div>';
     } else {
-        campaignCustomers.forEach(cu => {
+        filteredCustomers.forEach(cu => {
             const name = ((cu.first_name || '') + ' ' + (cu.last_name || '')).trim() || 'Unknown';
             const phone = cu.phone || cu.phone_normalized || '-';
             const isPending = cu.campaign_status === 'pending';
@@ -906,6 +1083,11 @@ function renderCampaignDetail() {
             const isChecked = selectedCustomerIds.includes(cu.customer_id);
 
             const replied = !!cu.replied_at;
+            // `is_shopify` is the derived column returned by the detail
+            // endpoint (EXISTS check against t_crm_prod_order SH-prefix
+            // within 300 days OR the `shopify` key in external_customer_ids).
+            // It comes back as 0/1 from MySQL, so coerce to boolean.
+            const isShopify = !!Number(cu.is_shopify);
             const matchTags = parseMatchTags(cu.match_tags);
             const tagsHtml = matchTags.length
                 ? `<div class="camp-match-tags">${matchTags.map(t => `<span class="camp-match-tag ${tagClass(t)}">${esc(t)}</span>`).join('')}</div>`
@@ -914,7 +1096,7 @@ function renderCampaignDetail() {
             <div class="camp-customer-row">
                 ${showCheckbox ? `<input type="checkbox" class="cust-checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCustomer(${cu.customer_id}, this.checked)">` : ''}
                 <div class="camp-customer-info">
-                    <div class="camp-customer-name">${esc(name)}${replied ? '<span class="camp-reply-badge">Replied</span>' : ''}</div>
+                    <div class="camp-customer-name">${esc(name)}${replied ? '<span class="camp-reply-badge">Replied</span>' : ''}${isShopify ? '<span class="camp-shopify-badge" title="Customer has ordered via Shopify">🛍 Shopify</span>' : ''}</div>
                     <div class="camp-customer-phone">${esc(phone)}</div>
                     <div class="camp-customer-details">
                         ${cu.city ? `<span>${esc(cu.city)}</span>` : ''}
@@ -922,10 +1104,31 @@ function renderCampaignDetail() {
                         ${cu.total_spent ? `<span>PKR ${parseFloat(cu.total_spent).toLocaleString()}</span>` : ''}
                     </div>
                     ${tagsHtml}
-                    ${cu.error_message ? `<div class="camp-error-text">${esc(cu.error_message)}</div>` : ''}
+                    ${(() => {
+                        // Dedup-excluded rows carry a 'Excluded:' error_message
+                        // prefix set at insert time. Surface it in a softer
+                        // amber style so it reads as info, not a hard error
+                        // like a failed WhatsApp send would.
+                        if (!cu.error_message) return '';
+                        const isDedup = typeof cu.error_message === 'string' && cu.error_message.indexOf('Excluded:') === 0;
+                        const cls = isDedup ? 'camp-excluded-reason' : 'camp-error-text';
+                        return `<div class="${cls}">${esc(cu.error_message)}</div>`;
+                    })()}
                 </div>
                 <div class="camp-customer-actions">
-                    <span class="camp-status-badge camp-status-${cu.campaign_status}">${cu.campaign_status}</span>
+                    ${(() => {
+                        // Show the dedicated 'Excluded' badge (amber) for
+                        // dedup-excluded rows, and keep the plain 'Skipped'
+                        // badge for operator-skipped rows. Both are
+                        // campaign_status='skipped' at the DB level.
+                        const isDedupExcluded = cu.campaign_status === 'skipped'
+                            && typeof cu.error_message === 'string'
+                            && cu.error_message.indexOf('Excluded:') === 0;
+                        if (isDedupExcluded) {
+                            return `<span class="camp-status-badge camp-status-excluded">Excluded</span>`;
+                        }
+                        return `<span class="camp-status-badge camp-status-${cu.campaign_status}">${cu.campaign_status}</span>`;
+                    })()}
                     ${isPending && !isEnded ? `
                         <button class="camp-btn camp-btn-primary" onclick="sendSingle(${cu.customer_id}, '${esc(name)}')">Send</button>
                         <button class="camp-btn camp-btn-secondary" onclick="skipCustomer(${cu.customer_id})">Skip</button>
@@ -941,6 +1144,26 @@ function renderCampaignDetail() {
 
     html += '</div>';
     el.innerHTML = html;
+
+    // NF: restore scroll position after the re-render. Use the fresh node
+    // created above (the old reference is now detached).
+    const _newList = document.getElementById('campCustomersList');
+    if (_newList && _prevScrollTop) {
+        _newList.scrollTop = _prevScrollTop;
+    }
+
+    // NF: restore focus + caret on the detail search input so typing
+    // feels continuous across the re-render triggered by each keystroke.
+    if (_searchWasFocused) {
+        const _newSearchEl = document.getElementById('campDetailSearch');
+        if (_newSearchEl) {
+            _newSearchEl.focus();
+            try {
+                const pos = _searchCaret != null ? _searchCaret : _newSearchEl.value.length;
+                _newSearchEl.setSelectionRange(pos, pos);
+            } catch (e) { /* ignore — some browsers don't support on all input types */ }
+        }
+    }
 }
 
 // ==========================================================================
@@ -957,12 +1180,23 @@ function toggleCustomer(customerId, checked) {
 }
 
 function toggleSelectAll(checked) {
+    // Select-all works on the currently-visible (filtered) rows so the
+    // user's mental model matches the UI. When no filter is active this
+    // is identical to selecting every row in the tab. When a filter is
+    // active, only visible rows get (de)selected — any prior selections
+    // on now-hidden rows are preserved on-check, and on-uncheck we only
+    // remove the visible ids so the rest of the selection survives.
+    const targetStatus = customerStatusFilter === 'failed' ? 'failed' : 'pending';
+    const visible = getFilteredCampaignCustomers()
+        .filter(c => c.campaign_status === targetStatus)
+        .map(c => c.customer_id);
     if (checked) {
-        // In the Failed tab select all failed rows; everywhere else stick to pending rows.
-        const targetStatus = customerStatusFilter === 'failed' ? 'failed' : 'pending';
-        selectedCustomerIds = campaignCustomers.filter(c => c.campaign_status === targetStatus).map(c => c.customer_id);
+        const merged = new Set(selectedCustomerIds);
+        visible.forEach(id => merged.add(id));
+        selectedCustomerIds = Array.from(merged);
     } else {
-        selectedCustomerIds = [];
+        const visibleSet = new Set(visible);
+        selectedCustomerIds = selectedCustomerIds.filter(id => !visibleSet.has(id));
     }
     renderCampaignDetail();
 }
@@ -996,6 +1230,79 @@ async function sendSingle(customerId, name) {
     }
 }
 
+// NF: size of each sub-batch sent to the server. Keep this small enough that
+// a single HTTP round-trip finishes well within the PHP/nginx/Cloudflare
+// timeout window even when Meta is slow. The server paces the per-customer
+// Meta API calls with a small sleep, so at ~200ms/message a 25-row chunk
+// finishes in ~5-6s — comfortably inside any proxy/server timeout and gives
+// us visible "X of N sent" progress updates between chunks.
+const CAMP_BULK_CHUNK_SIZE = 25;
+
+// Progress state — reflected in the Send/Retry button label while a bulk run
+// is in flight so the user can see it's still working on large batches.
+let bulkProgress = null; // {done, total, sent, failed}
+
+function chunk(arr, size) {
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+}
+
+// Runs the bulk send through /send-bulk in small sub-batches so long
+// campaigns (hundreds/thousands of customers) don't hit request timeouts
+// and the user sees progress. Every per-chunk response follows the same
+// shape as the single-shot endpoint so we can aggregate safely.
+async function runBulkInChunks(ids, includeFailed) {
+    const batches = chunk(ids, CAMP_BULK_CHUNK_SIZE);
+    // `excluded` counts rows the send-time dedup guard auto-moved to
+    // the Excluded tab (customer received this template from another
+    // campaign within the dedup window) — NOT the operator-Skipped tab.
+    // Aggregated across chunks so the end-of-run summary is accurate.
+    const agg = { sent: 0, failed: 0, excluded: 0, errors: [] };
+    bulkProgress = { done: 0, total: ids.length, sent: 0, failed: 0 };
+
+    for (let i = 0; i < batches.length; i++) {
+        const slice = batches[i];
+        try {
+            const body = { customer_ids: slice, body_params: ['@{{customer_name}}'] };
+            if (includeFailed) body.include_failed = true;
+            const data = await apiFetch(`/campaigns/${activeCampaignId}/send-bulk`, {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+            if (data.success && data.results) {
+                agg.sent += (data.results.sent || 0);
+                agg.failed += (data.results.failed || 0);
+                agg.excluded += (data.results.excluded || 0);
+                if (Array.isArray(data.results.errors)) {
+                    agg.errors = agg.errors.concat(data.results.errors);
+                }
+            } else {
+                // Whole chunk rejected by server (e.g. no eligible rows) — count
+                // the slice as failed so totals still reconcile for the user.
+                agg.failed += slice.length;
+                if (data.message) agg.errors.push({ error: data.message });
+            }
+        } catch (e) {
+            agg.failed += slice.length;
+            agg.errors.push({ error: 'Network error on chunk ' + (i + 1) });
+        }
+
+        bulkProgress.done += slice.length;
+        bulkProgress.sent = agg.sent;
+        bulkProgress.failed = agg.failed;
+        // Refresh the detail panel between chunks so the "Sending... (X/N)"
+        // label updates. We purposely don't reload counts from the server
+        // here — loadCampaignDetail() runs once at the end — because a mid-
+        // batch reload would rebuild the selection UI and could double-submit
+        // rows the user re-checked while the send is in flight.
+        renderCampaignDetail();
+    }
+
+    bulkProgress = null;
+    return agg;
+}
+
 async function bulkSend() {
     if (!activeCampaign?.wa_template_name || selectedCustomerIds.length === 0) return;
     if (!confirm(`Send "${activeCampaign.wa_template_name}" to ${selectedCustomerIds.length} customer(s)?`)) return;
@@ -1003,21 +1310,51 @@ async function bulkSend() {
     bulkSending = true;
     renderCampaignDetail();
 
-    const data = await apiFetch(`/campaigns/${activeCampaignId}/send-bulk`, {
-        method: 'POST',
-        body: JSON.stringify({ customer_ids: selectedCustomerIds, body_params: ['@{{customer_name}}'] })
-    });
+    const ids = selectedCustomerIds.slice();
+    const agg = await runBulkInChunks(ids, false);
 
     bulkSending = false;
+    selectedCustomerIds = [];
+    // Surface the dedup-guard action so the operator understands why
+    // `sent + failed` may be less than what they picked: the remainder
+    // is now sitting in the Excluded tab, not dropped silently.
+    const excludedMsg = agg.excluded > 0
+        ? `\nExcluded: ${agg.excluded} (already received this template recently — moved to Excluded tab, not sent)`
+        : '';
+    alert(`Bulk Send Complete\nSent: ${agg.sent}, Failed: ${agg.failed}${excludedMsg}${agg.errors.length ? '\n\nFirst errors:\n' + agg.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
+    loadCampaignDetail(activeCampaignId, customerStatusFilter);
+    loadCampaigns();
+}
 
-    if (data.success) {
-        const r = data.results;
-        selectedCustomerIds = [];
-        alert(`Bulk Send Complete\nSent: ${r.sent}, Failed: ${r.failed}${r.errors?.length ? '\n\nErrors:\n' + r.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
+// Manual re-check of the dedup window for this campaign. Re-evaluates
+// every pending customer against the current send history; matches move
+// to the Excluded tab (status='skipped' + 'Excluded:' prefix). Same
+// behaviour as the send-time guard but without actually sending anything
+// — useful when the operator wants to know the true pending count
+// before hitting Send on an old campaign.
+async function refreshDedup() {
+    if (!activeCampaignId) return;
+    if (!confirm('Refresh Dedup: re-check pending customers against recent sends. Matches will be moved to the Excluded tab (no messages will be sent). Continue?')) return;
+
+    try {
+        const data = await apiFetch(`/campaigns/${activeCampaignId}/refresh-dedup`, { method: 'POST' });
+        if (!data.success) {
+            alert(data.message || 'Failed to refresh dedup');
+            return;
+        }
+        const moved = data.moved || 0;
+        const scanned = data.pending_scanned || 0;
+        if (moved === 0 && scanned === 0) {
+            alert(data.message || 'No pending customers to re-check.');
+        } else if (moved === 0) {
+            alert(`Scanned ${scanned} pending customer(s). None needed to be excluded — your list is already up to date.`);
+        } else {
+            alert(`Scanned ${scanned} pending customer(s).\n${moved} moved to the Excluded tab (already received this template in the last ${data.dedup_window_days} day${data.dedup_window_days === 1 ? '' : 's'}).`);
+        }
         loadCampaignDetail(activeCampaignId, customerStatusFilter);
         loadCampaigns();
-    } else {
-        alert(data.message || 'Bulk send failed');
+    } catch (e) {
+        alert('Network error while refreshing dedup');
     }
 }
 
@@ -1053,22 +1390,17 @@ async function bulkRetry() {
     bulkSending = true;
     renderCampaignDetail();
 
-    const data = await apiFetch(`/campaigns/${activeCampaignId}/send-bulk`, {
-        method: 'POST',
-        body: JSON.stringify({ customer_ids: selectedCustomerIds, body_params: ['@{{customer_name}}'], include_failed: true })
-    });
+    const ids = selectedCustomerIds.slice();
+    const agg = await runBulkInChunks(ids, true);
 
     bulkSending = false;
-
-    if (data.success) {
-        const r = data.results;
-        selectedCustomerIds = [];
-        alert(`Retry Complete\nSent: ${r.sent}, Still Failed: ${r.failed}${r.errors?.length ? '\n\nErrors:\n' + r.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
-        loadCampaignDetail(activeCampaignId, customerStatusFilter);
-        loadCampaigns();
-    } else {
-        alert(data.message || 'Bulk retry failed');
-    }
+    selectedCustomerIds = [];
+    const exclRetryMsg = agg.excluded > 0
+        ? `\nExcluded: ${agg.excluded} (received this template elsewhere recently — moved to Excluded tab)`
+        : '';
+    alert(`Retry Complete\nSent: ${agg.sent}, Still Failed: ${agg.failed}${exclRetryMsg}${agg.errors.length ? '\n\nFirst errors:\n' + agg.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
+    loadCampaignDetail(activeCampaignId, customerStatusFilter);
+    loadCampaigns();
 }
 
 async function retryAllFailed() {
@@ -1080,22 +1412,16 @@ async function retryAllFailed() {
     bulkSending = true;
     renderCampaignDetail();
 
-    const data = await apiFetch(`/campaigns/${activeCampaignId}/send-bulk`, {
-        method: 'POST',
-        body: JSON.stringify({ customer_ids: allIds, body_params: ['@{{customer_name}}'], include_failed: true })
-    });
+    const agg = await runBulkInChunks(allIds, true);
 
     bulkSending = false;
-
-    if (data.success) {
-        const r = data.results;
-        selectedCustomerIds = [];
-        alert(`Retry All Complete\nSent: ${r.sent}, Still Failed: ${r.failed}${r.errors?.length ? '\n\nErrors:\n' + r.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
-        loadCampaignDetail(activeCampaignId, customerStatusFilter);
-        loadCampaigns();
-    } else {
-        alert(data.message || 'Retry all failed');
-    }
+    selectedCustomerIds = [];
+    const exclAllMsg = agg.excluded > 0
+        ? `\nExcluded: ${agg.excluded} (received this template elsewhere recently — moved to Excluded tab)`
+        : '';
+    alert(`Retry All Complete\nSent: ${agg.sent}, Still Failed: ${agg.failed}${exclAllMsg}${agg.errors.length ? '\n\nFirst errors:\n' + agg.errors.map(e => e.error).slice(0, 5).join('\n') : ''}`);
+    loadCampaignDetail(activeCampaignId, customerStatusFilter);
+    loadCampaigns();
 }
 
 async function skipCustomer(customerId) {
@@ -1184,6 +1510,12 @@ function resetCreateForm() {
     document.getElementById('filterSortDir').value = 'desc';
     document.getElementById('filterTrackingType').value = 'general';
     document.getElementById('filterTrackingDays').value = '30';
+    // Reset the template-dedup window to the default 30 days every time
+    // we open Create — it's a per-campaign decision, not a session
+    // preference. Present as a number input so the user can type 0 to
+    // disable the check if they want to force a re-send.
+    var dedupEl = document.getElementById('filterDedupDays');
+    if (dedupEl) dedupEl.value = '30';
     document.getElementById('previewResult').style.display = 'none';
     selectedTemplateName = '';
     updateTemplateSelectBtn();
@@ -1270,6 +1602,15 @@ function renderFilterGroups(scope = 'create') {
                 </select>
                 <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Only customers who placed a Qurbani order in this year (matches the Qurbani Dashboard definition).</div>
             </div>
+            <div class="camp-form-group">
+                <label>Source</label>
+                <select onchange="updateFilterGroup('${scope}', ${i}, 'source', this.value || null)">
+                    <option value=""             ${!g.source                  ? 'selected' : ''}>Any</option>
+                    <option value="shopify"      ${g.source === 'shopify'     ? 'selected' : ''}>🛍 Shopify only</option>
+                    <option value="non_shopify"  ${g.source === 'non_shopify' ? 'selected' : ''}>Non-Shopify only</option>
+                </select>
+                <div style="font-size:10px;color:#94a3b8;margin-top:4px;">Shopify = at least one SH-prefixed order in the last 300 days, or a Shopify customer-id on file.</div>
+            </div>
         </div>`;
     });
     el.innerHTML = html;
@@ -1339,6 +1680,24 @@ function renderPreviewResult(resEl, data, scope = 'create') {
     if (data.excluded_count > 0) pieces.push(`${data.excluded_count} excluded`);
     let html = `<div class="camp-preview-count">${pieces.join(' · ')}</div>`;
 
+    // Template-dedup breakdown. Only shown when the backend actually
+    // ran a dedup check (i.e. template + window were both provided).
+    // The "net will be sent" number is what really matters to the user
+    // — it's what ends up as 'pending' after dedup. Excluded customers
+    // are added to the campaign but land in a dedicated 'Excluded' tab
+    // for audit — they are NOT sent to.
+    if (data.already_sent_count > 0) {
+        const tpl = data.wa_template_name ? ` <span style="color:#64748b;">(${esc(data.wa_template_name)})</span>` : '';
+        html += `<div style="margin-top:8px;padding:8px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#92400e;line-height:1.5;">
+            <div><b>🚫 ${data.already_sent_count}</b> already received this template in the last <b>${data.dedup_window_days}</b> day${data.dedup_window_days === 1 ? '' : 's'}${tpl}</div>
+            <div style="margin-top:2px;"><b>✅ ${data.net_to_send}</b> will be queued to send. The other ${data.already_sent_count} will appear under the <b>Excluded</b> tab (not sent to).</div>
+        </div>`;
+    } else if (data.dedup_window_days > 0 && data.count > 0 && data.wa_template_name) {
+        // Reassurance state — the user picked a template + window but no
+        // one matches the recent-send set, so everybody will receive it.
+        html += `<div style="margin-top:6px;font-size:11px;color:#059669;">✅ No recent duplicates — all ${data.count} will be queued.</div>`;
+    }
+
     // Show per-group counts as a tiny breakdown
     const groups = filterGroups[scope];
     if (data.group_counts && groups && groups.length > 0) {
@@ -1365,9 +1724,18 @@ async function previewCount() {
     btn.disabled = true;
     btn.innerHTML = '<span class="camp-spinner camp-spinner-dark"></span>';
 
+    // Pass the selected template + dedup window so the backend can tell
+    // us how many of the matched customers already received this
+    // template recently. Both are optional: without a template, or with
+    // window=0, the backend simply returns already_sent_count=0.
+    const dedupDays = parseInt(document.getElementById('filterDedupDays')?.value);
     const data = await apiFetch('/campaigns/preview', {
         method: 'POST',
-        body: JSON.stringify({ filters: buildFilters('create') })
+        body: JSON.stringify({
+            filters: buildFilters('create'),
+            wa_template_name: selectedTemplateName || null,
+            dedup_window_days: Number.isFinite(dedupDays) ? dedupDays : 0,
+        })
     });
 
     btn.disabled = false;
@@ -1385,6 +1753,7 @@ async function createCampaign() {
     btn.disabled = true;
     btn.innerHTML = '<span class="camp-spinner"></span> Creating...';
 
+    const dedupDays = parseInt(document.getElementById('filterDedupDays')?.value);
     const data = await apiFetch('/campaigns/create', {
         method: 'POST',
         body: JSON.stringify({
@@ -1394,6 +1763,7 @@ async function createCampaign() {
             filters: buildFilters('create'),
             tracking_type: document.getElementById('filterTrackingType').value,
             tracking_window_days: parseInt(document.getElementById('filterTrackingDays').value) || 30,
+            dedup_window_days: Number.isFinite(dedupDays) ? dedupDays : 0,
         })
     });
 
@@ -1401,6 +1771,17 @@ async function createCampaign() {
     btn.innerHTML = 'Create Campaign';
 
     if (data.success) {
+        // Friendly one-liner summarising the dedup outcome. Only shown
+        // when dedup actually removed somebody; otherwise we stay silent.
+        // excluded_by_dedup customers are NOT in the campaign at all —
+        // the campaign's Total already reflects the net count.
+        if ((data.excluded_by_dedup || 0) > 0) {
+            alert(
+                `Campaign created.\n\n` +
+                `${data.pending_count} customer${data.pending_count === 1 ? '' : 's'} queued to send.\n` +
+                `${data.excluded_by_dedup} moved to the Excluded tab — already received "${selectedTemplateName}" in the last ${data.dedup_window_days} day${data.dedup_window_days === 1 ? '' : 's'} (will not be sent to).`
+            );
+        }
         closeCreateModal();
         loadCampaigns();
         loadCampaignDetail(data.campaign_id, 'pending');
@@ -1418,6 +1799,11 @@ function openAddCustomersModal(campaignId, campaignName) {
     filterGroups.addMore = [ {} ];
     document.getElementById('addCustomersTitle').textContent = `Add More Customers — ${campaignName}`;
     document.getElementById('previewAddResult').style.display = 'none';
+    // Default the dedup window to 30 every time we open, to match the
+    // Create Campaign modal and because this is a per-add choice rather
+    // than a persistent preference.
+    var dedupEl = document.getElementById('filterDedupDays_addMore');
+    if (dedupEl) dedupEl.value = '30';
     document.getElementById('addCustomersModal').classList.add('open');
     renderFilterGroups('addMore');
     renderExcludeCampaigns('addMore');
@@ -1437,9 +1823,20 @@ async function previewAddCustomers() {
     btn.disabled = true;
     btn.innerHTML = '<span class="camp-spinner camp-spinner-dark"></span>';
 
+    // When adding to an existing campaign the template is fixed by the
+    // campaign itself — we look it up from the active-campaigns list so
+    // the backend can apply the same dedup check. If the campaign isn't
+    // resolvable for any reason we just skip the template param and the
+    // preview falls back to plain filter-count.
+    const campaign = campaigns.find(c => c.id === addCustomersCampaignId);
+    const dedupDays = parseInt(document.getElementById('filterDedupDays_addMore')?.value);
     const data = await apiFetch('/campaigns/preview', {
         method: 'POST',
-        body: JSON.stringify({ filters: buildFilters('addMore') })
+        body: JSON.stringify({
+            filters: buildFilters('addMore'),
+            wa_template_name: campaign?.wa_template_name || null,
+            dedup_window_days: Number.isFinite(dedupDays) ? dedupDays : 0,
+        })
     });
 
     btn.disabled = false;
@@ -1454,9 +1851,13 @@ async function confirmAddCustomers() {
     btn.disabled = true;
     btn.innerHTML = '<span class="camp-spinner"></span> Adding...';
 
+    const dedupDays = parseInt(document.getElementById('filterDedupDays_addMore')?.value);
     const data = await apiFetch(`/campaigns/${addCustomersCampaignId}/add-customers`, {
         method: 'POST',
-        body: JSON.stringify({ filters: buildFilters('addMore') })
+        body: JSON.stringify({
+            filters: buildFilters('addMore'),
+            dedup_window_days: Number.isFinite(dedupDays) ? dedupDays : 0,
+        })
     });
 
     btn.disabled = false;
@@ -1465,10 +1866,16 @@ async function confirmAddCustomers() {
     if (data.success) {
         const skipped = data.already_in_campaign || 0;
         const excluded = data.excluded_count || 0;
+        // excluded_by_dedup = "new candidates we dropped from the insert
+        // because they already got this campaign's template recently".
+        // Distinct from already_in_campaign (= already part of this
+        // campaign at any status).
+        const dedupExcluded = data.excluded_by_dedup || 0;
         alert(
             `Added ${data.added} new customer${data.added === 1 ? '' : 's'}.` +
-            (skipped > 0 ? `\n${skipped} already in this campaign (skipped).` : '') +
-            (excluded > 0 ? `\n${excluded} excluded via earlier campaigns.` : '')
+            (skipped > 0 ? `\n${skipped} already in this campaign (not inserted).` : '') +
+            (excluded > 0 ? `\n${excluded} excluded via earlier campaigns.` : '') +
+            (dedupExcluded > 0 ? `\n${dedupExcluded} moved to the Excluded tab — already received this template in the last ${data.dedup_window_days} day${data.dedup_window_days === 1 ? '' : 's'} (will not be sent to).` : '')
         );
         closeAddCustomersModal();
         loadCampaignDetail(activeCampaignId, customerStatusFilter);

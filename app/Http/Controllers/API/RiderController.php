@@ -13987,6 +13987,7 @@ class RiderController extends Controller
                 'tracking_type' => 'nullable|string|in:general,products',
                 'tracked_product_ids' => 'nullable|array',
                 'tracking_window_days' => 'nullable|integer|min:1|max:365',
+                'dedup_window_days' => 'nullable|integer|min:0|max:365',
             ]);
 
             $filters = $request->input('filters', []);
@@ -13998,16 +13999,36 @@ class RiderController extends Controller
             $customerIds = $result['customer_ids'];
             $tagsById = $result['tags_by_id'] ?? [];
 
+            // Template-dedup: customers who already got this template
+            // in the last N days are still inserted into the campaign,
+            // but as status='skipped' with a distinguishing
+            // 'Excluded:' error_message prefix. The detail view has a
+            // dedicated Excluded tab for audit; they will NOT be sent
+            // to (sendBulk only pulls status='pending').
+            $templateName = (string) $request->input('wa_template_name');
+            $windowDays   = (int) $request->input('dedup_window_days', 0);
+            $alreadySentIds = $filterService->customersRecentlySentTemplate($customerIds, $templateName, $windowDays);
+            $alreadySentSet = array_flip($alreadySentIds);
+            $excludedByDedup = count($alreadySentIds);
+            $excludedReason = ($windowDays > 0 && $templateName !== '')
+                ? 'Excluded: already received template "' . $templateName . '" in last ' . $windowDays . ' day' . ($windowDays === 1 ? '' : 's')
+                : 'Excluded: recent template send';
+
             $campaignId = DB::table('t_crm_campaigns')->insertGetId([
                 'name' => $request->input('name'),
                 'status' => 'active',
                 'filters_json' => json_encode($filters),
                 'message_template' => $request->input('message_template', ''),
-                'wa_template_name' => $request->input('wa_template_name'),
+                'wa_template_name' => $templateName,
                 'wa_template_language' => $request->input('wa_template_language', 'en'),
                 'tracking_type' => $request->input('tracking_type', 'general'),
                 'tracked_product_ids' => $request->input('tracked_product_ids') ? json_encode($request->input('tracked_product_ids')) : null,
                 'tracking_window_days' => $request->input('tracking_window_days', 30),
+                // Persist the operator's dedup window so sendCampaignBulk()
+                // and Refresh Dedup can enforce it later. Matches web.
+                // 0 = dedup disabled (legacy campaigns pre-migration).
+                'dedup_window_days' => $windowDays,
+                // Full campaign size (pending + excluded). Matches web.
                 'total_customers' => count($customerIds),
                 'sent_count' => 0,
                 'created_by' => $user->id,
@@ -14017,15 +14038,25 @@ class RiderController extends Controller
 
             if (!empty($customerIds)) {
                 $hasTagsColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags');
-                $rows = array_map(function ($cId) use ($campaignId, $tagsById, $hasTagsColumn, $filterService) {
+                $hasErrColumn  = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'error_message');
+                // Laravel multi-row insert builds the column list from
+                // row 0, so every row in the batch must carry the same
+                // keys. Mixing rows that omit 'error_message' with rows
+                // that include it triggers MySQL 21S01. Always set it
+                // (null when not excluded) if the column exists.
+                $rows = array_map(function ($cId) use ($campaignId, $tagsById, $hasTagsColumn, $hasErrColumn, $filterService, $alreadySentSet, $excludedReason) {
+                    $isExcluded = isset($alreadySentSet[(int) $cId]);
                     $row = [
                         'campaign_id' => $campaignId,
                         'customer_id' => $cId,
-                        'status' => 'pending',
+                        'status' => $isExcluded ? 'skipped' : 'pending',
                         'created_at' => now(),
                     ];
                     if ($hasTagsColumn) {
                         $row['match_tags'] = $filterService->matchTagsJson($tagsById, (int) $cId);
+                    }
+                    if ($hasErrColumn) {
+                        $row['error_message'] = $isExcluded ? $excludedReason : null;
                     }
                     return $row;
                 }, $customerIds);
@@ -14039,6 +14070,10 @@ class RiderController extends Controller
                 'success' => true,
                 'campaign_id' => $campaignId,
                 'total_customers' => count($customerIds),
+                'pending_count' => count($customerIds) - $excludedByDedup,
+                'excluded_by_dedup' => $excludedByDedup,
+                'matched' => count($customerIds),
+                'dedup_window_days' => $windowDays,
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -14046,7 +14081,10 @@ class RiderController extends Controller
     }
 
     /**
-     * Preview: count matching customers for given filters (before creating)
+     * Preview: count matching customers for given filters (before creating).
+     * When wa_template_name + dedup_window_days are provided, also returns
+     * the count of customers that would be excluded because they already
+     * got the template in the window + the net queue size.
      */
     public function previewCampaign(Request $request)
     {
@@ -14054,11 +14092,27 @@ class RiderController extends Controller
             $filters = $request->input('filters', []);
             $filterService = app(\App\Services\CampaignFilterService::class);
             $result = $filterService->buildCustomerIdSet($filters);
+
+            $template   = trim((string) $request->input('wa_template_name', ''));
+            $windowDays = (int) $request->input('dedup_window_days', 0);
+            $alreadySentCount = 0;
+            if ($template !== '' && $windowDays > 0 && !empty($result['customer_ids'])) {
+                $alreadySentCount = count($filterService->customersRecentlySentTemplate(
+                    $result['customer_ids'],
+                    $template,
+                    $windowDays
+                ));
+            }
+
             return response()->json([
                 'success' => true,
                 'count' => count($result['customer_ids']),
                 'group_counts' => $result['group_counts'],
                 'excluded_count' => $result['excluded_count'],
+                'already_sent_count' => $alreadySentCount,
+                'net_to_send' => max(0, count($result['customer_ids']) - $alreadySentCount),
+                'dedup_window_days' => $windowDays,
+                'wa_template_name' => $template ?: null,
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -14103,6 +14157,14 @@ class RiderController extends Controller
                     'c.last_order_date'
                 );
 
+            // Derived Shopify-customer flag for the mobile badge. Same
+            // access pattern as the qurbani_year EXISTS already used in
+            // CampaignFilterService — hits the customer_id index and
+            // short-circuits. One boolean per returned row, no extra
+            // burden on list loads.
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $customersQuery->selectRaw('(' . $filterService->shopifyExistsExpr('c') . ') as is_shopify');
+
             // New columns are optional so mobile builds against older DBs still work.
             if (\Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'replied_at')) {
                 $customersQuery->addSelect('cc.replied_at');
@@ -14111,7 +14173,22 @@ class RiderController extends Controller
                 $customersQuery->addSelect('cc.match_tags');
             }
 
-            if ($statusFilter !== 'all') {
+            // "skipped" vs "excluded" both live under status='skipped' at
+            // the DB level — we split them via the 'Excluded:'
+            // error_message prefix set at insert time. Keeps parity with
+            // the web detail() endpoint and avoids an ENUM migration.
+            if ($statusFilter === 'excluded') {
+                $customersQuery
+                    ->where('cc.status', 'skipped')
+                    ->where('cc.error_message', 'LIKE', 'Excluded:%');
+            } elseif ($statusFilter === 'skipped') {
+                $customersQuery
+                    ->where('cc.status', 'skipped')
+                    ->where(function ($q) {
+                        $q->whereNull('cc.error_message')
+                          ->orWhere('cc.error_message', 'NOT LIKE', 'Excluded:%');
+                    });
+            } elseif ($statusFilter !== 'all') {
                 $customersQuery->where('cc.status', $statusFilter);
             }
 
@@ -14131,7 +14208,9 @@ class RiderController extends Controller
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
                 ")
                 ->first();
 
@@ -14176,7 +14255,9 @@ class RiderController extends Controller
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
                 ")
                 ->first();
 
@@ -14204,7 +14285,9 @@ class RiderController extends Controller
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
                 ")
                 ->first();
 
@@ -14267,10 +14350,85 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => "No {$label} customers found for the given IDs"], 422);
             }
 
-            $whatsapp = app(\App\Services\WhatsAppService::class);
-            $results = ['sent' => 0, 'failed' => 0, 'errors' => []];
+            // Send-time dedup guard — mirrors CampaignWebController::sendBulk().
+            // Catches pending customers who received the template via a
+            // newer campaign since this one was created. One batch-level
+            // lookup against the shared CampaignFilterService keeps web
+            // + mobile in lockstep on what "already received" means.
+            $dedupWindow = (int) ($campaign->dedup_window_days ?? 0);
+            $sendTimeExcluded = 0;
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            if ($dedupWindow > 0 && $templateName !== '') {
+                $batchIds = $customers->pluck('customer_id')->map(fn($v) => (int) $v)->all();
+                $nowExcludedIds = $filterService->customersRecentlySentTemplate(
+                    $batchIds,
+                    $templateName,
+                    $dedupWindow
+                );
+                if (!empty($nowExcludedIds)) {
+                    $excludedSet = array_flip($nowExcludedIds);
+                    $reason = 'Excluded: already received template "' . $templateName . '" in last '
+                        . $dedupWindow . ' day' . ($dedupWindow === 1 ? '' : 's');
 
-            foreach ($customers as $customer) {
+                    DB::table('t_crm_campaign_customers')
+                        ->where('campaign_id', $id)
+                        ->whereIn('customer_id', $nowExcludedIds)
+                        ->whereIn('status', $eligibleStatuses)
+                        ->update(['status' => 'skipped', 'error_message' => $reason, 'sent_at' => null]);
+
+                    $customers = $customers->reject(fn($c) => isset($excludedSet[(int) $c->customer_id]))->values();
+                    $sendTimeExcluded = count($nowExcludedIds);
+
+                    \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): dedup guard auto-excluded', [
+                        'campaign_id' => $id,
+                        'template' => $templateName,
+                        'window_days' => $dedupWindow,
+                        'excluded' => $sendTimeExcluded,
+                    ]);
+                }
+            }
+
+            if ($customers->isEmpty()) {
+                // Whole batch was auto-excluded by the guard — return
+                // success with the excluded count so the app can show a
+                // "nothing sent, N moved to Excluded" toast.
+                $counts = DB::table('t_crm_campaign_customers')
+                    ->where('campaign_id', $id)
+                    ->selectRaw("
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                        SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                        SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
+                    ")
+                    ->first();
+                return response()->json([
+                    'success' => true,
+                    'results' => ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []],
+                    'counts' => $counts,
+                ]);
+            }
+
+            $whatsapp = app(\App\Services\WhatsAppService::class);
+            $results = ['sent' => 0, 'failed' => 0, 'excluded' => $sendTimeExcluded, 'errors' => []];
+
+            // Pace outbound WhatsApp API calls to stay within Meta's per-second
+            // template throughput and reduce the chance of 131056 rate-limit
+            // errors on large retries. Mirrors the web sendBulk behaviour.
+            $total = $customers->count();
+            $paceMicros = $total > 1 ? 200_000 : 0;
+            \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): starting batch', [
+                'campaign_id'    => $id,
+                'template'       => $templateName,
+                'customer_count' => $total,
+                'include_failed' => $includeFailed,
+                'user_id'        => $user->id,
+            ]);
+
+            foreach ($customers as $index => $customer) {
+                if ($paceMicros && $index > 0) { usleep($paceMicros); }
+
                 $phone = $customer->phone_normalized ?: $customer->phone;
                 if (!$phone) {
                     DB::table('t_crm_campaign_customers')
@@ -14355,9 +14513,17 @@ class RiderController extends Controller
                     COUNT(*) as total,
                     SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
                     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status = 'skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
                 ")
                 ->first();
+
+            \Illuminate\Support\Facades\Log::info('Campaign bulk send (mobile): batch finished', [
+                'campaign_id' => $id,
+                'sent'        => $results['sent'],
+                'failed'      => $results['failed'],
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -14459,7 +14625,10 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Cannot add customers to an ended campaign'], 422);
             }
 
-            $request->validate(['filters' => 'required|array']);
+            $request->validate([
+                'filters' => 'required|array',
+                'dedup_window_days' => 'nullable|integer|min:0|max:365',
+            ]);
             $filters = $request->input('filters', []);
 
             $filterService = app(\App\Services\CampaignFilterService::class);
@@ -14475,6 +14644,8 @@ class RiderController extends Controller
                     'matched' => 0,
                     'excluded_count' => $result['excluded_count'],
                     'group_counts' => $result['group_counts'],
+                    'excluded_by_dedup' => 0,
+                    'dedup_window_days' => (int) $request->input('dedup_window_days', 0),
                 ]);
             }
 
@@ -14490,17 +14661,39 @@ class RiderController extends Controller
                 if (!isset($existingSet[$cId])) $toInsert[] = $cId;
             }
 
+            // Template-dedup — candidates who already received this
+            // campaign's template in the window are inserted as
+            // status='skipped' with the 'Excluded:' prefix so they
+            // land in the Excluded tab, not Pending or Skipped.
+            $windowDays = (int) $request->input('dedup_window_days', 0);
+            $templateName = (string) ($campaign->wa_template_name ?: '');
+            $alreadySentIds = $filterService->customersRecentlySentTemplate($toInsert, $templateName, $windowDays);
+            $alreadySentSet = array_flip($alreadySentIds);
+            $excludedByDedup = count($alreadySentIds);
+            $excludedReason = ($windowDays > 0 && $templateName !== '')
+                ? 'Excluded: already received template "' . $templateName . '" in last ' . $windowDays . ' day' . ($windowDays === 1 ? '' : 's')
+                : 'Excluded: recent template send';
+
             if (!empty($toInsert)) {
                 $hasTagsColumn = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'match_tags');
-                $rows = array_map(function ($cId) use ($id, $tagsById, $hasTagsColumn, $filterService) {
+                $hasErrColumn  = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_campaign_customers', 'error_message');
+                // Same row-shape rule as createCampaign() — always
+                // include error_message when the column exists, null
+                // for non-excluded rows. Otherwise Laravel's batch
+                // insert throws 21S01 at the first excluded row.
+                $rows = array_map(function ($cId) use ($id, $tagsById, $hasTagsColumn, $hasErrColumn, $filterService, $alreadySentSet, $excludedReason) {
+                    $isExcluded = isset($alreadySentSet[(int) $cId]);
                     $row = [
                         'campaign_id' => (int) $id,
                         'customer_id' => $cId,
-                        'status' => 'pending',
+                        'status' => $isExcluded ? 'skipped' : 'pending',
                         'created_at' => now(),
                     ];
                     if ($hasTagsColumn) {
                         $row['match_tags'] = $filterService->matchTagsJson($tagsById, (int) $cId);
+                    }
+                    if ($hasErrColumn) {
+                        $row['error_message'] = $isExcluded ? $excludedReason : null;
                     }
                     return $row;
                 }, $toInsert);
@@ -14516,19 +14709,125 @@ class RiderController extends Controller
 
             $counts = DB::table('t_crm_campaign_customers')
                 ->where('campaign_id', $id)
-                ->selectRaw("COUNT(*) as total, SUM(status='sent') as sent, SUM(status='pending') as pending, SUM(status='failed') as failed, SUM(status='skipped') as skipped")
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
+                ")
                 ->first();
 
             return response()->json([
                 'success' => true,
                 'added' => count($toInsert),
+                'added_pending' => count($toInsert) - $excludedByDedup,
                 'already_in_campaign' => count($candidateIds) - count($toInsert),
                 'matched' => count($candidateIds),
                 'excluded_count' => $result['excluded_count'],
                 'group_counts' => $result['group_counts'],
                 'counts' => $counts,
+                'excluded_by_dedup' => $excludedByDedup,
+                'dedup_window_days' => $windowDays,
             ]);
         } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Refresh template-dedup for an existing campaign (mobile parity with
+     * CampaignWebController::refreshDedup). Uses the campaign's stored
+     * dedup_window_days + wa_template_name — no user inputs beyond the
+     * campaign id — so the behaviour is identical whether the operator
+     * hits refresh from the web or mobile UI.
+     */
+    public function refreshCampaignDedup(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('view_campaigns')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $campaign = DB::table('t_crm_campaigns')->where('id', $id)->first();
+            if (!$campaign) {
+                return response()->json(['success' => false, 'message' => 'Campaign not found'], 404);
+            }
+
+            $templateName = (string) ($campaign->wa_template_name ?? '');
+            $windowDays   = (int) ($campaign->dedup_window_days ?? 0);
+
+            if ($windowDays <= 0 || $templateName === '') {
+                return response()->json([
+                    'success' => true,
+                    'moved'   => 0,
+                    'message' => 'Dedup is not enabled for this campaign (window or template not set).',
+                    'dedup_window_days' => $windowDays,
+                    'wa_template_name'  => $templateName ?: null,
+                ]);
+            }
+
+            $pendingIds = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->where('status', 'pending')
+                ->pluck('customer_id')
+                ->map(fn($v) => (int) $v)
+                ->all();
+
+            $filterService = app(\App\Services\CampaignFilterService::class);
+            $moved = 0;
+            if (!empty($pendingIds)) {
+                $nowExcludedIds = $filterService->customersRecentlySentTemplate(
+                    $pendingIds,
+                    $templateName,
+                    $windowDays
+                );
+
+                if (!empty($nowExcludedIds)) {
+                    $reason = 'Excluded: already received template "' . $templateName . '" in last '
+                        . $windowDays . ' day' . ($windowDays === 1 ? '' : 's');
+
+                    $moved = DB::table('t_crm_campaign_customers')
+                        ->where('campaign_id', $id)
+                        ->whereIn('customer_id', $nowExcludedIds)
+                        ->where('status', 'pending')
+                        ->update(['status' => 'skipped', 'error_message' => $reason]);
+                }
+            }
+
+            $counts = DB::table('t_crm_campaign_customers')
+                ->where('campaign_id', $id)
+                ->selectRaw("
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) as sent,
+                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status='skipped' AND (error_message IS NULL OR error_message NOT LIKE 'Excluded:%') THEN 1 ELSE 0 END) as skipped,
+                    SUM(CASE WHEN status='skipped' AND error_message LIKE 'Excluded:%' THEN 1 ELSE 0 END) as excluded
+                ")
+                ->first();
+
+            \Illuminate\Support\Facades\Log::info('Campaign dedup refresh (mobile)', [
+                'campaign_id' => $id,
+                'template'    => $templateName,
+                'window_days' => $windowDays,
+                'pending_scanned' => count($pendingIds),
+                'moved_to_excluded' => $moved,
+                'user_id' => $user->id,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'moved'   => $moved,
+                'pending_scanned' => count($pendingIds),
+                'dedup_window_days' => $windowDays,
+                'wa_template_name'  => $templateName,
+                'counts' => $counts,
+            ]);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Campaign dedup refresh failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -17138,6 +17437,101 @@ class RiderController extends Controller
             \DB::rollBack();
             \Log::error('Failed to add order payment', ['order_id' => $orderId, 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
             return response()->json(['success' => false, 'message' => 'Failed to record payment: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Mobile counterpart of OrderController@updateQurbaniPayment — lets the
+     * app patch non-financial metadata (receiving bank, reference, notes,
+     * stamp display fields) on an existing active payment. The ledger is
+     * NEVER touched here; amount / method / date remain immutable (use the
+     * void-and-readd flow for those).
+     */
+    public function updateOrderPayment(Request $request, $orderId, $paymentId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
+            $order = OrderModel::findOrFail($orderId);
+            $payment = \App\Models\CRM\OrderPaymentModel::where('order_id', $order->id)
+                ->where('id', $paymentId)
+                ->first();
+
+            if (!$payment) {
+                return response()->json(['success' => false, 'message' => 'Payment not found'], 404);
+            }
+            if ($payment->status !== 'active') {
+                return response()->json(['success' => false, 'message' => 'Voided payments cannot be edited'], 422);
+            }
+
+            $validated = $request->validate([
+                'reference' => 'nullable|string|max:255',
+                'notes' => 'nullable|string|max:1000',
+                'receiving_account_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
+                'sending_bank'    => 'nullable|string|max:100',
+                'stamp_date'      => 'nullable|date',
+                'stamp_ref_mode'  => 'nullable|string|in:reference,customer_name,blank',
+            ]);
+
+            $isOnline = in_array($payment->payment_method, ['online', 'bank_transfer', 'card']);
+
+            $updates = [];
+            if (array_key_exists('reference', $validated)) {
+                $updates['reference'] = $validated['reference'];
+            }
+            if (array_key_exists('notes', $validated)) {
+                $updates['notes'] = $validated['notes'];
+            }
+            if ($isOnline && array_key_exists('receiving_account_id', $validated)) {
+                $updates['receiving_account_id'] = $validated['receiving_account_id'];
+            }
+
+            if (!empty($updates)) {
+                $payment->fill($updates)->save();
+            }
+
+            $stampUpdates = [];
+            if (array_key_exists('sending_bank', $validated)) {
+                $stampUpdates['paid_stamp_sending_bank'] = $validated['sending_bank'];
+            }
+            if (array_key_exists('stamp_date', $validated)) {
+                $stampUpdates['paid_stamp_date'] = $validated['stamp_date'];
+            }
+            if (array_key_exists('stamp_ref_mode', $validated)) {
+                $stampUpdates['paid_stamp_ref_mode'] = $validated['stamp_ref_mode'];
+            }
+            if (!empty($stampUpdates)) {
+                $order->fill($stampUpdates)->save();
+            }
+
+            \Log::info('Order payment metadata updated', [
+                'order_id' => $order->id,
+                'payment_id' => $payment->id,
+                'user_id' => $user->id,
+                'updated_keys' => array_keys($updates),
+                'stamp_keys' => array_keys($stampUpdates),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment updated',
+                'payment' => [
+                    'id' => $payment->id,
+                    'reference' => $payment->reference,
+                    'notes' => $payment->notes,
+                    'receiving_account_id' => $payment->receiving_account_id,
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage(), 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to update order payment', [
+                'order_id' => $orderId, 'payment_id' => $paymentId, 'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to update payment: ' . $e->getMessage()], 500);
         }
     }
 

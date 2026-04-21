@@ -1,6 +1,30 @@
+   {{-- NF: Phase 1 sidebar visual polish. Pure CSS; no JS/ID/class names removed. --}}
+   <style>
+       /* Sidebar surface polish (phase 1) */
+       #sidebar .kt-menu-link { transition: background-color .15s ease, color .15s ease, border-color .15s ease; }
+       #sidebar .kt-menu-link:hover { background-color: #EFF6FF !important; } /* blue-50 */
+       #sidebar .kt-menu-link.nf-active {
+           background-color: #EFF6FF !important; /* blue-50 */
+           border-color: transparent !important;
+           box-shadow: inset 2px 0 0 #2563EB; /* blue-600 left accent */
+       }
+       #sidebar .kt-menu-link.nf-active .kt-menu-title { color: #1D4ED8 !important; font-weight: 600 !important; } /* blue-700 */
+       #sidebar .kt-menu-link.nf-active .kt-menu-icon,
+       #sidebar .kt-menu-link.nf-active .kt-menu-icon i { color: #1D4ED8 !important; }
+       /* Section headings: quieter + tighter so the nav has structure */
+       #sidebar .kt-menu-heading {
+           font-size: 11px !important;
+           font-weight: 600 !important;
+           letter-spacing: 0.06em !important;
+           color: #9CA3AF !important; /* gray-400 */
+       }
+       /* While the quick-search is active, force the Administration wrapper to be visible
+          so matches inside a collapsed section are still findable. */
+       #sidebar_menu.nf-searching #nf-admin-items { display: block !important; }
+   </style>
    <!-- Sidebar -->
-   <div class="kt-sidebar bg-gray-200 border-e border-gray-300 fixed top-0 bottom-0 z-20 hidden lg:flex flex-col items-stretch shrink-0 [--kt-drawer-enable:true] lg:[--kt-drawer-enable:false]" data-kt-drawer="true" data-kt-drawer-class="kt-drawer kt-drawer-start top-0 bottom-0" id="sidebar">
-       <div class="kt-sidebar-header hidden lg:flex flex-col items-stretch relative px-3 lg:px-6 shrink-0 border-b border-gray-300 pb-3" id="sidebar_header">
+   <div class="kt-sidebar bg-white border-e border-gray-200 fixed top-0 bottom-0 z-20 hidden lg:flex flex-col items-stretch shrink-0 [--kt-drawer-enable:true] lg:[--kt-drawer-enable:false]" data-kt-drawer="true" data-kt-drawer-class="kt-drawer kt-drawer-start top-0 bottom-0" id="sidebar">
+       <div class="kt-sidebar-header hidden lg:flex flex-col items-stretch relative px-3 lg:px-6 shrink-0 border-b border-gray-200 pb-3" id="sidebar_header">
            <div class="flex items-center justify-between py-3">
                <a class="text-gray-900 font-medium uppercase" href="/dashboard">
                    Nizami Farms
@@ -13,7 +37,7 @@
            
           <!-- (moved) user badge placed within menu area to avoid clipping -->
        </div>
-      <div class="kt-sidebar-content flex grow shrink-0 py-5 pe-2 bg-gray-100 overflow-hidden" id="sidebar_content">
+      <div class="kt-sidebar-content flex grow shrink-0 py-5 pe-2 bg-white overflow-hidden" id="sidebar_content">
               <div class="kt-scrollable-y-hover grow shrink-0 flex ps-2 lg:ps-5 pe-1 lg:pe-3 overflow-y-auto" 
                    style="scrollbar-width: thin; scrollbar-color: #9ca3af #f3f4f6;"
                    data-kt-scrollable="true" data-kt-scrollable-dependencies="#sidebar_header" data-kt-scrollable-height="auto" data-kt-scrollable-offset="0px" data-kt-scrollable-wrappers="#sidebar_content" id="sidebar_scrollable">
@@ -27,6 +51,14 @@
                           <span class="text-[12px] font-medium text-gray-800 truncate">
                               {{ auth()->user()->fullname ?? auth()->user()->name ?? 'User' }}
                           </span>
+                      </div>
+                      {{-- NF: Phase 2C — sidebar quick-search. Pure client-side DOM filter over .kt-menu-title text. --}}
+                      <div class="relative px-2 mb-2">
+                          <i class="ki-filled ki-magnifier absolute top-1/2 -translate-y-1/2 text-gray-400 text-[12px] pointer-events-none" style="inset-inline-start: 16px;"></i>
+                          <input id="nf-sidebar-search" type="text"
+                                 placeholder="Search menu…"
+                                 autocomplete="off" spellcheck="false"
+                                 class="w-full ps-8 pe-2 py-1.5 text-[12px] bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:border-blue-500 focus:bg-white transition-colors" />
                       </div>
                       @endif
                    <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
@@ -511,7 +543,7 @@
        <a href="/reports">
            <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                   📊
+                   <i class="ki-filled ki-chart-simple text-lg"></i>
                </span>
                <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
                    Reports
@@ -587,7 +619,7 @@
                    <a href="/approvals/online" title="Approve online payment invoices">
                        <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
                            <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
-                               💳
+                               <i class="ki-filled ki-credit-cart text-lg"></i>
                            </span>
                            <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900 flex-1">
                                Online Approvals
@@ -625,13 +657,26 @@
                 @endif
                 @endif
                  
-                <!-- Administration Section -->
+                <!-- Administration Section (Phase 2B: collapsible for non-riders, remembered in localStorage) -->
+                @if($userRole !== 'rider')
+                <div class="kt-menu-item pt-2.25 pb-px">
+                    <button type="button" id="nf-admin-toggle"
+                            class="flex items-center gap-1.5 w-full text-left ps-[10px] pe-[10px] py-0 bg-transparent border-0 cursor-pointer group">
+                        <span class="kt-menu-heading uppercase text-xs font-medium text-gray-400 group-hover:text-gray-600 transition-colors">
+                            Administration
+                        </span>
+                        <i id="nf-admin-chevron" class="ki-filled ki-down text-[10px] text-gray-400 group-hover:text-gray-600 transition-transform"></i>
+                    </button>
+                </div>
+                @else
                 <div class="kt-menu-item pt-2.25 pb-px">
                     <span class="kt-menu-heading uppercase text-xs font-medium text-gray-400 ps-[10px] pe-[10px]">
                         Administration
                     </span>
                 </div>
-                 
+                @endif
+
+                <div id="nf-admin-items">
                  @if($userRole !== 'rider')
                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                      <a href="/admin/operations">
@@ -791,7 +836,8 @@
                         </a>
                     </div>
                     @endif
-                    
+                </div>{{-- /#nf-admin-items --}}
+
                     <!-- Logout Section -->
                     @if(auth()->check())
                     <div class="kt-menu-item pt-4 pb-2">
@@ -854,3 +900,141 @@
    }
    </script>
    @endif
+
+   {{-- NF: Phase 1 active-route tagger. Marks the best-matching sidebar link with .nf-active.
+        Pure DOM tagging; no navigation, no fetch, no handlers touched. --}}
+   <script>
+   (function() {
+       try {
+           var currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+           var currentSource = new URLSearchParams(window.location.search).get('source');
+           var links = document.querySelectorAll('#sidebar_menu a[href]');
+           var best = null, bestLen = -1;
+           links.forEach(function(a) {
+               var href = a.getAttribute('href') || '';
+               if (!href || href === '#' || href.charAt(0) !== '/') return;
+               var url;
+               try { url = new URL(href, window.location.origin); } catch (e) { return; }
+               var linkPath = url.pathname.replace(/\/+$/, '') || '/';
+               var linkSource = url.searchParams.get('source');
+               var pathMatch = (currentPath === linkPath) ||
+                               (linkPath !== '/' && currentPath.indexOf(linkPath + '/') === 0);
+               if (!pathMatch) return;
+               // Disambiguate /orders (Invoices, no source) vs /orders?source=shopify (Shopify).
+               if ((linkSource || null) !== (currentSource || null)) return;
+               if (linkPath.length > bestLen) { best = a; bestLen = linkPath.length; }
+           });
+           if (best) {
+               var div = best.querySelector('.kt-menu-link');
+               if (div) div.classList.add('nf-active');
+           }
+       } catch (e) { /* never break the sidebar */ }
+   })();
+
+   /* NF: Phase 2B — Administration collapsible. Default expanded; state remembered per-user in localStorage.
+      Only attaches if the toggle button exists (non-rider users). Fails silent if localStorage is blocked. */
+   (function() {
+       try {
+           var toggle = document.getElementById('nf-admin-toggle');
+           var items = document.getElementById('nf-admin-items');
+           var chevron = document.getElementById('nf-admin-chevron');
+           if (!toggle || !items) return;
+           var STORAGE_KEY = 'nfAdminCollapsed';
+           function apply(collapsed) {
+               items.style.display = collapsed ? 'none' : '';
+               if (chevron) chevron.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+               toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+           }
+           var initial = false;
+           try { initial = localStorage.getItem(STORAGE_KEY) === '1'; } catch (e) {}
+           apply(initial);
+           toggle.addEventListener('click', function() {
+               var nowCollapsed = items.style.display !== 'none' ? true : false;
+               apply(nowCollapsed);
+               try { localStorage.setItem(STORAGE_KEY, nowCollapsed ? '1' : '0'); } catch (e) {}
+           });
+       } catch (e) { /* never break the sidebar */ }
+   })();
+
+   /* NF: Phase 2C — Sidebar quick-search. Pure DOM filter; no fetch, no state beyond the input. */
+   (function() {
+       try {
+           var input = document.getElementById('nf-sidebar-search');
+           var menu = document.getElementById('sidebar_menu');
+           if (!input || !menu) return;
+
+           // Collect top-level leaf items in document order; headings mark section boundaries.
+           var children = Array.prototype.slice.call(menu.children);
+           // Each entry is either {type:'heading', el}, {type:'leaf', el, title} or {type:'wrapper', el}.
+           // For #nf-admin-items wrapper we descend into its direct children so they are filtered too.
+           function classify(el) {
+               if (!el || el.nodeType !== 1) return null;
+               if (el.id === 'nf-admin-items') return { type: 'wrapper', el: el };
+               if (el.classList && el.classList.contains('kt-menu-item')) {
+                   if (el.querySelector(':scope > button#nf-admin-toggle')) {
+                       return { type: 'heading', el: el };
+                   }
+                   if (el.querySelector(':scope > .kt-menu-heading') ||
+                       (el.children.length === 1 && el.firstElementChild &&
+                        el.firstElementChild.querySelector && el.firstElementChild.querySelector('.kt-menu-heading'))) {
+                       return { type: 'heading', el: el };
+                   }
+                   var titleEl = el.querySelector('.kt-menu-title');
+                   if (titleEl) return { type: 'leaf', el: el, title: (titleEl.textContent || '').toLowerCase() };
+               }
+               return null;
+           }
+
+           var sections = []; // flat list of classified nodes, preserving order
+           children.forEach(function(c) {
+               var info = classify(c);
+               if (!info) return;
+               if (info.type === 'wrapper') {
+                   Array.prototype.slice.call(c.children).forEach(function(sub) {
+                       var subInfo = classify(sub);
+                       if (subInfo) sections.push(subInfo);
+                   });
+               } else {
+                   sections.push(info);
+               }
+           });
+
+           function filter(term) {
+               term = (term || '').trim().toLowerCase();
+               if (!term) {
+                   sections.forEach(function(s) { s.el.style.display = ''; });
+                   menu.classList.remove('nf-searching');
+                   return;
+               }
+               menu.classList.add('nf-searching');
+               // First pass: show/hide leaves by match
+               var lastHeading = null;
+               var headingHasMatch = false;
+               function finalizeHeading() {
+                   if (lastHeading) lastHeading.el.style.display = headingHasMatch ? '' : 'none';
+               }
+               sections.forEach(function(s) {
+                   if (s.type === 'heading') {
+                       finalizeHeading();
+                       lastHeading = s;
+                       headingHasMatch = false;
+                       s.el.style.display = 'none'; // optimistic; revealed if a leaf matches below
+                   } else if (s.type === 'leaf') {
+                       var match = s.title.indexOf(term) !== -1;
+                       s.el.style.display = match ? '' : 'none';
+                       if (match) {
+                           headingHasMatch = true;
+                           if (lastHeading) lastHeading.el.style.display = '';
+                       }
+                   }
+               });
+               finalizeHeading();
+           }
+
+           input.addEventListener('input', function() { filter(input.value); });
+           input.addEventListener('keydown', function(e) {
+               if (e.key === 'Escape') { input.value = ''; filter(''); input.blur(); }
+           });
+       } catch (e) { /* never break the sidebar */ }
+   })();
+   </script>

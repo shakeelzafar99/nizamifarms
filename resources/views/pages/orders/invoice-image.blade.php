@@ -516,12 +516,37 @@
                     <td class="amount">Rs {{ number_format($subtotal, 0) }}</td>
                 </tr>
                 
+                @php
+                    // Qurbani self-collection rule — see invoice.blade.php
+                    // for the detailed reasoning. This template drives the
+                    // WhatsApp invoice image, so the customer-facing impact
+                    // of a misleading "Free Delivery" line is highest here.
+                    $qSelfCollect = function ($v) {
+                        $s = strtolower(trim((string)($v ?? '')));
+                        return $s !== '' && str_contains($s, 'self');
+                    };
+                    $hasAnyQurbaniDT = false;
+                    $allQurbaniDTSelfCollect = true;
+                    foreach (($order->lineItems ?? []) as $__li) {
+                        $__dt = $__li->qurbani_delivery_type ?? null;
+                        if ($__dt) {
+                            $hasAnyQurbaniDT = true;
+                            if (!$qSelfCollect($__dt)) { $allQurbaniDTSelfCollect = false; }
+                        }
+                    }
+                    if (!$hasAnyQurbaniDT && !empty($order->qurbani_delivery_type)) {
+                        $hasAnyQurbaniDT = true;
+                        $allQurbaniDTSelfCollect = $qSelfCollect($order->qurbani_delivery_type);
+                    }
+                    $hideShippingRow = $hasAnyQurbaniDT && $allQurbaniDTSelfCollect
+                                       && (float)($order->shipping_total ?? 0) <= 0;
+                @endphp
                 @if($order->shipping_total && $order->shipping_total > 0)
                 <tr>
                     <td class="label">Shipping</td>
                     <td class="amount">Rs {{ number_format($order->shipping_total, 0) }}</td>
                 </tr>
-                @else
+                @elseif(!$hideShippingRow)
                 <tr>
                     <td class="label">Shipping</td>
                     <td class="amount" style="color: #059669; font-weight: 600;">Free Delivery</td>

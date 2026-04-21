@@ -34,6 +34,64 @@ use App\Models\CRM\CustomerModel;
 class CampaignFilterService
 {
     /**
+     * How far back we look when classifying a customer as "Shopify".
+     * 300 days keeps the window wide enough to not churn a customer out of
+     * the segment between two Qurbani seasons, while still reflecting
+     * roughly "this customer is currently using Shopify".
+     *
+     * If you ever need to tune this, it's the ONLY place it lives — both
+     * the campaigns preview filter and the per-customer badge query read
+     * this constant via `shopifyExistsExpr()`, so web and mobile stay in
+     * lockstep automatically.
+     */
+    public const SHOPIFY_RECENT_WINDOW_DAYS = 300;
+
+    /**
+     * A raw-SQL boolean expression that is TRUE when the given customer row
+     * should be classified as a Shopify customer.
+     *
+     * Uses a **combo** (user-requested):
+     *   • Primary signal: the customer has at least one approved production
+     *     order whose `order_number` starts with 'SH' within the recent
+     *     window (SH-prefix is how `OrderController@convertShopifyOrder`
+     *     tags Shopify orders once they're promoted into `t_crm_prod_order`).
+     *   • Guardrail: the customer's `external_customer_ids` JSON contains a
+     *     `shopify` key (set by `CustomerModel::findOrCreateByPhone` the
+     *     first time a Shopify order for that phone is seen, including ones
+     *     that are still pending approval in `t_crm_shopify_order`).
+     *
+     * Why both? The primary signal is the truthful ledger-based answer; the
+     * guardrail catches rows where the Shopify order is still awaiting
+     * approval (so it hasn't promoted to `t_crm_prod_order` yet) OR where
+     * the customer's last Shopify order is older than 300 days but we still
+     * want to preserve their Shopify identity.
+     *
+     * Performance: the EXISTS uses the existing `customer_id` index on
+     * `t_crm_prod_order`, short-circuits on first match, and is the same
+     * access pattern already used for `qurbani_year` (see
+     * `buildFilterGroupQuery`). The JSON check is evaluated on the already-
+     * loaded customer row and costs microseconds. No new index needed.
+     *
+     * @param string $customerAlias Alias or table name the customer row
+     *                              is referenced by in the outer query.
+     *                              Defaults to the unaliased table name,
+     *                              matching how `buildFilterGroupQuery`
+     *                              references it today.
+     */
+    public function shopifyExistsExpr(string $customerAlias = 't_crm_prod_customer'): string
+    {
+        $days = (int) self::SHOPIFY_RECENT_WINDOW_DAYS;
+        // NOTE: using a single-quoted SQL literal for the JSON path so MySQL
+        // sees the `$` as part of `$.shopify`, and escaping the `$` in the
+        // PHP double-quoted string so PHP does not try to interpolate it.
+        return '(EXISTS (SELECT 1 FROM t_crm_prod_order o_sh '
+             .        'WHERE o_sh.customer_id = ' . $customerAlias . '.id '
+             .          "AND o_sh.order_number LIKE 'SH%' "
+             .          "AND o_sh.order_date >= DATE_SUB(NOW(), INTERVAL {$days} DAY)) "
+             .  'OR JSON_EXTRACT(' . $customerAlias . ".external_customer_ids, '\$.shopify') IS NOT NULL)";
+    }
+
+    /**
      * Build the deduplicated customer-id set for a filter payload.
      *
      * Returns:
@@ -141,6 +199,11 @@ class CampaignFilterService
             if ($group['activity'] === '30day') $parts[] = '30d active';
             elseif ($group['activity'] === '90day') $parts[] = '90d active';
         }
+        if (!empty($group['source']) && is_string($group['source'])) {
+            $src = strtolower($group['source']);
+            if ($src === 'shopify')      $parts[] = 'Shopify only';
+            elseif ($src === 'non_shopify') $parts[] = 'Non-Shopify only';
+        }
         if (!empty($group['city'])) $parts[] = (string) $group['city'];
         if (isset($group['min_spend']) && $group['min_spend'] !== '' && $group['min_spend'] !== null) {
             $parts[] = '≥ ' . number_format((float) $group['min_spend']);
@@ -187,6 +250,21 @@ class CampaignFilterService
         }
         if (isset($group['max_spend']) && $group['max_spend'] !== '' && $group['max_spend'] !== null) {
             $query->where('total_spent', '<=', (float) $group['max_spend']);
+        }
+
+        // Shopify source filter. Three-state: 'shopify' | 'non_shopify' | 'any'
+        // (or absent → same as 'any'). Uses the same access pattern as the
+        // qurbani_year EXISTS below, so there is no new burden — MySQL hits
+        // the `customer_id` index on `t_crm_prod_order` and short-circuits
+        // on first match.
+        if (!empty($group['source']) && is_string($group['source'])) {
+            $src = strtolower($group['source']);
+            if ($src === 'shopify') {
+                $query->whereRaw($this->shopifyExistsExpr('t_crm_prod_customer'));
+            } elseif ($src === 'non_shopify') {
+                $query->whereRaw('NOT ' . $this->shopifyExistsExpr('t_crm_prod_customer'));
+            }
+            // 'any' or anything else → no filter applied (explicit no-op).
         }
 
         // Qurbani-year: customers who have at least one Qurbani order in the
@@ -292,5 +370,50 @@ class CampaignFilterService
     {
         if (empty($tagsById[$customerId])) return null;
         return json_encode(array_values($tagsById[$customerId]), JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Return the subset of $customerIds that already received a WhatsApp
+     * message for $templateName in the last $windowDays days. Sources
+     * from t_wa_messages (outbound only, not failed) so a customer who
+     * was sent the same template via ANY earlier campaign — or a one-off
+     * manual send — still counts as "already got it". Null/empty template
+     * or non-positive window short-circuits to an empty set so the caller
+     * can disable the check by just omitting those inputs.
+     *
+     * Both campaign entry points (CampaignWebController + RiderController)
+     * call this so web + mobile stay in lockstep and can't drift on what
+     * "already received" actually means.
+     */
+    public function customersRecentlySentTemplate(array $customerIds, string $templateName, int $windowDays): array
+    {
+        $templateName = trim($templateName);
+        if ($templateName === '' || $windowDays <= 0 || empty($customerIds)) {
+            return [];
+        }
+        if (!Schema::hasTable('t_wa_messages') || !Schema::hasTable('t_wa_conversations')) {
+            return [];
+        }
+
+        $cutoff = \Carbon\Carbon::now()->subDays($windowDays);
+
+        return DB::table('t_wa_messages as m')
+            ->join('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+            ->whereNotNull('c.customer_id')
+            ->whereIn('c.customer_id', $customerIds)
+            ->where('m.direction', 'outbound')
+            ->where('m.template_name', $templateName)
+            ->where('m.created_at', '>=', $cutoff)
+            // "failed" here = send API call failed outright. Webhook
+            // delivery failures (status=delivered-then-undelivered)
+            // still count as "the customer saw it in WhatsApp".
+            ->where(function ($q) {
+                $q->whereNull('m.status')->orWhere('m.status', '!=', 'failed');
+            })
+            ->pluck('c.customer_id')
+            ->map(fn ($v) => (int) $v)
+            ->unique()
+            ->values()
+            ->all();
     }
 }

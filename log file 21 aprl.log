@@ -1,0 +1,285 @@
+[2026-04-21 00:09:11] local.INFO: Vendor payment approval check {"vendor_id":8,"vendor_name":"Iqbal Meat Shop (Shahbaz)","amount":"150000","payment_source":"Online Bank","payment_source_code":"ONLINE","requires_approval":false,"approval_status":"approved","category_found":true,"config_exists":true} 
+[2026-04-21 00:21:58] local.INFO: Partial update detected (pop-out mode) {"order_id":"11580","order_number":"QUR26-011","fields_sent":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","items","discounts"]} 
+[2026-04-21 00:21:58] local.INFO: Update: All discounts removed {"order_id":"11580"} 
+[2026-04-21 00:21:58] local.INFO: Partial update - preserving operational fields {"order_id":11580,"order_number":"QUR26-011","fields_updated":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","discounts","items","discount_total"],"fields_preserved":{"order_status":"new","expected_packets":null,"payment_method":"cash","assigned_rider_user_id":null}} 
+[2026-04-21 00:22:18] local.INFO: Partial update detected (pop-out mode) {"order_id":"11580","order_number":"QUR26-011","fields_sent":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","items","discounts"]} 
+[2026-04-21 00:22:18] local.INFO: Update: All discounts removed {"order_id":"11580"} 
+[2026-04-21 00:22:18] local.INFO: Partial update - preserving operational fields {"order_id":11580,"order_number":"QUR26-011","fields_updated":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","discounts","items","discount_total"],"fields_preserved":{"order_status":"new","expected_packets":null,"payment_method":"cash","assigned_rider_user_id":null}} 
+[2026-04-21 00:48:00] local.INFO: Shopify order webhook received {"shopify_order_id":7133051158817,"order_number":19392,"total":"4040.00","ip":"34.61.151.24"} 
+[2026-04-21 00:48:00] local.INFO: Normalizing payment method {"original":"Regular Meat: Direct Bank Transfer","lowercase":"regular meat: direct bank transfer"} 
+[2026-04-21 00:48:00] local.INFO: Payment method normalized {"original":"Regular Meat: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 00:48:00] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5140,"order_number":19392,"is_shopify":true,"line_items_count":2,"is_update":false,"skus":["PH-SF","PB-MC"]} 
+[2026-04-21 00:48:00] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5140,"saved_count":2} 
+[2026-04-21 00:48:00] local.INFO: Shopify order stored in approval queue {"local_id":5140,"shopify_order_id":7133051158817,"order_number":19392,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 01:17:04] local.INFO: Partial update detected (pop-out mode) {"order_id":"11513","order_number":"QUR26-003","fields_sent":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","items","discounts"]} 
+[2026-04-21 01:17:04] local.INFO: Update: All discounts removed {"order_id":"11513"} 
+[2026-04-21 01:17:04] local.INFO: Partial update - preserving operational fields {"order_id":11513,"order_number":"QUR26-003","fields_updated":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","discounts","items","discount_total"],"fields_preserved":{"order_status":"new","expected_packets":null,"payment_method":"cash","assigned_rider_user_id":85}} 
+[2026-04-21 01:46:50] local.INFO: Shopify order webhook received {"shopify_order_id":7133178003745,"order_number":19393,"total":"11140.00","ip":"136.116.13.90"} 
+[2026-04-21 01:46:50] local.INFO: Normalizing payment method {"original":"Regular Meat: Direct Bank Transfer","lowercase":"regular meat: direct bank transfer"} 
+[2026-04-21 01:46:50] local.INFO: Payment method normalized {"original":"Regular Meat: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 01:46:50] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5141,"order_number":19393,"is_shopify":true,"line_items_count":6,"is_update":false,"skus":["P15-KWH","B10-OXT","B11-CCL","B6-TC","B5-VSBB","B1-BL"]} 
+[2026-04-21 01:46:50] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5141,"saved_count":6} 
+[2026-04-21 01:46:50] local.INFO: Shopify order stored in approval queue {"local_id":5141,"shopify_order_id":7133178003745,"order_number":19393,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 02:17:05] local.INFO: Vendor payment approval check {"vendor_id":2,"vendor_name":"Imran Qureshi (Beef)","amount":"100000","payment_source":"Online Bank","payment_source_code":"ONLINE","requires_approval":false,"approval_status":"approved","category_found":true,"config_exists":true} 
+[2026-04-21 02:34:11] local.INFO: Partial update detected (pop-out mode) {"order_id":"11676","order_number":"QUR26-021","fields_sent":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","items","discounts"]} 
+[2026-04-21 02:34:11] local.INFO: Update: All discounts removed {"order_id":"11676"} 
+[2026-04-21 02:34:11] local.INFO: Partial update - preserving operational fields {"order_id":11676,"order_number":"QUR26-021","fields_updated":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","discounts","items","discount_total"],"fields_preserved":{"order_status":"new","expected_packets":null,"payment_method":"cash","assigned_rider_user_id":null}} 
+[2026-04-21 02:34:12] local.INFO: Partial update detected (pop-out mode) {"order_id":"11676","order_number":"QUR26-021","fields_sent":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","items","discounts"]} 
+[2026-04-21 02:34:12] local.INFO: Update: All discounts removed {"order_id":"11676"} 
+[2026-04-21 02:34:12] local.INFO: Partial update - preserving operational fields {"order_id":11676,"order_number":"QUR26-021","fields_updated":["order_date","subtotal_price","shipping_total","tip_amount","total_price","note","discounts","items","discount_total"],"fields_preserved":{"order_status":"new","expected_packets":null,"payment_method":"cash","assigned_rider_user_id":null}} 
+[2026-04-21 07:03:58] local.INFO: Shopify order webhook received {"shopify_order_id":7133785325857,"order_number":19394,"total":"75500.00","ip":"136.119.1.17"} 
+[2026-04-21 07:03:58] local.INFO: Normalizing payment method {"original":"Qurbani Payment: Direct Bank Transfer","lowercase":"qurbani payment: direct bank transfer"} 
+[2026-04-21 07:03:58] local.INFO: Payment method normalized {"original":"Qurbani Payment: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 07:03:58] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5142,"order_number":19394,"is_shopify":true,"line_items_count":1,"is_update":false,"skus":["QUR-GB-D1-E1"]} 
+[2026-04-21 07:03:58] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5142,"saved_count":1} 
+[2026-04-21 07:03:58] local.INFO: Shopify order stored in approval queue {"local_id":5142,"shopify_order_id":7133785325857,"order_number":19394,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 10:08:42] local.INFO: Shopify order webhook received {"shopify_order_id":7134317183265,"order_number":19395,"total":"2330.00","ip":"35.226.173.41"} 
+[2026-04-21 10:08:42] local.INFO: Normalizing payment method {"original":"Regular Meat: Direct Bank Transfer","lowercase":"regular meat: direct bank transfer"} 
+[2026-04-21 10:08:42] local.INFO: Payment method normalized {"original":"Regular Meat: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 10:08:42] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5143,"order_number":19395,"is_shopify":true,"line_items_count":2,"is_update":false,"skus":["CH-DCO","CH-WC"]} 
+[2026-04-21 10:08:42] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5143,"saved_count":2} 
+[2026-04-21 10:08:42] local.INFO: Shopify order stored in approval queue {"local_id":5143,"shopify_order_id":7134317183265,"order_number":19395,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 10:29:09] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 10:29:12] local.INFO: WhatsApp: Incoming message saved {"conversation_id":42,"from":"923335644465","type":"image"} 
+[2026-04-21 10:37:25] local.INFO: Shopify order webhook received {"shopify_order_id":7134350704929,"order_number":19396,"total":"74000.00","ip":"34.59.141.83"} 
+[2026-04-21 10:37:25] local.INFO: Normalizing payment method {"original":"Qurbani Payment: Direct Bank Transfer","lowercase":"qurbani payment: direct bank transfer"} 
+[2026-04-21 10:37:25] local.INFO: Payment method normalized {"original":"Qurbani Payment: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 10:37:26] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5144,"order_number":19396,"is_shopify":true,"line_items_count":1,"is_update":false,"skus":["QUR-GB-D2-A1"]} 
+[2026-04-21 10:37:26] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5144,"saved_count":1} 
+[2026-04-21 10:37:26] local.INFO: Shopify order stored in approval queue {"local_id":5144,"shopify_order_id":7134350704929,"order_number":19396,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 10:38:25] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 10:38:25] local.INFO: WhatsApp: Incoming message saved {"conversation_id":113,"from":"923345738861","type":"text"} 
+[2026-04-21 10:39:23] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 10:39:25] local.INFO: WhatsApp: Incoming message saved {"conversation_id":113,"from":"923345738861","type":"image"} 
+[2026-04-21 10:39:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 10:39:54] local.INFO: WhatsApp: Incoming message saved {"conversation_id":113,"from":"923345738861","type":"audio"} 
+[2026-04-21 12:02:48] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:02:48] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:03:26] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2026-04-21 12:03:26] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?) and (`p`.`attribute_1` is null or LOWER(p.attribute_1) != 'qurbani') and `o`.`order_date` >= ?","bindings":["","","","shopify","cancelled","refunded","pending","2026-04-01 12:03:26"]} 
+[2026-04-21 12:03:27] local.DEBUG: Open Quantities Mobile - Results: {"count":10,"first_item":{"stdClass":{"name":"Mutton","quantity":"998.520","lean_quantity":"710.580","non_lean_quantity":"287.940","processing_quantity":"0.000","prepared_quantity":"998.520","order_count":309,"product_count":71}}} 
+[2026-04-21 12:09:20] local.INFO: calculateWorkingDays - shift data {"user_id":74,"shift_name":"Morning Shift","working_days_array":[1,3,4,5,6,7],"start_date":"2026-04-01","end_date":"2026-04-21"} 
+[2026-04-21 12:09:20] local.INFO: calculateWorkingDays - shift data {"user_id":74,"shift_name":"Morning Shift","working_days_array":[1,3,4,5,6,7],"start_date":"2026-04-01","end_date":"2026-04-21"} 
+[2026-04-21 12:09:20] local.INFO: calculateWorkingDays - result {"user_id":74,"working_days_count":18} 
+[2026-04-21 12:09:20] local.INFO: calculateWorkingDays - result {"user_id":74,"working_days_count":18} 
+[2026-04-21 12:09:20] local.INFO: Salary calculation - attendance breakdown {"user_id":74,"month":"2026-04-01","working_days":18,"present_days":13,"leave_days":3,"absent_days":2} 
+[2026-04-21 12:09:20] local.INFO: Salary calculation - attendance breakdown {"user_id":74,"month":"2026-04-01","working_days":18,"present_days":13,"leave_days":3,"absent_days":2} 
+[2026-04-21 12:09:20] local.DEBUG: Found salary advances {"user_id":74,"count":0,"total":0,"request_ids":""} 
+[2026-04-21 12:09:20] local.DEBUG: Found salary advances {"user_id":74,"count":0,"total":0,"request_ids":""} 
+[2026-04-21 12:09:26] local.INFO: Shopify order webhook received {"shopify_order_id":7134456545569,"order_number":19397,"total":"13220.00","ip":"34.123.228.88"} 
+[2026-04-21 12:09:26] local.INFO: Normalizing payment method {"original":"Regular meat: Cash on Delivery (COD)","lowercase":"regular meat: cash on delivery (cod)"} 
+[2026-04-21 12:09:26] local.INFO: Payment method normalized {"original":"Regular meat: Cash on Delivery (COD)","normalized":"cash"} 
+[2026-04-21 12:09:26] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5145,"order_number":19397,"is_shopify":true,"line_items_count":3,"is_update":false,"skus":["P3-BCP","P2-LGB","M16-YK"]} 
+[2026-04-21 12:09:26] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5145,"saved_count":3} 
+[2026-04-21 12:09:26] local.INFO: Shopify order stored in approval queue {"local_id":5145,"shopify_order_id":7134456545569,"order_number":19397,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 12:10:17] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":11719,"order_number":"SH-19392","is_shopify":false,"line_items_count":2,"is_update":false,"skus":["PH-SF","PB-MC"]} 
+[2026-04-21 12:10:17] local.INFO: OrderModel::changeStatus - Starting transaction {"order_id":11719,"status_code":"new","status_id":1} 
+[2026-04-21 12:10:17] local.INFO: OrderModel::changeStatus - Marked previous history as not current {"order_id":11719,"updated_rows":1} 
+[2026-04-21 12:10:17] local.INFO: OrderModel::changeStatus - Inserting new history record {"order_id":11719,"history_data":{"order_id":11719,"status_id":1,"status_code":"new","is_current":1,"changed_by":74,"notes":"Converted from Shopify approval","changed_at":"2026-04-21 12:10:17","created_at":"2026-04-21 12:10:17"}} 
+[2026-04-21 12:10:17] local.INFO: OrderModel::changeStatus - History record created {"order_id":11719,"history_id":37573} 
+[2026-04-21 12:10:17] local.INFO: OrderModel::changeStatus - Main order table updated {"order_id":11719,"new_status":"new"} 
+[2026-04-21 12:10:26] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":11720,"order_number":"SH-19391","is_shopify":false,"line_items_count":4,"is_update":false,"skus":["PH-JC","PH-BC","PH-SF","PH-CBS"]} 
+[2026-04-21 12:10:26] local.INFO: OrderModel::changeStatus - Starting transaction {"order_id":11720,"status_code":"new","status_id":1} 
+[2026-04-21 12:10:26] local.INFO: OrderModel::changeStatus - Marked previous history as not current {"order_id":11720,"updated_rows":1} 
+[2026-04-21 12:10:26] local.INFO: OrderModel::changeStatus - Inserting new history record {"order_id":11720,"history_data":{"order_id":11720,"status_id":1,"status_code":"new","is_current":1,"changed_by":74,"notes":"Converted from Shopify approval","changed_at":"2026-04-21 12:10:26","created_at":"2026-04-21 12:10:26"}} 
+[2026-04-21 12:10:26] local.INFO: OrderModel::changeStatus - History record created {"order_id":11720,"history_id":37575} 
+[2026-04-21 12:10:26] local.INFO: OrderModel::changeStatus - Main order table updated {"order_id":11720,"new_status":"new"} 
+[2026-04-21 12:10:33] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":11721,"order_number":"SH-19386","is_shopify":false,"line_items_count":4,"is_update":false,"skus":["CH-CBS","CH-TB","CH-BB","PH-DT"]} 
+[2026-04-21 12:10:33] local.INFO: OrderModel::changeStatus - Starting transaction {"order_id":11721,"status_code":"new","status_id":1} 
+[2026-04-21 12:10:33] local.INFO: OrderModel::changeStatus - Marked previous history as not current {"order_id":11721,"updated_rows":1} 
+[2026-04-21 12:10:33] local.INFO: OrderModel::changeStatus - Inserting new history record {"order_id":11721,"history_data":{"order_id":11721,"status_id":1,"status_code":"new","is_current":1,"changed_by":74,"notes":"Converted from Shopify approval","changed_at":"2026-04-21 12:10:33","created_at":"2026-04-21 12:10:33"}} 
+[2026-04-21 12:10:33] local.INFO: OrderModel::changeStatus - History record created {"order_id":11721,"history_id":37577} 
+[2026-04-21 12:10:33] local.INFO: OrderModel::changeStatus - Main order table updated {"order_id":11721,"new_status":"new"} 
+[2026-04-21 12:10:59] local.INFO: Shopify order webhook received {"shopify_order_id":7134460772641,"order_number":19398,"total":"6360.00","ip":"35.223.4.114"} 
+[2026-04-21 12:10:59] local.INFO: Normalizing payment method {"original":"Regular Meat: Direct Bank Transfer","lowercase":"regular meat: direct bank transfer"} 
+[2026-04-21 12:10:59] local.INFO: Payment method normalized {"original":"Regular Meat: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 12:10:59] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5146,"order_number":19398,"is_shopify":true,"line_items_count":3,"is_update":false,"skus":["PB-BL","PH-SF","PH-WH"]} 
+[2026-04-21 12:10:59] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5146,"saved_count":3} 
+[2026-04-21 12:10:59] local.INFO: Shopify order stored in approval queue {"local_id":5146,"shopify_order_id":7134460772641,"order_number":19398,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 12:45:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:45:48] local.INFO: WhatsApp: Incoming message saved {"conversation_id":4,"from":"923002561023","type":"text"} 
+[2026-04-21 12:45:58] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:45:59] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:49:30] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2026-04-21 12:49:30] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?) and (`p`.`attribute_1` is null or LOWER(p.attribute_1) != 'qurbani') and `o`.`order_date` >= ?","bindings":["","","","shopify","cancelled","refunded","pending","2026-04-01 12:49:30"]} 
+[2026-04-21 12:49:30] local.DEBUG: Open Quantities Mobile - Results: {"count":10,"first_item":{"stdClass":{"name":"Mutton","quantity":"1002.520","lean_quantity":"714.580","non_lean_quantity":"287.940","processing_quantity":"0.000","prepared_quantity":"998.520","order_count":310,"product_count":71}}} 
+[2026-04-21 12:49:55] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":11722,"order_number":"NF-17940","is_shopify":false,"line_items_count":1,"is_update":false,"skus":["KS-AS"]} 
+[2026-04-21 12:50:17] local.ERROR: Failed to get payment method timeline: SQLSTATE[42S02]: Base table or view not found: 1146 Table 'napp_db-3735f1cb.t_crm_order_payment_method_history' doesn't exist (Connection: mysql, SQL: select * from `t_crm_order_payment_method_history` where `order_id` = 11722 order by `changed_at` desc limit 10)  
+[2026-04-21 12:50:20] local.INFO: Payment method changed (quick change) {"order_id":11722,"order_number":"NF-17940","old_method":"cash","new_method":"online","user_id":68} 
+[2026-04-21 12:50:23] local.INFO: OrderModel::changeStatus - Starting transaction {"order_id":11722,"status_code":"delivered","status_id":5} 
+[2026-04-21 12:50:23] local.INFO: OrderModel::changeStatus - Marked previous history as not current {"order_id":11722,"updated_rows":1} 
+[2026-04-21 12:50:23] local.INFO: OrderModel::changeStatus - Inserting new history record {"order_id":11722,"history_data":{"order_id":11722,"status_id":5,"status_code":"delivered","is_current":1,"changed_by":68,"notes":"Status changed to delivered","changed_at":"2026-04-21 12:50:23","created_at":"2026-04-21 12:50:23"}} 
+[2026-04-21 12:50:23] local.INFO: OrderModel::changeStatus - History record created {"order_id":11722,"history_id":37579} 
+[2026-04-21 12:50:23] local.INFO: OrderModel::changeStatus - Main order table updated {"order_id":11722,"new_status":"delivered"} 
+[2026-04-21 12:50:23] local.INFO: Inventory deducted (mark as prepared) {"line_item_id":111545,"order_id":11722,"variant_id":2006,"product_id":1317,"sku":"KS-AS","quantity_deducted":"1.000","new_variant_inventory":4} 
+[2026-04-21 12:50:23] local.INFO: Auto-prepared items on delivered {"order_id":11722,"order_number":"NF-17940","status_trigger":"delivered","items_auto_prepared":1,"items_auto_deducted":1,"total_items":1} 
+[2026-04-21 12:50:23] local.INFO: Invoice posted to ledger {"order_id":11722,"ledger_id":11440,"amount":"0.00"} 
+[2026-04-21 12:50:23] local.INFO: Invoice posted to ledger {"order_id":11722,"ledger_id":11440} 
+[2026-04-21 12:50:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:50:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:50:47] local.INFO: Shopify order webhook received {"shopify_order_id":7134503043361,"order_number":19399,"total":"28740.00","ip":"136.114.46.169"} 
+[2026-04-21 12:50:47] local.INFO: Normalizing payment method {"original":"Regular Meat: Direct Bank Transfer","lowercase":"regular meat: direct bank transfer"} 
+[2026-04-21 12:50:47] local.INFO: Payment method normalized {"original":"Regular Meat: Direct Bank Transfer","normalized":"bank_transfer"} 
+[2026-04-21 12:50:48] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5147,"order_number":19399,"is_shopify":true,"line_items_count":7,"is_update":false,"skus":["PH-CBS","PB-MC","PB4-MQ","P9-LH","B7-CP","M4-FCP","M12-DT"]} 
+[2026-04-21 12:50:48] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5147,"saved_count":7} 
+[2026-04-21 12:50:48] local.INFO: Shopify order stored in approval queue {"local_id":5147,"shopify_order_id":7134503043361,"order_number":19399,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 12:50:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:53:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:53:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:55:07] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:55:07] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:57:36] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:57:39] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:57:39] local.INFO: Mobile permissions fetched {"user_id":68,"user_name":"Taimur","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities","view_expenses","approve_expenses","settle_expenses","view_vendors","manage_vendor_transactions","manage_vendor_products","view_approvals","view_nf_ledger","view_store_attendance","view_overall_ledger","view_daily_closing","view_riders_map","view_products","view_customers","view_online_approvals","view_reports","expense_all_payment_sources","view_assets","add_assets","view_all_business_units","select_business_unit","access_khaas_mode","create_expense_category","approve_khaas_transfer","view_campaigns","view_khaas_store_inventory","view_attendance_reports","view_delivery_regions","access_qurbani_mode","view_whatsapp_messages","send_whatsapp_messages"],"has_store_mode":true,"expense_backdate_days":30} 
+[2026-04-21 12:57:41] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2026-04-21 12:57:41] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?) and (`p`.`attribute_1` is null or LOWER(p.attribute_1) != 'qurbani') and `o`.`order_date` >= ?","bindings":["","","","shopify","cancelled","refunded","pending","2026-04-01 12:57:41"]} 
+[2026-04-21 12:57:42] local.DEBUG: Open Quantities Mobile - Results: {"count":10,"first_item":{"stdClass":{"name":"Mutton","quantity":"1002.520","lean_quantity":"714.580","non_lean_quantity":"287.940","processing_quantity":"0.000","prepared_quantity":"998.520","order_count":310,"product_count":71}}} 
+[2026-04-21 12:57:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 12:57:50] local.INFO: WhatsApp: Incoming message saved {"conversation_id":82,"from":"923235131277","type":"text"} 
+[2026-04-21 13:00:13] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:13] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:16] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:16] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:22] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:00:50] local.INFO: WhatsApp: Incoming message saved {"conversation_id":18,"from":"923455242624","type":"text"} 
+[2026-04-21 13:01:30] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:07:09] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:17:14] local.INFO: Shopify order webhook received {"shopify_order_id":7134524440865,"order_number":19400,"total":"3050.00","ip":"34.61.151.24"} 
+[2026-04-21 13:17:14] local.INFO: Normalizing payment method {"original":"Qurbani Payment: Cash Collection","lowercase":"qurbani payment: cash collection"} 
+[2026-04-21 13:17:14] local.INFO: Payment method normalized {"original":"Qurbani Payment: Cash Collection","normalized":"cash"} 
+[2026-04-21 13:17:14] local.INFO: storeOrderFromApi: Preparing to save line items {"order_id":5148,"order_number":19400,"is_shopify":true,"line_items_count":2,"is_update":false,"skus":["B10-CCR","B5-NCB"]} 
+[2026-04-21 13:17:14] local.INFO: storeOrderFromApi: Line items saved successfully {"order_id":5148,"saved_count":2} 
+[2026-04-21 13:17:14] local.INFO: Shopify order stored in approval queue {"local_id":5148,"shopify_order_id":7134524440865,"order_number":19400,"table":"t_crm_shopify_order","converted":0} 
+[2026-04-21 13:35:19] local.INFO: Mobile permissions fetched {"user_id":73,"user_name":"Waseem","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities"],"has_store_mode":true,"expense_backdate_days":0} 
+[2026-04-21 13:35:19] local.INFO: Mobile permissions fetched {"user_id":73,"user_name":"Waseem","roles_count":1,"permissions":["access_store_mode","view_open_orders","assign_riders","change_order_status","enter_packet_info","view_open_quantities"],"has_store_mode":true,"expense_backdate_days":0} 
+[2026-04-21 13:35:54] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2026-04-21 13:35:54] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?) and (`p`.`attribute_1` is null or LOWER(p.attribute_1) != 'qurbani') and `o`.`order_date` >= ?","bindings":["","","","shopify","cancelled","refunded","pending","2026-04-01 13:35:54"]} 
+[2026-04-21 13:35:55] local.DEBUG: Open Quantities Mobile - Results: {"count":10,"first_item":{"stdClass":{"name":"Mutton","quantity":"1002.520","lean_quantity":"714.580","non_lean_quantity":"287.940","processing_quantity":"0.000","prepared_quantity":"998.520","order_count":310,"product_count":71}}} 
+[2026-04-21 13:35:55] local.DEBUG: Open Quantities Mobile - Filters: {"level":0,"current_field":"attribute_1","filters":[]} 
+[2026-04-21 13:35:55] local.DEBUG: Open Quantities Mobile - Query SQL: {"sql":"select * from `t_crm_prod_order_line_item` as `li` inner join `t_crm_prod_order` as `o` on `li`.`order_id` = `o`.`id` left join `t_crm_prod_product_variant` as `pv` on ((`li`.`sku` is not null and `li`.`sku` != ? and `li`.`sku` = `pv`.`sku`) or `li`.`variant_id` = `pv`.`shopify_variant_id` or `li`.`variant_id` = `pv`.`id` or `li`.`product_id` = `pv`.`shopify_variant_id` or `li`.`product_id` = `pv`.`id`) left join `t_crm_prod_product` as `p` on (`pv`.`product_id` = `p`.`id` or `li`.`product_id` = `p`.`id` or (`li`.`sku` is null and (`li`.`variant_id` is null or `li`.`variant_id` = ?) and (`li`.`product_id` is null or `li`.`product_id` = ?) and LOWER(TRIM(li.name)) = LOWER(TRIM(p.title)))) where (`o`.`external_source` != ? or `o`.`external_source` is null) and `o`.`order_status` not in (?, ?, ?) and (`p`.`attribute_1` is null or LOWER(p.attribute_1) != 'qurbani') and `o`.`order_date` >= ?","bindings":["","","","shopify","cancelled","refunded","pending","2026-04-01 13:35:55"]} 
+[2026-04-21 13:35:56] local.DEBUG: Open Quantities Mobile - Results: {"count":10,"first_item":{"stdClass":{"name":"Mutton","quantity":"1002.520","lean_quantity":"714.580","non_lean_quantity":"287.940","processing_quantity":"0.000","prepared_quantity":"998.520","order_count":310,"product_count":71}}} 
+[2026-04-21 13:54:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:54:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:54:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:54:55] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:36] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:37] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:37] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:37] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:38] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:38] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:39] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:39] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:42] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:42] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:43] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:43] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:53] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:54] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:54] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:54] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:54] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:54] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:55] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:55:55] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:56:00] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:56:10] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:56:13] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:56:33] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 13:57:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:42] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:42] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:43] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:43] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:43] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:48] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:00:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:40] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:41] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:42] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:44] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:49] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:50] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:51] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:52] local.ERROR: WhatsApp: Message delivery failed {"wa_message_id":"wamid.HBgMOTIzMzEyNTQ3NTkwFQIAERgSMUM0MDU5NEYzNUI3MjRERDY3AA==","conversation_id":181,"error_code":131026,"error_message":"Message undeliverable","errors":[{"code":131026,"title":"Message undeliverable","message":"Message undeliverable","error_data":{"details":"Message Undeliverable."}}]} 
+[2026-04-21 14:01:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:52] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:55] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:01:56] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:00] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:02] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:03] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:04] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:10] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:16] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:27] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:28] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:45] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:46] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:47] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:02:57] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:03:01] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:03:03] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:03:06] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:03:14] local.INFO: WhatsApp webhook received {"entries":1} 
+[2026-04-21 14:03:14] local.INFO: WhatsApp webhook received {"entries":1} 

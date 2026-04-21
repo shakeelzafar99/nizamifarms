@@ -122,6 +122,35 @@
     }
 }
 
+/* Phase 2A: "More" dropdown styling — scoped so it can't leak to other menus */
+.nf-more-menu {
+    min-width: 220px;
+    padding: 6px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.nf-more-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    transition: background-color 0.15s ease;
+}
+.nf-more-item:hover { background: #eff6ff; color: #1d4ed8; }
+.nf-more-item .kt-menu-icon { width: 20px; display: inline-flex; align-items: center; justify-content: center; color: #6b7280; }
+.nf-more-item:hover .kt-menu-icon { color: #1d4ed8; }
+
 /* Status Cards Styles - Compact Design */
 .status-card.active .border-gray-200 {
     border-color: #3b82f6 !important;
@@ -906,17 +935,19 @@ input:focus, select:focus, button:focus {
 @endif
 
 <!-- Modern Orders Layout -->
-<div class="min-h-screen bg-gray-50">
-    
+<div class="min-h-screen bg-gray-50" style="overflow-x: clip;">
+    {{-- NF UI: overflow-x: clip prevents any accidental horizontal page scroll from visually overlapping the fixed sidebar.
+         'clip' (vs 'hidden') does not create a scroll container, so the sticky header/search bar below keep working. --}}
+
     <!-- Modern Sticky Header with Blur -->
     <div class="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 lg:px-6">
-            <!-- Compact Header Section -->
+        {{-- NF UI: full content width (dropped max-w-7xl) so the top bar lines up with the widened table card below. --}}
+        <div class="px-4 lg:px-6 min-w-0">
+            {{-- NF: Phase 1 — compact top. H1 kept accessible via sr-only; tabs below already identify the page.
+                 The standalone title row used to consume ~40px of vertical space. --}}
             <div class="py-1">
-                <div class="flex items-center justify-between mb-1">
-                    <h1 class="text-xl font-semibold text-gray-900">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
-                </div>
-                
+                <h1 class="sr-only">{{ $source === 'shopify' ? 'Shopify Orders' : 'Orders' }}</h1>
+
                 <!-- Tabs and Actions Row -->
                 <div class="flex items-center justify-between">
                     <div class="flex space-x-1 bg-gray-100 rounded-lg p-1">
@@ -961,7 +992,10 @@ input:focus, select:focus, button:focus {
                         @endif
                     </div>
                     
-                    <!-- Sticky Action Buttons Toolbar -->
+                    {{-- NF: Phase 2A — Toolbar collapsed to [Create order] + [Select Multiple] + [More ▾].
+                         All original IDs, classes, permission guards, and onclick handlers preserved verbatim
+                         so toggleSelectMultipleMode(), openColumnSettings(), openAllRidersMapModal(),
+                         and openAutoAssignModal() continue to work exactly as before. --}}
                     <div class="sticky-action-toolbar">
                         @if($user->hasPermission('create_orders'))
                         <button onclick="createNewOrder()" class="action-btn action-btn-primary">
@@ -971,39 +1005,73 @@ input:focus, select:focus, button:focus {
                             Create order
                         </button>
                         @endif
-                        
-                        <button onclick="openColumnSettings()" class="action-btn action-btn-secondary">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z"></path>
-                            </svg>
-                            Columns
-                        </button>
-                        
+
                         @if($source !== 'shopify')
-                        <!-- ⭐ Select Multiple Button - Toggles checkbox visibility -->
+                        <!-- ⭐ Select Multiple Button - Toggles checkbox visibility. Kept visible so the "active" blue tint is seen. -->
                         <button id="selectMultipleBtn" onclick="toggleSelectMultipleMode()" class="select-multiple-btn">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
                             </svg>
                             <span id="selectMultipleBtnText">Select Multiple</span>
                         </button>
-                        <!-- Bulk Status and Bulk Assign Rider buttons hidden - functionality available in floating bar when orders are selected -->
-                        <!-- ⭐ All Riders Map Button -->
-                        <button onclick="openAllRidersMapModal()" class="action-btn" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #f59e0b; color: #92400e;">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            📍 Riders Map
-                        </button>
-                        <!-- Auto-assign riders by region -->
-                        <button onclick="openAutoAssignModal()" class="action-btn" style="background: linear-gradient(135deg, #eef2ff 0%, #c7d2fe 100%); border-color: #6366f1; color: #3730a3;">
-                            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            🚴 Auto-assign Riders
-                        </button>
                         @endif
+
+                        <!-- More actions dropdown: Columns (always), Riders Map & Auto-assign (non-shopify) -->
+                        <div class="kt-menu" data-kt-menu="true">
+                            <div class="kt-menu-item"
+                                 data-kt-menu-item-offset="0,8px"
+                                 data-kt-menu-item-placement="bottom-end"
+                                 data-kt-menu-item-placement-rtl="bottom-start"
+                                 data-kt-menu-item-toggle="dropdown"
+                                 data-kt-menu-item-trigger="click">
+                                <button type="button" class="kt-menu-toggle action-btn action-btn-secondary">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                                    </svg>
+                                    More
+                                    <svg class="w-3 h-3 ms-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </button>
+                                <div class="kt-menu-dropdown kt-menu-default nf-more-menu" data-kt-menu-dismiss="true">
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openColumnSettings()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2a2 2 0 002-2z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Columns</span>
+                                        </button>
+                                    </div>
+
+                                    @if($source !== 'shopify')
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openAllRidersMapModal()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon" style="color:#b45309;">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Riders Map</span>
+                                        </button>
+                                    </div>
+
+                                    <div class="kt-menu-item">
+                                        <button type="button" onclick="openAutoAssignModal()" class="kt-menu-link nf-more-item">
+                                            <span class="kt-menu-icon" style="color:#4338ca;">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                                </svg>
+                                            </span>
+                                            <span class="kt-menu-title">Auto-assign Riders</span>
+                                        </button>
+                                    </div>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1041,7 +1109,8 @@ input:focus, select:focus, button:focus {
     
     <!-- Sticky Search and Filters Bar - Stays visible when scrolling -->
     <div class="sticky top-0 z-20 bg-gray-50 border-b border-gray-200 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 lg:px-6 py-2">
+        {{-- NF UI: full content width (dropped max-w-7xl) to match the widened table card. --}}
+        <div class="px-4 lg:px-6 py-2 min-w-0">
             <!-- Search and Filters in one compact row -->
             <div class="flex flex-wrap items-center gap-3">
                 <!-- Search Input -->
@@ -1118,9 +1187,10 @@ input:focus, select:focus, button:focus {
         </div>
 
     <!-- Modern Orders Table Container -->
-    <div class="max-w-7xl mx-auto px-4 lg:px-6 pt-2 pb-6">
-        <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
-            <div class="orders-table-container relative" style="height: calc(100vh - 220px); overflow: auto;">
+    {{-- NF UI: dropped max-w-7xl so the table uses the full content width (less horizontal scroll); card is now a flex column that caps its height so pagination is always visible inside it. --}}
+    <div class="px-4 lg:px-6 pt-2 pb-6 min-w-0">
+        <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm flex flex-col" style="max-height: calc(100vh - 180px);">
+            <div class="orders-table-container relative flex-1 min-h-0" style="overflow: auto;">
                 <table class="min-w-full divide-y divide-gray-200" style="width: max-content; min-width: 100%;">
                     <colgroup id="table-colgroup"></colgroup>
                     <thead class="bg-gray-50 sticky top-0 z-20">
@@ -1217,11 +1287,9 @@ input:focus, select:focus, button:focus {
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-    
-            <!-- Shopify-Style Pagination -->
-            <div class="bg-white border-t border-gray-200 px-6 py-3">
+
+            <!-- Shopify-Style Pagination (now inside card so page numbers stay visible) -->
+            <div class="bg-white border-t border-gray-200 px-6 py-3 flex-shrink-0">
                 <div class="flex items-center justify-between">
                     <!-- Left: Show entries -->
                     <div class="flex items-center text-sm text-gray-700">
@@ -1291,6 +1359,8 @@ input:focus, select:focus, button:focus {
                 </div>
             </div>
         </div>
+        </div>{{-- /card --}}
+    </div>{{-- /Modern Orders Table Container wrapper --}}
                         </div>
 
                         <!-- <div class="flex items-center gap-2 order-2 md:order-1">
@@ -9757,8 +9827,8 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 // Reset to current page data if search is too short but not empty
                 window.filteredOrders = [...window.ordersData];
-                renderOrdersWithFilters(window.filteredOrders);
-                updateResultsCount();
+                window.searchPage = 1;
+                applyFilteredRender();
             }
         }, 300); // Reduced timeout for better responsiveness
     });
@@ -9779,6 +9849,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const perPageSelector = document.getElementById('per-page-selector');
     if (perPageSelector) {
         perPageSelector.addEventListener('change', function() {
+            // NF: If a search is active, re-paginate client-side instead of reloading
+            // (a reload would drop the search term and go back to the full dataset).
+            const activeSearch = ((document.getElementById('orderSearch') || {}).value || '').trim();
+            if (activeSearch.length > 2 && typeof applyFilteredRender === 'function') {
+                window.searchPage = 1;
+                applyFilteredRender();
+                return;
+            }
             const perPage = this.value;
             const currentUrl = new URL(window.location.href);
             currentUrl.searchParams.set('per_page', perPage);
@@ -9931,22 +10009,22 @@ function fetchFilteredOrders() {
     .then(data => {
         if (data.success) {
             window.filteredOrders = data.orders;
-            renderOrdersWithFilters(window.filteredOrders);
-            updateResultsCount();
+            window.searchPage = 1; // new result set → start at first page
+            applyFilteredRender();
         } else {
             console.error('Filter error:', data.message);
             // Show empty state instead of fallback data when search fails
             window.filteredOrders = [];
-            renderOrdersWithFilters(window.filteredOrders);
-            updateResultsCount();
+            window.searchPage = 1;
+            applyFilteredRender();
         }
     })
     .catch(error => {
         console.error('Filter request failed:', error);
         // Show empty state instead of fallback data when search fails
         window.filteredOrders = [];
-        renderOrdersWithFilters(window.filteredOrders);
-        updateResultsCount();
+        window.searchPage = 1;
+        applyFilteredRender();
     })
     .finally(() => {
         hideLoadingState();
@@ -10034,6 +10112,88 @@ function updateResultsCount() {
         if (numericPager) numericPager.style.display = '';
     }
 }
+
+/* NF: Client-side pagination for search results.
+   Backend caps search at 100 matches (single request). We used to dump them all into the table and hide the pager,
+   which left users with no way to navigate. This slices window.filteredOrders by the per-page-selector value
+   and rebuilds Previous / numeric / Next buttons on the existing #pager-wrap element.
+   Safe: does not touch server-side pagination (used when no search is active). */
+window.searchPage = window.searchPage || 1;
+function _nfSearchPerPage() {
+    const sel = document.getElementById('per-page-selector');
+    const v = sel ? parseInt(sel.value, 10) : 25;
+    return (isFinite(v) && v > 0) ? v : 25;
+}
+function applyFilteredRender() {
+    const searchTerm = ((document.getElementById('orderSearch') || {}).value || '').trim();
+    const list = window.filteredOrders || [];
+    if (searchTerm.length <= 2) {
+        window.searchPage = 1;
+        renderOrdersWithFilters(list);
+        updateResultsCount();
+        return;
+    }
+    const perPage = _nfSearchPerPage();
+    const total = list.length;
+    const totalPages = Math.max(1, Math.ceil(total / perPage));
+    if (!Number.isFinite(window.searchPage) || window.searchPage < 1) window.searchPage = 1;
+    if (window.searchPage > totalPages) window.searchPage = totalPages;
+    const page = window.searchPage;
+    const start = (page - 1) * perPage;
+    const end = Math.min(start + perPage, total);
+    renderOrdersWithFilters(list.slice(start, end));
+    // Let updateResultsCount hide the pager first, then we re-show & rebuild it for search mode.
+    updateResultsCount();
+    const paginationInfo = document.getElementById('pagination-info');
+    if (paginationInfo) {
+        paginationInfo.textContent = total === 0
+            ? '0 search results'
+            : `${start + 1}-${end} of ${total} search results`;
+    }
+    const pagerWrap = document.getElementById('pager-wrap');
+    if (pagerWrap) {
+        pagerWrap.style.display = '';
+        pagerWrap.innerHTML = _nfBuildSearchPagerHtml(totalPages, page);
+    }
+    const container = document.querySelector('.orders-table-container');
+    if (container) container.scrollTop = 0;
+}
+function _nfBuildSearchPagerHtml(totalPages, current) {
+    const navBase = 'px-3 py-2 text-sm bg-white border border-gray-300 rounded-md';
+    const navOn = 'text-gray-700 hover:bg-gray-50';
+    const navOff = 'text-gray-400 cursor-not-allowed';
+    const numBtn = 'px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50';
+    const numActive = 'px-3 py-2 text-sm bg-blue-600 text-white rounded-md font-medium';
+    let html = '';
+    html += current > 1
+        ? `<a href="javascript:void(0)" onclick="goToSearchPage(${current - 1})" class="${navBase} ${navOn}">Previous</a>`
+        : `<button type="button" disabled class="${navBase} ${navOff}">Previous</button>`;
+    html += '<div class="flex items-center gap-1" id="numeric-pager">';
+    const s = Math.max(1, current - 2);
+    const e = Math.min(totalPages, current + 2);
+    if (s > 1) {
+        html += `<a href="javascript:void(0)" onclick="goToSearchPage(1)" class="px-3 py-1.5 text-sm pagination-btn">1</a>`;
+        if (s > 2) html += '<span class="px-2 py-1.5 text-sm text-gray-400">...</span>';
+    }
+    for (let p = s; p <= e; p++) {
+        html += (p === current)
+            ? `<span class="${numActive}">${p}</span>`
+            : `<a href="javascript:void(0)" onclick="goToSearchPage(${p})" class="${numBtn}">${p}</a>`;
+    }
+    if (e < totalPages) {
+        if (e < totalPages - 1) html += '<span class="px-2 py-1.5 text-sm text-gray-400">...</span>';
+        html += `<a href="javascript:void(0)" onclick="goToSearchPage(${totalPages})" class="px-3 py-1.5 text-sm pagination-btn">${totalPages}</a>`;
+    }
+    html += '</div>';
+    html += current < totalPages
+        ? `<a href="javascript:void(0)" onclick="goToSearchPage(${current + 1})" class="${navBase} ${navOn}">Next</a>`
+        : `<button type="button" disabled class="${navBase} ${navOff}">Next</button>`;
+    return html;
+}
+window.goToSearchPage = function(p) {
+    window.searchPage = p;
+    applyFilteredRender();
+};
 
 // Render table with filtered data
 function renderOrdersWithFilters(data) {

@@ -201,6 +201,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/campaigns/{id}', [\App\Http\Controllers\API\RiderController::class, 'getCampaignDetail']);
     Route::post('/store/campaigns/{id}/add-customers', [\App\Http\Controllers\API\RiderController::class, 'addCampaignCustomers']);
     Route::post('/store/campaigns/{id}/refresh', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaign']);
+    Route::post('/store/campaigns/{id}/refresh-dedup', [\App\Http\Controllers\API\RiderController::class, 'refreshCampaignDedup']);
     Route::post('/store/campaigns/{id}/end', [\App\Http\Controllers\API\RiderController::class, 'endCampaign']);
     Route::get('/store/campaigns/{id}/stats', [\App\Http\Controllers\API\RiderController::class, 'getCampaignStats']);
     Route::post('/store/campaigns/{id}/send-bulk', [\App\Http\Controllers\API\RiderController::class, 'sendCampaignBulk']);
@@ -251,6 +252,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);
+    // Amend non-financial metadata (receiving bank, reference, notes, stamp
+    // overrides) on an existing active payment. Cannot change amount /
+    // method / date — those still require void-and-readd.
+    Route::put('/orders/{orderId}/payments/{paymentId}', [\App\Http\Controllers\API\RiderController::class, 'updateOrderPayment']);
     // Void a previously-recorded payment (soft delete + ledger reversal).
     Route::delete('/orders/{orderId}/payments/{paymentId}', [\App\Http\Controllers\API\RiderController::class, 'deleteOrderPayment']);
     // Display-only edits of the invoice PAID stamp (mirrors the web
@@ -396,6 +401,13 @@ Route::middleware('auth:sanctum')->group(function () {
             ->get(['id', 'name', 'short_code', 'color_hex']);
         return response()->json(['success' => true, 'data' => $accounts]);
     });
+
+    // Quick-create endpoint for the mobile Qurbani Pay modal's "+ Add new"
+    // bank flow. Re-uses the web OnlineReceivingAccountController so the
+    // validation + defaulting logic (sort_order bump, is_active=true,
+    // default colour) stays in a single place and the two call sites
+    // cannot drift.
+    Route::post('/online-receiving-accounts', [\App\Http\Controllers\FIN\OnlineReceivingAccountController::class, 'store']);
     
     // ============================
     // Products (Mobile Store Mode)
