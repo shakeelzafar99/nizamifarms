@@ -295,6 +295,204 @@
 }
 .wa-conv-item.unread .wa-conv-preview { font-weight: 600; color: #374151; }
 .wa-conv-city { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+
+/* ── Labels: shared chip styles + inbox-row strip + header strip ───────
+   We render labels as pills both on inbox rows (small, inline, max two
+   visible plus "+N more") and in the chat header (slightly larger so
+   the operator can scan the current status at a glance). Colour comes
+   from the label record itself; we pick a readable text colour based
+   on a contrast heuristic at render time.
+*/
+.wa-label-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    line-height: 1.4;
+    white-space: nowrap;
+    background: #e5e7eb;
+    color: #111827;
+}
+.wa-label-chip .wa-label-remove {
+    background: none;
+    border: none;
+    color: inherit;
+    padding: 0 0 0 2px;
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0.75;
+    line-height: 1;
+}
+.wa-label-chip .wa-label-remove:hover { opacity: 1; }
+.wa-conv-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.wa-chat-hdr-labels {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    padding: 6px 12px 0 12px;
+    background: rgba(0,0,0,0.04);
+}
+.wa-chat-hdr-labels:empty { display: none; }
+
+/* 3-dot chat-header menu trigger + dropdown. Absolute-positioned
+   dropdown so it floats over the chat body instead of getting clipped
+   by overflow:hidden on .wa-chat. */
+.wa-chat-menu-wrap { position: relative; margin-left: 6px; }
+.wa-chat-menu-btn {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1;
+}
+.wa-chat-menu-btn:hover { background: rgba(255,255,255,0.32); }
+.wa-chat-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    min-width: 200px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+    z-index: 20;
+    overflow: hidden;
+}
+.wa-chat-menu.open { display: block; }
+.wa-chat-menu button {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    background: #fff;
+    border: none;
+    text-align: left;
+    font-size: 13px;
+    color: #111827;
+    cursor: pointer;
+}
+.wa-chat-menu button:hover { background: #f3f4f6; }
+.wa-chat-menu hr { margin: 4px 0; border: none; border-top: 1px solid #f3f4f6; }
+
+/* Labels modal */
+.wa-labels-modal {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+.wa-labels-modal.open { display: flex; }
+.wa-labels-box {
+    width: 480px; max-width: 95vw; max-height: 88vh;
+    background: #fff; border-radius: 12px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+}
+.wa-labels-hdr {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid #f3f4f6;
+}
+.wa-labels-hdr h3 { margin: 0; font-size: 15px; font-weight: 700; color: #111827; }
+.wa-labels-body { padding: 14px 18px; overflow-y: auto; flex: 1; }
+.wa-labels-section-title {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: #6b7280; font-weight: 700;
+    margin: 4px 0 8px 0;
+}
+.wa-label-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px;
+    border-radius: 12px;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer;
+    border: 1.5px solid #e5e7eb;
+    background: #fff;
+    color: #374151;
+    margin: 3px 4px 3px 0;
+    transition: all 0.12s;
+}
+.wa-label-toggle.applied {
+    border-color: currentColor;
+}
+.wa-label-toggle:hover { background: #f9fafb; }
+.wa-label-manage-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px dashed #f3f4f6;
+}
+.wa-label-manage-row:last-child { border-bottom: none; }
+.wa-label-color-dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(0,0,0,0.1);
+}
+.wa-label-manage-actions { margin-left: auto; display: flex; gap: 4px; }
+.wa-label-manage-actions button {
+    background: none; border: none; cursor: pointer;
+    color: #6b7280; padding: 4px 6px; border-radius: 6px; font-size: 12px;
+}
+.wa-label-manage-actions button:hover { color: #111827; background: #f3f4f6; }
+.wa-label-create-row {
+    display: flex; gap: 6px; align-items: center;
+    padding-top: 10px; border-top: 1px solid #f3f4f6; margin-top: 10px;
+}
+.wa-label-create-row input[type=text] {
+    flex: 1; padding: 7px 10px;
+    border: 1.5px solid #e5e7eb; border-radius: 8px;
+    font-size: 13px; outline: none;
+}
+.wa-label-create-row input[type=color] {
+    width: 36px; height: 34px; padding: 2px;
+    border: 1.5px solid #e5e7eb; border-radius: 8px; cursor: pointer;
+    background: #fff;
+}
+.wa-label-create-row button {
+    padding: 7px 14px;
+    background: #16a34a; color: #fff; font-weight: 600; font-size: 13px;
+    border: none; border-radius: 8px; cursor: pointer;
+}
+.wa-label-create-row button:hover { background: #15803d; }
+
+/* Labels filter dropdown on the inbox */
+.wa-label-filter-wrap { position: relative; margin-left: auto; }
+.wa-label-filter-btn {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #374151;
+    font-weight: 500;
+}
+.wa-label-filter-btn:hover { background: #f3f4f6; }
+.wa-label-filter-btn.active { background: #dcfce7; border-color: #86efac; color: #166534; }
+.wa-label-filter-menu {
+    display: none;
+    position: absolute; right: 0; top: calc(100% + 4px);
+    min-width: 180px; max-height: 260px; overflow-y: auto;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    box-shadow: 0 8px 22px rgba(0,0,0,0.1);
+    z-index: 30;
+}
+.wa-label-filter-menu.open { display: block; }
+.wa-label-filter-menu button {
+    display: flex; align-items: center; gap: 6px;
+    width: 100%; padding: 8px 12px;
+    background: #fff; border: none; text-align: left;
+    font-size: 13px; cursor: pointer; color: #111827;
+}
+.wa-label-filter-menu button:hover { background: #f3f4f6; }
+.wa-label-filter-menu button.active { background: #f0fdf4; font-weight: 600; }
 .wa-unread-badge {
     background: #16a34a;
     color: #fff;
@@ -308,6 +506,45 @@
     justify-content: center;
     padding: 0 6px;
     margin-left: 8px;
+}
+
+/* Phase 2 — @mention dot on inbox rows. Blue to differentiate from the
+   green "unread" badge; shown only when the CURRENT user has an unread
+   mention on this conversation. */
+.wa-mention-dot {
+    background: #3B82F6;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 10px;
+    min-width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 6px;
+    margin-left: 6px;
+    line-height: 1;
+}
+.wa-filter-me { display: inline-flex; align-items: center; gap: 4px; }
+.wa-filter-me .wa-mention-pip {
+    width: 8px; height: 8px; border-radius: 50%; background: #DC2626;
+    display: inline-block;
+}
+/* User-mention label: subtle @ tag on the toggle chip. */
+.wa-label-mention-tag {
+    color: #3B82F6; font-weight: 700; margin-right: 2px;
+}
+.wa-label-mention-badge {
+    font-size: 10px; color: #3B82F6; font-weight: 600;
+    background: #EFF6FF; border: 1px solid #BFDBFE;
+    padding: 1px 5px; border-radius: 6px; margin-left: 4px;
+}
+/* User-picker dropdown in the create-label row. */
+.wa-label-user-select {
+    flex: 1; min-width: 140px;
+    padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 6px;
+    font-size: 12px; background: #fff;
 }
 
 /* ── RIGHT: Chat Panel ── */
@@ -953,6 +1190,20 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 <button class="wa-filter-btn active" data-filter="all">All</button>
                 <button class="wa-filter-btn" data-filter="unread">Unread</button>
                 <button class="wa-filter-btn" data-filter="qurbani" id="waFilterQurbani" style="display:none;" title="Conversations auto-flagged as Qurbani">🐐 Qurbani</button>
+                <!-- Label filter: picks one label id to narrow the inbox. Uses a
+                     dropdown instead of one pill per label so the strip doesn't
+                     explode if the workspace has many labels. -->
+                <div class="wa-label-filter-wrap">
+                    <button class="wa-label-filter-btn" id="waLabelFilterBtn" onclick="toggleLabelFilter()" title="Filter by label">🏷️ Label</button>
+                    <div class="wa-label-filter-menu" id="waLabelFilterMenu"></div>
+                </div>
+                {{-- Phase 2 — @me: only conversations where the current user
+                     has an unread mention. Tiny red dot appears when there
+                     are any unread mentions regardless of toggle state. --}}
+                <button class="wa-filter-btn wa-filter-me" id="waFilterMe" onclick="toggleAssignedToMe()" title="Conversations you were tagged in">
+                    <span>@ me</span>
+                    <span class="wa-mention-pip" id="waMentionPip" style="display:none;"></span>
+                </button>
                 @if(!(($waIsLimited ?? false)))
                 <button class="wa-btn wa-btn-gray" onclick="openQurbaniSettings()" title="Qurbani tab settings" style="margin-left:auto;padding:3px 10px;font-size:12px;">⚙</button>
                 @endif
@@ -991,7 +1242,21 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             </div>
             <div class="wa-session-badge" id="waSessionBadge" style="display:none;">24h expired</div>
             <button id="waOrdersToggle" onclick="toggleOrdersPanel()" style="background:rgba(255,255,255,0.2);border:none;border-radius:6px;padding:6px 10px;cursor:pointer;color:#fff;font-size:12px;font-weight:500;display:none;margin-left:8px;white-space:nowrap;" title="Customer Orders">📋 Orders</button>
+            <div class="wa-chat-menu-wrap">
+                <button class="wa-chat-menu-btn" id="waChatMenuBtn" title="More actions" onclick="toggleChatMenu()">⋮</button>
+                <div class="wa-chat-menu" id="waChatMenu">
+                    <button onclick="doMarkUnread()" title="Mark this conversation as unread">
+                        <span>📩</span> Mark as Unread
+                    </button>
+                    <button onclick="openLabelsModal()" title="Apply or manage labels">
+                        <span>🏷️</span> Labels…
+                    </button>
+                </div>
+            </div>
         </div>
+        <!-- Labels row under the header — shows labels applied to the active
+             conversation. Hidden when empty via CSS. -->
+        <div class="wa-chat-hdr-labels" id="waChatHdrLabels"></div>
         <div class="wa-chat-msgs" id="waChatMessages">
             <div class="wa-loading">Loading messages...</div>
         </div>
@@ -1243,6 +1508,45 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         </div>
     </div>
 </div>
+
+<!-- ═══ LABELS MODAL ═══
+     Two sections:
+       • Apply/remove labels for the currently-open conversation (toggles).
+       • Manage label library (create/edit/delete) — only visible to users
+         with manage_whatsapp_labels. System labels can be edited but the
+         delete button shows a confirmation warning.
+-->
+<div class="wa-labels-modal" id="waLabelsModal" onclick="if(event.target===this)closeLabelsModal()">
+    <div class="wa-labels-box" onclick="event.stopPropagation()">
+        <div class="wa-labels-hdr">
+            <h3>Conversation Labels</h3>
+            <button class="wa-new-panel-close" onclick="closeLabelsModal()">&times;</button>
+        </div>
+        <div class="wa-labels-body">
+            <div class="wa-labels-section-title">Apply labels</div>
+            <div id="waLabelToggles" style="margin-bottom:10px;">
+                <div style="font-size:12px;color:#9ca3af;">Loading…</div>
+            </div>
+
+            <div id="waLabelManageBlock" style="display:none;">
+                <div class="wa-labels-section-title" style="margin-top:14px;">Manage library</div>
+                <div id="waLabelManageList"></div>
+                <div class="wa-label-create-row">
+                    <input type="text" id="waLabelNewName" placeholder="New label name (e.g. Complaint)" maxlength="60">
+                    <input type="color" id="waLabelNewColor" value="#16A34A" title="Label colour">
+                    {{-- Phase 2: optional user-mention binding. When a user
+                         is picked, applying the label pushes them an FCM
+                         notification and tracks the mention as unread for
+                         them until they open the conversation. --}}
+                    <select id="waLabelNewUser" class="wa-label-user-select" title="Mention a user (optional)">
+                        <option value="">No user (generic)</option>
+                    </select>
+                    <button onclick="createLabel()">Add</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 @endsection
 
 @push('demo1_js')
@@ -1254,6 +1558,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     let activeConvId = null;
     let activeConv = null;
     let currentFilter = 'all';
+    // Phase 2 — when true, ?assigned_to_me=1 is added to the inbox query
+    // and only conversations with unread @mentions for the current user
+    // are returned. Toggled by the @me filter button.
+    let assignedToMe = false;
     // 'customers' (legacy behaviour, searches name/phone/city) or 'chats'
     // (searches inside message content via the backend's search_mode param).
     // Toggled by the small pill row underneath the search input.
@@ -1445,6 +1753,30 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
         });
     }
+
+    // Phase 2 — poll the mentions count every 30s and keep the red pip
+    // on the @me filter button in sync even when the user isn't actively
+    // filtering. Only runs when the user has any chance of seeing a
+    // mention (i.e. they have WA view perm — we can approximate by just
+    // trying and ignoring 403s).
+    function refreshMentionsPip() {
+        apiFetch('/messages/mentions-count').then(d => {
+            if (!d || !d.success) return;
+            const pip = document.getElementById('waMentionPip');
+            if (!pip) return;
+            if ((d.mentions_count || 0) > 0) {
+                pip.style.display = 'inline-block';
+            } else {
+                pip.style.display = 'none';
+            }
+        }).catch(() => {});
+    }
+    window.toggleAssignedToMe = function() {
+        assignedToMe = !assignedToMe;
+        const btn = document.getElementById('waFilterMe');
+        if (btn) btn.classList.toggle('active', assignedToMe);
+        loadConversations();
+    };
 
     function renderConversations(convs, opts = {}) {
         const el = document.getElementById('waConvList');
@@ -2491,12 +2823,435 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         document.body.appendChild(overlay);
     };
 
+    // ═══════════════════════════════════════════════════════════════════
+    // LABELS + 3-DOT MENU (Phase 1)
+    //
+    // Responsibilities:
+    //   • Fetch the workspace label library lazily (first time the labels
+    //     modal or filter dropdown opens). Cached in `allLabels` for the
+    //     rest of the session until we bust it after create/update/delete.
+    //   • Render label chips on inbox rows and in the chat header.
+    //   • Apply / remove labels on the active conversation.
+    //   • Library CRUD (gated on `can_manage` from the API response).
+    //   • "Mark Unread" — hits the new markUnread endpoint and reloads.
+    // ═══════════════════════════════════════════════════════════════════
+    let allLabels = null;     // { labels:[…], can_manage:bool }
+    let labelFilterId = null; // active filter id or null
+
+    function labelTextColor(hex) {
+        // Pick white or dark text for a given hex colour by relative
+        // luminance. Handles both 3- and 6-digit hexes. Fallback to dark.
+        if (!hex || typeof hex !== 'string') return '#111827';
+        let h = hex.trim().replace('#','');
+        if (h.length === 3) h = h.split('').map(c => c+c).join('');
+        if (h.length !== 6) return '#111827';
+        const r = parseInt(h.slice(0,2), 16);
+        const g = parseInt(h.slice(2,4), 16);
+        const b = parseInt(h.slice(4,6), 16);
+        const yiq = (r*299 + g*587 + b*114) / 1000;
+        return yiq >= 160 ? '#111827' : '#fff';
+    }
+    function chipBackground(hex) {
+        // Light pastel fill for inbox rows (10% hex) falling back to
+        // grey, plus a matching coloured border for definition.
+        if (!hex) return { bg: '#f3f4f6', color: '#374151', border: '#e5e7eb' };
+        return { bg: hex + '26', color: '#111827', border: hex + '80' };
+    }
+    function renderConvLabels(labels) {
+        if (!labels || !labels.length) return '';
+        const shown = labels.slice(0, 2);
+        const extra = labels.length - shown.length;
+        const chips = shown.map(l => {
+            const c = chipBackground(l.color);
+            return `<span class="wa-label-chip" title="${esc(l.name)}" style="background:${c.bg};color:${c.color};border:1px solid ${c.border};">${esc(l.name)}</span>`;
+        }).join('');
+        const more = extra > 0 ? `<span class="wa-label-chip" style="background:#e5e7eb;color:#374151;">+${extra}</span>` : '';
+        return `<div class="wa-conv-labels">${chips}${more}</div>`;
+    }
+    function renderChatHeaderLabels(labels) {
+        const wrap = document.getElementById('waChatHdrLabels');
+        if (!wrap) return;
+        if (!labels || !labels.length) { wrap.innerHTML = ''; return; }
+        wrap.innerHTML = labels.map(l => {
+            const c = chipBackground(l.color);
+            return `<span class="wa-label-chip" style="background:${c.bg};color:${c.color};border:1px solid ${c.border};">
+                ${esc(l.name)}
+                <button class="wa-label-remove" title="Remove label" onclick="removeLabelFromActive(${l.id})">&times;</button>
+            </span>`;
+        }).join('');
+    }
+
+    // Hook into renderConversations — we *extend* the existing markup by
+    // injecting the labels row after city. Easier than rewriting the whole
+    // function, and keeps the existing chat-search snippet logic intact.
+    const _origRenderConversations = renderConversations;
+    renderConversations = function(convs, opts) {
+        _origRenderConversations(convs, opts);
+        // After the base render, walk the list and inject a labels strip
+        // for each row (if the conversation has any labels).
+        document.querySelectorAll('#waConvList .wa-conv-item').forEach(el => {
+            const id = parseInt(el.dataset.id || '0', 10);
+            const conv = convs.find(c => c.id === id);
+            if (!conv) return;
+            // Labels strip.
+            if (conv.labels && conv.labels.length && !el.querySelector('.wa-conv-labels')) {
+                const info = el.querySelector('.wa-conv-info');
+                if (info) info.insertAdjacentHTML('beforeend', renderConvLabels(conv.labels));
+            }
+            // Phase 2 — mention dot. Injected at the end of the bottom row
+            // right after the unread badge so both "needs attention" chips
+            // line up. Only added when the CURRENT user has unread mentions
+            // on this convo.
+            if ((conv.mentions_count || 0) > 0 && !el.querySelector('.wa-mention-dot')) {
+                const bottom = el.querySelector('.wa-conv-bottom') || el.querySelector('.wa-conv-info');
+                if (bottom) bottom.insertAdjacentHTML('beforeend',
+                    '<span class="wa-mention-dot" title="You were tagged on this conversation">@</span>');
+            }
+        });
+    };
+
+    // Hook into openConv — after the detail call resolves, push the
+    // conversation's labels into the header strip. The original openConv
+    // already sets activeConv when the promise resolves, so we rely on
+    // a tiny poll to detect that happened and paint the strip. We keep
+    // this simple by overriding window.openConv; preserving all the
+    // existing behaviour by calling through.
+    const _origOpenConv = window.openConv;
+    window.openConv = function(id) {
+        renderChatHeaderLabels([]); // clear while loading
+        _origOpenConv(id);
+        // activeConv is set asynchronously inside _origOpenConv. Poll once
+        // shortly after to paint header labels. 400ms is enough for a
+        // typical detail fetch; worst case we'll reconcile on next poll.
+        setTimeout(() => {
+            if (activeConv && activeConv.id === id) {
+                renderChatHeaderLabels(activeConv.labels || []);
+            }
+        }, 400);
+    };
+
+    // Also refresh the header-label strip every poll tick so changes
+    // applied by other users eventually show up here (we're already
+    // refetching the detail in the existing msgPollTimer → the
+    // updateSessionUI call) — hook that by reading activeConv.
+    setInterval(() => {
+        if (activeConv && activeConv.id === activeConvId) {
+            renderChatHeaderLabels(activeConv.labels || []);
+        }
+    }, POLL_INTERVAL);
+
+    // ── 3-dot menu ──
+    window.toggleChatMenu = function() {
+        document.getElementById('waChatMenu').classList.toggle('open');
+    };
+    // Close menu on outside click.
+    document.addEventListener('click', function(e) {
+        const menu = document.getElementById('waChatMenu');
+        const btn = document.getElementById('waChatMenuBtn');
+        if (menu && menu.classList.contains('open') && !menu.contains(e.target) && e.target !== btn) {
+            menu.classList.remove('open');
+        }
+        const lf = document.getElementById('waLabelFilterMenu');
+        const lfBtn = document.getElementById('waLabelFilterBtn');
+        if (lf && lf.classList.contains('open') && !lf.contains(e.target) && e.target !== lfBtn) {
+            lf.classList.remove('open');
+        }
+    });
+
+    window.doMarkUnread = function() {
+        document.getElementById('waChatMenu').classList.remove('open');
+        if (!activeConvId) return;
+        apiFetch('/messages/conversations/' + activeConvId + '/mark-unread', { method: 'POST' }).then(d => {
+            if (d.success) {
+                // Drop out of this conversation so the unread badge re-appears
+                // on the left, and reload the list so the styling updates.
+                const prevId = activeConvId;
+                activeConvId = null;
+                activeConv = null;
+                const panel = document.getElementById('waChat');
+                if (panel) panel.classList.remove('visible');
+                const empty = document.getElementById('waEmptyState');
+                if (empty) empty.style.display = 'flex';
+                loadConversations();
+                if (window.toastr && toastr.success) toastr.success('Marked as unread');
+            } else if (window.toastr && toastr.error) {
+                toastr.error(d.message || 'Failed to mark unread');
+            }
+        });
+    };
+
+    // ── Labels modal ──
+    window.openLabelsModal = function() {
+        document.getElementById('waChatMenu').classList.remove('open');
+        if (!activeConvId) return;
+        document.getElementById('waLabelsModal').classList.add('open');
+        renderLabelsModal();
+    };
+    window.closeLabelsModal = function() {
+        document.getElementById('waLabelsModal').classList.remove('open');
+    };
+
+    function fetchLabels(force) {
+        if (allLabels && !force) return Promise.resolve(allLabels);
+        return apiFetch('/messages/labels').then(d => {
+            if (!d.success) return { labels: [], can_manage: false };
+            allLabels = d;
+            return d;
+        });
+    }
+
+    function renderLabelsModal() {
+        const togglesEl = document.getElementById('waLabelToggles');
+        const manageWrap = document.getElementById('waLabelManageBlock');
+        const manageList = document.getElementById('waLabelManageList');
+        togglesEl.innerHTML = '<div style="font-size:12px;color:#9ca3af;">Loading…</div>';
+        manageWrap.style.display = 'none';
+
+        Promise.all([
+            fetchLabels(true),
+            apiFetch('/messages/conversations/' + activeConvId), // to get current labels
+        ]).then(([lib, det]) => {
+            const applied = (det && det.conversation && det.conversation.labels) || [];
+            const appliedIds = new Set(applied.map(l => l.id));
+            // Keep activeConv in sync so the header strip is correct.
+            if (det && det.conversation) {
+                activeConv = det.conversation;
+                renderChatHeaderLabels(activeConv.labels || []);
+            }
+
+            if (!lib.labels.length) {
+                togglesEl.innerHTML = '<div style="font-size:12px;color:#9ca3af;">No labels yet. ' +
+                    (lib.can_manage ? 'Create one below.' : 'Ask an admin to create labels.') + '</div>';
+            } else {
+                togglesEl.innerHTML = lib.labels.map(l => {
+                    const on = appliedIds.has(l.id);
+                    const style = on
+                        ? `background:${l.color}26;color:${l.color === '#FFFFFF' || l.color === '#fff' ? '#111827' : l.color};border-color:${l.color};`
+                        : '';
+                    const mentionPrefix = l.user_id ? '<span class="wa-label-mention-tag">@</span>' : '';
+                    return `<span class="wa-label-toggle ${on ? 'applied' : ''}" style="${style}" onclick="toggleLabelOnActive(${l.id}, ${on ? 1 : 0})">
+                        <span class="wa-label-color-dot" style="background:${l.color}"></span>
+                        ${mentionPrefix}${esc(l.name)}
+                    </span>`;
+                }).join('');
+            }
+
+            if (lib.can_manage) {
+                manageWrap.style.display = 'block';
+                // Populate the user-mention picker ONCE per modal open.
+                // Server gates this endpoint by manage_whatsapp_labels, so
+                // if we got can_manage we know it will succeed.
+                populateLabelUserPicker();
+                if (!lib.labels.length) {
+                    manageList.innerHTML = '<div style="font-size:12px;color:#9ca3af;padding:6px 0;">No labels yet.</div>';
+                } else {
+                    manageList.innerHTML = lib.labels.map(l => `
+                        <div class="wa-label-manage-row" data-lid="${l.id}">
+                            <span class="wa-label-color-dot" style="background:${l.color}"></span>
+                            <span style="font-size:13px;color:#111827;font-weight:500;">${esc(l.name)}</span>
+                            ${l.user_id ? '<span class="wa-label-mention-badge" title="Applying this label pings the tagged user">@mention</span>' : ''}
+                            ${l.is_system ? '<span style="font-size:10px;color:#9ca3af;margin-left:4px;">system</span>' : ''}
+                            <div class="wa-label-manage-actions">
+                                <button title="Rename" onclick="renameLabel(${l.id})">✏️</button>
+                                <button title="Delete" onclick="deleteLabelClick(${l.id}, ${l.is_system ? 1 : 0})">🗑️</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            }
+        });
+    }
+
+    // Phase 2: fill the user-mention picker dropdown with eligible staff.
+    // Cached between renders; re-fetched only if cache is empty.
+    let _labelUsersCache = null;
+    function populateLabelUserPicker() {
+        const sel = document.getElementById('waLabelNewUser');
+        if (!sel) return;
+        if (_labelUsersCache) {
+            _renderLabelUserOptions(sel, _labelUsersCache);
+            return;
+        }
+        apiFetch('/messages/label-users').then(d => {
+            if (!d || !d.success) return;
+            _labelUsersCache = d.users || [];
+            _renderLabelUserOptions(sel, _labelUsersCache);
+        });
+    }
+    function _renderLabelUserOptions(sel, users) {
+        // Preserve any already-selected value across re-renders.
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">No user (generic)</option>' +
+            users.map(u => `<option value="${u.id}">@ ${esc(u.fullname || ('User #' + u.id))}</option>`).join('');
+        if (prev) sel.value = prev;
+    }
+
+    window.toggleLabelOnActive = function(labelId, isApplied) {
+        if (!activeConvId) return;
+        if (isApplied) {
+            apiFetch('/messages/conversations/' + activeConvId + '/labels/' + labelId, { method: 'DELETE' }).then(d => {
+                if (!d.success) return;
+                if (activeConv) activeConv.labels = d.labels;
+                renderChatHeaderLabels(d.labels || []);
+                renderLabelsModal(); // re-render toggles
+                loadConversations(); // refresh inbox row chips
+            });
+        } else {
+            apiFetch('/messages/conversations/' + activeConvId + '/labels', {
+                method: 'POST', body: JSON.stringify({ label_id: labelId }),
+            }).then(d => {
+                if (!d.success) return;
+                if (activeConv) activeConv.labels = d.labels;
+                renderChatHeaderLabels(d.labels || []);
+                renderLabelsModal();
+                loadConversations();
+            });
+        }
+    };
+
+    window.removeLabelFromActive = function(labelId) {
+        if (!activeConvId) return;
+        apiFetch('/messages/conversations/' + activeConvId + '/labels/' + labelId, { method: 'DELETE' }).then(d => {
+            if (!d.success) return;
+            if (activeConv) activeConv.labels = d.labels;
+            renderChatHeaderLabels(d.labels || []);
+            loadConversations();
+        });
+    };
+
+    window.createLabel = function() {
+        const name = (document.getElementById('waLabelNewName').value || '').trim();
+        const color = document.getElementById('waLabelNewColor').value || '#16A34A';
+        const userEl = document.getElementById('waLabelNewUser');
+        const userId = userEl && userEl.value ? parseInt(userEl.value, 10) : null;
+        if (!name) { alert('Please enter a label name.'); return; }
+        const body = { name, color };
+        if (userId) body.user_id = userId;
+        apiFetch('/messages/labels', {
+            method: 'POST', body: JSON.stringify(body),
+        }).then(d => {
+            if (!d.success) { alert(d.message || 'Failed to create label'); return; }
+            document.getElementById('waLabelNewName').value = '';
+            if (userEl) userEl.value = '';
+            allLabels = null;
+            renderLabelsModal();
+            loadConversations();
+            loadLabelFilterMenu(true);
+        });
+    };
+
+    window.renameLabel = function(id) {
+        const newName = prompt('New label name:');
+        if (!newName) return;
+        apiFetch('/messages/labels/' + id, {
+            method: 'PUT', body: JSON.stringify({ name: newName.trim() }),
+        }).then(d => {
+            if (!d.success) { alert(d.message || 'Failed to rename'); return; }
+            allLabels = null;
+            renderLabelsModal();
+            loadConversations();
+            loadLabelFilterMenu(true);
+            // If the active conv had this label, refresh its header strip.
+            if (activeConv && (activeConv.labels || []).some(l => l.id === id)) {
+                apiFetch('/messages/conversations/' + activeConvId).then(d2 => {
+                    if (d2.success) { activeConv = d2.conversation; renderChatHeaderLabels(activeConv.labels || []); }
+                });
+            }
+        });
+    };
+
+    window.deleteLabelClick = function(id, isSystem) {
+        const warn = isSystem
+            ? 'This is a system label — are you SURE you want to delete it from every conversation?'
+            : 'Delete this label? It will be removed from every conversation that has it.';
+        if (!confirm(warn)) return;
+        apiFetch('/messages/labels/' + id, { method: 'DELETE' }).then(d => {
+            if (!d.success) { alert(d.message || 'Failed to delete'); return; }
+            allLabels = null;
+            renderLabelsModal();
+            loadConversations();
+            loadLabelFilterMenu(true);
+            if (labelFilterId === id) { labelFilterId = null; }
+            if (activeConvId) {
+                apiFetch('/messages/conversations/' + activeConvId).then(d2 => {
+                    if (d2.success) { activeConv = d2.conversation; renderChatHeaderLabels(activeConv.labels || []); }
+                });
+            }
+        });
+    };
+
+    // ── Label filter on inbox ──
+    window.toggleLabelFilter = function() {
+        const menu = document.getElementById('waLabelFilterMenu');
+        const opening = !menu.classList.contains('open');
+        menu.classList.toggle('open');
+        if (opening) loadLabelFilterMenu(false);
+    };
+    function loadLabelFilterMenu(force) {
+        fetchLabels(force).then(lib => {
+            const menu = document.getElementById('waLabelFilterMenu');
+            if (!menu) return;
+            const items = [
+                `<button class="${labelFilterId===null?'active':''}" onclick="setLabelFilter(null)">All conversations</button>`,
+                ...lib.labels.map(l => `
+                    <button class="${labelFilterId===l.id?'active':''}" onclick="setLabelFilter(${l.id})">
+                        <span class="wa-label-color-dot" style="background:${l.color}"></span>
+                        ${esc(l.name)}
+                    </button>
+                `),
+            ];
+            menu.innerHTML = items.join('');
+        });
+    }
+    window.setLabelFilter = function(id) {
+        labelFilterId = id;
+        const btn = document.getElementById('waLabelFilterBtn');
+        const menu = document.getElementById('waLabelFilterMenu');
+        if (menu) menu.classList.remove('open');
+        if (btn) {
+            if (id) {
+                btn.classList.add('active');
+                const lib = allLabels || { labels: [] };
+                const l = lib.labels.find(x => x.id === id);
+                btn.textContent = '🏷️ ' + (l ? l.name : 'Label');
+            } else {
+                btn.classList.remove('active');
+                btn.textContent = '🏷️ Label';
+            }
+        }
+        loadConversations();
+    };
+
+    // Hook loadConversations once more — append label_id / assigned_to_me to
+    // the URL if either filter is active. When neither is set we just defer
+    // to the original implementation so we don't run two requests in a row.
+    const _origLoadConversations = loadConversations;
+    loadConversations = function() {
+        if (!labelFilterId && !assignedToMe) {
+            _origLoadConversations();
+            return;
+        }
+        let url = '/messages/conversations?filter=' + currentFilter;
+        const searchInput = document.getElementById('waSearch');
+        const search = (searchInput && searchInput.value || '').trim();
+        if (search) url += '&search=' + encodeURIComponent(search) + '&search_mode=' + (currentSearchMode || 'customers');
+        if (labelFilterId) url += '&label_id=' + labelFilterId;
+        if (assignedToMe)  url += '&assigned_to_me=1';
+        apiFetch(url).then(d => {
+            if (!d.success) return;
+            renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
+        });
+    };
+
     // ── Init ──
     loadQurbaniSettings();
     loadConversations();
     convPollTimer = setInterval(() => {
         loadConversations();
     }, POLL_INTERVAL);
+    // Phase 2 — keep the @me pip in sync with the server's mention count.
+    refreshMentionsPip();
+    setInterval(refreshMentionsPip, 30000);
 })();
 </script>
 @endverbatim

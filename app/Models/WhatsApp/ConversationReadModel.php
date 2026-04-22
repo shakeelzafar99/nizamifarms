@@ -25,12 +25,14 @@ class ConversationReadModel extends Model
         'conversation_id',
         'user_id',
         'last_read_at',
+        'forced_unread_at',
     ];
 
     protected $casts = [
         'conversation_id' => 'integer',
         'user_id' => 'integer',
         'last_read_at' => 'datetime',
+        'forced_unread_at' => 'datetime',
     ];
 
     public function conversation()

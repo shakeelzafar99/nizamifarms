@@ -184,6 +184,16 @@ class WhatsAppController extends Controller
                 ->keyBy('conversation_id');
 
             // Per-user unread counts (see web controller for rule details).
+            // Rules (all must hold for an inbound message to be unread for user X):
+            //   1. direction='inbound' — only customer messages count.
+            //   2. created_at > my own last_read_at (or I have no read row).
+            //   3. created_at > conversation.global_read_at — set when a
+            //      super-reader (Taimur) marks the thread read. Makes the
+            //      conversation appear read for EVERYONE from that moment,
+            //      without touching each user's personal read row.
+            //   4. No staff has replied AFTER this inbound message. Any
+            //      outbound reply "handles" prior inbounds for all staff.
+            $hasGlobalReadCol = Schema::hasColumn('t_wa_conversations', 'global_read_at');
             $unreadByConv = [];
             if ($hasReadsTable && !empty($conversationIds)) {
                 $unreadQ = DB::table('t_wa_messages as m')
@@ -205,6 +215,16 @@ class WhatsAppController extends Controller
                           AND m2.created_at > m.created_at
                     )');
 
+                // Super-reader global read marker — only apply if the column
+                // exists (idempotent across pre/post migration installs).
+                if ($hasGlobalReadCol) {
+                    $unreadQ->leftJoin('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+                            ->where(function ($w) {
+                                $w->whereNull('c.global_read_at')
+                                  ->orWhereColumn('m.created_at', '>', 'c.global_read_at');
+                            });
+                }
+
                 // Limited users shouldn't see unread counts for messages they
                 // aren't allowed to read.
                 if ($access['limited']) {
@@ -215,13 +235,67 @@ class WhatsAppController extends Controller
                 foreach ($rows as $r) {
                     $unreadByConv[$r->conversation_id] = (int) $r->cnt;
                 }
+
+                // Post-process: any conversation the user has explicitly
+                // "Mark as Unread"-ed should show at least 1 unread, even
+                // when there are no eligible inbound messages left (e.g.
+                // staff already replied to everything). We use a simple
+                // indexed lookup on the user's own read rows.
+                if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+                    $forcedIds = DB::table('t_wa_conversation_reads')
+                        ->where('user_id', $userId)
+                        ->whereIn('conversation_id', $conversationIds)
+                        ->whereNotNull('forced_unread_at')
+                        ->pluck('conversation_id');
+                    foreach ($forcedIds as $fid) {
+                        if (empty($unreadByConv[$fid])) {
+                            $unreadByConv[$fid] = 1;
+                        }
+                    }
+                }
             } else {
                 foreach ($conversations as $c) {
                     $unreadByConv[$c->id] = (int) $c->unread_count;
                 }
             }
 
-            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId) {
+            // Batch-fetch labels applied to each visible conversation so we
+            // can render chips on inbox rows without an N+1 query. One join,
+            // keyed by conversation_id. Also track per-conversation unread
+            // mention count for the CURRENT user (Phase 2) so mobile can
+            // show a small "@" ping on inbox rows without another round-trip.
+            $labelsByConv = [];
+            $mentionsByConv = [];
+            $hasLabelsTable = Schema::hasTable('t_wa_labels') && Schema::hasTable('t_wa_conversation_labels');
+            $hasSeenCol = $hasLabelsTable && Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at');
+            if ($hasLabelsTable && !empty($conversationIds)) {
+                $cols = ['cl.conversation_id', 'l.id', 'l.name', 'l.color', 'l.user_id'];
+                if ($hasSeenCol) $cols[] = 'cl.mention_seen_at';
+
+                $labelRows = DB::table('t_wa_conversation_labels as cl')
+                    ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                    ->whereIn('cl.conversation_id', $conversationIds)
+                    ->orderBy('l.name')
+                    ->get($cols);
+                foreach ($labelRows as $lr) {
+                    $labelsByConv[$lr->conversation_id][] = [
+                        'id'      => (int) $lr->id,
+                        'name'    => $lr->name,
+                        'color'   => $lr->color,
+                        'user_id' => $lr->user_id ? (int) $lr->user_id : null,
+                    ];
+                    // Count unread mentions targeted at the CURRENT viewer.
+                    if ($hasSeenCol
+                        && $lr->user_id
+                        && (int) $lr->user_id === (int) $userId
+                        && empty($lr->mention_seen_at)) {
+                        $mentionsByConv[$lr->conversation_id] =
+                            ($mentionsByConv[$lr->conversation_id] ?? 0) + 1;
+                    }
+                }
+            }
+
+            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv) {
                 $lastMsg = $lastMessages->get($conv->id);
                 // Chat-mode extras: ship the matched snippet + count
                 // so the mobile UI can render a highlighted preview.
@@ -245,11 +319,33 @@ class WhatsAppController extends Controller
                     'match_count' => $match['count'] ?? null,
                     'match_direction' => $match['direction'] ?? null,
                     'assigned_to' => $conv->assigned_to,
+                    'labels' => $labelsByConv[$conv->id] ?? [],
+                    // Phase 2: unread @mentions targeted at the viewer.
+                    'mentions_count' => (int) ($mentionsByConv[$conv->id] ?? 0),
                 ];
             });
 
             if ($filter === 'unread') {
                 $result = $result->filter(fn($c) => ($c['unread_count'] ?? 0) > 0)->values();
+            }
+
+            // Phase 2 filter: "@me" — conversations where the current user
+            // has at least one unread mention. Cheap because mentions_count
+            // is already computed above.
+            if ($request->boolean('assigned_to_me')) {
+                $result = $result->filter(fn($c) => ($c['mentions_count'] ?? 0) > 0)->values();
+            }
+
+            // Optional filter by label_id — keeps the inbox focused when the
+            // user taps a label chip or picks one from the filter dropdown.
+            if ($labelFilter = $request->input('label_id')) {
+                $labelFilter = (int) $labelFilter;
+                $result = $result->filter(function ($c) use ($labelFilter) {
+                    foreach ($c['labels'] ?? [] as $l) {
+                        if ((int) $l['id'] === $labelFilter) return true;
+                    }
+                    return false;
+                })->values();
             }
 
             return response()->json([
@@ -351,6 +447,7 @@ class WhatsAppController extends Controller
             }
 
             $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
+            $convLabels = $this->labelsForConversation($conversation->id);
 
             return response()->json([
                 'success' => true,
@@ -370,6 +467,7 @@ class WhatsAppController extends Controller
                         : null,
                     'assigned_to' => $conversation->assigned_to,
                     'seen_by' => $seenBy,
+                    'labels' => $convLabels,
                 ],
                 'messages' => $result,
                 'has_more' => $messages->count() === $limit,
@@ -434,6 +532,177 @@ class WhatsAppController extends Controller
 
         } catch (\Exception $e) {
             Log::error('WhatsApp: Failed to send message', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Send a voice note (audio message) in a conversation.
+     *
+     * Accepts a multipart upload from the mobile app with field name
+     * `audio`, saves it alongside inbound media under
+     * `storage/app/public/whatsapp-media/YYYY/MM/outbound-<uuid>.<ext>`,
+     * uploads the bytes to Meta's /media endpoint to get a media_id,
+     * sends a WhatsApp `type=audio` message, and persists the outbound
+     * row so the message appears in the thread with the same playback
+     * flow inbound audio already uses (via /public-storage/{path}).
+     *
+     * Safety rails:
+     *   - `send_whatsapp_messages` permission required (same as text send).
+     *   - 24-hour session window enforced (Meta rejects free-form audio
+     *     outside the window anyway; we short-circuit here to give a
+     *     friendlier error with a template prompt).
+     *   - 5 minute / 8 MB mobile-side cap is mirrored server-side to
+     *     protect us from a rogue/very-large upload on shared hosting.
+     *   - Only audio MIME types accepted.
+     *   - Nothing is persisted or sent if any step fails; the local
+     *     file is removed on failure so we don't leak orphan media.
+     */
+    public function sendVoiceNote(Request $request, $conversationId)
+    {
+        $savedPath = null;
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('send_whatsapp_messages')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $request->validate([
+                // 'audio' is the uploaded file. Mime rule intentionally lax:
+                // Android's MediaRecorder can tag the same AAC stream as
+                // audio/mp4, audio/aac, audio/3gpp, or application/octet-stream
+                // depending on the device. We filter on the *content* below
+                // via getMimeType(), so we just need any file here.
+                'audio' => 'required|file|max:8192', // 8 MB cap (Laravel validates in KB)
+                'duration_ms' => 'nullable|integer|min:0|max:360000', // ≤ 6 min, informational only
+            ]);
+
+            $conversation = ConversationModel::find($conversationId);
+            if (!$conversation) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            // Same 24-hour gate as text sends. Meta will reject outside
+            // this window; we return early with a session_expired flag
+            // so the mobile app can offer the template picker instead.
+            if (!$this->whatsapp->isSessionActive($conversation)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => '24-hour window expired. Use a template message to re-initiate.',
+                    'session_expired' => true,
+                ], 422);
+            }
+
+            $file = $request->file('audio');
+            if (!$file || !$file->isValid()) {
+                return response()->json(['success' => false, 'message' => 'Invalid audio upload'], 422);
+            }
+
+            // Actual MIME from the uploaded bytes (not the client-provided
+            // label). We only accept recognised audio containers — anything
+            // else (image/exe/etc) gets rejected before we touch Meta.
+            $detected = strtolower((string) $file->getMimeType());
+            $allowed  = [
+                'audio/mp4', 'audio/aac', 'audio/x-m4a', 'audio/m4a',
+                'audio/mpeg', 'audio/mp3',
+                'audio/ogg', 'audio/opus',
+                'audio/3gpp', 'audio/amr',
+                'video/mp4', // Android often reports .m4a as video/mp4; still audio-only
+            ];
+            if (!in_array($detected, $allowed, true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unsupported audio format: ' . ($detected ?: 'unknown'),
+                ], 422);
+            }
+
+            // Pick a sensible Meta-facing MIME. WhatsApp accepts audio/mp4
+            // and audio/aac for M4A payloads; we normalise video/mp4 →
+            // audio/mp4 so Meta's type-check is happy.
+            $metaMime = $detected === 'video/mp4' ? 'audio/mp4' : $detected;
+
+            // Reuse the inbound media folder — /public-storage/{path} already
+            // streams files out of this location without needing a symlink
+            // (shared-hosting safe, same path attendance photos use).
+            $extension  = $file->getClientOriginalExtension() ?: ($file->extension() ?: 'm4a');
+            $filename   = 'outbound-' . \Illuminate\Support\Str::uuid()->toString() . '.' . strtolower($extension);
+            $relative   = config('whatsapp.media_path') . '/' . date('Y/m') . '/' . $filename;
+            $savedPath  = $file->storeAs(
+                dirname($relative),
+                basename($relative),
+                config('whatsapp.media_disk')
+            );
+            if (!$savedPath) {
+                return response()->json(['success' => false, 'message' => 'Failed to store audio file'], 500);
+            }
+
+            // Absolute path on disk so WhatsAppService can read the bytes.
+            $absolutePath = Storage::disk(config('whatsapp.media_disk'))->path($savedPath);
+
+            // Step 1 — upload to Meta, get back a media_id.
+            $mediaId = $this->whatsapp->uploadMediaToWhatsApp($absolutePath, $metaMime);
+            if (!$mediaId) {
+                // Don't leak the orphan file on failure.
+                Storage::disk(config('whatsapp.media_disk'))->delete($savedPath);
+                $savedPath = null;
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to upload audio to WhatsApp. Please try again.',
+                ], 502);
+            }
+
+            // Step 2 — send the WhatsApp message referencing the media_id.
+            $response = $this->whatsapp->sendAudio($conversation->wa_phone, $mediaId);
+            if (!($response['success'] ?? false)) {
+                Storage::disk(config('whatsapp.media_disk'))->delete($savedPath);
+                $savedPath = null;
+                return response()->json([
+                    'success' => false,
+                    'message' => $response['error'] ?? 'WhatsApp rejected the audio message',
+                ], 500);
+            }
+
+            // Step 3 — persist the outbound message so our UI can replay it.
+            // We go through MessageModel directly (not saveOutboundMessage)
+            // because that helper doesn't know about media_url. Mirrors the
+            // inbound audio row shape exactly so rendering code can stay
+            // direction-agnostic.
+            $waMessageId = $response['messages'][0]['id'] ?? null;
+            $message = MessageModel::create([
+                'conversation_id' => $conversation->id,
+                'wa_message_id'   => $waMessageId,
+                'direction'       => 'outbound',
+                'type'            => 'audio',
+                'content'         => '[Voice Note]',
+                'media_url'       => $savedPath,
+                'media_mime_type' => $metaMime,
+                'status'          => 'sent',
+                'sent_by'         => $user->id,
+                'created_at'      => now(),
+            ]);
+
+            ConversationModel::where('id', $conversation->id)->update(['last_message_at' => now()]);
+
+            return response()->json([
+                'success' => true,
+                'message_id'    => $message->id,
+                'wa_message_id' => $waMessageId,
+                'media_url'     => $message->media_public_url,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            // Laravel's validator already returns a 422 with a readable
+            // error — pass it through unchanged.
+            throw $ve;
+        } catch (\Exception $e) {
+            // Best-effort cleanup of any partially-saved file so we don't
+            // leave orphans after a server error.
+            if ($savedPath) {
+                try { Storage::disk(config('whatsapp.media_disk'))->delete($savedPath); } catch (\Exception $ignored) {}
+            }
+            Log::error('WhatsApp: sendVoiceNote failed', [
+                'conversation_id' => $conversationId,
+                'error' => $e->getMessage(),
+            ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -505,7 +774,9 @@ class WhatsAppController extends Controller
 
     /**
      * Mark a conversation as read for this user and send blue-tick receipts
-     * to the customer.
+     * to the customer. If this user is a super-reader (Taimur), the read
+     * also applies globally — any inbound message older than "now" becomes
+     * read for every staff member via t_wa_conversations.global_read_at.
      */
     public function markRead(Request $request, $conversationId)
     {
@@ -518,13 +789,39 @@ class WhatsAppController extends Controller
 
             $now = now();
             if (Schema::hasTable('t_wa_conversation_reads')) {
+                // Always clear forced_unread_at on markRead — opening the
+                // chat is the explicit signal that the user no longer wants
+                // this conv forced to the top of the unread list.
+                $readPayload = ['last_read_at' => $now];
+                if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+                    $readPayload['forced_unread_at'] = null;
+                }
                 ConversationReadModel::updateOrCreate(
                     ['user_id' => $user->id, 'conversation_id' => $conversationId],
-                    ['last_read_at' => $now]
+                    $readPayload
                 );
             }
 
-            ConversationModel::where('id', $conversationId)->update(['unread_count' => 0]);
+            // Clear any unread @mentions for this user on this conversation
+            // (user-mention labels where mention_seen_at IS NULL). We do it
+            // with a direct join to avoid fetching label IDs client-side.
+            if (Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at')) {
+                DB::table('t_wa_conversation_labels as cl')
+                    ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                    ->where('cl.conversation_id', $conversationId)
+                    ->where('l.user_id', $user->id)
+                    ->whereNull('cl.mention_seen_at')
+                    ->update(['cl.mention_seen_at' => $now]);
+            }
+
+            // Super-reader: also stamp conversation-wide so other staff see
+            // the thread as read without touching their individual rows.
+            $updates = ['unread_count' => 0];
+            if ($this->whatsapp->isSuperReader($user) &&
+                Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+                $updates['global_read_at'] = $now;
+            }
+            ConversationModel::where('id', $conversationId)->update($updates);
 
             try {
                 $this->whatsapp->markInboundAsReadOnWhatsApp((int) $conversationId);
@@ -537,6 +834,430 @@ class WhatsAppController extends Controller
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Mark a conversation as UNREAD for this user.
+     *
+     * For a regular user we delete their t_wa_conversation_reads row — the
+     * next unread calc will then consider all inbound messages after 1970
+     * (effectively "everything I haven't seen yet since the last outbound
+     * reply"). We don't nuke their row entirely if the conversation has no
+     * inbound messages; we still need the legacy unread_count bump so the
+     * list shows a dot on their next fetch.
+     *
+     * For a super-reader we additionally clear the conversation's
+     * global_read_at. The semantic: "Taimur is telling the team this
+     * deserves another look" — if he clears it, everyone should see it
+     * as unread again.
+     */
+    public function markUnread(Request $request, $conversationId)
+    {
+        try {
+            $user = Auth::user();
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $conversation = ConversationModel::find($conversationId);
+            if (!$conversation) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            // Upsert the user's read row with forced_unread_at = NOW(). We
+            // DO NOT touch last_read_at — the existing schema has it NOT
+            // NULL, and the forced_unread_at flag alone is enough to make
+            // the unread calc report this conv as unread regardless of the
+            // "has an outbound reply after this inbound" rule. On the next
+            // markRead we clear forced_unread_at automatically.
+            $hasForcedCol = Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at');
+            if (Schema::hasTable('t_wa_conversation_reads') && $hasForcedCol) {
+                // Seed a fresh row for users who have never opened the conv
+                // before — last_read_at is required, so use the epoch.
+                $existing = ConversationReadModel::where('user_id', $user->id)
+                    ->where('conversation_id', $conversationId)
+                    ->first();
+                if ($existing) {
+                    $existing->forced_unread_at = now();
+                    $existing->save();
+                } else {
+                    ConversationReadModel::create([
+                        'user_id'          => $user->id,
+                        'conversation_id'  => $conversationId,
+                        'last_read_at'     => '1970-01-01 00:00:00',
+                        'forced_unread_at' => now(),
+                    ]);
+                }
+            } elseif (Schema::hasTable('t_wa_conversation_reads')) {
+                // Pre-migration fallback — best effort, no forced flag available.
+                ConversationReadModel::where('user_id', $user->id)
+                    ->where('conversation_id', $conversationId)
+                    ->delete();
+            }
+
+            // Re-seed the legacy counter so badge consumers that only read
+            // unread_count (push badge-sum endpoint) still show a dot even
+            // when the user has already replied.
+            $updates = ['unread_count' => max(1, (int) $conversation->unread_count)];
+            if ($this->whatsapp->isSuperReader($user) &&
+                Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+                $updates['global_read_at'] = null;
+            }
+            ConversationModel::where('id', $conversationId)->update($updates);
+
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            Log::error('markUnread failed', ['error' => $e->getMessage(), 'conv' => $conversationId]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =========================================================================
+    // LABELS (Phase 1 — shared library + apply/remove; Phase 2 adds user
+    // mentions via t_wa_labels.user_id + mention_seen_at on the pivot)
+    // =========================================================================
+
+    /**
+     * Phase 2 helper — return the list of staff users eligible to be
+     * targets of a user-mention label (i.e. anyone with the WhatsApp view
+     * permission). Only admins who can manage labels need this, so it's
+     * gated the same way. Returns id + display name (fullname), already
+     * sorted by name. Lightweight enough to run on every open of the
+     * label-create form.
+     */
+    public function getLabelUsers(Request $request)
+    {
+        try {
+            $me = Auth::user();
+            if (!$me || !$me->hasMobilePermission('manage_whatsapp_labels')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+            $rows = DB::table('t_sys_user as u')
+                ->join('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
+                ->join('t_sys_role_mobile_permission as rmp', 'rmp.role_id', '=', 'ur.role_id')
+                ->join('t_sys_mobile_permission as mp', 'mp.id', '=', 'rmp.mobile_permission_id')
+                ->whereIn('mp.permission_code', ['view_whatsapp_messages', 'view_whatsapp_messages_limited'])
+                ->where('u.is_active', 1)
+                ->distinct()
+                ->orderBy('u.fullname')
+                ->get(['u.id', 'u.fullname', 'u.email'])
+                ->map(fn ($r) => [
+                    'id'       => (int) $r->id,
+                    'fullname' => $r->fullname,
+                    'email'    => $r->email,
+                ]);
+            return response()->json(['success' => true, 'users' => $rows]);
+        } catch (\Exception $e) {
+            Log::error('getLabelUsers failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Phase 2 — count of unread @mentions for the current user, across
+     * ALL conversations. Used by the mobile shell to show a red "@" dot
+     * on the WhatsApp tab icon, independent of the plain unread badge.
+     */
+    public function getMentionsCount(Request $request)
+    {
+        try {
+            $me = Auth::user();
+            if (!$me || !$this->resolveWhatsAppAccess($me)['allowed']) {
+                return response()->json(['success' => true, 'mentions_count' => 0]);
+            }
+            if (!Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at')) {
+                return response()->json(['success' => true, 'mentions_count' => 0]);
+            }
+            $count = DB::table('t_wa_conversation_labels as cl')
+                ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+                ->where('l.user_id', $me->id)
+                ->whereNull('cl.mention_seen_at')
+                ->count();
+            return response()->json(['success' => true, 'mentions_count' => (int) $count]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'mentions_count' => 0]);
+        }
+    }
+
+    /**
+     * List every label in the workspace. Used to populate the Labels sheet
+     * on mobile. Ordered: user-mention labels first (so `@user` tags surface
+     * quickly), then alphabetical.
+     */
+    public function getLabels(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$this->resolveWhatsAppAccess($user)['allowed']) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+            if (!Schema::hasTable('t_wa_labels')) {
+                return response()->json(['success' => true, 'labels' => []]);
+            }
+
+            $labels = \App\Models\WhatsApp\LabelModel::orderByRaw('CASE WHEN user_id IS NULL THEN 1 ELSE 0 END')
+                ->orderBy('name')
+                ->get()
+                ->map(function ($l) {
+                    return [
+                        'id'        => $l->id,
+                        'name'      => $l->name,
+                        'color'     => $l->color,
+                        'user_id'   => $l->user_id,
+                        'is_system' => (bool) $l->is_system,
+                    ];
+                });
+
+            return response()->json([
+                'success' => true,
+                'labels' => $labels,
+                'can_manage' => (bool) $user->hasMobilePermission('manage_whatsapp_labels'),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('getLabels failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Create a new label. Gated by `manage_whatsapp_labels` so random users
+     * can't pollute the shared library. Enforces case-insensitive uniqueness
+     * on name so we never end up with "VIP" and "vip" side by side.
+     */
+    public function createLabel(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('manage_whatsapp_labels')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $data = $request->validate([
+                'name'    => 'required|string|max:60',
+                'color'   => 'nullable|string|max:20',
+                'user_id' => 'nullable|integer|exists:t_sys_user,id',
+            ]);
+
+            $name = trim($data['name']);
+            if ($name === '') {
+                return response()->json(['success' => false, 'message' => 'Name required'], 422);
+            }
+
+            $exists = \App\Models\WhatsApp\LabelModel::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])->exists();
+            if ($exists) {
+                return response()->json(['success' => false, 'message' => 'A label with that name already exists.'], 422);
+            }
+
+            $label = \App\Models\WhatsApp\LabelModel::create([
+                'name'       => $name,
+                'color'      => $data['color'] ?? '#6B7280',
+                'user_id'    => $data['user_id'] ?? null,
+                'is_system'  => 0,
+                'created_by' => $user->id,
+            ]);
+
+            return response()->json(['success' => true, 'label' => $label]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            Log::error('createLabel failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Update an existing label's name / colour / user binding. Same manage
+     * perm as create. We allow editing system labels (the seeded defaults)
+     * because users may want to retheme them — deletion is what we protect.
+     */
+    public function updateLabel(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('manage_whatsapp_labels')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $label = \App\Models\WhatsApp\LabelModel::find($id);
+            if (!$label) {
+                return response()->json(['success' => false, 'message' => 'Label not found'], 404);
+            }
+
+            $data = $request->validate([
+                'name'    => 'sometimes|required|string|max:60',
+                'color'   => 'sometimes|nullable|string|max:20',
+                'user_id' => 'sometimes|nullable|integer|exists:t_sys_user,id',
+            ]);
+
+            if (isset($data['name'])) {
+                $name = trim($data['name']);
+                if ($name === '') {
+                    return response()->json(['success' => false, 'message' => 'Name required'], 422);
+                }
+                $clash = \App\Models\WhatsApp\LabelModel::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+                    ->where('id', '!=', $id)->exists();
+                if ($clash) {
+                    return response()->json(['success' => false, 'message' => 'Another label already has this name.'], 422);
+                }
+                $label->name = $name;
+            }
+            if (array_key_exists('color', $data))   $label->color = $data['color'] ?: '#6B7280';
+            if (array_key_exists('user_id', $data)) $label->user_id = $data['user_id'];
+
+            $label->save();
+            return response()->json(['success' => true, 'label' => $label]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            Log::error('updateLabel failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Delete a label from the library. Also cascades through
+     * t_wa_conversation_labels via the FK so no orphan pivot rows are left.
+     * Admins can delete even system labels — the system flag is advisory.
+     */
+    public function deleteLabel(Request $request, $id)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('manage_whatsapp_labels')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $label = \App\Models\WhatsApp\LabelModel::find($id);
+            if (!$label) {
+                return response()->json(['success' => false, 'message' => 'Label not found'], 404);
+            }
+
+            $label->delete();
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            Log::error('deleteLabel failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Apply a label to a conversation. Open to anyone with the base
+     * view permission — labelling is a core inbox action, not an admin
+     * one. Idempotent: re-applying a label is a no-op, not an error.
+     */
+    public function applyLabel(Request $request, $conversationId)
+    {
+        try {
+            $user = Auth::user();
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $data = $request->validate([
+                'label_id' => 'required|integer|exists:t_wa_labels,id',
+            ]);
+
+            $conv = ConversationModel::find($conversationId);
+            if (!$conv) {
+                return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            // Check existing pivot first so we can tell a fresh apply from a
+            // re-apply. We only push-notify on the FIRST application — otherwise
+            // tapping the label toggle twice would spam the user.
+            $existing = \App\Models\WhatsApp\ConversationLabelModel::where('conversation_id', $conversationId)
+                ->where('label_id', $data['label_id'])
+                ->first();
+
+            $isNewApply = ($existing === null);
+
+            // Idempotent upsert. Reset mention_seen_at on re-apply so a
+            // re-tag after the mentioned user cleared it surfaces as unread
+            // again — operators may re-tag to re-escalate.
+            $hasSeenCol = Schema::hasColumn('t_wa_conversation_labels', 'mention_seen_at');
+            $payload = ['applied_by' => $user->id, 'applied_at' => now()];
+            if ($hasSeenCol) {
+                $payload['mention_seen_at'] = null;
+            }
+            \App\Models\WhatsApp\ConversationLabelModel::updateOrCreate(
+                ['conversation_id' => $conversationId, 'label_id' => $data['label_id']],
+                $payload
+            );
+
+            // If this is a user-mention label (user_id set) AND the applier
+            // is not the same person being tagged (no self-mention pings),
+            // fire an FCM push + leave the pivot's mention_seen_at NULL so
+            // the recipient's inbox shows a red dot until they open it.
+            try {
+                $label = \App\Models\WhatsApp\LabelModel::find($data['label_id']);
+                if ($isNewApply && $label && $label->user_id && (int) $label->user_id !== (int) $user->id) {
+                    app(\App\Services\FirebaseService::class)->notifyWhatsAppMention(
+                        (int) $label->user_id,
+                        $user->fullname ?? ('User #' . $user->id),
+                        $conv->display_name ?: ($conv->wa_contact_name ?: $conv->wa_phone),
+                        (int) $conversationId
+                    );
+                }
+            } catch (\Exception $e) {
+                // Never let a notification failure break the API call.
+                Log::debug('applyLabel: mention push failed (non-fatal)', ['error' => $e->getMessage()]);
+            }
+
+            return response()->json(['success' => true, 'labels' => $this->labelsForConversation($conversationId)]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            Log::error('applyLabel failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Remove a label from a conversation. Returns the remaining labels so
+     * the caller can update its chip list without a full refetch.
+     */
+    public function removeLabel(Request $request, $conversationId, $labelId)
+    {
+        try {
+            $user = Auth::user();
+            $access = $this->resolveWhatsAppAccess($user);
+            if (!$access['allowed']) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            \App\Models\WhatsApp\ConversationLabelModel::where('conversation_id', $conversationId)
+                ->where('label_id', $labelId)
+                ->delete();
+
+            return response()->json(['success' => true, 'labels' => $this->labelsForConversation($conversationId)]);
+        } catch (\Exception $e) {
+            Log::error('removeLabel failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Internal helper — returns the labels currently applied to one
+     * conversation in the same shape used in list / detail responses.
+     */
+    protected function labelsForConversation($conversationId): array
+    {
+        if (!Schema::hasTable('t_wa_labels') || !Schema::hasTable('t_wa_conversation_labels')) {
+            return [];
+        }
+        return DB::table('t_wa_conversation_labels as cl')
+            ->join('t_wa_labels as l', 'l.id', '=', 'cl.label_id')
+            ->where('cl.conversation_id', $conversationId)
+            ->orderBy('l.name')
+            ->get(['l.id', 'l.name', 'l.color', 'l.user_id'])
+            ->map(fn($r) => [
+                'id'      => (int) $r->id,
+                'name'    => $r->name,
+                'color'   => $r->color,
+                'user_id' => $r->user_id ? (int) $r->user_id : null,
+            ])->all();
     }
 
     /**
@@ -575,12 +1296,37 @@ class WhatsAppController extends Controller
                       AND m2.created_at > m.created_at
                 )');
 
+            // Honour the super-reader's global_read_at marker when counting
+            // the badge — otherwise the red dot would stay on even after
+            // Taimur clears the thread for everyone.
+            if (Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+                $countQ->leftJoin('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+                       ->where(function ($w) {
+                           $w->whereNull('c.global_read_at')
+                             ->orWhereColumn('m.created_at', '>', 'c.global_read_at');
+                       });
+            }
+
             // Limited users' badge only counts messages inside their window.
             if ($access['limited']) {
                 $countQ->where('m.created_at', '>=', $access['cutoff']);
             }
 
             $count = $countQ->count();
+
+            // Add the forced-unread bucket: one per conversation the user
+            // has explicitly Mark-Unread-ed and not yet reopened. De-dup
+            // against conversations already counted above so we don't
+            // double-count a thread that has genuine unread + forced.
+            if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+                $forcedCount = DB::table('t_wa_conversation_reads')
+                    ->where('user_id', $user->id)
+                    ->whereNotNull('forced_unread_at')
+                    ->count();
+                if ($forcedCount > 0) {
+                    $count = max($count, $forcedCount);
+                }
+            }
 
             return response()->json(['success' => true, 'unread_count' => (int) $count]);
 

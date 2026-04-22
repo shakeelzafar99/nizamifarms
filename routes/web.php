@@ -314,6 +314,17 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/conversations/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getMessages'])->name('messages.messages');
         Route::post('/conversations/{id}/send', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendMessage'])->name('messages.send');
         Route::post('/conversations/{id}/mark-read', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markRead'])->name('messages.markRead');
+        Route::post('/conversations/{id}/mark-unread', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markUnread'])->name('messages.markUnread');
+        // Labels (Phase 1)
+        Route::get('/labels', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getLabels'])->name('messages.getLabels');
+        Route::post('/labels', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'createLabel'])->name('messages.createLabel');
+        Route::put('/labels/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'updateLabel'])->name('messages.updateLabel');
+        Route::delete('/labels/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'deleteLabel'])->name('messages.deleteLabel');
+        Route::post('/conversations/{id}/labels', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'applyLabel'])->name('messages.applyLabel');
+        Route::delete('/conversations/{id}/labels/{labelId}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'removeLabel'])->name('messages.removeLabel');
+        // Labels — Phase 2 (user mentions)
+        Route::get('/label-users',    [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getLabelUsers'])->name('messages.getLabelUsers');
+        Route::get('/mentions-count', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getMentionsCount'])->name('messages.getMentionsCount');
         Route::post('/send-template', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendTemplate'])->name('messages.sendTemplate');
         Route::get('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getTemplates'])->name('messages.templates');
         Route::post('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'storeTemplate'])->name('messages.storeTemplate');

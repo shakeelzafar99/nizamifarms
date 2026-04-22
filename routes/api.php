@@ -513,7 +513,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/conversations', [WhatsAppController::class, 'getConversations']);
         Route::get('/conversations/{id}', [WhatsAppController::class, 'getMessages']);
         Route::post('/conversations/{id}/send', [WhatsAppController::class, 'sendMessage']);
+        Route::post('/conversations/{id}/send-voice', [WhatsAppController::class, 'sendVoiceNote']);
         Route::post('/conversations/{id}/mark-read', [WhatsAppController::class, 'markRead']);
+        Route::post('/conversations/{id}/mark-unread', [WhatsAppController::class, 'markUnread']);
+        // Labels (Phase 1)
+        Route::get('/labels', [WhatsAppController::class, 'getLabels']);
+        Route::post('/labels', [WhatsAppController::class, 'createLabel']);
+        Route::put('/labels/{id}', [WhatsAppController::class, 'updateLabel']);
+        Route::delete('/labels/{id}', [WhatsAppController::class, 'deleteLabel']);
+        Route::post('/conversations/{id}/labels', [WhatsAppController::class, 'applyLabel']);
+        Route::delete('/conversations/{id}/labels/{labelId}', [WhatsAppController::class, 'removeLabel']);
+        // Labels — Phase 2 (user mentions)
+        Route::get('/label-users',     [WhatsAppController::class, 'getLabelUsers']);
+        Route::get('/mentions-count',  [WhatsAppController::class, 'getMentionsCount']);
         Route::post('/send-template', [WhatsAppController::class, 'sendTemplate']);
         Route::get('/unread-count', [WhatsAppController::class, 'getUnreadCount']);
         Route::get('/templates', [WhatsAppController::class, 'getTemplates']);

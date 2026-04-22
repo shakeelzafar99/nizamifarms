@@ -155,6 +155,85 @@ class WhatsAppService
     }
 
     /**
+     * Upload a local media file to Meta's resumable media endpoint.
+     * Returns the Meta media_id string (used afterwards as audio.id /
+     * document.id in a /messages call), or null on failure.
+     *
+     * This is the OUTBOUND counterpart of downloadMedia(). We keep the
+     * flow deliberately simple: one multipart POST, no chunking. Voice
+     * notes recorded on the mobile app stay well under Meta's 16 MB
+     * audio cap (~1 MB per minute at AAC 128 kbps, and the mobile side
+     * is capped at 5 minutes). If we ever add larger media we can swap
+     * this for Meta's resumable upload API without changing callers.
+     *
+     * The caller owns the local file — we don't delete it here because
+     * the outbound message row needs to keep a pointer for replay in
+     * our own UI.
+     */
+    public function uploadMediaToWhatsApp(string $localPath, string $mimeType): ?string
+    {
+        try {
+            if (!file_exists($localPath)) {
+                Log::error('WhatsApp: uploadMediaToWhatsApp - file missing', ['path' => $localPath]);
+                return null;
+            }
+
+            $url = "{$this->apiBase}/{$this->phoneNumberId}/media";
+
+            // messaging_product + type are required by Meta; the file is
+            // attached under the field name "file".
+            $response = Http::withToken($this->accessToken)
+                ->timeout(60)
+                ->attach('file', file_get_contents($localPath), basename($localPath), ['Content-Type' => $mimeType])
+                ->asMultipart()
+                ->post($url, [
+                    ['name' => 'messaging_product', 'contents' => 'whatsapp'],
+                    ['name' => 'type',              'contents' => $mimeType],
+                ]);
+
+            if (!$response->successful()) {
+                Log::error('WhatsApp: Media upload failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'mime' => $mimeType,
+                ]);
+                return null;
+            }
+
+            $mediaId = $response->json('id');
+            if (!$mediaId) {
+                Log::error('WhatsApp: Media upload returned no id', ['body' => $response->body()]);
+                return null;
+            }
+
+            return (string) $mediaId;
+        } catch (\Exception $e) {
+            Log::error('WhatsApp: uploadMediaToWhatsApp exception', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * Send an audio message (voice note) using an already-uploaded
+     * Meta media_id. The recipient sees a playable audio message
+     * inside WhatsApp. With AAC/M4A they get a standard audio player;
+     * with OGG/OPUS it renders as the waveform voice-note bubble —
+     * same API call either way, just different source MIME.
+     */
+    public function sendAudio(string $to, string $mediaId): array
+    {
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type'    => 'individual',
+            'to'                => $to,
+            'type'              => 'audio',
+            'audio'             => ['id' => $mediaId],
+        ];
+
+        return $this->sendRequest($payload);
+    }
+
+    /**
      * Mark a message as read (sends blue ticks to customer)
      */
     public function markAsRead(string $messageId): array
@@ -661,6 +740,33 @@ class WhatsAppService
         }
 
         return $conversation->last_customer_message_at->diffInHours(now()) < 24;
+    }
+
+    /**
+     * Returns true when the given user can mark a conversation read for
+     * EVERYONE (not just themselves). Granted via the
+     * `whatsapp_super_reader` mobile permission — assigned to the Taimur
+     * role by the labels/super-reader migration. Used by markRead /
+     * markUnread to decide whether to stamp the conversation's
+     * `global_read_at` column.
+     *
+     * Accepts either a User instance or null (e.g. unauthenticated web
+     * request) and returns false for null.
+     */
+    public function isSuperReader($user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+        // hasMobilePermission exists on both web and store users; it
+        // walks the role → t_sys_role_mobile_permission link. Safe to
+        // call even if the permission row doesn't exist yet (returns false).
+        try {
+            return method_exists($user, 'hasMobilePermission')
+                && $user->hasMobilePermission('whatsapp_super_reader');
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     /**

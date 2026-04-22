@@ -40,6 +40,65 @@ class FirebaseService
     }
 
     /**
+     * Send a push notification to a SINGLE user's active devices. Used for
+     * targeted notifications like WhatsApp conversation @mentions where
+     * we want only the mentioned staff member to be pinged — not the
+     * whole permission group. Best-effort: silently no-ops if the user
+     * has no active device tokens or Firebase isn't configured.
+     */
+    public function notifyUser(int $userId, array $notification, array $data = [], string $channelId = 'whatsapp_messages'): void
+    {
+        if (!$this->projectId || !file_exists($this->credentialsPath)) {
+            Log::debug('Firebase: Skipping user push (not configured)', ['user_id' => $userId]);
+            return;
+        }
+
+        try {
+            $tokens = DB::table('t_wa_device_tokens')
+                ->where('user_id', $userId)
+                ->where('is_active', 1)
+                ->pluck('fcm_token')
+                ->all();
+
+            if (empty($tokens)) return;
+
+            $accessToken = $this->getAccessToken();
+            if (!$accessToken) {
+                Log::error('Firebase: Failed to get access token for notifyUser', ['user_id' => $userId]);
+                return;
+            }
+
+            foreach ($tokens as $fcmToken) {
+                $this->sendToDevice($accessToken, $fcmToken, $notification, $data, $channelId);
+            }
+        } catch (\Exception $e) {
+            Log::error('Firebase: notifyUser failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Convenience wrapper: tell a specific user they have been mentioned
+     * on a WhatsApp conversation. Picks a consistent notification shape
+     * so mobile can deep-link straight into the conversation and highlight
+     * the mention on arrival.
+     */
+    public function notifyWhatsAppMention(
+        int $mentionedUserId,
+        string $mentionedByName,
+        string $conversationDisplayName,
+        int $conversationId
+    ): void {
+        $this->notifyUser($mentionedUserId, [
+            'title' => "{$mentionedByName} tagged you",
+            'body'  => "on the chat with {$conversationDisplayName}",
+        ], [
+            'type'            => 'whatsapp_mention',
+            'conversation_id' => (string) $conversationId,
+            'mentioned_by'    => $mentionedByName,
+        ], 'whatsapp_messages');
+    }
+
+    /**
      * Send a push notification when a new production plan/demand is created
      */
     public function notifyNewPlan(string $createdByName, string $demandDate, int $demandId, float $totalKg): void
