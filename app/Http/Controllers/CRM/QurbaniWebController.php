@@ -295,12 +295,24 @@ class QurbaniWebController extends Controller
                 $q->whereNull('o.order_status')
                   ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
             })
+            // Apr-2026: the bucket labels (delivery_type, day, slot, region)
+            // are now sourced STRICTLY from the line item. The previous
+            // `COALESCE(li.*, o.*, 'Unassigned')` fallback was copying the
+            // order-level denormalised copy (which `OrderController::store`
+            // / `update` populates from the FIRST qurbani line item) down
+            // onto sibling lines that had their own attributes left blank,
+            // producing phantom buckets — e.g. a Charity Rajanpur hissa
+            // with only `Day 1` set was being counted under the sibling
+            // Goat line's Delivery / Afternoon / Rawalpindi cell.
+            // Lines with no line-item value now correctly surface under
+            // 'Unassigned' so the team can spot and fix them at source.
+            // Category stays per-item (product's attribute_2).
             ->select(
-                DB::raw("COALESCE(NULLIF(li.qurbani_delivery_type, ''), NULLIF(o.qurbani_delivery_type, ''), 'Unassigned') as delivery_type"),
-                DB::raw("COALESCE(NULLIF(li.qurbani_day, ''), NULLIF(o.qurbani_day, ''), 'Unassigned') as day"),
+                DB::raw("COALESCE(NULLIF(li.qurbani_delivery_type, ''), 'Unassigned') as delivery_type"),
+                DB::raw("COALESCE(NULLIF(li.qurbani_day, ''), 'Unassigned') as day"),
                 DB::raw("COALESCE(NULLIF(p.attribute_2, ''), 'Uncategorized') as category"),
-                DB::raw("COALESCE(NULLIF(li.qurbani_slot, ''), NULLIF(o.qurbani_slot, ''), 'Unassigned') as slot"),
-                DB::raw("COALESCE(NULLIF(li.qurbani_region, ''), NULLIF(o.qurbani_region, ''), 'Unassigned') as region"),
+                DB::raw("COALESCE(NULLIF(li.qurbani_slot, ''), 'Unassigned') as slot"),
+                DB::raw("COALESCE(NULLIF(li.qurbani_region, ''), 'Unassigned') as region"),
                 DB::raw('COALESCE(SUM(li.quantity), 0) as qty')
             )
             ->groupBy('delivery_type', 'day', 'category', 'slot', 'region')

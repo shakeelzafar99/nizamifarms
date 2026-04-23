@@ -17226,12 +17226,18 @@ class RiderController extends Controller
                     $q->whereNull('o.order_status')
                       ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
                 })
+                // Strictly line-item based grouping — see QurbaniWebController::getOrderStats
+                // for the rationale. Previously this mirrored the web query's
+                // COALESCE(li.*, o.*, 'Unassigned') which leaked the order's
+                // first-line snapshot onto sibling lines and mis-bucketed them
+                // in the mobile target-remaining hint. Lines with nothing set
+                // now land in 'Unassigned'.
                 ->select(
-                    \DB::raw("COALESCE(NULLIF(li.qurbani_delivery_type, ''), NULLIF(o.qurbani_delivery_type, ''), 'Unassigned') as delivery_type"),
-                    \DB::raw("COALESCE(NULLIF(li.qurbani_day, ''), NULLIF(o.qurbani_day, ''), 'Unassigned') as day"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_delivery_type, ''), 'Unassigned') as delivery_type"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_day, ''), 'Unassigned') as day"),
                     \DB::raw("COALESCE(NULLIF(p.attribute_2, ''), 'Uncategorized') as category"),
-                    \DB::raw("COALESCE(NULLIF(li.qurbani_slot, ''), NULLIF(o.qurbani_slot, ''), 'Unassigned') as slot"),
-                    \DB::raw("COALESCE(NULLIF(li.qurbani_region, ''), NULLIF(o.qurbani_region, ''), 'Unassigned') as region"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_slot, ''), 'Unassigned') as slot"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_region, ''), 'Unassigned') as region"),
                     \DB::raw('COALESCE(SUM(li.quantity), 0) as qty')
                 )
                 ->groupBy('delivery_type', 'day', 'category', 'slot', 'region')
