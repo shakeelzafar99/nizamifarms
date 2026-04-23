@@ -23,6 +23,12 @@ class QurbaniWebController extends Controller
         $days = ($fieldOptions['qurbani_day'] ?? collect())->pluck('option_value');
         $slots = ($fieldOptions['qurbani_slot'] ?? collect())->pluck('option_value');
         $deliveryTypes = ($fieldOptions['qurbani_delivery_type'] ?? collect())->pluck('option_value');
+        // New Apr-2026 attributes (Qurbani Type + Paya). Pluck the option
+        // values so the orders page can render dropdowns / filters — if a
+        // site hasn't run the migration yet these collections are simply
+        // empty and the UI degrades gracefully.
+        $qurbaniTypes = ($fieldOptions['qurbani_type'] ?? collect())->pluck('option_value');
+        $payaOptions = ($fieldOptions['qurbani_paya'] ?? collect())->pluck('option_value');
 
         // Category Level 2 values that appear on qurbani products (e.g. Goat (Bakra), Beef).
         // Used to populate the Category filter dropdown on the qurbani orders page so the
@@ -59,10 +65,21 @@ class QurbaniWebController extends Controller
             ->ordered()
             ->get(['id', 'name', 'short_code', 'color_hex']);
 
+        // Default payment method (cash/online) from Qurbani settings — used
+        // to pre-select the payment-method chip when an order is still
+        // "unpaid" (no stored payment_method yet) so the team can just hit
+        // Record without reselecting every time. Falls back to 'cash' so the
+        // historical default is preserved when the setting is missing.
+        $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
+        if (!in_array($defaultPaymentMethod, ['cash', 'online'], true)) {
+            $defaultPaymentMethod = 'cash';
+        }
+
         return view('pages.qurbani.orders', compact(
             'regions', 'subRegions', 'days', 'slots', 'deliveryTypes',
+            'qurbaniTypes', 'payaOptions',
             'categories', 'riders', 'fieldOptions', 'isTaimur',
-            'deleteEnabled', 'receivingAccounts'
+            'deleteEnabled', 'receivingAccounts', 'defaultPaymentMethod'
         ));
     }
 
@@ -135,6 +152,27 @@ class QurbaniWebController extends Controller
                   });
             });
         }
+        // qurbani_type + qurbani_paya filters — these columns exist only on
+        // the line-item row (no order-level mirror), so narrow the order set
+        // to those with at least one matching line item.
+        if ($request->filled('qurbani_type')) {
+            $qtype = $request->qurbani_type;
+            $query->whereExists(function ($sub) use ($qtype) {
+                $sub->select(DB::raw(1))
+                    ->from('t_crm_prod_order_line_item as fli')
+                    ->whereColumn('fli.order_id', 'o.id')
+                    ->where('fli.qurbani_type', $qtype);
+            });
+        }
+        if ($request->filled('qurbani_paya')) {
+            $paya = $request->qurbani_paya;
+            $query->whereExists(function ($sub) use ($paya) {
+                $sub->select(DB::raw(1))
+                    ->from('t_crm_prod_order_line_item as fli')
+                    ->whereColumn('fli.order_id', 'o.id')
+                    ->where('fli.qurbani_paya', $paya);
+            });
+        }
         if ($request->filled('status')) {
             $query->where('o.order_status', $request->status);
         }
@@ -186,7 +224,7 @@ class QurbaniWebController extends Controller
             $lineItems = DB::table('t_crm_prod_order_line_item as li')
                 ->leftJoin('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
                 ->whereIn('li.order_id', $orderIds)
-                ->select('li.order_id', 'li.name', 'li.quantity', 'li.line_total', 'li.qurbani_day', 'li.qurbani_slot', 'li.qurbani_region', 'li.qurbani_sub_region', 'li.qurbani_delivery_type', 'li.instructions', 'p.attribute_2 as category_level_2')
+                ->select('li.order_id', 'li.name', 'li.quantity', 'li.line_total', 'li.qurbani_day', 'li.qurbani_slot', 'li.qurbani_region', 'li.qurbani_sub_region', 'li.qurbani_delivery_type', 'li.qurbani_type', 'li.qurbani_paya', 'li.instructions', 'p.attribute_2 as category_level_2')
                 ->get()
                 ->groupBy('order_id');
         }
@@ -198,6 +236,8 @@ class QurbaniWebController extends Controller
         if ($request->filled('region')) $itemFilters['qurbani_region'] = $request->region;
         if ($request->filled('sub_region')) $itemFilters['qurbani_sub_region'] = $request->sub_region;
         if ($request->filled('delivery_type')) $itemFilters['qurbani_delivery_type'] = $request->delivery_type;
+        if ($request->filled('qurbani_type')) $itemFilters['qurbani_type'] = $request->qurbani_type;
+        if ($request->filled('qurbani_paya')) $itemFilters['qurbani_paya'] = $request->qurbani_paya;
         if ($request->filled('category')) $itemFilters['category_level_2'] = $request->category;
         $hasItemFilters = !empty($itemFilters);
 
@@ -341,12 +381,148 @@ class QurbaniWebController extends Controller
         $categories = array_values(array_unique(array_keys($catsSet)));
         sort($categories);
 
+        // ================================================================
+        // Targets (soft caps). Returned as two maps so the frontend can
+        // render "booked / target" without extra round-trips:
+        //   targets.summary[dt][day][category]                 = qty
+        //   targets.breakdown[dt][day][category][slot][region] = qty
+        // The targets table is a flat (delivery_type, day, category, slot,
+        // region, target_qty) shape — summary rows have slot='' & region=''.
+        // If the table doesn't exist yet (migration not run) we just return
+        // empty maps so the UI keeps working.
+        // ================================================================
+        $targetSummary = [];
+        $targetBreakdown = [];
+        if (DB::getSchemaBuilder()->hasTable('t_crm_qurbani_targets')) {
+            $targetRows = DB::table('t_crm_qurbani_targets')->get();
+            foreach ($targetRows as $tr) {
+                $dt  = (string) $tr->delivery_type;
+                $day = (string) $tr->day;
+                $cat = (string) $tr->category;
+                $slot   = (string) ($tr->slot ?? '');
+                $region = (string) ($tr->region ?? '');
+                $qty = (int) $tr->target_qty;
+                if ($slot === '' && $region === '') {
+                    $targetSummary[$dt][$day][$cat] = $qty;
+                } else {
+                    $targetBreakdown[$dt][$day][$cat][$slot][$region] = $qty;
+                }
+            }
+        }
+
         return response()->json([
             'success' => true,
             'days' => $days,
             'categories' => $categories,
             'summary' => $summary,
             'detail' => $detail,
+            'targets' => [
+                'summary' => $targetSummary,
+                'breakdown' => $targetBreakdown,
+            ],
+        ]);
+    }
+
+    /**
+     * Upsert Qurbani target quantities (soft caps) sent from the Qurbani
+     * orders summary. Accepts a JSON body like:
+     *   {
+     *     "level": "summary" | "breakdown",
+     *     "entries": [
+     *       { "delivery_type": "Delivery", "day": "Day 1",
+     *         "category": "Goat (Bakra)", "slot": "", "region": "",
+     *         "target_qty": 200 }, ...
+     *     ]
+     *   }
+     * Entries with target_qty <= 0 are DELETED instead of upserted, so the
+     * UI can "clear" a target simply by setting it to 0. slot/region are
+     * kept as empty strings for summary-level rows (see migration notes).
+     */
+    public function saveQurbaniTargets(Request $request)
+    {
+        // Targets are a business-planning control — only the Taimur role can
+        // create/edit/clear them. Management and others can still VIEW the
+        // targets (they ride along on getOrderStats for everyone) but not
+        // change them. The summary-card UI hides the "Set Targets" buttons
+        // for non-Taimur users as well; this is the authoritative guard.
+        $isTaimur = DB::table('t_sys_user_role as ur')
+            ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+            ->where('ur.user_id', auth()->id())
+            ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+            ->exists();
+        if (!$isTaimur) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only the Taimur role can set Qurbani targets.',
+            ], 403);
+        }
+
+        if (!DB::getSchemaBuilder()->hasTable('t_crm_qurbani_targets')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Qurbani targets table missing — please run the add_qurbani_targets_apr2026.sql migration first.',
+            ], 500);
+        }
+
+        $validated = $request->validate([
+            'level' => 'required|string|in:summary,breakdown',
+            'entries' => 'required|array',
+            'entries.*.delivery_type' => 'required|string|max:100',
+            'entries.*.day' => 'required|string|max:100',
+            'entries.*.category' => 'required|string|max:100',
+            'entries.*.slot' => 'nullable|string|max:150',
+            'entries.*.region' => 'nullable|string|max:100',
+            'entries.*.target_qty' => 'required|integer|min:0|max:100000',
+        ]);
+
+        $now = now();
+        $savedCount = 0;
+        $deletedCount = 0;
+
+        DB::transaction(function () use ($validated, $now, &$savedCount, &$deletedCount) {
+            foreach ($validated['entries'] as $e) {
+                $slot   = $validated['level'] === 'summary' ? '' : (string) ($e['slot'] ?? '');
+                $region = $validated['level'] === 'summary' ? '' : (string) ($e['region'] ?? '');
+                $qty = (int) $e['target_qty'];
+
+                $match = [
+                    'delivery_type' => $e['delivery_type'],
+                    'day'           => $e['day'],
+                    'category'      => $e['category'],
+                    'slot'          => $slot,
+                    'region'        => $region,
+                ];
+
+                if ($qty <= 0) {
+                    // "Clear" — remove any existing row for this cell.
+                    $deletedCount += DB::table('t_crm_qurbani_targets')->where($match)->delete();
+                    continue;
+                }
+
+                // Try update first; if no row existed yet, insert a fresh one.
+                // This keeps the original `created_at` on existing rows
+                // (updateOrInsert would overwrite it).
+                $affected = DB::table('t_crm_qurbani_targets')
+                    ->where($match)
+                    ->update([
+                        'target_qty' => $qty,
+                        'updated_at' => $now,
+                    ]);
+                if ($affected === 0) {
+                    DB::table('t_crm_qurbani_targets')->insert(array_merge($match, [
+                        'target_qty' => $qty,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]));
+                }
+                $savedCount++;
+            }
+        });
+
+        return response()->json([
+            'success' => true,
+            'saved' => $savedCount,
+            'deleted' => $deletedCount,
         ]);
     }
 

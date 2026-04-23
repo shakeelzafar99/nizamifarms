@@ -4150,8 +4150,8 @@ function loadEditForm(order) {
                                     ×
                                 </button>
                             </div>
-                            ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_sub_region || item.qurbani_delivery_type || order.is_qurbani) ? `
-                            <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
+                            ${(item.qurbani_day || item.qurbani_slot || item.qurbani_region || item.qurbani_sub_region || item.qurbani_delivery_type || item.qurbani_type || item.qurbani_paya || order.is_qurbani) ? `
+                            <div class="qurbani-item-fields" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7, 1fr) auto; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;" data-item-index="${index}">
                                 <div>
                                     <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
                                     <select name="items[${index}][qurbani_day]" class="qurbani-item-select" data-field="qurbani_day" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
@@ -4185,6 +4185,20 @@ function loadEditForm(order) {
                                     <select name="items[${index}][qurbani_delivery_type]" class="qurbani-item-select" data-field="qurbani_delivery_type" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
                                         <option value="">-</option>
                                         <option value="${item.qurbani_delivery_type || ''}" selected>${item.qurbani_delivery_type || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Qurbani Type</label>
+                                    <select name="items[${index}][qurbani_type]" class="qurbani-item-select" data-field="qurbani_type" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_type || ''}" selected>${item.qurbani_type || '-'}</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Paya</label>
+                                    <select name="items[${index}][qurbani_paya]" class="qurbani-item-select" data-field="qurbani_paya" ${item.id ? 'disabled' : ''} style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:${item.id ? '#f5f5f4' : '#fff'};">
+                                        <option value="">-</option>
+                                        <option value="${item.qurbani_paya || ''}" selected>${item.qurbani_paya || '-'}</option>
                                     </select>
                                 </div>
                                 ${item.id ? '<div style="display:flex; align-items:flex-end;"><button type="button" onclick="unlockQurbaniFields(this)" style="padding:4px 8px; background:#D97706; color:#fff; border:none; border-radius:4px; font-size:11px; cursor:pointer; white-space:nowrap;">✏️ Edit</button></div>' : ''}
@@ -6281,17 +6295,23 @@ function saveOrderChanges(orderId) {
                 variant_id: variantId,
                 product_id: productId
             };
-            // Per-item qurbani fields
+            // Per-item qurbani fields. NOTE: qurbani_type and qurbani_paya
+            // use suffix-anchored ([name$=...]) selectors because "name*"
+            // would also match "qurbani_delivery_type" (substring hit).
             var qDay = item.querySelector('select[name*="qurbani_day"]')?.value;
             var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
             var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
             var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
             var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            var qType = item.querySelector('select[name$="[qurbani_type]"]')?.value;
+            var qPaya = item.querySelector('select[name$="[qurbani_paya]"]')?.value;
             if (qDay) itemObj.qurbani_day = qDay;
             if (qSlot) itemObj.qurbani_slot = qSlot;
             if (qRegion) itemObj.qurbani_region = qRegion;
             if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
             if (qDT) itemObj.qurbani_delivery_type = qDT;
+            if (qType) itemObj.qurbani_type = qType;
+            if (qPaya) itemObj.qurbani_paya = qPaya;
             var instr = item.querySelector('input[name*="instructions"]')?.value;
             itemObj.instructions = instr || '';
             items.push(itemObj);
@@ -6536,11 +6556,16 @@ function saveAndCloseOrder(orderId) {
             var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
             var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
             var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            // Suffix-anchored selectors — see note in saveOrderChanges.
+            var qType = item.querySelector('select[name$="[qurbani_type]"]')?.value;
+            var qPaya = item.querySelector('select[name$="[qurbani_paya]"]')?.value;
             if (qDay) itemObj.qurbani_day = qDay;
             if (qSlot) itemObj.qurbani_slot = qSlot;
             if (qRegion) itemObj.qurbani_region = qRegion;
             if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
             if (qDT) itemObj.qurbani_delivery_type = qDT;
+            if (qType) itemObj.qurbani_type = qType;
+            if (qPaya) itemObj.qurbani_paya = qPaya;
             var instr = item.querySelector('input[name*="instructions"]')?.value;
             itemObj.instructions = instr || '';
             items.push(itemObj);
@@ -6981,11 +7006,16 @@ function popoutOrder() {
                     var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
                     var qSubRegion = item.querySelector('select[name*="qurbani_sub_region"]')?.value;
                     var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+                    // Suffix-anchored selectors — see note in saveOrderChanges.
+                    var qType = item.querySelector('select[name$="[qurbani_type]"]')?.value;
+                    var qPaya = item.querySelector('select[name$="[qurbani_paya]"]')?.value;
                     if (qDay) itemObj.qurbani_day = qDay;
                     if (qSlot) itemObj.qurbani_slot = qSlot;
                     if (qRegion) itemObj.qurbani_region = qRegion;
                     if (qSubRegion) itemObj.qurbani_sub_region = qSubRegion;
                     if (qDT) itemObj.qurbani_delivery_type = qDT;
+                    if (qType) itemObj.qurbani_type = qType;
+                    if (qPaya) itemObj.qurbani_paya = qPaya;
                     var instr = item.querySelector('input[name*="instructions"]')?.value;
                     itemObj.instructions = instr || '';
                     items.push(itemObj);
@@ -7559,9 +7589,10 @@ function showProductResults(products, index) {
             const variantId = product.id && product.id.startsWith('variant_') ? product.id.replace('variant_', '') : '';
             const sku = (product.sku || '').replace(/'/g, "\\'");
             const attr1 = (product.attribute_1 || '').replace(/'/g, "\\'");
+            const attr2 = (product.attribute_2 || '').replace(/'/g, "\\'");
             const attr3 = (product.attribute_3 || '').replace(/'/g, "\\'");
             return `
-            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}', '${attr1}', '${attr3}')" 
+            <div onclick="selectProduct(${index}, '${product.id}', '${product.name.replace(/'/g, "\\'")}', ${product.price}, '${sku}', '${variantId}', '${attr1}', '${attr3}', '${attr2}')" 
                  data-product-index="${idx}"
                  style="padding: 8px; cursor: pointer; border-bottom: 1px solid #f3f4f6; transition: background-color 0.1s;"
                  onmouseover="this.style.backgroundColor='#f9fafb'; currentDropdownIndex=${idx};" 
@@ -7576,7 +7607,7 @@ function showProductResults(products, index) {
     
     dropdown.style.display = 'block';
 }
-function selectProduct(index, productId, productName, price, sku = '', variantId = '', attribute1 = '', attribute3 = '') {
+function selectProduct(index, productId, productName, price, sku = '', variantId = '', attribute1 = '', attribute3 = '', attribute2 = '') {
     const lineItem = document.querySelector(`.line-item[data-index="${index}"]`);
     if (!lineItem) {
         console.error('Line item not found for index:', index);
@@ -7644,6 +7675,12 @@ function selectProduct(index, productId, productName, price, sku = '', variantId
 
     if (attribute1 && attribute1.toLowerCase() === 'qurbani') {
         showQurbaniFields();
+        // Stash attribute_2 (category, e.g. "Goat (Bakra)") on the row so the
+        // target-remaining hint (qurbaniTargets*) can look up the right cell
+        // when the user picks day / delivery_type without an extra API call.
+        if (attribute2) {
+            lineItem.setAttribute('data-product-category', attribute2);
+        }
         addQurbaniFieldsToLineItem(lineItem, index);
         if (attribute3) {
             waitForDayOptionsAndAutoFill(lineItem, attribute3);
@@ -7683,7 +7720,9 @@ function addQurbaniFieldsToLineItem(lineItem, index) {
     if (lineItem.querySelector('.qurbani-item-fields')) return;
     var fieldsDiv = document.createElement('div');
     fieldsDiv.className = 'qurbani-item-fields';
-    fieldsDiv.style.cssText = 'grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;';
+    // Seven columns now: Day, Slot, Region, Sub-Region, Delivery Type,
+    // Qurbani Type (new Apr-2026), Paya (new Apr-2026).
+    fieldsDiv.style.cssText = 'grid-column: 1 / -1; display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 8px; background: #fffbeb; border-radius: 6px; border: 1px solid #fcd34d;';
     fieldsDiv.innerHTML = `
         <div>
             <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Day</label>
@@ -7715,13 +7754,159 @@ function addQurbaniFieldsToLineItem(lineItem, index) {
                 <option value="">-</option>
             </select>
         </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Qurbani Type</label>
+            <select name="items[${index}][qurbani_type]" class="qurbani-item-select" data-field="qurbani_type" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
+        <div>
+            <label style="display:block; font-size:11px; font-weight:600; color:#92400e; margin-bottom:2px;">Paya</label>
+            <select name="items[${index}][qurbani_paya]" class="qurbani-item-select" data-field="qurbani_paya" data-is-new style="width:100%; padding:4px 6px; border:1px solid #fcd34d; border-radius:4px; font-size:12px; background:#fff;">
+                <option value="">-</option>
+            </select>
+        </div>
     `;
     lineItem.appendChild(fieldsDiv);
+    // A small hint strip under the qurbani attributes showing
+    //   "Booked 34 / Target 200 · Remaining 166 for Goat (Bakra) · Day 1 · Delivery"
+    // once the user has picked Day + Delivery Type. Created hidden and
+    // revealed by refreshQurbaniRemainingHint() as soon as enough attributes
+    // are set. Display is purely informational — targets are soft limits.
+    var hintDiv = document.createElement('div');
+    hintDiv.className = 'qurbani-item-remaining-hint';
+    hintDiv.style.cssText = 'grid-column: 1 / -1; display: none; padding: 6px 10px; margin-top: -6px; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px; font-size: 12px; color: #3730a3; font-weight: 500;';
+    lineItem.appendChild(hintDiv);
+
+    // Wire up change listeners so the hint stays live as the user picks
+    // attributes or edits the quantity.
+    ['qurbani_day','qurbani_delivery_type','qurbani_slot','qurbani_region'].forEach(function (field) {
+        var sel = fieldsDiv.querySelector('select[data-field="' + field + '"]');
+        if (sel) sel.addEventListener('change', function () { refreshQurbaniRemainingHint(lineItem); });
+    });
+    var qtyInput = lineItem.querySelector('input[name$="[quantity]"]');
+    if (qtyInput) qtyInput.addEventListener('input', function () { refreshQurbaniRemainingHint(lineItem); });
+
     if (qurbaniFieldOptionsCache) {
         populateQurbaniSelects(qurbaniFieldOptionsCache);
     } else {
         populateQurbaniEditSelects();
     }
+
+    // Kick off the stats fetch (cached) so the hint can appear as soon as
+    // the user picks Day + Delivery Type.
+    ensureQurbaniTargetStatsLoaded();
+}
+
+// ============================================================
+// Qurbani target-remaining hint (Apr-2026)
+// ============================================================
+// Loads the same /qurbani/api/order-stats payload the Booked Summary uses
+// and caches it on window. Each open line item can then instantly compute
+//   remaining = target - already_booked - quantity_in_this_row
+// without hitting the server again. The cache is refreshed every 60s in
+// case another user books from the office while this form is open.
+// ============================================================
+window._qurbaniTargetStats = null;
+window._qurbaniTargetStatsFetchedAt = 0;
+function ensureQurbaniTargetStatsLoaded(force) {
+    var now = Date.now();
+    if (!force && window._qurbaniTargetStats && (now - window._qurbaniTargetStatsFetchedAt) < 60000) {
+        return Promise.resolve(window._qurbaniTargetStats);
+    }
+    return fetch('/qurbani/api/order-stats', {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+        if (data && data.success) {
+            window._qurbaniTargetStats = data;
+            window._qurbaniTargetStatsFetchedAt = Date.now();
+            // Refresh any already-visible hints now that data is here.
+            document.querySelectorAll('.line-item').forEach(function (row) {
+                if (row.querySelector('.qurbani-item-remaining-hint')) {
+                    refreshQurbaniRemainingHint(row);
+                }
+            });
+        }
+        return window._qurbaniTargetStats;
+    })
+    .catch(function () { return null; });
+}
+
+function refreshQurbaniRemainingHint(lineItem) {
+    var hint = lineItem.querySelector('.qurbani-item-remaining-hint');
+    if (!hint) return;
+    var stats = window._qurbaniTargetStats;
+    if (!stats) { hint.style.display = 'none'; return; }
+
+    var category = lineItem.getAttribute('data-product-category') || '';
+    var day = (lineItem.querySelector('select[data-field="qurbani_day"]') || {}).value || '';
+    var dt  = (lineItem.querySelector('select[data-field="qurbani_delivery_type"]') || {}).value || '';
+    var slot   = (lineItem.querySelector('select[data-field="qurbani_slot"]') || {}).value || '';
+    var region = (lineItem.querySelector('select[data-field="qurbani_region"]') || {}).value || '';
+    var qty = parseInt((lineItem.querySelector('input[name$="[quantity]"]') || {}).value || '0', 10) || 0;
+
+    if (!category || !day || !dt) { hint.style.display = 'none'; return; }
+
+    // Prefer the finest-grained target available:
+    //   (slot, region) -> breakdown target
+    //   otherwise       -> summary target
+    var target = 0;
+    var booked = 0;
+    var scopeLabel = '';
+    try {
+        if (slot && region && stats.targets && stats.targets.breakdown
+            && stats.targets.breakdown[dt] && stats.targets.breakdown[dt][day]
+            && stats.targets.breakdown[dt][day][category]
+            && stats.targets.breakdown[dt][day][category][slot]
+            && stats.targets.breakdown[dt][day][category][slot][region] != null) {
+            target = parseInt(stats.targets.breakdown[dt][day][category][slot][region], 10) || 0;
+            booked = (((stats.detail || {})[dt] || {})[day] || {})[category];
+            booked = (booked && booked.cell && booked.cell[slot] && booked.cell[slot][region]) || 0;
+            scopeLabel = category + ' · ' + day + ' · ' + dt + ' · ' + slot + ' · ' + region;
+        } else if (stats.targets && stats.targets.summary
+            && stats.targets.summary[dt] && stats.targets.summary[dt][day]
+            && stats.targets.summary[dt][day][category] != null) {
+            target = parseInt(stats.targets.summary[dt][day][category], 10) || 0;
+            booked = (((stats.summary || {})[dt] || {})[day] || {})[category] || 0;
+            scopeLabel = category + ' · ' + day + ' · ' + dt;
+        } else {
+            // No target set for this cell — stay quiet.
+            hint.style.display = 'none';
+            return;
+        }
+    } catch (_e) { hint.style.display = 'none'; return; }
+
+    var remainingBefore = target - booked;
+    var remainingAfter  = remainingBefore - qty;
+
+    // Colour + icon cues: green if still within target, amber once we cross
+    // 90%, red once we exceed. Soft limit — we still let the booking go
+    // through, this is purely visual guidance for the team.
+    var bg = '#eef2ff', border = '#c7d2fe', color = '#3730a3', icon = '🎯';
+    if (remainingAfter < 0) { bg = '#fee2e2'; border = '#fecaca'; color = '#991b1b'; icon = '⚠️'; }
+    else if (remainingAfter <= Math.max(1, Math.ceil(target * 0.1))) { bg = '#fef3c7'; border = '#fde68a'; color = '#92400e'; icon = '⚡'; }
+
+    hint.style.background = bg;
+    hint.style.borderColor = border;
+    hint.style.color = color;
+
+    var msg = icon + ' Booked ' + booked + ' / Target ' + target;
+    if (qty > 0) {
+        msg += ' · After this order: ' + (booked + qty) + ' / ' + target;
+    }
+    if (remainingAfter >= 0) {
+        msg += ' · Remaining ' + remainingAfter;
+    } else {
+        msg += ' · Over target by ' + Math.abs(remainingAfter) + ' (soft limit)';
+    }
+    msg += '  —  ' + scopeLabel;
+
+    hint.textContent = msg;
+    hint.style.display = 'block';
 }
 
 // Auto-add a new line item if the current one is the last and has content
@@ -8127,6 +8312,11 @@ function hideProductDropdown(index) {
 }
 
 let qurbaniFieldOptionsCache = null;
+// Admin-configured default payment method for new qurbani orders
+// (cash/online). Seeded from /qurbani-settings/api/options the first time
+// Qurbani fields are shown and re-used by the Add Qurbani Payment modal
+// so it opens on the right radio instead of hard-coding 'cash'.
+let qurbaniDefaultPaymentMethod = 'cash';
 function showQurbaniFields() {
     const section = document.getElementById('qurbaniFieldsSection');
     if (!section) return;
@@ -8143,12 +8333,18 @@ function showQurbaniFields() {
     .then(r => r.json())
     .then(data => {
         qurbaniFieldOptionsCache = data.options || {};
+        if (data.qurbani_default_payment_method === 'online' || data.qurbani_default_payment_method === 'cash') {
+            qurbaniDefaultPaymentMethod = data.qurbani_default_payment_method;
+        }
         populateQurbaniSelects(qurbaniFieldOptionsCache);
     });
 }
 
 function populateQurbaniSelects(optionsGrouped) {
-    const fields = ['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type'];
+    // qurbani_type + qurbani_paya are simple flat dropdowns (no parent),
+    // so the default branch inside populateItemSlotSelect handles them
+    // exactly the same way as qurbani_delivery_type.
+    const fields = ['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya'];
     fields.forEach(fieldKey => {
         const fieldOpts = optionsGrouped[fieldKey] || [];
         document.querySelectorAll(`select[name="${fieldKey}"]`).forEach(sel => {
@@ -8289,6 +8485,9 @@ function populateQurbaniEditSelects() {
     .then(r => r.json())
     .then(data => {
         qurbaniFieldOptionsCache = data.options || {};
+        if (data.qurbani_default_payment_method === 'online' || data.qurbani_default_payment_method === 'cash') {
+            qurbaniDefaultPaymentMethod = data.qurbani_default_payment_method;
+        }
         populateQurbaniSelects(qurbaniFieldOptionsCache);
     });
 }
@@ -8297,6 +8496,23 @@ function populateQurbaniEditSelects() {
 var qurbaniPaymentOrderId = null;
 function openQurbaniPaymentModal(orderId) {
     qurbaniPaymentOrderId = orderId;
+    // Seed the default payment method from the Qurbani settings config if
+    // we haven't loaded it yet. Non-blocking — if this is a fresh page
+    // load and the cache is cold we'll fall back to the JS default
+    // ('cash') and the modal just opens on that.
+    if (!qurbaniFieldOptionsCache) {
+        fetch('/qurbani-settings/api/options', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        })
+        .then(r => r.json())
+        .then(data => {
+            qurbaniFieldOptionsCache = data.options || qurbaniFieldOptionsCache || {};
+            if (data.qurbani_default_payment_method === 'online' || data.qurbani_default_payment_method === 'cash') {
+                qurbaniDefaultPaymentMethod = data.qurbani_default_payment_method;
+            }
+        })
+        .catch(() => {});
+    }
     // Build modal
     var existing = document.getElementById('qurbaniPaymentOverlay');
     if (existing) existing.remove();
@@ -8316,12 +8532,21 @@ function openQurbaniPaymentModal(orderId) {
             </div>
             <div style="margin-bottom:12px;">
                 <label style="font-size:13px; font-weight:600; color:#374151;">Payment Method *</label>
+                {{-- Server-side pre-select: reads qurbani_default_payment_method
+                     from t_fin_config so the team's configured default for new
+                     orders lights up when the modal opens. Falls back to 'cash'
+                     if the admin hasn't picked one. --}}
+                @php
+                    $_qpmDefault = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
+                    if (!in_array($_qpmDefault, ['cash','online'], true)) { $_qpmDefault = 'cash'; }
+                    $_qpmCashActive = $_qpmDefault === 'cash';
+                @endphp
                 <div style="display:flex; gap:8px; margin-top:4px;">
-                    <button id="qpCashBtn" onclick="selectQPMethod('cash')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:#10b981; color:#fff; border:2px solid #10b981;">Cash</button>
-                    <button id="qpOnlineBtn" onclick="selectQPMethod('online')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:#f3f4f6; color:#374151; border:2px solid #d1d5db;">Online</button>
+                    <button id="qpCashBtn" onclick="selectQPMethod('cash')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:{{ $_qpmCashActive ? '#10b981' : '#f3f4f6' }}; color:{{ $_qpmCashActive ? '#fff' : '#374151' }}; border:2px solid {{ $_qpmCashActive ? '#10b981' : '#d1d5db' }};">Cash</button>
+                    <button id="qpOnlineBtn" onclick="selectQPMethod('online')" style="flex:1; padding:8px; border-radius:6px; font-weight:700; cursor:pointer; background:{{ !$_qpmCashActive ? '#3b82f6' : '#f3f4f6' }}; color:{{ !$_qpmCashActive ? '#fff' : '#374151' }}; border:2px solid {{ !$_qpmCashActive ? '#3b82f6' : '#d1d5db' }};">Online</button>
                 </div>
             </div>
-            <input type="hidden" id="qpMethod" value="cash">
+            <input type="hidden" id="qpMethod" value="{{ $_qpmDefault }}">
             <div style="margin-bottom:12px;">
                 <label style="font-size:13px; font-weight:600; color:#374151;">Reference (optional)</label>
                 <input type="text" id="qpReference" style="width:100%; padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; margin-top:4px; font-size:13px;" placeholder="Transaction ID / receipt #">
@@ -8334,6 +8559,11 @@ function openQurbaniPaymentModal(orderId) {
         </div>
     `;
     document.body.appendChild(overlay);
+    // Sync the modal's selected method with the current qurbaniDefault
+    // in case the admin changed the setting after the page loaded.
+    try {
+        selectQPMethod(qurbaniDefaultPaymentMethod === 'online' ? 'online' : 'cash');
+    } catch (e) { /* defensive: server-side blade fallback already painted */ }
 }
 
 var qpSelectedMethod = 'cash';
@@ -10594,10 +10824,15 @@ function saveNewOrder() {
             var qSlot = item.querySelector('select[name*="qurbani_slot"]')?.value;
             var qRegion = item.querySelector('select[name*="qurbani_region"]')?.value;
             var qDT = item.querySelector('select[name*="qurbani_delivery_type"]')?.value;
+            // Suffix-anchored selectors — see note in saveOrderChanges.
+            var qType = item.querySelector('select[name$="[qurbani_type]"]')?.value;
+            var qPaya = item.querySelector('select[name$="[qurbani_paya]"]')?.value;
             if (qDay) itemObj.qurbani_day = qDay;
             if (qSlot) itemObj.qurbani_slot = qSlot;
             if (qRegion) itemObj.qurbani_region = qRegion;
             if (qDT) itemObj.qurbani_delivery_type = qDT;
+            if (qType) itemObj.qurbani_type = qType;
+            if (qPaya) itemObj.qurbani_paya = qPaya;
             var instr = item.querySelector('input[name*="instructions"]')?.value;
             itemObj.instructions = instr || '';
             items.push(itemObj);
@@ -10693,12 +10928,40 @@ function loadDefaultShippingPrice(modalId = null) {
         }
     };
 
+    // Pre-select the Payment Method dropdown on the Create-Order form to
+    // match the admin's Qurbani default (cash/online). Only runs when
+    // qurbani_mode=1 so regular orders keep their historical default.
+    // The dropdown's options are 'cash' / 'online' / 'bank_transfer' / 'card';
+    // we only nudge it for those two values the qurbani config exposes.
+    const applyPaymentMethod = (method) => {
+        if (method !== 'cash' && method !== 'online') return;
+        let pmSelect;
+        if (modalId) {
+            pmSelect = document.querySelector(`#${modalId} select[name="payment_method"]`);
+        } else {
+            pmSelect = document.querySelector('select[name="payment_method"]');
+        }
+        if (!pmSelect) return;
+        // Only override when user hasn't already picked something different
+        // (defensive: saveOrderChanges is called immediately after this, so
+        // in practice the form is still fresh).
+        const optionExists = Array.from(pmSelect.options).some(o => o.value === method);
+        if (optionExists) {
+            pmSelect.value = method;
+            // Clear any stale "selected" attr from the cash hard-default.
+            Array.from(pmSelect.options).forEach(o => { o.selected = (o.value === method); });
+        }
+    };
+
     if (isQurbani) {
         fetch('/qurbani-settings/api/options', { headers: { 'Accept': 'application/json' } })
             .then(r => r.json())
             .then(data => {
                 if (data.success && data.qurbani_shipping_price != null) {
                     applyPrice(data.qurbani_shipping_price);
+                }
+                if (data.success && data.qurbani_default_payment_method) {
+                    applyPaymentMethod(data.qurbani_default_payment_method);
                 }
             })
             .catch(() => applyPrice(1000));

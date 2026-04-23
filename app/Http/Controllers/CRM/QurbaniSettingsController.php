@@ -22,18 +22,26 @@ class QurbaniSettingsController extends Controller
             ->groupBy('field_name');
 
         $shippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
+        // Default payment method for brand-new qurbani orders. Stored in
+        // t_fin_config so both web + mobile read the same value. Only 'cash'
+        // or 'online' are accepted (matches the Qurbani payment modal).
+        $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
+        if (!in_array($defaultPaymentMethod, ['cash', 'online'], true)) {
+            $defaultPaymentMethod = 'cash';
+        }
 
         return response()->json([
             'success' => true,
             'options' => $options,
             'qurbani_shipping_price' => $shippingPrice,
+            'qurbani_default_payment_method' => $defaultPaymentMethod,
         ]);
     }
 
     public function storeOption(Request $request)
     {
         $validated = $request->validate([
-            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_sub_region,qurbani_delivery_type',
+            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_sub_region,qurbani_delivery_type,qurbani_type,qurbani_paya',
             'option_value' => 'required|string|max:100',
             'parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',
             'delivery_type_parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',
@@ -158,6 +166,31 @@ class QurbaniSettingsController extends Controller
         \App\Models\FIN\ConfigModel::set('qurbani_shipping_price', $validated['price'], 'Default delivery fee for qurbani orders');
 
         return response()->json(['success' => true, 'message' => 'Delivery fee updated', 'price' => $validated['price']]);
+    }
+
+    /**
+     * Set the default payment method used when a new qurbani order is
+     * created (web + mobile read this to pre-select the radio/select).
+     * Only 'cash' and 'online' are valid because the Qurbani payment
+     * modal is constrained to those two methods.
+     */
+    public function updateDefaultPaymentMethod(Request $request)
+    {
+        $validated = $request->validate([
+            'method' => 'required|string|in:cash,online',
+        ]);
+
+        \App\Models\FIN\ConfigModel::set(
+            'qurbani_default_payment_method',
+            $validated['method'],
+            'Default payment method pre-selected when creating a new qurbani order'
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Default payment method updated',
+            'method' => $validated['method'],
+        ]);
     }
 
     public function reorderOptions(Request $request)

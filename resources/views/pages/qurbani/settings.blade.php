@@ -50,6 +50,8 @@
         $riderDeliveredEnabled = \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
         $qurbaniShippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
         $deleteEnabled = \App\Models\FIN\ConfigModel::get('qurbani_delete_enabled', '0') === '1';
+        $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
+        if (!in_array($defaultPaymentMethod, ['cash','online'], true)) { $defaultPaymentMethod = 'cash'; }
     @endphp
 
     {{-- Delivery Fee Section --}}
@@ -66,6 +68,31 @@
                 <input type="number" id="qurbaniShippingPrice" value="{{ $qurbaniShippingPrice }}" min="0" step="1" style="width: 140px; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 16px; font-weight: 600;">
                 <button onclick="saveShippingPrice()" class="btn-add">Save</button>
                 <span id="shippingPriceSaved" style="display:none; font-size: 12px; color: #059669; font-weight: 600;">✓ Saved</span>
+            </div>
+        </div>
+    </div>
+
+    {{-- Default Payment Method Section --}}
+    <div class="field-section" style="margin-bottom: 20px;">
+        <div class="field-header">
+            <div>
+                <div class="field-title">💳 Default Payment Method</div>
+                <div class="field-subtitle">Pre-selected method when a new qurbani order is created (web and mobile). Users can still change it per order.</div>
+            </div>
+        </div>
+        <div class="field-body">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+                <div style="display:flex; gap:8px;">
+                    <button type="button" id="dpmCashBtn" onclick="setDefaultPaymentMethod('cash')"
+                            style="padding:8px 18px; border-radius:8px; font-weight:700; font-size:13px; border:2px solid {{ $defaultPaymentMethod === 'cash' ? '#10b981' : '#d1d5db' }}; background:{{ $defaultPaymentMethod === 'cash' ? '#10b981' : '#f3f4f6' }}; color:{{ $defaultPaymentMethod === 'cash' ? '#fff' : '#374151' }}; cursor:pointer;">
+                        Cash
+                    </button>
+                    <button type="button" id="dpmOnlineBtn" onclick="setDefaultPaymentMethod('online')"
+                            style="padding:8px 18px; border-radius:8px; font-weight:700; font-size:13px; border:2px solid {{ $defaultPaymentMethod === 'online' ? '#3b82f6' : '#d1d5db' }}; background:{{ $defaultPaymentMethod === 'online' ? '#3b82f6' : '#f3f4f6' }}; color:{{ $defaultPaymentMethod === 'online' ? '#fff' : '#374151' }}; cursor:pointer;">
+                        Online
+                    </button>
+                </div>
+                <span id="dpmSaved" style="display:none; font-size: 12px; color: #059669; font-weight: 600;">✓ Saved</span>
             </div>
         </div>
     </div>
@@ -184,16 +211,22 @@ function toggleRiderDelivered() {
     .catch(() => { showToast('Error updating setting', 'error'); btn.disabled = false; btn.textContent = 'Retry'; });
 }
 
+// NOTE: Order here also drives the render sequence on the settings page.
+// qurbani_type / qurbani_paya are simple flat dropdowns (no parent) so
+// they slot in with the same renderer used for qurbani_delivery_type.
 const FIELD_CONFIG = {
     qurbani_day: { label: 'Qurbani Day', icon: '📅', description: 'Day options for qurbani delivery' },
     qurbani_slot: { label: 'Qurbani Slot', icon: '🕐', description: 'Time slots (assigned per day)' },
     qurbani_region: { label: 'Qurbani Region', icon: '📍', description: 'Delivery region options' },
     qurbani_sub_region: { label: 'Sub Region', icon: '📌', description: 'Sub-regions (assigned per region)' },
     qurbani_delivery_type: { label: 'Delivery Type', icon: '🚚', description: 'Delivery or self collection' },
+    qurbani_type: { label: 'Qurbani Type', icon: '🐐', description: 'Standard, custom, or your own values' },
+    qurbani_paya: { label: 'Paya', icon: '🦵', description: 'Paya handling (standard, bhunnay paye, ...)' },
 };
 const FIELD_LABELS = {
     qurbani_day: 'Day', qurbani_slot: 'Slot', qurbani_region: 'Region',
     qurbani_sub_region: 'Sub Region', qurbani_delivery_type: 'Type',
+    qurbani_type: 'Qurbani Type', qurbani_paya: 'Paya',
 };
 
 let allOptions = {};
@@ -204,6 +237,42 @@ function showToast(message, type = 'success') {
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+}
+
+// Default payment method (cash/online) used when a brand-new qurbani
+// order is created. Two buttons act as a radio — clicking saves
+// immediately so there's no ambiguous unsaved-state. The styling
+// below mirrors the server-rendered initial state for consistency.
+async function setDefaultPaymentMethod(method) {
+    if (method !== 'cash' && method !== 'online') return;
+    const cashBtn = document.getElementById('dpmCashBtn');
+    const onlineBtn = document.getElementById('dpmOnlineBtn');
+    const paint = (m) => {
+        if (m === 'cash') {
+            cashBtn.style.background = '#10b981'; cashBtn.style.color = '#fff'; cashBtn.style.borderColor = '#10b981';
+            onlineBtn.style.background = '#f3f4f6'; onlineBtn.style.color = '#374151'; onlineBtn.style.borderColor = '#d1d5db';
+        } else {
+            onlineBtn.style.background = '#3b82f6'; onlineBtn.style.color = '#fff'; onlineBtn.style.borderColor = '#3b82f6';
+            cashBtn.style.background = '#f3f4f6'; cashBtn.style.color = '#374151'; cashBtn.style.borderColor = '#d1d5db';
+        }
+    };
+    paint(method);
+    try {
+        const r = await fetch('{{ route("qurbani-settings.api.default-payment-method") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ method }),
+        });
+        const data = await r.json();
+        if (data.success) {
+            const badge = document.getElementById('dpmSaved');
+            badge.style.display = '';
+            setTimeout(() => badge.style.display = 'none', 2000);
+            showToast('Default payment method: ' + method.toUpperCase());
+        } else {
+            showToast('Failed to save default', 'error');
+        }
+    } catch (e) { showToast('Error saving', 'error'); }
 }
 
 async function saveShippingPrice() {

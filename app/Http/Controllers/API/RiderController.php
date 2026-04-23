@@ -204,6 +204,8 @@ class RiderController extends Controller
                     'qurbani_slot' => $item->qurbani_slot,
                     'qurbani_region' => $item->qurbani_region,
                     'qurbani_delivery_type' => $item->qurbani_delivery_type,
+                    'qurbani_type' => $item->qurbani_type,
+                    'qurbani_paya' => $item->qurbani_paya,
                     'instructions' => $item->instructions,
                 ];
             });
@@ -16873,7 +16875,7 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'instructions');
+                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya', 'instructions');
                 }])
                 ->with(['lineItems.product' => function($q) {
                     $q->select('id', 'attribute_2');
@@ -16887,14 +16889,25 @@ class RiderController extends Controller
             }
 
             // Apply qurbani field filters (check both order-level and line-item-level)
-            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type'] as $field) {
+            // qurbani_type and qurbani_paya live ONLY on line items (no order-level
+            // column). Everything else exists on both — keep the legacy behaviour
+            // of matching against either the order row or any line-item row.
+            $lineOnlyFields = ['qurbani_type', 'qurbani_paya'];
+            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya'] as $field) {
                 if ($request->get($field)) {
                     $filterVal = $request->get($field);
-                    $query->where(function($q) use ($field, $filterVal) {
-                        $q->where($field, $filterVal)
-                          ->orWhereHas('lineItems', function($sub) use ($field, $filterVal) {
-                              $sub->where($field, $filterVal);
-                          });
+                    $isLineOnly = in_array($field, $lineOnlyFields, true);
+                    $query->where(function($q) use ($field, $filterVal, $isLineOnly) {
+                        if ($isLineOnly) {
+                            $q->whereHas('lineItems', function($sub) use ($field, $filterVal) {
+                                $sub->where($field, $filterVal);
+                            });
+                        } else {
+                            $q->where($field, $filterVal)
+                              ->orWhereHas('lineItems', function($sub) use ($field, $filterVal) {
+                                  $sub->where($field, $filterVal);
+                              });
+                        }
                     });
                 }
             }
@@ -17006,6 +17019,8 @@ class RiderController extends Controller
                             'qurbani_region' => $item->qurbani_region,
                             'qurbani_sub_region' => $item->qurbani_sub_region,
                             'qurbani_delivery_type' => $item->qurbani_delivery_type,
+                            'qurbani_type' => $item->qurbani_type,
+                            'qurbani_paya' => $item->qurbani_paya,
                             'category_level_2' => $item->product->attribute_2 ?? null,
                             'instructions' => $item->instructions,
                         ];
@@ -17046,6 +17061,10 @@ class RiderController extends Controller
                 'qurbani_region' => 'nullable|string|max:100',
                 'qurbani_sub_region' => 'nullable|string|max:100',
                 'qurbani_delivery_type' => 'nullable|string|max:50',
+                // New Apr-2026 attributes — accepted so the mobile
+                // edit-order / details screens can update them too.
+                'qurbani_type' => 'nullable|string|max:50',
+                'qurbani_paya' => 'nullable|string|max:50',
                 'instructions' => 'nullable|string|max:500',
                 'line_item_id' => 'nullable|integer|exists:t_crm_prod_order_line_item,id',
             ]);
@@ -17058,6 +17077,14 @@ class RiderController extends Controller
                 'qurbani_sub_region' => $validated['qurbani_sub_region'] ?? null,
                 'qurbani_delivery_type' => $validated['qurbani_delivery_type'] ?? null,
             ];
+            // Only patch qurbani_type / qurbani_paya when the caller actually
+            // sent them — otherwise blank payloads would wipe existing values.
+            if (array_key_exists('qurbani_type', $validated)) {
+                $fields['qurbani_type'] = $validated['qurbani_type'];
+            }
+            if (array_key_exists('qurbani_paya', $validated)) {
+                $fields['qurbani_paya'] = $validated['qurbani_paya'];
+            }
             if (array_key_exists('instructions', $validated)) {
                 $fields['instructions'] = $validated['instructions'];
             }
@@ -17138,6 +17165,14 @@ class RiderController extends Controller
                 ->values();
 
             $shippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
+            // Default payment method (cash/online) for new qurbani orders.
+            // Mobile reads this to pre-select the method chip so the setting
+            // configured on the web Qurbani Settings page flows through
+            // without extra plumbing. Only 'cash' / 'online' are valid.
+            $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
+            if (!in_array($defaultPaymentMethod, ['cash', 'online'], true)) {
+                $defaultPaymentMethod = 'cash';
+            }
 
             $rawInvoiceFields = \DB::table('t_crm_qurbani_field_options')
                 ->where('show_in_invoice', 1)
@@ -17154,7 +17189,94 @@ class RiderController extends Controller
                 'options' => $options,
                 'categories' => $categories,
                 'qurbani_shipping_price' => $shippingPrice,
+                'qurbani_default_payment_method' => $defaultPaymentMethod,
                 'invoice_fields' => $invoiceFields,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Booked summary + targets for the mobile Qurbani create/edit form.
+     *
+     * Mirrors the web controller's QurbaniWebController::getOrderStats shape
+     * ({ success, summary, detail, targets }) so the mobile "target remaining"
+     * hint on the new-order form can compute booked/target/remaining locally
+     * without duplicating logic. Kept intentionally read-only — writing
+     * targets stays a web-only Taimur-role flow.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getQurbaniBookedStats(Request $request)
+    {
+        try {
+            $rows = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_prod_order_line_item as li', 'li.order_id', '=', 'o.id')
+                ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'li.product_id')
+                ->where(function ($q) {
+                    $q->whereRaw("LOWER(COALESCE(p.attribute_1, '')) = 'qurbani'")
+                      ->orWhereNotNull('li.qurbani_day')
+                      ->orWhereNotNull('li.qurbani_slot')
+                      ->orWhereNotNull('li.qurbani_region')
+                      ->orWhereNotNull('li.qurbani_delivery_type');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('o.order_status')
+                      ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+                })
+                ->select(
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_delivery_type, ''), NULLIF(o.qurbani_delivery_type, ''), 'Unassigned') as delivery_type"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_day, ''), NULLIF(o.qurbani_day, ''), 'Unassigned') as day"),
+                    \DB::raw("COALESCE(NULLIF(p.attribute_2, ''), 'Uncategorized') as category"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_slot, ''), NULLIF(o.qurbani_slot, ''), 'Unassigned') as slot"),
+                    \DB::raw("COALESCE(NULLIF(li.qurbani_region, ''), NULLIF(o.qurbani_region, ''), 'Unassigned') as region"),
+                    \DB::raw('COALESCE(SUM(li.quantity), 0) as qty')
+                )
+                ->groupBy('delivery_type', 'day', 'category', 'slot', 'region')
+                ->get();
+
+            $summary = [];
+            $detail = [];
+            foreach ($rows as $r) {
+                $dt = (string) $r->delivery_type;
+                $day = (string) $r->day;
+                $cat = (string) $r->category;
+                $slot = (string) $r->slot;
+                $region = (string) $r->region;
+                $qty = (int) $r->qty;
+                $summary[$dt][$day][$cat] = ($summary[$dt][$day][$cat] ?? 0) + $qty;
+                $detail[$dt][$day][$cat]['cell'][$slot][$region] = ($detail[$dt][$day][$cat]['cell'][$slot][$region] ?? 0) + $qty;
+            }
+
+            $targetSummary = [];
+            $targetBreakdown = [];
+            if (\DB::getSchemaBuilder()->hasTable('t_crm_qurbani_targets')) {
+                $targetRows = \DB::table('t_crm_qurbani_targets')->get();
+                foreach ($targetRows as $tr) {
+                    $dt  = (string) $tr->delivery_type;
+                    $day = (string) $tr->day;
+                    $cat = (string) $tr->category;
+                    $slot   = (string) ($tr->slot ?? '');
+                    $region = (string) ($tr->region ?? '');
+                    $qty = (int) $tr->target_qty;
+                    if ($slot === '' && $region === '') {
+                        $targetSummary[$dt][$day][$cat] = $qty;
+                    } else {
+                        $targetBreakdown[$dt][$day][$cat][$slot][$region] = $qty;
+                    }
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'summary' => $summary,
+                'detail' => $detail,
+                'targets' => [
+                    'summary' => $targetSummary,
+                    'breakdown' => $targetBreakdown,
+                ],
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);

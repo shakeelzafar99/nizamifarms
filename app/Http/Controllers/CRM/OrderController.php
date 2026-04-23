@@ -1101,6 +1101,9 @@ class OrderController extends Controller
                 'items.*.qurbani_region' => 'nullable|string|max:100',
                 'items.*.qurbani_sub_region' => 'nullable|string|max:100',
                 'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
+                // New Apr-2026 qurbani attributes (configurable dropdowns).
+                'items.*.qurbani_type' => 'nullable|string|max:50',
+                'items.*.qurbani_paya' => 'nullable|string|max:50',
                 'items.*.instructions' => 'nullable|string|max:500',
                 // Multiple discounts support
                 'discounts' => 'nullable|array',
@@ -1495,6 +1498,11 @@ class OrderController extends Controller
                     if (!empty($itemData['qurbani_region'])) $updateLineItem['qurbani_region'] = $itemData['qurbani_region'];
                     if (!empty($itemData['qurbani_sub_region'])) $updateLineItem['qurbani_sub_region'] = $itemData['qurbani_sub_region'];
                     if (!empty($itemData['qurbani_delivery_type'])) $updateLineItem['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
+                    // New qurbani attributes — only written when the form
+                    // actually sends a value so older code paths don't
+                    // accidentally wipe user edits.
+                    if (!empty($itemData['qurbani_type'])) $updateLineItem['qurbani_type'] = $itemData['qurbani_type'];
+                    if (!empty($itemData['qurbani_paya'])) $updateLineItem['qurbani_paya'] = $itemData['qurbani_paya'];
                     if (array_key_exists('instructions', $itemData)) $updateLineItem['instructions'] = $itemData['instructions'];
 
                     // Backward compat: use order-level qurbani fields if item-level not set
@@ -1781,6 +1789,9 @@ class OrderController extends Controller
                 'items.*.qurbani_region' => 'nullable|string|max:100',
                 'items.*.qurbani_sub_region' => 'nullable|string|max:100',
                 'items.*.qurbani_delivery_type' => 'nullable|string|max:50',
+                // New Apr-2026 qurbani attributes (configurable dropdowns).
+                'items.*.qurbani_type' => 'nullable|string|max:50',
+                'items.*.qurbani_paya' => 'nullable|string|max:50',
                 'items.*.instructions' => 'nullable|string|max:500',
                 // Customer creation fields
                 'customer_phone' => 'nullable|string',
@@ -2080,6 +2091,8 @@ class OrderController extends Controller
                     if (!empty($itemData['qurbani_region'])) $lineItemData['qurbani_region'] = $itemData['qurbani_region'];
                     if (!empty($itemData['qurbani_sub_region'])) $lineItemData['qurbani_sub_region'] = $itemData['qurbani_sub_region'];
                     if (!empty($itemData['qurbani_delivery_type'])) $lineItemData['qurbani_delivery_type'] = $itemData['qurbani_delivery_type'];
+                    if (!empty($itemData['qurbani_type'])) $lineItemData['qurbani_type'] = $itemData['qurbani_type'];
+                    if (!empty($itemData['qurbani_paya'])) $lineItemData['qurbani_paya'] = $itemData['qurbani_paya'];
                     if (array_key_exists('instructions', $itemData)) $lineItemData['instructions'] = $itemData['instructions'];
 
                     // Backward compat: also accept order-level qurbani fields and apply to all items

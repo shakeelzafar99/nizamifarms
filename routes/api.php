@@ -248,6 +248,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Qurbani Mode
     Route::get('/qurbani/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOpenOrders']);
     Route::get('/qurbani/field-options', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniFieldOptions']);
+    // Booked summary + targets (soft-limit guidance on new-order form).
+    Route::get('/qurbani/booked-stats', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniBookedStats']);
     Route::put('/orders/{id}/qurbani-details', [\App\Http\Controllers\API\RiderController::class, 'updateQurbaniDetails']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);

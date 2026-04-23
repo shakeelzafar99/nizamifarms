@@ -62,6 +62,25 @@
 .qstats-mini th { background:#f9fafb; color:#6b7280; font-weight:600; font-size:10px; text-transform:uppercase; }
 .qstats-mini .row-label { background:#fafafa; text-align:left; font-weight:600; color:#374151; }
 .qstats-mini .zero { color:#d1d5db; }
+/* Apr-2026: soft-cap target rendering. "booked/target" with color hint.
+   Color hints are intentionally subtle so the table still reads as numeric
+   data first, target awareness second. */
+.qstats-cell-target { color:#9ca3af; font-size:10px; font-weight:500; margin-left:2px; }
+.qstats-cell-ok     { color:#15803d; font-weight:700; }   /* < 90% */
+.qstats-cell-near   { color:#b45309; font-weight:700; }   /* 90-100% */
+.qstats-cell-over   { color:#b91c1c; font-weight:700; }   /* > 100% */
+/* Edit-mode inputs. Kept tiny so the table doesn't visually jump when
+   switching between view and edit modes. */
+.qstats-target-input {
+    width: 58px; text-align:center; font-size:11px; padding:2px 4px;
+    border:1px solid #fcd34d; border-radius:4px; background:#fffbeb; color:#111827;
+}
+.qstats-target-input:focus { outline:none; border-color:#d97706; box-shadow:0 0 0 2px rgba(217,119,6,.15); }
+.qstats-savebtn { font-size:11px; padding:4px 12px; border-radius:6px; border:1px solid #059669; background:#10b981; color:#fff; cursor:pointer; font-weight:600; }
+.qstats-savebtn:hover { background:#059669; }
+.qstats-savebtn:disabled { background:#9ca3af; border-color:#9ca3af; cursor:not-allowed; }
+.qstats-cancelbtn { font-size:11px; padding:4px 10px; border-radius:6px; border:1px solid #d1d5db; background:#fff; color:#6b7280; cursor:pointer; font-weight:600; }
+.qstats-cancelbtn:hover { background:#f9fafb; color:#111827; }
 
 @media (max-width: 768px) {
     .qstats-cards { grid-template-columns:1fr; }
@@ -175,6 +194,31 @@
                         @endforeach
                     </select>
                 </div>
+                {{-- New Apr-2026 qurbani attributes. Rendered only when the
+                     admin has configured option values so a fresh install
+                     (no migration / seeds yet) doesn't show empty pickers. --}}
+                @if(isset($qurbaniTypes) && count($qurbaniTypes) > 0)
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1">Qurbani Type</label>
+                    <select id="filterQurbaniType" class="filter-select" onchange="loadOrders()">
+                        <option value="">All Types</option>
+                        @foreach($qurbaniTypes as $qt)
+                        <option value="{{ $qt }}">{{ $qt }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                @endif
+                @if(isset($payaOptions) && count($payaOptions) > 0)
+                <div>
+                    <label class="text-xs font-medium text-gray-500 block mb-1">Paya</label>
+                    <select id="filterQurbaniPaya" class="filter-select" onchange="loadOrders()">
+                        <option value="">All Paya</option>
+                        @foreach($payaOptions as $po)
+                        <option value="{{ $po }}">{{ $po }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                @endif
                 <div>
                     <label class="text-xs font-medium text-gray-500 block mb-1">Payment</label>
                     <select id="filterPaymentStatus" class="filter-select" onchange="loadOrders()">
@@ -328,6 +372,11 @@ let hasItemFilters = false;
 let activeCategoryFilter = null;
 let currentRegion = '';
 const isTaimurOrMgmt = {{ $isTaimurOrMgmt ? 'true' : 'false' }};
+// Apr-2026: target quantities are Taimur-only (NOT management). Used to
+// gate the "Set Targets" buttons on the booked summary. Backend enforces
+// the same rule in QurbaniWebController::saveQurbaniTargets so hiding
+// the buttons is purely a UX nicety.
+const isTaimurStrict = {{ ($isTaimur ?? false) ? 'true' : 'false' }};
 const canDeleteOrders = {{ ($isTaimur ?? false) && ($deleteEnabled ?? false) ? 'true' : 'false' }};
 const fieldOptions = @json($fieldOptions);
 window._qurbaniRiders = @json($riders);
@@ -361,6 +410,12 @@ function clearFilters() {
     if (payEl) payEl.value = '';
     const catEl = document.getElementById('filterCategory');
     if (catEl) catEl.value = '';
+    // New Apr-2026 qurbani attributes. Guarded because the filters only
+    // render when the admin has configured option values.
+    const qtEl = document.getElementById('filterQurbaniType');
+    if (qtEl) qtEl.value = '';
+    const payaEl = document.getElementById('filterQurbaniPaya');
+    if (payaEl) payaEl.value = '';
     document.getElementById('filterCustomer').value = '';
     currentRegion = '';
     activeCategoryFilter = null;
@@ -504,6 +559,10 @@ function loadOrders() {
     const paymentStatus = (document.getElementById('filterPaymentStatus') || {}).value || '';
     const category = (document.getElementById('filterCategory') || {}).value || '';
     const customer = document.getElementById('filterCustomer').value.trim();
+    // New Apr-2026 qurbani attributes (only present in the DOM when the admin
+    // has configured option values — guarded lookup keeps older layouts working).
+    const qType = (document.getElementById('filterQurbaniType') || {}).value || '';
+    const qPaya = (document.getElementById('filterQurbaniPaya') || {}).value || '';
     if (day) params.set('day', day);
     if (slot) params.set('slot', slot);
     if (region) params.set('region', region);
@@ -512,6 +571,8 @@ function loadOrders() {
     if (paymentStatus) params.set('payment_status', paymentStatus);
     if (category) params.set('category', category);
     if (customer) params.set('customer', customer);
+    if (qType) params.set('qurbani_type', qType);
+    if (qPaya) params.set('qurbani_paya', qPaya);
 
     document.getElementById('ordersBody').innerHTML = '<tr><td colspan="14" class="px-4 py-8 text-center text-gray-400">Loading...</td></tr>';
 
@@ -759,6 +820,11 @@ function assignRiderFromTable(sel) {
 // this list. The backing DB stays authoritative — next page load we'll
 // get a fresh copy seeded by QurbaniWebController::index.
 let QURBANI_RECEIVING_ACCOUNTS = @json($receivingAccounts ?? []);
+// Qurbani settings → default payment method for NEW orders (cash/online).
+// Used when the current order has no payment_method saved yet, so the
+// modal opens on the admin-configured default instead of a hard-coded
+// 'cash'. Overridden if the order already has a method set.
+var QURBANI_DEFAULT_PAYMENT_METHOD = @json($defaultPaymentMethod ?? 'cash');
 
 var _qurbaniPaymentOrderId = null;
 var _qurbaniPaymentReceivingId = null; // currently-selected receiving bank id
@@ -766,9 +832,17 @@ function openQurbaniPaymentModal(orderId, balanceRemaining, orderPaymentMethod) 
     _qurbaniPaymentOrderId = orderId;
     _qurbaniPaymentReceivingId = null;
     // Normalise the order's payment method so the dropdown opens on the
-    // right option. Orders store either 'cash' or 'online'; anything else
-    // falls back to cash (the historical default).
-    var defaultMethod = (orderPaymentMethod === 'online') ? 'online' : 'cash';
+    // right option. Orders store either 'cash' or 'online'; anything
+    // else (or missing) falls back to the admin-configured default from
+    // Qurbani settings so brand-new orders respect the team's preference.
+    var defaultMethod;
+    if (orderPaymentMethod === 'online') {
+        defaultMethod = 'online';
+    } else if (orderPaymentMethod === 'cash') {
+        defaultMethod = 'cash';
+    } else {
+        defaultMethod = (QURBANI_DEFAULT_PAYMENT_METHOD === 'online') ? 'online' : 'cash';
+    }
     var existing = document.getElementById('qurbaniPayOverlay');
     if (existing) existing.remove();
 
@@ -1974,7 +2048,7 @@ function openEditFieldOptions(fieldName) {
     const modal = document.getElementById('editFieldOptionsModal');
     const title = document.getElementById('editFieldTitle');
     const body = document.getElementById('editFieldBody');
-    const labels = { qurbani_day: 'Qurbani Day', qurbani_slot: 'Qurbani Slot', qurbani_region: 'Qurbani Region', qurbani_sub_region: 'Sub Region', qurbani_delivery_type: 'Delivery Type' };
+    const labels = { qurbani_day: 'Qurbani Day', qurbani_slot: 'Qurbani Slot', qurbani_region: 'Qurbani Region', qurbani_sub_region: 'Sub Region', qurbani_delivery_type: 'Delivery Type', qurbani_type: 'Qurbani Type', qurbani_paya: 'Paya' };
     title.textContent = 'Edit: ' + (labels[fieldName] || fieldName);
 
     fetch('/qurbani-settings/api/options?field=' + fieldName, {
@@ -2063,8 +2137,54 @@ function addFieldOption(fieldName) {
 // ======= QURBANI STATS PANEL =======
 let qStatsData = null;                  // latest response from /qurbani/api/order-stats
 let qStatsBreakdownKey = null;          // currently expanded delivery_type, or null for summary view
+// Apr-2026: target-editing state. When a user clicks "Set Targets" on a
+// specific delivery-type card we switch that card (and only that card) into
+// edit mode. The key is the delivery_type string; value is true while
+// editing. Breakdown edit state is tracked separately per mini-table key
+// "<dt>||<day>||<cat>" so we can have at most one breakdown table in edit
+// mode at a time without forcing all of them into inputs at once.
+const qStatsSummaryEditing = new Set();
+let qStatsBreakdownEditingKey = null;
 
 const QSTATS_COLLAPSED_KEY = 'qurbani_stats_collapsed_v1';
+
+// Helper: shape the "booked / target" cell content with color hinting.
+// When no target is set we render only the booked count, so cards remain
+// clean on fresh installs that haven't configured caps yet.
+function qstatsFormatCell(booked, target) {
+    const t = parseInt(target) || 0;
+    const b = parseInt(booked) || 0;
+    if (t <= 0) {
+        return b === 0
+            ? `<span class="zero">0</span>`
+            : `<span>${b}</span>`;
+    }
+    let cls = 'qstats-cell-ok';
+    const pct = t > 0 ? (b / t) * 100 : 0;
+    if (pct > 100) cls = 'qstats-cell-over';
+    else if (pct >= 90) cls = 'qstats-cell-near';
+    return `<span class="${cls}">${b}</span><span class="qstats-cell-target">/${t}</span>`;
+}
+
+// Helper: shape an "edit-mode" input cell. Pre-filled with the current
+// target; empty / 0 means "no target". Uses data attributes so we can
+// serialize all inputs in one pass when the user hits Save.
+function qstatsEditCell(dt, day, cat, booked, target, slot, region) {
+    const val = (parseInt(target) || 0) === 0 ? '' : String(parseInt(target));
+    const safeAttrs =
+        `data-dt="${qstatsEscape(dt)}" ` +
+        `data-day="${qstatsEscape(day)}" ` +
+        `data-cat="${qstatsEscape(cat)}" ` +
+        `data-slot="${qstatsEscape(slot || '')}" ` +
+        `data-region="${qstatsEscape(region || '')}"`;
+    return `
+        <div style="display:flex; flex-direction:column; align-items:center; gap:2px;">
+            <input type="number" min="0" step="1" class="qstats-target-input" ${safeAttrs}
+                   value="${qstatsEscape(val)}" placeholder="-">
+            <span style="font-size:9px; color:#9ca3af;">booked ${parseInt(booked) || 0}</span>
+        </div>
+    `;
+}
 
 function qstatsDotColor(dt) {
     const k = String(dt || '').toLowerCase();
@@ -2156,6 +2276,12 @@ function renderQurbaniSummary() {
 }
 
 function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
+    // Targets live on the server response. Falls back to empty maps if the
+    // migration hasn't been run yet (backend returns {} in that case).
+    const allTargets = ((qStatsData && qStatsData.targets) || {}).summary || {};
+    const byDayCatTarget = allTargets[deliveryType] || {};
+    const isEditing = qStatsSummaryEditing.has(deliveryType);
+
     // Compute row / col totals and grand total.
     const colTotals = {};
     let grandTotal = 0;
@@ -2163,20 +2289,24 @@ function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
         let rowTotal = 0;
         const cells = days.map(day => {
             const qty = ((byDayCat[day] || {})[cat]) || 0;
+            const tgt = ((byDayCatTarget[day] || {})[cat]) || 0;
             rowTotal += qty;
             colTotals[day] = (colTotals[day] || 0) + qty;
-            return qty;
+            return { qty, tgt, day };
         });
         grandTotal += rowTotal;
         return { cat, cells, rowTotal };
     });
 
+    // When editing, we always show the full grid so admins can set targets
+    // even for (day, category) pairs that currently have 0 bookings.
+    const showEmpty = isEditing;
     let tableHtml;
-    if (grandTotal === 0) {
+    if (grandTotal === 0 && !showEmpty) {
         tableHtml = '<div class="qstats-empty">No bookings yet for this type.</div>';
     } else {
         tableHtml = `
-            <table class="qstats-table">
+            <table class="qstats-table" data-card-dt="${qstatsEscape(deliveryType)}">
                 <thead>
                     <tr>
                         <th></th>
@@ -2188,7 +2318,11 @@ function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
                     ${rows.map(r => `
                         <tr>
                             <td class="row-label">${qstatsEscape(r.cat)}</td>
-                            ${r.cells.map(v => `<td class="${v === 0 ? 'zero' : ''}">${v}</td>`).join('')}
+                            ${r.cells.map(c =>
+                                isEditing
+                                    ? `<td>${qstatsEditCell(deliveryType, c.day, r.cat, c.qty, c.tgt, '', '')}</td>`
+                                    : `<td class="${c.qty === 0 && c.tgt === 0 ? 'zero' : ''}">${qstatsFormatCell(c.qty, c.tgt)}</td>`
+                            ).join('')}
                             <td class="total-col">${r.rowTotal}</td>
                         </tr>
                     `).join('')}
@@ -2203,21 +2337,96 @@ function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
     }
 
     const dotColor = qstatsDotColor(deliveryType);
+    // Footer actions change based on mode: view mode offers breakdown/set,
+    // edit mode offers save/cancel. Kept identically structured so the
+    // card height barely shifts when toggling.
+    const dtJs = qstatsEscape(deliveryType).replace(/'/g, "\\'");
+    const actionsHtml = isEditing
+        ? `
+            <button class="qstats-cancelbtn" onclick="qstatsCancelSummaryEdit('${dtJs}')">Cancel</button>
+            <button class="qstats-savebtn"   onclick="qstatsSaveSummaryEdit('${dtJs}')">Save Targets</button>
+        `
+        : `
+            ${isTaimurStrict ? `<button class="qstats-ghostbtn secondary" onclick="qstatsStartSummaryEdit('${dtJs}')">🎯 Set Targets</button>` : ''}
+            <button class="qstats-ghostbtn" onclick="renderQurbaniBreakdown('${dtJs}')" ${grandTotal === 0 ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>View breakdown &rarr;</button>
+        `;
+
     return `
         <div class="qstats-card" data-dt="${qstatsEscape(deliveryType)}">
             <div class="qstats-card-head">
                 <div class="qstats-card-title">
                     <span class="dot" style="background:${dotColor};"></span>
                     <span>${qstatsEscape(deliveryType)}</span>
+                    ${isEditing ? '<span class="qstats-badge" style="background:#fef3c7; color:#92400e;">Editing targets</span>' : ''}
                 </div>
                 <div class="qstats-card-total">Total <b>${grandTotal}</b></div>
             </div>
             ${tableHtml}
             <div class="qstats-card-actions" style="justify-content:flex-end; margin-top:8px;">
-                <button class="qstats-ghostbtn" onclick="renderQurbaniBreakdown('${qstatsEscape(deliveryType).replace(/'/g, "\\'")}')" ${grandTotal === 0 ? 'disabled style=\"opacity:0.5; cursor:not-allowed;\"' : ''}>View breakdown &rarr;</button>
+                ${actionsHtml}
             </div>
         </div>
     `;
+}
+
+function qstatsStartSummaryEdit(deliveryType) {
+    qStatsSummaryEditing.add(deliveryType);
+    renderQurbaniSummary();
+}
+
+function qstatsCancelSummaryEdit(deliveryType) {
+    qStatsSummaryEditing.delete(deliveryType);
+    renderQurbaniSummary();
+}
+
+function qstatsSaveSummaryEdit(deliveryType) {
+    // Grab every input belonging to this delivery-type card. We scoped the
+    // inputs by data-dt so Delivery/Self-Collection cards can be edited and
+    // saved independently.
+    const inputs = document.querySelectorAll(`table[data-card-dt="${CSS.escape(deliveryType)}"] input.qstats-target-input`);
+    const entries = [];
+    inputs.forEach(inp => {
+        const raw = (inp.value || '').trim();
+        const qty = raw === '' ? 0 : Math.max(0, parseInt(raw) || 0);
+        entries.push({
+            delivery_type: inp.getAttribute('data-dt'),
+            day:           inp.getAttribute('data-day'),
+            category:      inp.getAttribute('data-cat'),
+            slot:          inp.getAttribute('data-slot') || '',
+            region:        inp.getAttribute('data-region') || '',
+            target_qty:    qty,
+        });
+    });
+    qstatsPostTargets('summary', entries, () => {
+        qStatsSummaryEditing.delete(deliveryType);
+        loadQurbaniStats();
+    });
+}
+
+// Posts target rows to the backend and refreshes on success. Shared between
+// summary-card and breakdown-mini-table saves so the behaviour stays
+// consistent (toast-free; errors surface via alert).
+function qstatsPostTargets(level, entries, onSuccess) {
+    // Reuse the top-level csrfToken already hydrated from the meta tag.
+    return fetch('/qurbani/api/targets', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': csrfToken,
+            'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({ level, entries }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d || !d.success) throw new Error(d && d.message ? d.message : 'Failed to save targets');
+        if (typeof onSuccess === 'function') onSuccess(d);
+    })
+    .catch(err => {
+        alert((err && err.message) || 'Could not save targets. Please try again.');
+    });
 }
 
 function renderQurbaniBreakdown(deliveryType) {
@@ -2231,6 +2440,10 @@ function renderQurbaniBreakdown(deliveryType) {
     const categories = qStatsData.categories || [];
     const detail = (qStatsData.detail || {})[deliveryType] || {};
     const summaryForType = (qStatsData.summary || {})[deliveryType] || {};
+    // Breakdown-level targets: targets.breakdown[dt][day][cat][slot][region].
+    // Falls back to empty {} when absent.
+    const bdTargetsAll = ((qStatsData && qStatsData.targets) || {}).breakdown || {};
+    const bdTargetsType = bdTargetsAll[deliveryType] || {};
 
     if (loading) loading.style.display = 'none';
     if (summary) summary.style.display = 'none';
@@ -2249,19 +2462,44 @@ function renderQurbaniBreakdown(deliveryType) {
             const regions = ((detail[day] || {})[cat] || {}).regions || [];
             if (slots.length === 0 || regions.length === 0) return;
 
+            const targetsForCell = ((bdTargetsType[day] || {})[cat]) || {};
+            const editKey = `${deliveryType}||${day}||${cat}`;
+            const isEditing = qStatsBreakdownEditingKey === editKey;
+
             const rowsHtml = slots.map(slot => {
                 const cellsHtml = regions.map(region => {
                     const v = ((cellMap[slot] || {})[region]) || 0;
-                    return `<td class="${v === 0 ? 'zero' : ''}">${v}</td>`;
+                    const t = ((targetsForCell[slot] || {})[region]) || 0;
+                    if (isEditing) {
+                        return `<td>${qstatsEditCell(deliveryType, day, cat, v, t, slot, region)}</td>`;
+                    }
+                    return `<td class="${v === 0 && t === 0 ? 'zero' : ''}">${qstatsFormatCell(v, t)}</td>`;
                 }).join('');
                 return `<tr><td class="row-label">${qstatsEscape(slot)}</td>${cellsHtml}</tr>`;
             }).join('');
 
+            // Each mini-table gets its own Set / Save / Cancel toolbar so
+            // admins can focus on one (day × category) at a time.
+            const dtJs  = qstatsEscape(deliveryType).replace(/'/g, "\\'");
+            const dayJs = qstatsEscape(day).replace(/'/g, "\\'");
+            const catJs = qstatsEscape(cat).replace(/'/g, "\\'");
+            const toolbarHtml = isEditing
+                ? `
+                    <button class="qstats-cancelbtn" onclick="qstatsCancelBreakdownEdit()">Cancel</button>
+                    <button class="qstats-savebtn"   onclick="qstatsSaveBreakdownEdit('${dtJs}','${dayJs}','${catJs}')">Save</button>
+                `
+                : (isTaimurStrict
+                    ? `<button class="qstats-ghostbtn secondary" style="font-size:10px; padding:2px 8px;" onclick="qstatsStartBreakdownEdit('${dtJs}','${dayJs}','${catJs}')">🎯 Set Targets</button>`
+                    : '');
+
             miniHtml.push(`
-                <div class="qstats-mini">
+                <div class="qstats-mini" data-edit-key="${qstatsEscape(editKey)}">
                     <div class="qstats-mini-head">
-                        <div class="qstats-mini-title">${qstatsEscape(day)} &middot; ${qstatsEscape(cat)}</div>
-                        <div class="qstats-mini-total">${qtyTotal}</div>
+                        <div class="qstats-mini-title">${qstatsEscape(day)} &middot; ${qstatsEscape(cat)}${isEditing ? ' <span style="color:#d97706; font-weight:600; font-size:10px;">(editing)</span>' : ''}</div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <div class="qstats-mini-total">${qtyTotal}</div>
+                            ${toolbarHtml}
+                        </div>
                     </div>
                     <table>
                         <thead>
@@ -2295,6 +2533,44 @@ function renderQurbaniBreakdown(deliveryType) {
             ${body}
         </div>
     `;
+}
+
+function qstatsStartBreakdownEdit(deliveryType, day, cat) {
+    qStatsBreakdownEditingKey = `${deliveryType}||${day}||${cat}`;
+    renderQurbaniBreakdown(deliveryType);
+}
+
+function qstatsCancelBreakdownEdit() {
+    const prev = qStatsBreakdownEditingKey;
+    qStatsBreakdownEditingKey = null;
+    if (prev) {
+        const dt = prev.split('||')[0];
+        renderQurbaniBreakdown(dt);
+    }
+}
+
+function qstatsSaveBreakdownEdit(deliveryType, day, cat) {
+    const editKey = `${deliveryType}||${day}||${cat}`;
+    const container = document.querySelector(`[data-edit-key="${CSS.escape(editKey)}"]`);
+    if (!container) { qStatsBreakdownEditingKey = null; renderQurbaniBreakdown(deliveryType); return; }
+    const inputs = container.querySelectorAll('input.qstats-target-input');
+    const entries = [];
+    inputs.forEach(inp => {
+        const raw = (inp.value || '').trim();
+        const qty = raw === '' ? 0 : Math.max(0, parseInt(raw) || 0);
+        entries.push({
+            delivery_type: inp.getAttribute('data-dt'),
+            day:           inp.getAttribute('data-day'),
+            category:      inp.getAttribute('data-cat'),
+            slot:          inp.getAttribute('data-slot') || '',
+            region:        inp.getAttribute('data-region') || '',
+            target_qty:    qty,
+        });
+    });
+    qstatsPostTargets('breakdown', entries, () => {
+        qStatsBreakdownEditingKey = null;
+        loadQurbaniStats();
+    });
 }
 
 function toggleQurbaniStats() {

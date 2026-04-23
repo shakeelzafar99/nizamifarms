@@ -281,6 +281,7 @@ Route::middleware(['auth'])->group(function () {
         Route::delete('/api/options/{id}', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'deleteOption'])->name('qurbani-settings.api.delete');
         Route::post('/api/reorder', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'reorderOptions'])->name('qurbani-settings.api.reorder');
         Route::post('/api/shipping-price', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateShippingPrice'])->name('qurbani-settings.api.shipping-price');
+        Route::post('/api/default-payment-method', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateDefaultPaymentMethod'])->name('qurbani-settings.api.default-payment-method');
     });
 
     // Qurbani Web Pages (orders, dashboard)
@@ -289,6 +290,9 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
         Route::get('/api/order-stats', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrderStats'])->name('qurbani.api.order-stats');
+        // Apr-2026: soft-cap target quantities per (delivery_type, day, category)
+        // and optionally per (slot, region) on the booked-summary card.
+        Route::post('/api/targets', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'saveQurbaniTargets'])->name('qurbani.api.save-targets');
         Route::post('/api/toggle', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleQurbaniMode'])->name('qurbani.api.toggle');
         Route::post('/api/toggle-rider-delivered', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleRiderDelivered'])->name('qurbani.api.toggle-rider-delivered');
         Route::post('/api/toggle-delete', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'toggleDeleteEnabled'])->name('qurbani.api.toggle-delete');

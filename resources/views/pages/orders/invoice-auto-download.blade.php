@@ -366,7 +366,8 @@
                 <div>Azizpura Market, G-6/1</div>
                 <div>Islamabad</div>
                 <div>www.nizamifarms.com</div>
-                <div>Ph: 0333-5300605</div>
+                <div>Ph: 0305-5300905</div>
+                <div>0320-0NIZAMI (0649264)</div>
             </div>
         </div>
         
@@ -513,7 +514,7 @@
                 You have trusted us to serve you the best meat in town, thank you!
             </div>
             <div class="footer-contact">
-                Follow us on Facebook & Instagram: @nizamifarms, in case of complaints, please contact: 0333-5300605 or write to<br>
+                Follow us on Facebook & Instagram: @nizamifarms, in case of complaints, please contact: 0305-5300905 or 0320-0NIZAMI (0649264) or write to<br>
                 us at: support@nizamifarms.com
             </div>
         </div>

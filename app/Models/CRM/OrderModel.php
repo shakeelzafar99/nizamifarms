@@ -176,27 +176,53 @@ class OrderModel extends BaseModel
      * place.
      *
      * Returns an associative array suitable for use directly in Blade:
-     *   - show       (bool)   → whether to render the stamp at all
-     *   - bank       (string) → sending bank label ("HBL", "CASH", "—")
-     *   - date       (string) → formatted payment date ("17 Apr 2026")
-     *   - ref        (?string)→ third line (reference/customer name/null-hides)
-     *   - ref_label  (string) → "ref" | "to" depending on ref_mode
+     *   - show            (bool)   → whether to render the stamp at all
+     *   - bank            (string) → sending bank label ("HBL", "CASH", "—")
+     *                                (kept for back-compat; mirrors sending_bank)
+     *   - sending_bank    (string) → customer's sending bank ("HBL", "CASH", "—")
+     *   - receiving_bank  (string) → Nizami Farms receiving bank ("HBL", "", "—")
+     *                                Empty for cash orders.
+     *   - date            (string) → formatted payment date ("17 Apr 2026")
+     *   - ref             (?string)→ third line (reference/customer name/null-hides)
+     *   - ref_label       (string) → "ref" | "to" depending on ref_mode
+     *   - logo_url        (string) → fully-qualified logo URL used as a
+     *                                faint watermark inside the stamp.
      */
     public function getPaidStampData(): array
     {
         // Fully paid only — per product decision (partial stamps not shown).
         if (($this->payment_status ?? '') !== 'paid') {
-            return ['show' => false, 'bank' => '', 'date' => '', 'ref' => null, 'ref_label' => 'ref'];
+            return [
+                'show' => false, 'bank' => '', 'sending_bank' => '',
+                'receiving_bank' => '', 'date' => '', 'ref' => null,
+                'ref_label' => 'ref', 'logo_url' => '',
+            ];
         }
 
         // Latest active payment gives us fallbacks for anything the user
         // didn't explicitly set on the stamp override fields.
         $latest = $this->payments()->first(); // payments() already filters active + DESC by date
 
-        // Sending bank — order override wins; else infer from payment method.
+        // Sending bank (customer's bank) — order override wins;
+        // else infer from payment method ('CASH' for cash, '—' otherwise).
         $sendingBank = $this->paid_stamp_sending_bank;
         if (!$sendingBank) {
             $sendingBank = ($latest && $latest->payment_method === 'cash') ? 'CASH' : '—';
+        }
+
+        // Receiving bank (Nizami Farms' bank) — derived from the latest
+        // payment's receiving_account_id → t_fin_online_receiving_accounts.
+        // Only shown for non-cash payments; cash receipts leave it blank so
+        // the stamp doesn't look crowded.
+        $receivingBank = '';
+        if ($latest && $latest->payment_method !== 'cash' && $latest->receiving_account_id) {
+            $receivingBank = \DB::table('t_fin_online_receiving_accounts')
+                ->where('id', $latest->receiving_account_id)
+                ->value('short_code')
+                ?: \DB::table('t_fin_online_receiving_accounts')
+                    ->where('id', $latest->receiving_account_id)
+                    ->value('name')
+                ?: '';
         }
 
         // Stamp date — order override wins; else latest payment date; else
@@ -222,12 +248,35 @@ class OrderModel extends BaseModel
             $refLabel = 'to';
         } // 'blank' → $ref stays null so the line isn't rendered
 
+        // Absolute URL to the company logo, used as a faint watermark
+        // inside the stamp. Prod stores the file as "nizami-farms-logo.png.jpg"
+        // (not .png), so we probe the same fallback chain the other invoice
+        // templates use and return the first URL whose file actually exists.
+        // Works for the on-screen invoice, html2canvas image render, and
+        // dompdf (remote-enabled). Mobile ignores this and uses its own
+        // bundled asset.
+        $logoCandidates = [
+            'assets/media/logos/nizami-farms-logo.png',
+            'assets/media/logos/nizami-farms-logo.jpg',
+            'assets/media/logos/nizami-farms-logo.png.jpg',
+        ];
+        $logoUrl = asset($logoCandidates[0]); // last-resort URL
+        foreach ($logoCandidates as $candidate) {
+            if (is_file(public_path($candidate))) {
+                $logoUrl = asset($candidate);
+                break;
+            }
+        }
+
         return [
-            'show'      => true,
-            'bank'      => $sendingBank,
-            'date'      => $stampDateFormatted,
-            'ref'       => $ref ?: null,
-            'ref_label' => $refLabel,
+            'show'           => true,
+            'bank'           => $sendingBank,           // back-compat alias
+            'sending_bank'   => $sendingBank,
+            'receiving_bank' => $receivingBank,
+            'date'           => $stampDateFormatted,
+            'ref'            => $ref ?: null,
+            'ref_label'      => $refLabel,
+            'logo_url'       => $logoUrl,
         ];
     }
 
