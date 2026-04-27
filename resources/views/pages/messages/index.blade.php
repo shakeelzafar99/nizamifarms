@@ -103,7 +103,14 @@
 }
 
 /* Filters */
-.wa-filters { display: flex; gap: 6px; margin-top: 10px; }
+/* Apr-2026: filter strip wraps to a second line at narrow widths instead
+   of clipping. We deliberately do NOT use horizontal scrolling here —
+   the strip hosts the Label-filter dropdown which is positioned
+   absolutely beneath its trigger button, and any overflow:auto/hidden
+   on the parent would clip that popover. The management buttons (⚙
+   Qurbani settings, 🤖 Auto-reply) were moved up into the side header
+   so the filter row only needs to hold actual filter pills. */
+.wa-filters { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .wa-filter-btn {
     padding: 5px 14px;
     border-radius: 20px;
@@ -114,6 +121,7 @@
     background: #fff;
     color: #6b7280;
     transition: all 0.15s;
+    white-space: nowrap;
 }
 .wa-filter-btn:hover { background: #f3f4f6; }
 .wa-filter-btn.active {
@@ -282,6 +290,19 @@
     text-overflow: ellipsis;
 }
 .wa-conv-item.unread .wa-conv-name { font-weight: 700; }
+/* Apr-2026: failed-send pin shown next to the customer name. Stays on
+   the inbox row until the next successful outbound clears the flag
+   server-side (see WhatsAppWebController::getConversations). */
+.wa-conv-failed-pin {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 4px;
+    color: #dc2626;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: help;
+}
 .wa-conv-time { font-size: 11px; color: #9ca3af; flex-shrink: 0; margin-left: 8px; }
 .wa-conv-item.unread .wa-conv-time { color: #16a34a; font-weight: 600; }
 .wa-conv-bottom { display: flex; justify-content: space-between; align-items: center; margin-top: 3px; }
@@ -335,6 +356,65 @@
     background: rgba(0,0,0,0.04);
 }
 .wa-chat-hdr-labels:empty { display: none; }
+
+/* Pinned marketing-template indicator (Apr 2026 — see add_marketing_dedup_apr2026.sql).
+   Sits just below the chat header / labels strip. Hidden when empty. */
+.wa-chat-hdr-marketing {
+    padding: 8px 12px;
+    background: #fef3c7;          /* amber-100 */
+    border-top: 1px solid #fde68a;
+    border-bottom: 1px solid #fde68a;
+    color: #78350f;               /* amber-900 */
+    font-size: 12px;
+    line-height: 1.45;
+    display: flex; align-items: flex-start; gap: 6px;
+}
+.wa-chat-hdr-marketing:empty { display: none; }
+.wa-chat-hdr-marketing .wa-mkt-pin { font-size: 14px; line-height: 1; margin-top: 1px; }
+.wa-chat-hdr-marketing .wa-mkt-list {
+    display: flex; flex-wrap: wrap; gap: 4px 10px;
+}
+.wa-chat-hdr-marketing .wa-mkt-item { white-space: nowrap; }
+.wa-chat-hdr-marketing .wa-mkt-item b { font-weight: 600; }
+.wa-chat-hdr-marketing .wa-mkt-item .wa-mkt-when { color: #92400e; }
+
+/* Confirm dialog used for the marketing-template re-send guard. Re-uses the
+   same backdrop behaviour as other inline modals in this view. */
+.wa-mkt-confirm-back {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+}
+.wa-mkt-confirm {
+    background: #fff;
+    border-radius: 10px;
+    width: min(440px, 92vw);
+    box-shadow: 0 20px 40px rgba(0,0,0,0.25);
+    overflow: hidden;
+    font-size: 14px;
+}
+.wa-mkt-confirm h4 {
+    margin: 0; padding: 14px 18px;
+    background: #fef3c7;
+    color: #78350f;
+    font-size: 15px;
+    border-bottom: 1px solid #fde68a;
+}
+.wa-mkt-confirm .wa-mkt-body { padding: 16px 18px; color: #334155; line-height: 1.5; }
+.wa-mkt-confirm .wa-mkt-actions {
+    padding: 12px 18px; display: flex; gap: 8px; justify-content: flex-end;
+    background: #f8fafc; border-top: 1px solid #e2e8f0;
+}
+.wa-mkt-confirm button {
+    border: none; border-radius: 6px; padding: 8px 14px;
+    cursor: pointer; font-weight: 500; font-size: 13px;
+}
+.wa-mkt-confirm .wa-mkt-cancel { background: #e2e8f0; color: #334155; }
+.wa-mkt-confirm .wa-mkt-cancel:hover { background: #cbd5e1; }
+.wa-mkt-confirm .wa-mkt-send-anyway { background: #f59e0b; color: #fff; }
+.wa-mkt-confirm .wa-mkt-send-anyway:hover { background: #d97706; }
+.wa-mkt-confirm .wa-mkt-blocked { background: #94a3b8; color: #fff; cursor: not-allowed; }
 
 /* 3-dot chat-header menu trigger + dropdown. Absolute-positioned
    dropdown so it floats over the chat body instead of getting clipped
@@ -463,7 +543,13 @@
 .wa-label-create-row button:hover { background: #15803d; }
 
 /* Labels filter dropdown on the inbox */
-.wa-label-filter-wrap { position: relative; margin-left: auto; }
+/* Apr-2026: dropped `margin-left: auto`. It originally pushed the Label
+   button (and the now-relocated ⚙/🤖 buttons) to the right edge of the
+   filter row. With those settings buttons moved to the side header, the
+   filter pills can simply sit left-to-right with natural spacing — and
+   when the row gets crowded it now wraps to a second line cleanly
+   instead of having one item awkwardly anchored to the right. */
+.wa-label-filter-wrap { position: relative; }
 .wa-label-filter-btn {
     background: #fff;
     border: 1px solid #e5e7eb;
@@ -1170,7 +1256,19 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 <h2>Messages</h2>
                 <div class="wa-side-hdr-actions">
                     <button class="wa-btn wa-btn-green" id="waNewMsgBtn" onclick="toggleNewMessage()">+ New</button>
+                    {{-- Apr-2026: management buttons moved up here (out of the
+                         filter row below) so they're always reachable even
+                         when the filter strip is full. Templates already
+                         lived here; Qurbani-tab settings and Auto-reply now
+                         join it. Permissions match what the filter row used
+                         to enforce. --}}
                     <button class="wa-btn wa-btn-gray" onclick="openTemplateManager()" title="Manage Templates">⚙</button>
+                    @if(!(($waIsLimited ?? false)))
+                    <button class="wa-btn wa-btn-gray" onclick="openQurbaniSettings()" title="Qurbani tab settings">🐐</button>
+                    @endif
+                    @if(($waCanManageAutoReply ?? false))
+                    <button class="wa-btn wa-btn-gray" onclick="openAutoReplySettings()" title="Auto-reply rules (out-of-hours, day-off, custom)">🤖</button>
+                    @endif
                 </div>
             </div>
             <div class="wa-search-wrap">
@@ -1204,9 +1302,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     <span>@ me</span>
                     <span class="wa-mention-pip" id="waMentionPip" style="display:none;"></span>
                 </button>
-                @if(!(($waIsLimited ?? false)))
-                <button class="wa-btn wa-btn-gray" onclick="openQurbaniSettings()" title="Qurbani tab settings" style="margin-left:auto;padding:3px 10px;font-size:12px;">⚙</button>
-                @endif
+                {{-- Apr-2026: ⚙ Qurbani-settings and 🤖 Auto-reply buttons used
+                     to live here; they were clipped at narrow widths because
+                     the filter row had no overflow handling and adding any
+                     would have clipped the Label-filter popover. They were
+                     moved to .wa-side-hdr-actions above (next to +New /
+                     Templates) where they belong as management actions
+                     rather than filters. --}}
             </div>
             @if(($waIsLimited ?? false))
             <div style="margin-top:8px;padding:7px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#92400e;display:flex;align-items:center;gap:6px;line-height:1.35;" title="Your account has Limited Messages access. Older conversations are hidden.">
@@ -1257,6 +1359,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         <!-- Labels row under the header — shows labels applied to the active
              conversation. Hidden when empty via CSS. -->
         <div class="wa-chat-hdr-labels" id="waChatHdrLabels"></div>
+        <!-- Marketing-template pinned indicator — shows marketing-category
+             templates sent to this customer in the last N days (see
+             add_marketing_dedup_apr2026.sql). Hidden when empty via CSS. -->
+        <div class="wa-chat-hdr-marketing" id="waChatHdrMarketing"></div>
         <div class="wa-chat-msgs" id="waChatMessages">
             <div class="wa-loading">Loading messages...</div>
         </div>
@@ -1370,6 +1476,142 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         </div>
     </div>
 </div>
+
+{{-- ═══ MODAL: WhatsApp Auto-Reply settings (Apr-2026) ═══
+     Two panes: rules list on the left, editor form on the right. The
+     "+ New Rule" button on the list switches the form into create mode.
+     Saving / deleting in the form refreshes the list without a full
+     re-fetch. Master toggle lives at the top so an operator can silence
+     the entire feature in one click during an event. --}}
+@if(($waCanManageAutoReply ?? false))
+<div class="wa-modal-overlay" id="waAutoReplyModal" style="display:none;" onclick="if(event.target===this)closeAutoReplySettings()">
+    <div class="wa-modal" style="width:880px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;">
+        <div class="wa-modal-hdr">
+            <h3>🤖 WhatsApp Auto-Reply</h3>
+            <button class="wa-modal-x" onclick="closeAutoReplySettings()">✕</button>
+        </div>
+        <div class="wa-modal-body" style="padding:0;display:flex;flex-direction:column;flex:1;min-height:0;">
+            {{-- Help strip + master toggle. Help text is intentionally short
+                 (one line) so it doesn't push the rule list off the screen. --}}
+            <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;background:#fafafa;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                <div style="font-size:12px;color:#6b7280;flex:1;min-width:200px;line-height:1.4;">
+                    Replies fire on inbound messages, inside the WhatsApp 24h customer-care window.
+                    No template approval needed — text is sent as a free-form session message.
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:#ecfdf5;border:1px solid #86efac;border-radius:8px;cursor:pointer;font-weight:600;color:#166534;">
+                    <input type="checkbox" id="arMasterToggle" style="transform:scale(1.2);" onchange="toggleAutoReplyMaster(this.checked)" />
+                    <span id="arMasterLabel">Auto-reply: Off</span>
+                </label>
+            </div>
+
+            <div style="display:flex;flex:1;min-height:0;">
+                {{-- LEFT: rule list --}}
+                <div style="width:260px;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;background:#f9fafb;">
+                    <div style="padding:10px;border-bottom:1px solid #e5e7eb;display:flex;gap:6px;">
+                        <button class="wa-btn wa-btn-green" style="flex:1;padding:6px 10px;font-size:12px;" onclick="newAutoReplyRule()">+ New Rule</button>
+                    </div>
+                    <div id="arRuleList" style="flex:1;overflow-y:auto;"></div>
+                </div>
+
+                {{-- RIGHT: editor --}}
+                <div id="arEditorPane" style="flex:1;overflow-y:auto;padding:16px;">
+                    <div id="arEmptyHint" style="text-align:center;color:#9ca3af;padding:60px 20px;font-size:13px;">
+                        Select a rule on the left to edit, or click <strong>+ New Rule</strong> to add one.
+                    </div>
+                    <div id="arForm" style="display:none;">
+                        <input type="hidden" id="arRuleId" value="" />
+
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Rule name</label>
+                            <input type="text" id="arName" maxlength="150" placeholder="e.g. Out of working hours" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                        </div>
+
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Reply message</label>
+                            <textarea id="arMessage" rows="4" maxlength="4000" placeholder="Thanks for your message! We're currently away from our desks. We'll get back to you as soon as we're back online." style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;"></textarea>
+                            <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Sent verbatim. WhatsApp formatting works (*bold*, _italic_, ~strike~).</div>
+                        </div>
+
+                        <div style="display:flex;gap:12px;margin-bottom:12px;">
+                            <div style="flex:1;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Trigger</label>
+                                <select id="arMatchMode" onchange="onArMatchModeChange()" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;background:white;">
+                                    <option value="time_window">Time window (hours/days)</option>
+                                    <option value="specific_dates">Specific dates (e.g. holidays)</option>
+                                    <option value="always">Always (catch-all)</option>
+                                </select>
+                            </div>
+                            <div style="flex:1;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Priority</label>
+                                <input type="number" id="arPriority" min="0" max="9999" value="100" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Lower runs first.</div>
+                            </div>
+                            <div style="flex:1;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Cooldown (hours)</label>
+                                <input type="number" id="arCooldown" min="0" max="168" value="6" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Per customer.</div>
+                            </div>
+                        </div>
+
+                        {{-- Time-window-specific fields --}}
+                        <div id="arTimeWindowFields">
+                            <div style="margin-bottom:12px;">
+                                <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:6px;">Days of week</label>
+                                <div id="arDaysRow" style="display:flex;gap:6px;flex-wrap:wrap;">
+                                    {{-- 0=Sun … 6=Sat to match JS Date.getDay() --}}
+                                    @foreach(['Sun'=>0,'Mon'=>1,'Tue'=>2,'Wed'=>3,'Thu'=>4,'Fri'=>5,'Sat'=>6] as $lab=>$idx)
+                                        <label style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;cursor:pointer;background:white;">
+                                            <input type="checkbox" class="ar-day" data-day="{{ $idx }}" />
+                                            <span>{{ $lab }}</span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                                <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Leave all unchecked = every day.</div>
+                            </div>
+
+                            <div style="display:flex;gap:12px;margin-bottom:12px;">
+                                <div style="flex:1;">
+                                    <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Start time</label>
+                                    <input type="time" id="arStart" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                                </div>
+                                <div style="flex:1;">
+                                    <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">End time</label>
+                                    <input type="time" id="arEnd" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;box-sizing:border-box;" />
+                                </div>
+                            </div>
+                            <div style="font-size:11px;color:#6b7280;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;line-height:1.4;">
+                                <strong>Tip — out-of-hours setup:</strong> set Start to your closing time (e.g. 18:00) and End to opening (e.g. 09:00). Crossing midnight is supported automatically. Leave both blank to fire all-day on the selected weekdays.
+                            </div>
+                        </div>
+
+                        {{-- Specific-dates-specific fields --}}
+                        <div id="arSpecificDatesFields" style="display:none;">
+                            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">Dates (one per line, YYYY-MM-DD)</label>
+                            <textarea id="arSpecificDates" rows="4" placeholder="2026-12-25&#10;2026-12-26" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:monospace;box-sizing:border-box;"></textarea>
+                            <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Fires on these dates only, regardless of time of day. Useful for fixed holidays.</div>
+                        </div>
+
+                        <label style="display:flex;align-items:center;gap:8px;margin-top:12px;padding:8px 12px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;cursor:pointer;">
+                            <input type="checkbox" id="arEnabled" />
+                            <span style="font-weight:600;color:#166534;font-size:13px;">Rule active</span>
+                        </label>
+
+                        <div id="arStatus" style="margin-top:10px;font-size:12px;color:#6b7280;min-height:16px;"></div>
+
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:14px;border-top:1px solid #e5e7eb;">
+                            <button id="arDeleteBtn" onclick="deleteAutoReplyRule()" class="wa-btn" style="padding:7px 14px;background:#fee2e2;border:1px solid #fecaca;color:#b91c1c;font-size:12px;display:none;">🗑 Delete</button>
+                            <div style="display:flex;gap:8px;margin-left:auto;">
+                                <button onclick="cancelAutoReplyEdit()" class="wa-btn wa-btn-gray" style="padding:7px 16px;">Cancel</button>
+                                <button onclick="saveAutoReplyRule()" id="arSaveBtn" class="wa-btn wa-btn-green" style="padding:7px 16px;">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+@endif
 
 <!-- ═══ MODAL: Template Picker ═══ -->
 <div class="wa-modal-overlay" id="waTemplateModal" style="display:none;" onclick="if(event.target===this)closeTemplatePicker()">
@@ -1660,6 +1902,233 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             .catch(() => { btn.disabled = false; status.style.color = '#ef4444'; status.textContent = 'Rescan failed.'; });
     };
 
+    // ═════════════════════════════════════════════════════════════════════
+    // Auto-Reply settings (Apr-2026)
+    //
+    // Rules are loaded once when the modal opens; saving/deleting refreshes
+    // the local cache without refetching. The form is editor-pane-style:
+    // null arRuleId = "create new", otherwise update existing.
+    // ═════════════════════════════════════════════════════════════════════
+
+    let _arRules = [];
+    let _arSelectedId = null;
+
+    window.openAutoReplySettings = function() {
+        const modal = document.getElementById('waAutoReplyModal');
+        if (!modal) return;
+        modal.style.display = 'flex';
+        document.getElementById('arStatus').textContent = '';
+        loadAutoReplyRules();
+    };
+    window.closeAutoReplySettings = function() {
+        const modal = document.getElementById('waAutoReplyModal');
+        if (modal) modal.style.display = 'none';
+    };
+
+    function loadAutoReplyRules() {
+        apiFetch('/messages/auto-reply').then(d => {
+            if (!d.success) {
+                document.getElementById('arRuleList').innerHTML =
+                    '<div style="padding:14px;color:#ef4444;font-size:12px;line-height:1.5;">' +
+                    (d.message || 'Failed to load rules.') + '</div>';
+                return;
+            }
+            _arRules = d.rules || [];
+            const toggle = document.getElementById('arMasterToggle');
+            const label = document.getElementById('arMasterLabel');
+            toggle.checked = !!d.enabled;
+            label.textContent = 'Auto-reply: ' + (d.enabled ? 'On' : 'Off');
+            renderAutoReplyRuleList();
+            // Keep selection if the rule still exists, otherwise clear.
+            if (_arSelectedId && _arRules.find(r => r.id === _arSelectedId)) {
+                selectAutoReplyRule(_arSelectedId);
+            } else {
+                _arSelectedId = null;
+                document.getElementById('arForm').style.display = 'none';
+                document.getElementById('arEmptyHint').style.display = '';
+            }
+        }).catch(() => {
+            document.getElementById('arRuleList').innerHTML =
+                '<div style="padding:14px;color:#ef4444;font-size:12px;">Failed to load rules.</div>';
+        });
+    }
+
+    function renderAutoReplyRuleList() {
+        const host = document.getElementById('arRuleList');
+        if (!_arRules.length) {
+            host.innerHTML = '<div style="padding:18px;color:#9ca3af;font-size:12px;text-align:center;">No rules yet. Click "+ New Rule" above.</div>';
+            return;
+        }
+        const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+        const summary = r => {
+            if (r.match_mode === 'always') return 'Always';
+            if (r.match_mode === 'specific_dates') return (r.specific_dates && r.specific_dates.length) + ' date(s)';
+            const days = r.days_of_week ? r.days_of_week.split(',').map(d => ['Su','Mo','Tu','We','Th','Fr','Sa'][parseInt(d,10)]).join(' ') : 'every day';
+            const t = (r.start_time && r.end_time) ? (r.start_time.slice(0,5) + '–' + r.end_time.slice(0,5)) : 'all day';
+            return days + ' · ' + t;
+        };
+        host.innerHTML = _arRules.map(r => `
+            <div class="ar-row" data-id="${r.id}" onclick="selectAutoReplyRule(${r.id})"
+                 style="padding:10px 12px;border-bottom:1px solid #e5e7eb;cursor:pointer;${_arSelectedId === r.id ? 'background:#dbeafe;' : ''}">
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span style="width:6px;height:6px;border-radius:50%;background:${r.enabled ? '#22c55e' : '#9ca3af'};display:inline-block;"></span>
+                    <div style="font-weight:600;font-size:13px;color:#111827;flex:1;${r.enabled ? '' : 'color:#9ca3af;'}" title="${esc(r.name)}">${esc(r.name)}</div>
+                </div>
+                <div style="font-size:11px;color:#6b7280;margin-top:3px;margin-left:12px;">${esc(summary(r))}</div>
+            </div>
+        `).join('');
+    }
+
+    window.selectAutoReplyRule = function(id) {
+        _arSelectedId = id;
+        const r = _arRules.find(x => x.id === id);
+        if (!r) return;
+        document.getElementById('arEmptyHint').style.display = 'none';
+        document.getElementById('arForm').style.display = '';
+        document.getElementById('arRuleId').value = r.id;
+        document.getElementById('arName').value = r.name || '';
+        document.getElementById('arMessage').value = r.message || '';
+        document.getElementById('arMatchMode').value = r.match_mode || 'time_window';
+        document.getElementById('arPriority').value = r.priority != null ? r.priority : 100;
+        document.getElementById('arCooldown').value = r.cooldown_hours != null ? r.cooldown_hours : 6;
+        document.getElementById('arEnabled').checked = !!r.enabled;
+        const days = r.days_of_week ? r.days_of_week.split(',').map(s => parseInt(s,10)) : [];
+        document.querySelectorAll('.ar-day').forEach(cb => {
+            cb.checked = days.includes(parseInt(cb.dataset.day, 10));
+        });
+        document.getElementById('arStart').value = r.start_time ? r.start_time.slice(0,5) : '';
+        document.getElementById('arEnd').value   = r.end_time   ? r.end_time.slice(0,5)   : '';
+        document.getElementById('arSpecificDates').value = (r.specific_dates || []).join('\n');
+        document.getElementById('arDeleteBtn').style.display = '';
+        onArMatchModeChange();
+        document.getElementById('arStatus').textContent = '';
+        renderAutoReplyRuleList();
+    };
+
+    window.newAutoReplyRule = function() {
+        _arSelectedId = null;
+        document.getElementById('arEmptyHint').style.display = 'none';
+        document.getElementById('arForm').style.display = '';
+        document.getElementById('arRuleId').value = '';
+        document.getElementById('arName').value = '';
+        document.getElementById('arMessage').value = '';
+        document.getElementById('arMatchMode').value = 'time_window';
+        document.getElementById('arPriority').value = 100;
+        document.getElementById('arCooldown').value = 6;
+        document.getElementById('arEnabled').checked = true;
+        document.querySelectorAll('.ar-day').forEach(cb => { cb.checked = false; });
+        document.getElementById('arStart').value = '';
+        document.getElementById('arEnd').value = '';
+        document.getElementById('arSpecificDates').value = '';
+        document.getElementById('arDeleteBtn').style.display = 'none';
+        onArMatchModeChange();
+        document.getElementById('arStatus').textContent = '';
+        renderAutoReplyRuleList();
+    };
+
+    window.cancelAutoReplyEdit = function() {
+        _arSelectedId = null;
+        document.getElementById('arForm').style.display = 'none';
+        document.getElementById('arEmptyHint').style.display = '';
+        renderAutoReplyRuleList();
+    };
+
+    window.onArMatchModeChange = function() {
+        const mode = document.getElementById('arMatchMode').value;
+        document.getElementById('arTimeWindowFields').style.display = (mode === 'time_window') ? '' : 'none';
+        document.getElementById('arSpecificDatesFields').style.display = (mode === 'specific_dates') ? '' : 'none';
+    };
+
+    window.toggleAutoReplyMaster = function(checked) {
+        const label = document.getElementById('arMasterLabel');
+        label.textContent = 'Auto-reply: ' + (checked ? 'On' : 'Off');
+        apiFetch('/messages/auto-reply/toggle', {
+            method: 'POST',
+            body: JSON.stringify({ enabled: checked }),
+        }).then(d => {
+            if (!d.success) {
+                // Revert on failure.
+                document.getElementById('arMasterToggle').checked = !checked;
+                label.textContent = 'Auto-reply: ' + (!checked ? 'On' : 'Off');
+                alert(d.message || 'Failed to update master switch.');
+            }
+        }).catch(() => {
+            document.getElementById('arMasterToggle').checked = !checked;
+            label.textContent = 'Auto-reply: ' + (!checked ? 'On' : 'Off');
+            alert('Failed to update master switch.');
+        });
+    };
+
+    window.saveAutoReplyRule = function() {
+        const id = document.getElementById('arRuleId').value || null;
+        const status = document.getElementById('arStatus');
+        const btn = document.getElementById('arSaveBtn');
+        const name = document.getElementById('arName').value.trim();
+        const message = document.getElementById('arMessage').value.trim();
+        const mode = document.getElementById('arMatchMode').value;
+        if (!name) { status.style.color = '#ef4444'; status.textContent = 'Rule name is required.'; return; }
+        if (!message) { status.style.color = '#ef4444'; status.textContent = 'Reply message is required.'; return; }
+
+        const days = Array.from(document.querySelectorAll('.ar-day'))
+            .filter(cb => cb.checked).map(cb => cb.dataset.day).join(',');
+        const specificDates = document.getElementById('arSpecificDates').value
+            .split(/\r?\n/).map(s => s.trim()).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
+
+        if (mode === 'specific_dates' && specificDates.length === 0) {
+            status.style.color = '#ef4444';
+            status.textContent = 'At least one valid YYYY-MM-DD date is required for "Specific dates" mode.';
+            return;
+        }
+
+        const payload = {
+            name,
+            message,
+            match_mode: mode,
+            enabled: document.getElementById('arEnabled').checked,
+            priority: parseInt(document.getElementById('arPriority').value, 10) || 100,
+            cooldown_hours: parseInt(document.getElementById('arCooldown').value, 10) || 0,
+            days_of_week: mode === 'time_window' ? days : '',
+            start_time: (mode === 'time_window' ? document.getElementById('arStart').value : '') || null,
+            end_time:   (mode === 'time_window' ? document.getElementById('arEnd').value   : '') || null,
+            specific_dates: mode === 'specific_dates' ? specificDates : [],
+        };
+
+        btn.disabled = true; status.style.color = '#6b7280'; status.textContent = 'Saving...';
+        const url = id ? ('/messages/auto-reply/rules/' + id) : '/messages/auto-reply/rules';
+        apiFetch(url, { method: 'POST', body: JSON.stringify(payload) })
+            .then(d => {
+                btn.disabled = false;
+                if (d.success) {
+                    status.style.color = '#16a34a';
+                    status.textContent = 'Saved.';
+                    _arSelectedId = d.id || _arSelectedId;
+                    loadAutoReplyRules();
+                } else {
+                    status.style.color = '#ef4444';
+                    status.textContent = d.message || 'Failed to save.';
+                }
+            })
+            .catch(e => { btn.disabled = false; status.style.color = '#ef4444'; status.textContent = 'Failed to save.'; });
+    };
+
+    window.deleteAutoReplyRule = function() {
+        const id = document.getElementById('arRuleId').value;
+        if (!id) return;
+        if (!confirm('Delete this auto-reply rule? This cannot be undone.')) return;
+        apiFetch('/messages/auto-reply/rules/' + id, { method: 'DELETE' })
+            .then(d => {
+                if (d.success) {
+                    _arSelectedId = null;
+                    document.getElementById('arForm').style.display = 'none';
+                    document.getElementById('arEmptyHint').style.display = '';
+                    loadAutoReplyRules();
+                } else {
+                    alert(d.message || 'Failed to delete.');
+                }
+            })
+            .catch(() => alert('Failed to delete.'));
+    };
+
     function apiFetch(url, opts = {}) {
         opts.headers = { ...(opts.headers || {}), 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json', 'Content-Type': 'application/json' };
         return fetch(url, opts).then(r => r.json());
@@ -1796,6 +2265,15 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             // Only show the goat badge when the Qurbani feature is enabled
             // (master switch in settings drawer); we hide the badge otherwise.
             const qBadge = (waQurbaniEnabled && c.is_qurbani) ? '<span title="Qurbani conversation" style="margin-right:4px;font-size:14px;">🐐</span>' : '';
+            // Apr-2026: failed-send indicator. Surfaced when the latest
+            // outbound message in this conversation (within last 7 days)
+            // came back with status='failed'. Tooltip carries the error
+            // reason so the operator knows what to retry without first
+            // opening the chat. Cleared automatically on next successful
+            // send (server-side computation in getConversations).
+            const failBadge = c.last_send_failed
+                ? `<span class="wa-conv-failed-pin" title="${esc('Last send failed' + (c.last_send_error ? ': ' + c.last_send_error : '') + (c.last_send_template ? ' (template: ' + c.last_send_template + ')' : ''))}">⚠</span>`
+                : '';
             // Chat-search mode: append a snippet of the matched message
             // under the last-message preview, with the query highlighted.
             // We still show the last-message line above so operators keep
@@ -1809,7 +2287,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 <div class="wa-avatar">${(c.customer_name||'?')[0].toUpperCase()}</div>
                 <div class="wa-conv-info">
                     <div class="wa-conv-top">
-                        <div class="wa-conv-name">${qBadge}${esc(c.customer_name || c.wa_phone)}</div>
+                        <div class="wa-conv-name">${qBadge}${failBadge}${esc(c.customer_name || c.wa_phone)}</div>
                         <div class="wa-conv-time">${fmtTime(c.last_message_at)}</div>
                     </div>
                     <div class="wa-conv-bottom">
@@ -1871,7 +2349,30 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             }
         });
 
-        apiFetch('/messages/conversations/' + id + '/mark-read', {method:'POST'});
+        // Strip the unread badge off this row in the DOM right away so
+        // a previously "Mark as Unread"-ed conversation doesn't keep the
+        // dot until the next inbox poll. The server-side implicit
+        // markRead inside getMessages has already cleared the forced
+        // flag; this is just a UI sync.
+        try {
+            const row = document.querySelector('.wa-conv-item[data-id="' + id + '"]');
+            if (row) {
+                row.classList.remove('unread');
+                row.querySelectorAll('.wa-unread-badge').forEach(b => b.remove());
+            }
+        } catch (_) {}
+
+        apiFetch('/messages/conversations/' + id + '/mark-read', {method:'POST'})
+            .then(() => {
+                // Once the server confirms, re-pull the inbox so any other
+                // staleness (last-message preview, label badges, etc.) is
+                // refreshed too. Cheap because loadConversations is the
+                // same call the regular poll makes.
+                if (typeof loadConversations === 'function') {
+                    try { loadConversations(); } catch (_) {}
+                }
+            })
+            .catch(() => {});
 
         if (msgPollTimer) clearInterval(msgPollTimer);
         msgPollTimer = setInterval(() => {
@@ -2161,6 +2662,33 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             if (!val) { alert('Please fill in all template variables.'); return; }
             params.push(val);
         }
+
+        // Marketing-template dedup guard. We always run the pre-flight
+        // check first so a recently-sent marketing template prompts the
+        // operator BEFORE the network round-trip to Meta. The server
+        // double-checks on the actual /send-template call, so this UI
+        // step is purely for UX (it cannot be the only line of defence).
+        runMarketingDedupCheck(t.name).then(check => {
+            if (check && check.recently_sent) {
+                if (check.can_override) {
+                    showMarketingDedupConfirm(check, () => {
+                        // Operator chose Send Anyway → re-send with force=true.
+                        doSendTemplate(t, params, true);
+                    });
+                } else {
+                    // Hard block — show the message and stop.
+                    showMarketingDedupBlocked(check);
+                }
+                return;
+            }
+            doSendTemplate(t, params, false);
+        });
+    };
+
+    // Internal helper that performs the actual /send-template POST and
+    // handles the standard success / failure / 409 fallback. Called from
+    // sendTemplate() above and from the "Send Anyway" path.
+    function doSendTemplate(t, params, force) {
         apiFetch('/messages/send-template', {
             method: 'POST',
             body: JSON.stringify({
@@ -2168,7 +2696,8 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 template_name: t.name,
                 body_params: params,
                 conversation_id: activeConvId || null,
-                customer_id: activeConv.customer_id
+                customer_id: activeConv.customer_id,
+                force: !!force
             })
         }).then(d => {
             if (d.success) {
@@ -2178,6 +2707,11 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     apiFetch('/messages/conversations/' + activeConvId).then(r => {
                         if (r.success) renderMessages(r.messages, r.has_more);
                     });
+                    // Refresh the pinned-marketing strip — the just-sent
+                    // template will become a new entry on it.
+                    if (typeof loadRecentMarketingStrip === 'function') {
+                        loadRecentMarketingStrip(activeConvId);
+                    }
                 } else {
                     setTimeout(() => {
                         apiFetch('/messages/conversations?search=' + encodeURIComponent(activeConv.wa_phone)).then(r => {
@@ -2188,11 +2722,22 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                         });
                     }, 500);
                 }
-            } else {
-                alert(d.message || 'Failed to send template');
+                return;
             }
+            // Server-side dedup guard rejected — surface the same confirm
+            // we'd have shown via the pre-flight (covers the case where
+            // the pre-flight raced or the server rule fired).
+            if (d.reason === 'recent_marketing_send') {
+                if (d.can_override) {
+                    showMarketingDedupConfirm(d, () => doSendTemplate(t, params, true));
+                } else {
+                    showMarketingDedupBlocked(d);
+                }
+                return;
+            }
+            alert(d.message || 'Failed to send template');
         });
-    };
+    }
 
     // ── Auto-resize textarea ──
     document.getElementById('waMessageInput').addEventListener('input', function() {
@@ -3242,6 +3787,160 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
         });
     };
+
+    // =========================================================================
+    // Marketing-template dedup module (Apr 2026 — see add_marketing_dedup_apr2026.sql).
+    //
+    // Three responsibilities, all confined to this block to keep the rest of
+    // the file untouched:
+    //   1. runMarketingDedupCheck(templateName) — pre-flight check called from
+    //      sendTemplate() before the actual send. Returns the same payload
+    //      shape as the server-side 409 so callers can reuse one renderer.
+    //   2. showMarketingDedupConfirm() / showMarketingDedupBlocked() — render
+    //      the inline confirm dialog (override allowed) or the hard-block
+    //      message (override denied by role).
+    //   3. loadRecentMarketingStrip(convId) + renderRecentMarketingStrip() —
+    //      fetch and paint the pinned amber strip in the chat header.
+    // =========================================================================
+
+    function runMarketingDedupCheck(templateName) {
+        if (!activeConv || !templateName) return Promise.resolve(null);
+        return apiFetch('/messages/template-recent-send-check', {
+            method: 'POST',
+            body: JSON.stringify({
+                conversation_id: activeConvId || null,
+                phone:           activeConv.wa_phone || null,
+                template_name:   templateName,
+            })
+        }).then(d => d || null).catch(() => null);
+    }
+
+    function showMarketingDedupConfirm(payload, onConfirm) {
+        // Tear down any previous instance so repeated clicks don't stack.
+        const existing = document.getElementById('waMktConfirmBack');
+        if (existing) existing.remove();
+
+        const wrap = document.createElement('div');
+        wrap.id = 'waMktConfirmBack';
+        wrap.className = 'wa-mkt-confirm-back';
+        wrap.innerHTML = `
+            <div class="wa-mkt-confirm" role="dialog" aria-modal="true">
+                <h4>📌 Marketing template recently sent</h4>
+                <div class="wa-mkt-body">
+                    This customer was sent the marketing template
+                    <b>${esc(payload.template_display_name || payload.template_name || '')}</b>
+                    <span class="wa-mkt-when">${esc(payload.sent_at_human || '')}</span>.
+                    <br><br>
+                    Sending the same marketing template again may annoy the customer
+                    and risk WhatsApp quality penalties. Do you want to send it anyway?
+                </div>
+                <div class="wa-mkt-actions">
+                    <button class="wa-mkt-cancel"      type="button">Cancel</button>
+                    <button class="wa-mkt-send-anyway" type="button">Send Anyway</button>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap);
+
+        const close = () => wrap.remove();
+        wrap.querySelector('.wa-mkt-cancel').addEventListener('click', close);
+        wrap.querySelector('.wa-mkt-send-anyway').addEventListener('click', () => {
+            close();
+            try { onConfirm && onConfirm(); } catch (e) {}
+        });
+        wrap.addEventListener('click', (ev) => { if (ev.target === wrap) close(); });
+    }
+
+    function showMarketingDedupBlocked(payload) {
+        const existing = document.getElementById('waMktConfirmBack');
+        if (existing) existing.remove();
+
+        const wrap = document.createElement('div');
+        wrap.id = 'waMktConfirmBack';
+        wrap.className = 'wa-mkt-confirm-back';
+        wrap.innerHTML = `
+            <div class="wa-mkt-confirm" role="dialog" aria-modal="true">
+                <h4>📌 Marketing template recently sent</h4>
+                <div class="wa-mkt-body">
+                    ${esc(payload.message || 'This marketing template was already sent recently.')}
+                    <br><br>
+                    Re-sending requires the <b>WhatsApp: Override Marketing Dedup</b>
+                    permission. Please ask Taimur or Management to send it.
+                </div>
+                <div class="wa-mkt-actions">
+                    <button class="wa-mkt-cancel" type="button">OK</button>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap);
+        const close = () => wrap.remove();
+        wrap.querySelector('.wa-mkt-cancel').addEventListener('click', close);
+        wrap.addEventListener('click', (ev) => { if (ev.target === wrap) close(); });
+    }
+
+    function renderRecentMarketingStrip(templates) {
+        const wrap = document.getElementById('waChatHdrMarketing');
+        if (!wrap) return;
+        if (!Array.isArray(templates) || templates.length === 0) {
+            wrap.innerHTML = '';
+            return;
+        }
+        const items = templates.map(t => `
+            <span class="wa-mkt-item">
+                <b>${esc(t.template_display_name || t.template_name)}</b>
+                <span class="wa-mkt-when">${esc(t.sent_at_human || '')}</span>
+            </span>
+        `).join('');
+        wrap.innerHTML = `
+            <span class="wa-mkt-pin">📌</span>
+            <div class="wa-mkt-list">
+                <span style="font-weight:600;">Marketing template${templates.length > 1 ? 's' : ''} sent recently:</span>
+                ${items}
+            </div>`;
+    }
+
+    // Cache the latest fetch per conversation so polling doesn't churn
+    // the DOM when nothing changed.
+    let _mktStripFor = null;
+    let _mktStripRaw = null;
+    function loadRecentMarketingStrip(convId) {
+        if (!convId) {
+            _mktStripFor = null;
+            _mktStripRaw = null;
+            renderRecentMarketingStrip([]);
+            return;
+        }
+        apiFetch('/messages/conversations/' + convId + '/recent-marketing-templates')
+            .then(d => {
+                if (!d || !d.success) return;
+                if (!d.feature_enabled) {
+                    _mktStripFor = convId;
+                    _mktStripRaw = '[]';
+                    renderRecentMarketingStrip([]);
+                    return;
+                }
+                const list = Array.isArray(d.templates) ? d.templates : [];
+                const json = JSON.stringify(list);
+                if (_mktStripFor === convId && _mktStripRaw === json) return; // no change
+                _mktStripFor = convId;
+                _mktStripRaw = json;
+                renderRecentMarketingStrip(list);
+            })
+            .catch(() => {});
+    }
+
+    // Wrap openConv (chains over the labels-strip wrap added above) so
+    // opening any conversation refreshes the marketing strip too.
+    const _origOpenConvForMkt = window.openConv;
+    window.openConv = function(id) {
+        renderRecentMarketingStrip([]); // clear while loading
+        _origOpenConvForMkt(id);
+        loadRecentMarketingStrip(id);
+    };
+
+    // Refresh on the same poll cadence as labels — handles the case where
+    // a marketing template gets sent from another tab / device.
+    setInterval(() => {
+        if (activeConvId) loadRecentMarketingStrip(activeConvId);
+    }, POLL_INTERVAL);
 
     // ── Init ──
     loadQurbaniSettings();

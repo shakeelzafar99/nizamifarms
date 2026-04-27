@@ -295,8 +295,38 @@ class WhatsAppController extends Controller
                 }
             }
 
-            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv) {
+            // Failed-send indicator: per conversation, flag the row if its
+            // most recent outbound message (last 7 days) has status='failed'.
+            // Mirrors the web inbox surfaces — operator can spot failures
+            // without opening every chat. Clears automatically once the
+            // next outbound for that conversation lands successfully.
+            $failedByConv = [];
+            if (!empty($conversationIds)) {
+                $cutoff = now()->subDays(7);
+                $latestOutboundIds = DB::table('t_wa_messages')
+                    ->selectRaw('MAX(id) as id, conversation_id')
+                    ->whereIn('conversation_id', $conversationIds)
+                    ->where('direction', 'outbound')
+                    ->where('created_at', '>=', $cutoff)
+                    ->groupBy('conversation_id')
+                    ->pluck('id');
+                if ($latestOutboundIds->isNotEmpty()) {
+                    $failedRows = DB::table('t_wa_messages')
+                        ->whereIn('id', $latestOutboundIds)
+                        ->where('status', 'failed')
+                        ->get(['conversation_id', 'error_message', 'template_name']);
+                    foreach ($failedRows as $fr) {
+                        $failedByConv[$fr->conversation_id] = [
+                            'error_message' => $fr->error_message ?: 'Send failed',
+                            'template_name' => $fr->template_name,
+                        ];
+                    }
+                }
+            }
+
+            $result = $conversations->map(function ($conv) use ($lastMessages, $unreadByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv) {
                 $lastMsg = $lastMessages->get($conv->id);
+                $failed = $failedByConv[$conv->id] ?? null;
                 // Chat-mode extras: ship the matched snippet + count
                 // so the mobile UI can render a highlighted preview.
                 $match = $matchByConvId[$conv->id] ?? null;
@@ -322,6 +352,10 @@ class WhatsAppController extends Controller
                     'labels' => $labelsByConv[$conv->id] ?? [],
                     // Phase 2: unread @mentions targeted at the viewer.
                     'mentions_count' => (int) ($mentionsByConv[$conv->id] ?? 0),
+                    // Apr-2026: failed-send indicator on inbox rows.
+                    'last_send_failed' => $failed !== null,
+                    'last_send_error'  => $failed['error_message'] ?? null,
+                    'last_send_template' => $failed['template_name'] ?? null,
                 ];
             });
 
@@ -448,6 +482,31 @@ class WhatsAppController extends Controller
 
             $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
             $convLabels = $this->labelsForConversation($conversation->id);
+
+            // Defensive implicit mark-as-read on chat-open / poll. The
+            // explicit POST /mark-read runs the same write but the mobile
+            // can race it (e.g. user backs out before the await resolves)
+            // — leaving a previously "Marked Unread" conv stuck unread.
+            // Doing it here too guarantees the per-user read row is up to
+            // date by the time we ship the messages payload back. We
+            // skip the WhatsApp blue-tick receipt API on purpose; that
+            // side-effect stays on the explicit POST so we don't spam it
+            // on every poll tick.
+            if ($user && !$before && Schema::hasTable('t_wa_conversation_reads')) {
+                try {
+                    $payload = ['last_read_at' => now()];
+                    if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+                        $payload['forced_unread_at'] = null;
+                    }
+                    ConversationReadModel::updateOrCreate(
+                        ['user_id' => $user->id, 'conversation_id' => $conversation->id],
+                        $payload
+                    );
+                    ConversationModel::where('id', $conversation->id)->update(['unread_count' => 0]);
+                } catch (\Exception $e) {
+                    Log::debug('getMessages: implicit markRead skipped', ['error' => $e->getMessage()]);
+                }
+            }
 
             return response()->json([
                 'success' => true,
@@ -724,11 +783,27 @@ class WhatsAppController extends Controller
                 'body_params' => 'nullable|array',
                 'customer_id' => 'nullable|integer',
                 'conversation_id' => 'nullable|integer',
+                'force' => 'nullable|boolean',
             ]);
 
             $phone = $this->whatsapp->formatPhone($request->input('phone'));
             $templateName = $request->input('template_name');
             $bodyParams = $request->input('body_params', []);
+            $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
+
+            // Marketing-dedup guard. Returns null if OK to send, or a payload
+            // describing the recent prior send (relayed as 409 Conflict so
+            // the mobile chat UI can show the Alert.alert confirm).
+            $dedup = $this->whatsapp->enforceMarketingDedup(
+                $request->input('conversation_id'),
+                $phone,
+                $templateName,
+                $user,
+                $force
+            );
+            if ($dedup) {
+                return response()->json(['success' => false] + $dedup, 409);
+            }
 
             $response = $this->whatsapp->sendTemplateMessage($phone, $templateName, 'en', $bodyParams);
 
@@ -757,7 +832,8 @@ class WhatsAppController extends Controller
                 $templateDisplay,
                 $user->id,
                 $templateName,
-                $bodyParams
+                $bodyParams,
+                $force && $this->whatsapp->canOverrideMarketingDedup($user)
             );
 
             return response()->json([
@@ -768,6 +844,128 @@ class WhatsAppController extends Controller
 
         } catch (\Exception $e) {
             Log::error('WhatsApp: Failed to send template', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Pre-flight check for the mobile chat-window template picker. Returns
+     * the same payload shape as the 409 blocked response from sendTemplate.
+     * Always returns HTTP 200 so the mobile client doesn't have to parse
+     * status codes — `recently_sent=false` means OK, true means show the
+     * Alert.alert confirm.
+     */
+    public function templateRecentSendCheck(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('view_whatsapp_messages')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $request->validate([
+                'conversation_id' => 'nullable|integer',
+                'phone'           => 'nullable|string',
+                'template_name'   => 'required|string',
+            ]);
+
+            $filter = app(\App\Services\CampaignFilterService::class);
+            $window = $this->whatsapp->getMarketingDedupWindowDays();
+            $isMarketing = $filter->isMarketingTemplate($request->input('template_name'));
+
+            $base = [
+                'success'         => true,
+                'is_marketing'    => $isMarketing,
+                'window_days'     => $window,
+                'recently_sent'   => false,
+                'feature_enabled' => $window > 0,
+            ];
+
+            if ($window <= 0 || !$isMarketing) {
+                return response()->json($base);
+            }
+
+            $conversationId = (int) $request->input('conversation_id', 0);
+            if (!$conversationId && $request->filled('phone')) {
+                $phone = $this->whatsapp->formatPhone($request->input('phone'));
+                $conv = ConversationModel::where('wa_phone', $phone)->first();
+                if ($conv) $conversationId = (int) $conv->id;
+            }
+            if (!$conversationId) {
+                return response()->json($base);
+            }
+
+            $hit = $filter->recentMarketingTemplateSendForConversation(
+                $conversationId,
+                $request->input('template_name'),
+                $window
+            );
+            if (!$hit) {
+                return response()->json($base);
+            }
+
+            $canOverride = $this->whatsapp->canOverrideMarketingDedup($user);
+
+            return response()->json($base + [
+                'recently_sent'         => true,
+                'reason'                => 'recent_marketing_send',
+                'template_name'         => $hit['template_name'],
+                'template_display_name' => $hit['template_display_name'],
+                'sent_at'               => $hit['sent_at'],
+                'sent_at_human'         => $hit['sent_at_human'],
+                'can_override'          => $canOverride,
+                'message'               => $canOverride
+                    ? sprintf(
+                        'This customer was sent the marketing template "%s" %s. Send it again?',
+                        $hit['template_display_name'],
+                        $hit['sent_at_human']
+                      )
+                    : sprintf(
+                        'This customer was sent the marketing template "%s" %s. Re-sending the same marketing template within %d days is not allowed for your role.',
+                        $hit['template_display_name'],
+                        $hit['sent_at_human'],
+                        $hit['window_days']
+                      ),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('WhatsApp: templateRecentSendCheck failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Mobile mirror of WhatsAppWebController::recentMarketingTemplates —
+     * powers the pinned strip in the mobile chat header.
+     */
+    public function recentMarketingTemplates(Request $request, $conversationId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user || !$user->hasMobilePermission('view_whatsapp_messages')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $window = $this->whatsapp->getMarketingDedupWindowDays();
+            if ($window <= 0) {
+                return response()->json([
+                    'success'         => true,
+                    'feature_enabled' => false,
+                    'window_days'     => 0,
+                    'templates'       => [],
+                ]);
+            }
+
+            $templates = app(\App\Services\CampaignFilterService::class)
+                ->recentMarketingTemplatesForConversation((int) $conversationId, $window);
+
+            return response()->json([
+                'success'         => true,
+                'feature_enabled' => true,
+                'window_days'     => $window,
+                'templates'       => $templates,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('WhatsApp: recentMarketingTemplates failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }

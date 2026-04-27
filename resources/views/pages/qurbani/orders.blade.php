@@ -52,6 +52,30 @@
 .qstats-table .total-col { background:#fffbeb; font-weight:700; color:#92400e; }
 .qstats-empty { text-align:center; padding:20px; color:#9ca3af; font-size:12px; font-style:italic; }
 
+/* Apr-2026 redesign: day rows now sit on the Y-axis (rows) and categories
+   live on the X-axis (cols). Each day has expandable nested slot sub-rows
+   beneath. Day rows are clickable (toggle slot expansion); slot rows are
+   indented and rendered in a paler tone so they read as secondary
+   detail beneath the parent day. The chevron on the day row's row-label
+   indicates the expand/collapse state. */
+.qstats-table .day-row .row-label { cursor:pointer; user-select:none; }
+.qstats-table .day-row .row-label:hover { background:#f3f4f6; }
+.qstats-table .day-row .row-label .chev { display:inline-block; width:10px; color:#9ca3af; font-size:10px; margin-right:4px; transition:transform .15s ease; }
+.qstats-table .day-row.expanded .row-label .chev { transform:rotate(90deg); color:#374151; }
+.qstats-table .slot-row td { background:#fafbfc; font-size:11px; color:#4b5563; }
+.qstats-table .slot-row .row-label { background:#fafbfc; font-weight:500; color:#6b7280; padding-left:24px; font-size:11px; }
+.qstats-table .slot-row.zero-row td { color:#d1d5db; }
+.qstats-table .slot-row.zero-row .row-label { color:#9ca3af; }
+
+/* Apr-2026 Phase 2: filter-on-click. Clickable data cells get a faint
+   hover ring so the affordance is discoverable without being noisy.
+   Disabled (zero) cells are not clickable — pointer stays as default
+   so users don't accidentally apply a filter that returns nothing. */
+.qstats-table td.filterable { cursor:pointer; transition:background .12s ease, box-shadow .12s ease; }
+.qstats-table td.filterable:hover { background:#fef3c7; box-shadow: inset 0 0 0 2px #f59e0b; }
+.qstats-table td.filterable.zero { cursor:default; }
+.qstats-table td.filterable.zero:hover { background:inherit; box-shadow:none; }
+
 .qstats-mini-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:10px; }
 .qstats-mini { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; }
 .qstats-mini-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; padding-bottom:6px; border-bottom:1px dashed #e5e7eb; }
@@ -1816,6 +1840,12 @@ function previewQurbaniInvoice() {
     .catch(function(e) { alert('Error: ' + e.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
 }
 
+// Non-blocking Qurbani-invoice send (Apr-2026). Mirrors the regular
+// orders page rewrite — closes the dialog right away, fires the
+// actual send in the background, and surfaces a sticky red banner if
+// it fails so the operator can keep working without the WhatsApp API
+// holding the page hostage. See orders/index.blade.php for the
+// regular-orders equivalent.
 function sendWhatsAppInvoice() {
     var phone = document.getElementById('waInvPhone').value.trim();
     var templateName = document.getElementById('waTemplateName').value.trim();
@@ -1823,34 +1853,27 @@ function sendWhatsAppInvoice() {
     if (!phone) { alert('Please enter a phone number'); return; }
     if (!templateName) { alert('Please enter the template name'); return; }
     var params = bodyParamsStr ? bodyParamsStr.split(',').map(function(s) { return s.trim(); }) : [];
-    var btn = document.getElementById('waSendBtn');
-    var statusEl = document.getElementById('waInvStatus');
-    btn.textContent = 'Sending...'; btn.disabled = true;
-    statusEl.style.display = 'none';
 
-    // If preview image isn't ready yet (e.g. user hit Send before the auto-
-    // preview finished), force a capture first so the header image resolves.
+    // Snapshot dialog state before we tear it down — currentOrderId is
+    // shared across other modals on the page and would have flipped
+    // by the time the fetch settles.
+    var orderIdSnap = qurWaCurrentOrderId;
+    var labelCustomer = (params[0] || '').trim() || phone;
+    var labelOrder    = (params[1] || '').trim() || ('#' + orderIdSnap);
+
+    var overlay = document.getElementById('waInvoiceOverlay');
+    if (overlay) overlay.remove();
+    qurShowSendToast('Sending invoice ' + labelOrder + ' to ' + labelCustomer + '...', 'info');
+
     var previewReady = document.getElementById('waInvPreviewArea')?.style.display === 'block';
     var ensureReady = previewReady
         ? Promise.resolve()
         : new Promise(function(resolve) {
-            fetch('/messages/invoice-image/' + qurWaCurrentOrderId, { headers: {'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json'} })
+            fetch('/messages/invoice-image/' + orderIdSnap, { headers: {'X-CSRF-TOKEN': csrfToken, 'Accept': 'application/json'} })
                 .then(function(r) { return r.json(); })
                 .then(function(d) {
                     if (d && d.success && d.needs_capture) {
-                        return captureQurbaniInvoiceImage(d.invoice_url, qurWaCurrentOrderId).then(function(uploadRes) {
-                            var img = document.getElementById('waInvPreviewImg');
-                            var area = document.getElementById('waInvPreviewArea');
-                            if (img) img.src = uploadRes.image_url;
-                            if (area) area.style.display = 'block';
-                            resolve();
-                        }).catch(function() { resolve(); });
-                    }
-                    if (d && d.success && d.image_url) {
-                        var img = document.getElementById('waInvPreviewImg');
-                        var area = document.getElementById('waInvPreviewArea');
-                        if (img) img.src = d.image_url;
-                        if (area) area.style.display = 'block';
+                        return captureQurbaniInvoiceImage(d.invoice_url, orderIdSnap).then(function() { resolve(); }).catch(function() { resolve(); });
                     }
                     resolve();
                 })
@@ -1861,23 +1884,62 @@ function sendWhatsAppInvoice() {
         return fetch('/messages/send-invoice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
-            body: JSON.stringify({ order_id: qurWaCurrentOrderId, phone: phone, template_name: templateName, body_params: params }),
+            body: JSON.stringify({ order_id: orderIdSnap, phone: phone, template_name: templateName, body_params: params }),
         });
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.success) {
-            statusEl.style.display = 'block'; statusEl.style.color = '#16a34a';
-            statusEl.textContent = 'Invoice sent successfully!';
-            btn.textContent = 'Sent!';
-            setTimeout(function() { var el = document.getElementById('waInvoiceOverlay'); if (el) el.remove(); }, 2000);
+            qurShowSendToast('Invoice ' + labelOrder + ' sent to ' + labelCustomer, 'success');
         } else {
-            statusEl.style.display = 'block'; statusEl.style.color = '#dc2626';
-            statusEl.textContent = data.message || 'Failed to send';
-            btn.textContent = 'Send Invoice'; btn.disabled = false;
+            qurShowSendFailure(labelOrder, labelCustomer, data.message || 'Failed to send', orderIdSnap);
         }
     })
-    .catch(function(e) { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
+    .catch(function(e) {
+        qurShowSendFailure(labelOrder, labelCustomer, e.message || 'Network error', orderIdSnap);
+    });
+}
+
+// Lightweight toast for the Qurbani orders page (no global helper here).
+// Auto-dismisses after 3s. Stacks bottom-right so it doesn't overlap
+// the failure banners pinned to the top-right.
+function qurShowSendToast(msg, kind) {
+    var toast = document.createElement('div');
+    var bg = kind === 'success' ? '#10b981' : (kind === 'info' ? '#0ea5e9' : '#ef4444');
+    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:' + bg + ';color:#fff;padding:12px 18px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:10000;font-size:13px;font-weight:500;max-width:360px;';
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.remove(); }, 3000);
+}
+
+// Sticky failure banner — same contract as the orders/index.blade.php
+// equivalent. One banner per (order, customer) pair; subsequent
+// failures for the same order replace the existing entry rather than
+// stacking duplicates.
+function qurShowSendFailure(orderLabel, customerLabel, reason, orderId) {
+    var host = document.getElementById('qurInvFailureStack');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'qurInvFailureStack';
+        host.style.cssText = 'position:fixed;top:80px;right:20px;z-index:10001;display:flex;flex-direction:column;gap:8px;max-width:380px;';
+        document.body.appendChild(host);
+    }
+    var key = 'fail-' + (orderId || orderLabel);
+    var banner = host.querySelector('[data-key="' + key + '"]');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.dataset.key = key;
+        banner.style.cssText = 'background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;padding:12px 14px;border-radius:8px;box-shadow:0 4px 12px rgba(220,38,38,0.15);font-size:13px;color:#991b1b;line-height:1.4;';
+        host.appendChild(banner);
+    }
+    var safe = function(s) { return String(s).replace(/[&<>"]/g, function(c) { return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); };
+    banner.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
+            '<div style="font-weight:700;color:#991b1b;">⚠ Qurbani invoice send failed</div>' +
+            '<button onclick="this.closest(\'[data-key]\').remove()" style="background:none;border:none;color:#991b1b;cursor:pointer;font-size:18px;line-height:1;padding:0;margin:-4px -4px 0 0;">&times;</button>' +
+        '</div>' +
+        '<div style="margin-top:6px;color:#7f1d1d;">Order <strong>' + safe(orderLabel) + '</strong> · Customer <strong>' + safe(customerLabel) + '</strong></div>' +
+        '<div style="margin-top:6px;color:#7f1d1d;font-size:12px;">' + safe(reason) + '</div>';
 }
 
 function sendQurbaniOtherMessage() {
@@ -2148,6 +2210,169 @@ let qStatsBreakdownEditingKey = null;
 
 const QSTATS_COLLAPSED_KEY = 'qurbani_stats_collapsed_v1';
 
+// Apr-2026: per-card per-day expand state for the new axis-swapped layout.
+// Keyed as "<deliveryType>||<day>". A day is collapsed by default — only
+// the totals row shows — and clicking the day row reveals nested slot
+// sub-rows. Persisted in-memory (resets on full reload) which keeps the
+// initial render compact (the user explicitly asked for the compact view
+// to remain available).
+const qStatsExpandedDays = new Set();
+function qstatsDayKey(dt, day) { return String(dt) + '||' + String(day); }
+window.qstatsToggleDayExpand = function(dt, day) {
+    const k = qstatsDayKey(dt, day);
+    if (qStatsExpandedDays.has(k)) qStatsExpandedDays.delete(k);
+    else qStatsExpandedDays.add(k);
+    renderQurbaniSummary();
+};
+
+// Apr-2026: bulk toggle. "Expand All" reveals every day's slot
+// sub-rows for one delivery-type card; "Collapse All" hides them.
+// We compute the current state by counting how many of the card's
+// days are already expanded — if at least one is collapsed, the
+// button reads "Expand All"; if all are expanded, it reads
+// "Collapse All". This means a single click always lands the user
+// in the obviously-useful next state.
+function qstatsCardDays(deliveryType) {
+    if (!qStatsData) return [];
+    const detailForDt = (qStatsData.detail || {})[deliveryType] || {};
+    const used = Object.keys(detailForDt);
+    if (used.length > 0) return used;
+    // Fallback to the global day list when the card has no data yet
+    // (e.g. Delivery card before any orders exist for that type).
+    return qStatsData.days || [];
+}
+function qstatsCardAllExpanded(deliveryType) {
+    const days = qstatsCardDays(deliveryType);
+    if (days.length === 0) return false;
+    return days.every(d => qStatsExpandedDays.has(qstatsDayKey(deliveryType, d)));
+}
+window.qstatsToggleCardExpandAll = function(deliveryType) {
+    const days = qstatsCardDays(deliveryType);
+    const allExpanded = qstatsCardAllExpanded(deliveryType);
+    days.forEach(d => {
+        const k = qstatsDayKey(deliveryType, d);
+        if (allExpanded) qStatsExpandedDays.delete(k);
+        else qStatsExpandedDays.add(k);
+    });
+    renderQurbaniSummary();
+};
+
+// Apr-2026 Phase 2: clicking a summary cell drives the orders-table
+// filters below. Each cell carries data attributes naming the
+// (deliveryType, day, category, slot) tuple it represents; this
+// helper applies them to the existing filter <select>s in the
+// "Filters Row" panel and triggers loadOrders().
+//
+// Empty / undefined values are treated as "clear that filter".
+// 'Unassigned' values are also treated as clear because:
+//   1. Filter <select>s are populated from t_crm_qurbani_field_options
+//      and don't carry an "Unassigned" option (the COALESCE label
+//      only appears in the *aggregate* SQL, never in the option
+//      table). Setting select.value = 'Unassigned' silently fails
+//      and the dropdown reverts to its previous value, leaving the
+//      user with a stale filter — confusing.
+//   2. Filtering by literal 'Unassigned' on the backend would also
+//      require a special whereNull/whereEmpty branch that doesn't
+//      exist today. Keeping that out of scope for this Phase 2.
+// We surface a small toast in this case so the user understands why
+// nothing happened and can navigate manually if needed.
+function qstatsApplyFilterValue(selId, val) {
+    const sel = document.getElementById(selId);
+    if (!sel) return false;
+    const isUnassigned = (val === 'Unassigned' || val === 'Uncategorized');
+    const target = (val === undefined || val === null || isUnassigned) ? '' : String(val);
+    // Only set if the option exists; otherwise we'd silently mis-filter.
+    if (target !== '') {
+        const opt = Array.prototype.find.call(sel.options, o => o.value === target);
+        if (!opt) return false;
+    }
+    sel.value = target;
+    return true;
+}
+function qstatsToast(msg) {
+    let host = document.getElementById('qstatsToastHost');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'qstatsToastHost';
+        host.style.cssText = 'position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:8px;';
+        document.body.appendChild(host);
+    }
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.cssText = 'background:#1f2937; color:#fff; padding:10px 14px; border-radius:8px; font-size:12px; max-width:340px; box-shadow:0 8px 20px rgba(0,0,0,0.18); opacity:0; transform:translateY(-6px); transition:all .2s ease;';
+    host.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; });
+    setTimeout(() => {
+        t.style.opacity = '0'; t.style.transform = 'translateY(-6px)';
+        setTimeout(() => { try { host.removeChild(t); } catch(_){} }, 250);
+    }, 3500);
+}
+window.qstatsApplyFilter = function(opts) {
+    const o = opts || {};
+    const had = { dt: false, day: false, cat: false, slot: false };
+    const skipped = [];
+
+    if (o.deliveryType !== undefined) {
+        had.dt = qstatsApplyFilterValue('filterDeliveryType', o.deliveryType);
+        if (!had.dt && o.deliveryType && o.deliveryType !== 'Unassigned') skipped.push('delivery type');
+    }
+    if (o.day !== undefined) {
+        had.day = qstatsApplyFilterValue('filterDay', o.day);
+        if (!had.day && o.day && o.day !== 'Unassigned') skipped.push('day');
+    }
+    if (o.category !== undefined) {
+        had.cat = qstatsApplyFilterValue('filterCategory', o.category);
+        if (!had.cat && o.category && o.category !== 'Uncategorized') skipped.push('category');
+        // Also keep the "category cards" tab strip in sync.
+        if (typeof activeCategoryFilter !== 'undefined') {
+            try { activeCategoryFilter = (o.category && o.category !== 'Uncategorized') ? o.category : null; } catch(_){}
+        }
+    }
+    if (o.slot !== undefined) {
+        // Slot dropdown is a dependent filter: its options are pruned
+        // based on the currently-selected day + delivery_type. We have
+        // to rebuild the option list FIRST so the slot value we want
+        // to set is actually in the dropdown.
+        if (typeof updateSlotDropdown === 'function') updateSlotDropdown();
+        had.slot = qstatsApplyFilterValue('filterSlot', o.slot);
+        if (!had.slot && o.slot && o.slot !== 'Unassigned') skipped.push('slot');
+    } else {
+        // Clear slot when day/dt change so we don't carry over an
+        // incompatible slot from a previous click.
+        const slotSel = document.getElementById('filterSlot');
+        if (slotSel) slotSel.value = '';
+        if (typeof updateSlotDropdown === 'function') updateSlotDropdown();
+    }
+
+    // Region / sub-region / payment / qurbani_type / paya are NOT touched
+    // by summary clicks — keeping those independent so the user can stack
+    // a region filter on top of a "Day 1 / Cow Share" cell click.
+
+    // Inform the user when an Unassigned bucket was clicked.
+    const unassignedHits = [];
+    if (o.day === 'Unassigned') unassignedHits.push('day');
+    if (o.deliveryType === 'Unassigned') unassignedHits.push('delivery type');
+    if (o.category === 'Uncategorized') unassignedHits.push('category');
+    if (o.slot === 'Unassigned') unassignedHits.push('slot');
+    if (unassignedHits.length > 0) {
+        qstatsToast('Unassigned ' + unassignedHits.join(', ') + ' cannot be filtered directly. Showing closest match — please assign these line items at the order level.');
+    }
+
+    if (typeof loadOrders === 'function') loadOrders();
+
+    // Smooth-scroll the orders list into view so the user immediately
+    // sees the result of their filter click.
+    setTimeout(() => {
+        const target = document.getElementById('ordersTableContainer')
+            || document.getElementById('ordersTable')
+            || document.getElementById('ordersList')
+            || document.querySelector('#ordersContent .bg-white.border.border-gray-200.rounded-lg');
+        if (target && target.scrollIntoView) {
+            try { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_){}
+        }
+    }, 60);
+};
+
 // Helper: shape the "booked / target" cell content with color hinting.
 // When no target is set we render only the booked count, so cards remain
 // clean on fresh installs that haven't configured caps yet.
@@ -2276,60 +2501,232 @@ function renderQurbaniSummary() {
 }
 
 function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
+    // Apr-2026 layout swap.
+    //   X-axis (columns)        : categories (Cow Share, Goat, Lamb, ...).
+    //   Y-axis (rows)           : days (Day 1, Day 2, ..., Unassigned).
+    //   Nested rows under day   : slots (Morning, Afternoon, ...) with
+    //                             per-(day, slot, category) booked counts.
+    //                             Sourced by aggregating the existing
+    //                             detail[dt][day][cat]['cell'][slot][region]
+    //                             map across regions (since this card is
+    //                             slot-not-region focused — the breakdown
+    //                             view still does region drill-down).
+    //   Always visible          : day rows (with totals) + final Total row,
+    //                             so a collapsed card still reports the
+    //                             headline numbers per day.
+    //   Click on day row label  : toggles its slot sub-rows.
+    //   Targets edit mode       : applies ONLY to the day row cells (i.e.
+    //                             summary-level (dt, day, cat) targets).
+    //                             Slot-level targets are still managed via
+    //                             the breakdown view (unchanged) since
+    //                             those carry an extra region dimension.
+    //
     // Targets live on the server response. Falls back to empty maps if the
     // migration hasn't been run yet (backend returns {} in that case).
     const allTargets = ((qStatsData && qStatsData.targets) || {}).summary || {};
     const byDayCatTarget = allTargets[deliveryType] || {};
     const isEditing = qStatsSummaryEditing.has(deliveryType);
+    // Pre-declare the JS-arg-safe deliveryType string. We need this BEFORE
+    // building the table HTML below because the bottom Total row's click
+    // handlers reference it. (Apr-2026: previously this was declared
+    // further down with the footer actions, which made `dtJs` hit the
+    // const TDZ when the totals row was being constructed and silently
+    // killed the whole summary render.)
+    const dtJs = qstatsEscape(deliveryType).replace(/'/g, "\\'");
 
-    // Compute row / col totals and grand total.
-    const colTotals = {};
-    let grandTotal = 0;
-    const rows = categories.map(cat => {
-        let rowTotal = 0;
-        const cells = days.map(day => {
-            const qty = ((byDayCat[day] || {})[cat]) || 0;
-            const tgt = ((byDayCatTarget[day] || {})[cat]) || 0;
-            rowTotal += qty;
-            colTotals[day] = (colTotals[day] || 0) + qty;
-            return { qty, tgt, day };
+    // Pull the global slot order from the API. We ALSO re-derive the
+    // slots actually used by THIS delivery type so the card only lists
+    // slots that are relevant to it (e.g. if Self-Collection has no
+    // 'Afternoon' bookings, we don't render an empty Afternoon row
+    // under every day on the Self-Collection card).
+    const globalSlots = (qStatsData && Array.isArray(qStatsData.slots)) ? qStatsData.slots : [];
+    const detailForDt = ((qStatsData && qStatsData.detail) || {})[deliveryType] || {};
+    const slotsUsedSet = {};
+    Object.keys(detailForDt).forEach(day => {
+        const catBlobs = detailForDt[day] || {};
+        Object.keys(catBlobs).forEach(cat => {
+            const cellMap = (catBlobs[cat] && catBlobs[cat].cell) || {};
+            Object.keys(cellMap).forEach(slot => { slotsUsedSet[slot] = true; });
         });
-        grandTotal += rowTotal;
-        return { cat, cells, rowTotal };
+    });
+    // Preserve global ordering, fall back to whatever order we discovered.
+    const slotsForCard = globalSlots.filter(s => slotsUsedSet[s])
+        .concat(Object.keys(slotsUsedSet).filter(s => globalSlots.indexOf(s) < 0));
+
+    // byDaySlotCat[day][slot][cat] = qty — built from detail by summing
+    // across regions for the (day, slot, cat) triple.
+    const byDaySlotCat = {};
+    Object.keys(detailForDt).forEach(day => {
+        byDaySlotCat[day] = byDaySlotCat[day] || {};
+        const catBlobs = detailForDt[day] || {};
+        Object.keys(catBlobs).forEach(cat => {
+            const cellMap = (catBlobs[cat] && catBlobs[cat].cell) || {};
+            Object.keys(cellMap).forEach(slot => {
+                const regionMap = cellMap[slot] || {};
+                let q = 0;
+                Object.keys(regionMap).forEach(rg => { q += parseInt(regionMap[rg]) || 0; });
+                if (!byDaySlotCat[day][slot]) byDaySlotCat[day][slot] = {};
+                byDaySlotCat[day][slot][cat] = (byDaySlotCat[day][slot][cat] || 0) + q;
+            });
+        });
     });
 
-    // When editing, we always show the full grid so admins can set targets
-    // even for (day, category) pairs that currently have 0 bookings.
+    // Column totals = total per category (sum across days).
+    const catColTotals = {};
+    categories.forEach(c => { catColTotals[c] = 0; });
+    let grandTotal = 0;
+    const dayRows = days.map(day => {
+        let dayTotal = 0;
+        const catCells = categories.map(cat => {
+            const qty = ((byDayCat[day] || {})[cat]) || 0;
+            const tgt = ((byDayCatTarget[day] || {})[cat]) || 0;
+            dayTotal += qty;
+            catColTotals[cat] = (catColTotals[cat] || 0) + qty;
+            return { qty, tgt, cat };
+        });
+        grandTotal += dayTotal;
+        return { day, catCells, dayTotal };
+    });
+
+    // When editing we always show the full grid so admins can set targets
+    // for (day, category) pairs that currently have 0 bookings. Slot
+    // sub-rows are suppressed during editing — admins are setting
+    // day×category caps, not slot caps.
     const showEmpty = isEditing;
     let tableHtml;
     if (grandTotal === 0 && !showEmpty) {
         tableHtml = '<div class="qstats-empty">No bookings yet for this type.</div>';
     } else {
+        // Build day-row block (day row + optional slot sub-rows).
+        const buildDayBlock = (r) => {
+            const dayKey = qstatsDayKey(deliveryType, r.day);
+            const isExpanded = !isEditing && qStatsExpandedDays.has(dayKey);
+            const dayJsArg = qstatsEscape(deliveryType).replace(/'/g, "\\'");
+            const dayValueJsArg = qstatsEscape(r.day).replace(/'/g, "\\'");
+
+            // Slot sub-rows are only rendered when expanded AND not editing.
+            // They show qty per category for that (day, slot) combo. Cells
+            // are read-only here — slot-level targets stay in the breakdown
+            // view since they carry an extra region dimension.
+            let slotRowsHtml = '';
+            if (isExpanded && slotsForCard.length > 0) {
+                slotRowsHtml = slotsForCard.map(slot => {
+                    const slotCatMap = (byDaySlotCat[r.day] || {})[slot] || {};
+                    let slotTotal = 0;
+                    const slotCells = categories.map(cat => {
+                        const q = parseInt(slotCatMap[cat] || 0) || 0;
+                        slotTotal += q;
+                        return q;
+                    });
+                    if (slotTotal === 0) return '';
+                    const slotJsArg = qstatsEscape(slot).replace(/'/g, "\\'");
+                    const slotCellsHtml = categories.map((cat, idx) => {
+                        const q = slotCells[idx];
+                        const catJsArg = qstatsEscape(cat).replace(/'/g, "\\'");
+                        const cls = q === 0 ? 'zero filterable' : 'filterable';
+                        const click = q === 0
+                            ? ''
+                            : `onclick="qstatsApplyFilter({deliveryType:'${dayJsArg}', day:'${dayValueJsArg}', category:'${catJsArg}', slot:'${slotJsArg}'})"`;
+                        const cellTitle = q === 0
+                            ? ''
+                            : `title="Filter orders to ${qstatsEscape(deliveryType)} · ${qstatsEscape(r.day)} · ${qstatsEscape(slot)} · ${qstatsEscape(cat)}"`;
+                        return `<td class="${cls}" ${click} ${cellTitle}>${q === 0 ? '<span class="zero">0</span>' : q}</td>`;
+                    }).join('');
+                    // Slot-row Total cell → filter by (dt, day, slot), category cleared.
+                    const slotTotalClick = `onclick="qstatsApplyFilter({deliveryType:'${dayJsArg}', day:'${dayValueJsArg}', slot:'${slotJsArg}', category:''})"`;
+                    return `
+                        <tr class="slot-row">
+                            <td class="row-label" title="Slot under ${qstatsEscape(r.day)}">↳ ${qstatsEscape(slot)}</td>
+                            ${slotCellsHtml}
+                            <td class="total-col filterable" ${slotTotalClick} title="Filter orders to ${qstatsEscape(deliveryType)} · ${qstatsEscape(r.day)} · ${qstatsEscape(slot)} (any category)">${slotTotal}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            const chev = isEditing ? '' : `<span class="chev">${isExpanded ? '▾' : '▸'}</span>`;
+            // Day-row label still toggles expansion (unchanged). Cell click
+            // is for filtering — they live in different DOM nodes so there's
+            // no event-handler conflict.
+            const onClickAttr = isEditing
+                ? ''
+                : `onclick="qstatsToggleDayExpand('${dayJsArg}','${dayValueJsArg}')"`;
+
+            // Day-row category cells. In view mode each cell is filterable
+            // (sets dt + day + cat, clears slot). Edit mode keeps the
+            // input rendering — no filter clicks while editing targets.
+            const dayCatCellsHtml = r.catCells.map(c => {
+                if (isEditing) {
+                    return `<td>${qstatsEditCell(deliveryType, r.day, c.cat, c.qty, c.tgt, '', '')}</td>`;
+                }
+                const catJsArg = qstatsEscape(c.cat).replace(/'/g, "\\'");
+                const isZero = c.qty === 0 && c.tgt === 0;
+                const cls = isZero ? 'zero filterable' : 'filterable';
+                const click = isZero
+                    ? ''
+                    : `onclick="qstatsApplyFilter({deliveryType:'${dayJsArg}', day:'${dayValueJsArg}', category:'${catJsArg}', slot:''})"`;
+                const titleAttr = isZero
+                    ? ''
+                    : `title="Filter orders to ${qstatsEscape(deliveryType)} · ${qstatsEscape(r.day)} · ${qstatsEscape(c.cat)}"`;
+                return `<td class="${cls}" ${click} ${titleAttr}>${qstatsFormatCell(c.qty, c.tgt)}</td>`;
+            }).join('');
+
+            // Day-row Total cell → filter by (dt, day) only, category & slot cleared.
+            const dayTotalClick = isEditing
+                ? ''
+                : `onclick="qstatsApplyFilter({deliveryType:'${dayJsArg}', day:'${dayValueJsArg}', category:'', slot:''})"`;
+            const dayTotalCls = isEditing ? 'total-col' : 'total-col filterable';
+
+            return `
+                <tr class="day-row${isExpanded ? ' expanded' : ''}">
+                    <td class="row-label" ${onClickAttr}>${chev}${qstatsEscape(r.day)}</td>
+                    ${dayCatCellsHtml}
+                    <td class="${dayTotalCls}" ${dayTotalClick} ${isEditing ? '' : `title="Filter orders to ${qstatsEscape(deliveryType)} · ${qstatsEscape(r.day)} (any category)"`}>${r.dayTotal}</td>
+                </tr>
+                ${slotRowsHtml}
+            `;
+        };
+
+        // Bottom Total row: clicking a category column total filters
+        // by (dt, category) across all days. Clicking the grand total
+        // clears day/category/slot and just narrows by delivery type.
+        // Edit mode disables filter clicks across the whole card.
+        const totalRowCellsHtml = categories.map(c => {
+            const v = catColTotals[c] || 0;
+            if (isEditing) return `<td>${v}</td>`;
+            const catJsArg = qstatsEscape(c).replace(/'/g, "\\'");
+            const cls = v === 0 ? '' : 'filterable';
+            const click = v === 0
+                ? ''
+                : `onclick="qstatsApplyFilter({deliveryType:'${dtJs}', day:'', category:'${catJsArg}', slot:''})"`;
+            const titleAttr = v === 0
+                ? ''
+                : `title="Filter orders to ${qstatsEscape(deliveryType)} · ${qstatsEscape(c)} (all days)"`;
+            return `<td class="${cls}" ${click} ${titleAttr}>${v}</td>`;
+        }).join('');
+        const grandTotalCls = isEditing ? '' : 'filterable';
+        const grandTotalClick = isEditing
+            ? ''
+            : `onclick="qstatsApplyFilter({deliveryType:'${dtJs}', day:'', category:'', slot:''})"`;
+        const grandTotalTitle = isEditing
+            ? ''
+            : `title="Filter orders to ${qstatsEscape(deliveryType)} (all days, all categories)"`;
+
         tableHtml = `
             <table class="qstats-table" data-card-dt="${qstatsEscape(deliveryType)}">
                 <thead>
                     <tr>
                         <th></th>
-                        ${days.map(d => `<th>${qstatsEscape(d)}</th>`).join('')}
+                        ${categories.map(c => `<th>${qstatsEscape(c)}</th>`).join('')}
                         <th class="total-col">Total</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${rows.map(r => `
-                        <tr>
-                            <td class="row-label">${qstatsEscape(r.cat)}</td>
-                            ${r.cells.map(c =>
-                                isEditing
-                                    ? `<td>${qstatsEditCell(deliveryType, c.day, r.cat, c.qty, c.tgt, '', '')}</td>`
-                                    : `<td class="${c.qty === 0 && c.tgt === 0 ? 'zero' : ''}">${qstatsFormatCell(c.qty, c.tgt)}</td>`
-                            ).join('')}
-                            <td class="total-col">${r.rowTotal}</td>
-                        </tr>
-                    `).join('')}
+                    ${dayRows.map(buildDayBlock).join('')}
                     <tr class="total-row">
                         <td class="row-label">Total</td>
-                        ${days.map(d => `<td>${colTotals[d] || 0}</td>`).join('')}
-                        <td>${grandTotal}</td>
+                        ${totalRowCellsHtml}
+                        <td class="${grandTotalCls}" ${grandTotalClick} ${grandTotalTitle}>${grandTotal}</td>
                     </tr>
                 </tbody>
             </table>
@@ -2339,14 +2736,23 @@ function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
     const dotColor = qstatsDotColor(deliveryType);
     // Footer actions change based on mode: view mode offers breakdown/set,
     // edit mode offers save/cancel. Kept identically structured so the
-    // card height barely shifts when toggling.
-    const dtJs = qstatsEscape(deliveryType).replace(/'/g, "\\'");
+    // card height barely shifts when toggling. (`dtJs` is declared at the
+    // top of this function — needed earlier for the totals row click
+    // handlers; see comment there.)
+    // Expand-all toggle label flips based on current state. Only render
+    // the button when there's at least one slot worth showing — otherwise
+    // it would be a no-op control that just confuses the user.
+    const allExpanded = qstatsCardAllExpanded(deliveryType);
+    const expandBtnHtml = (slotsForCard.length > 0 && grandTotal > 0)
+        ? `<button class="qstats-ghostbtn" onclick="qstatsToggleCardExpandAll('${dtJs}')" title="Show or hide slot rows for every day">${allExpanded ? '▾ Collapse All' : '▸ Expand All'}</button>`
+        : '';
     const actionsHtml = isEditing
         ? `
             <button class="qstats-cancelbtn" onclick="qstatsCancelSummaryEdit('${dtJs}')">Cancel</button>
             <button class="qstats-savebtn"   onclick="qstatsSaveSummaryEdit('${dtJs}')">Save Targets</button>
         `
         : `
+            ${expandBtnHtml}
             ${isTaimurStrict ? `<button class="qstats-ghostbtn secondary" onclick="qstatsStartSummaryEdit('${dtJs}')">🎯 Set Targets</button>` : ''}
             <button class="qstats-ghostbtn" onclick="renderQurbaniBreakdown('${dtJs}')" ${grandTotal === 0 ? 'disabled style="opacity:0.5; cursor:not-allowed;"' : ''}>View breakdown &rarr;</button>
         `;

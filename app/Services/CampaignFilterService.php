@@ -385,13 +385,20 @@ class CampaignFilterService
      * call this so web + mobile stay in lockstep and can't drift on what
      * "already received" actually means.
      */
-    public function customersRecentlySentTemplate(array $customerIds, string $templateName, int $windowDays): array
+    public function customersRecentlySentTemplate(array $customerIds, string $templateName, int $windowDays, bool $marketingOnly = false): array
     {
         $templateName = trim($templateName);
         if ($templateName === '' || $windowDays <= 0 || empty($customerIds)) {
             return [];
         }
         if (!Schema::hasTable('t_wa_messages') || !Schema::hasTable('t_wa_conversations')) {
+            return [];
+        }
+
+        // marketingOnly short-circuits if the named template isn't actually
+        // a marketing-category one — utility/auth templates (invoices,
+        // OTPs, transactional confirmations) must NEVER be deduped.
+        if ($marketingOnly && !$this->isMarketingTemplate($templateName)) {
             return [];
         }
 
@@ -415,5 +422,190 @@ class CampaignFilterService
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * Lightweight lookup: is the given template name flagged as a
+     * marketing-category template in `t_wa_templates`? Cached per request
+     * via a static map so repeated checks during a campaign send don't
+     * re-hit the DB. Returns false if the templates table is missing or
+     * the template isn't found (default to "not marketing" so we never
+     * accidentally dedup utility/auth sends).
+     */
+    public function isMarketingTemplate(string $templateName): bool
+    {
+        $templateName = trim($templateName);
+        if ($templateName === '') return false;
+
+        static $cache = [];
+        if (array_key_exists($templateName, $cache)) {
+            return $cache[$templateName];
+        }
+        if (!Schema::hasTable('t_wa_templates') || !Schema::hasColumn('t_wa_templates', 'category')) {
+            return $cache[$templateName] = false;
+        }
+        $row = DB::table('t_wa_templates')
+            ->select('category')
+            ->where('name', $templateName)
+            ->first();
+        return $cache[$templateName] = ($row && strtolower((string) $row->category) === 'marketing');
+    }
+
+    /**
+     * Same as customersRecentlySentTemplate() but operating on a single
+     * conversation (id) instead of a customer-id set. Returns the most
+     * recent matching outbound row (or null) along with the resolved
+     * template display name. Used by the chat-window pre-flight check
+     * and the pinned-indicator endpoint.
+     *
+     * The conversation→customer fallback chain:
+     *   1. If the conversation has a customer_id, match other outbound
+     *      messages to that same customer (handles the case where the
+     *      customer has multiple conversations on different numbers).
+     *   2. Otherwise fall back to matching by conversation_id directly,
+     *      so the rule still works for unknown/new chats that haven't
+     *      been linked to a customer yet.
+     */
+    public function recentMarketingTemplateSendForConversation(int $conversationId, string $templateName, int $windowDays): ?array
+    {
+        $templateName = trim($templateName);
+        if ($conversationId <= 0 || $templateName === '' || $windowDays <= 0) {
+            return null;
+        }
+        if (!Schema::hasTable('t_wa_messages') || !Schema::hasTable('t_wa_conversations')) {
+            return null;
+        }
+        if (!$this->isMarketingTemplate($templateName)) {
+            // The whole feature is marketing-scoped. If this isn't a
+            // marketing template, there is nothing to warn about.
+            return null;
+        }
+
+        $conv = DB::table('t_wa_conversations')
+            ->select('id', 'customer_id')
+            ->where('id', $conversationId)
+            ->first();
+        if (!$conv) return null;
+
+        $cutoff = \Carbon\Carbon::now()->subDays($windowDays);
+
+        $q = DB::table('t_wa_messages as m')
+            ->where('m.direction', 'outbound')
+            ->where('m.template_name', $templateName)
+            ->where('m.created_at', '>=', $cutoff)
+            ->where(function ($w) {
+                $w->whereNull('m.status')->orWhere('m.status', '!=', 'failed');
+            });
+
+        if ($conv->customer_id) {
+            $q->join('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+              ->where('c.customer_id', $conv->customer_id);
+        } else {
+            $q->where('m.conversation_id', $conversationId);
+        }
+
+        $row = $q->orderBy('m.created_at', 'desc')
+            ->select('m.created_at', 'm.template_name')
+            ->first();
+        if (!$row) return null;
+
+        $sentAt = \Carbon\Carbon::parse($row->created_at);
+        return [
+            'template_name'         => $row->template_name,
+            'template_display_name' => $this->lookupTemplateDisplayName($row->template_name),
+            'sent_at'               => $sentAt->toDateTimeString(),
+            'sent_at_human'         => $sentAt->diffForHumans(),
+            'window_days'           => $windowDays,
+        ];
+    }
+
+    /**
+     * Return ALL distinct marketing templates sent to this conversation's
+     * customer in the configured window, newest-first. Powers the pinned
+     * "marketing template sent recently" strip in the chat header (web
+     * + mobile). Returns an empty array when the feature is disabled
+     * (window=0) or when the conversation hasn't received any marketing
+     * templates lately.
+     */
+    public function recentMarketingTemplatesForConversation(int $conversationId, int $windowDays): array
+    {
+        if ($conversationId <= 0 || $windowDays <= 0) {
+            return [];
+        }
+        if (!Schema::hasTable('t_wa_messages')
+            || !Schema::hasTable('t_wa_conversations')
+            || !Schema::hasTable('t_wa_templates')) {
+            return [];
+        }
+
+        $conv = DB::table('t_wa_conversations')
+            ->select('id', 'customer_id')
+            ->where('id', $conversationId)
+            ->first();
+        if (!$conv) return [];
+
+        $cutoff = \Carbon\Carbon::now()->subDays($windowDays);
+
+        $q = DB::table('t_wa_messages as m')
+            ->join('t_wa_templates as t', 't.name', '=', 'm.template_name')
+            ->where('m.direction', 'outbound')
+            ->whereNotNull('m.template_name')
+            ->where('m.template_name', '!=', '')
+            ->where('m.created_at', '>=', $cutoff)
+            ->where(function ($w) {
+                $w->whereNull('m.status')->orWhere('m.status', '!=', 'failed');
+            })
+            ->whereRaw("LOWER(t.category) = 'marketing'");
+
+        if ($conv->customer_id) {
+            $q->join('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+              ->where('c.customer_id', $conv->customer_id);
+        } else {
+            $q->where('m.conversation_id', $conversationId);
+        }
+
+        // We want one row per template_name with its latest send time.
+        $rows = $q->select(
+                'm.template_name',
+                't.display_name',
+                DB::raw('MAX(m.created_at) as last_sent_at')
+            )
+            ->groupBy('m.template_name', 't.display_name')
+            ->orderByDesc('last_sent_at')
+            ->limit(5) // hard cap so the strip never balloons
+            ->get();
+
+        return $rows->map(function ($r) use ($windowDays) {
+            $sentAt = \Carbon\Carbon::parse($r->last_sent_at);
+            return [
+                'template_name'         => $r->template_name,
+                'template_display_name' => $r->display_name ?: $r->template_name,
+                'sent_at'               => $sentAt->toDateTimeString(),
+                'sent_at_human'         => $sentAt->diffForHumans(),
+                'window_days'           => $windowDays,
+            ];
+        })->all();
+    }
+
+    /**
+     * Look up a template's `display_name` by its `name` (Cloud API key).
+     * Returns the template name itself as a sensible fallback so the UI
+     * never shows a blank label.
+     */
+    public function lookupTemplateDisplayName(string $templateName): string
+    {
+        $templateName = trim($templateName);
+        if ($templateName === '') return '';
+        if (!Schema::hasTable('t_wa_templates')) return $templateName;
+
+        static $cache = [];
+        if (array_key_exists($templateName, $cache)) return $cache[$templateName];
+
+        $row = DB::table('t_wa_templates')
+            ->select('display_name')
+            ->where('name', $templateName)
+            ->first();
+        $display = ($row && !empty($row->display_name)) ? (string) $row->display_name : $templateName;
+        return $cache[$templateName] = $display;
     }
 }

@@ -3081,6 +3081,25 @@ function previewInvoiceWhatsApp() {
     .catch(e => { alert('Error: ' + e.message); btn.textContent = 'Refresh Preview'; btn.disabled = false; });
 }
 
+// Non-blocking invoice send (Apr-2026). The original implementation
+// kept the dialog open with a "Sending..." spinner until the WhatsApp
+// API returned (often 5–15s on a flaky link) which froze the operator
+// in front of a single order. The new flow:
+//
+//   1. Validate the form locally.
+//   2. Capture the customer / order labels from the dialog so the
+//      progress + result toasts can name the affected order without
+//      a follow-up DB lookup.
+//   3. Close the dialog immediately and show an informational toast.
+//   4. Fire the actual send asynchronously. On resolution we either:
+//      - success: small green toast (auto-dismiss).
+//      - failure: a sticky red banner pinned to the top of the page
+//        showing the order #, customer name, and error reason — the
+//        operator dismisses it manually after retrying / acting on it.
+//
+// The fetch promise stays alive for the lifetime of the orders page,
+// so navigating away will cancel an in-flight send (acceptable — this
+// is page-scoped, not a queue).
 function sendInvoiceWhatsApp() {
     const phone = document.getElementById('waInvPhone').value.trim();
     const templateName = document.getElementById('waInvTemplate').value.trim();
@@ -3090,35 +3109,31 @@ function sendInvoiceWhatsApp() {
     if (!templateName) { alert('Please select an invoice template'); return; }
 
     const bodyParams = bodyParamsStr ? bodyParamsStr.split(',').map(s => s.trim()) : [];
-    const btn = document.getElementById('waInvSendBtn');
-    const statusEl = document.getElementById('waInvStatus');
-    btn.textContent = 'Sending...';
-    btn.disabled = true;
-    statusEl.style.display = 'none';
 
-    // If the auto-preview hasn't finished yet (user pressed Send quickly),
-    // ensure the invoice image is captured first so the API has a header to
-    // attach. Mirrors the Qurbani flow to avoid "missing image" errors.
+    // Pull the human-readable labels off the body-params input (the
+    // dialog seeds it as "Customer Name, ORDER#" — see waInvBodyParams
+    // initialisation in the dialog template). Falls back gracefully
+    // when the operator has rewritten the input.
+    const labelCustomer = (bodyParams[0] || '').trim() || phone;
+    const labelOrder    = (bodyParams[1] || '').trim() || ('#' + currentOrderId);
+
+    // Snapshot the order id — currentOrderId is mutated by other
+    // dialogs (view, edit, etc.) so we can't trust it inside the
+    // resolved promise body.
+    const orderIdSnap = currentOrderId;
     const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
+    // Close dialog right away and acknowledge.
+    document.getElementById('waInvoiceDialog')?.remove();
+    showToast(`Sending invoice ${labelOrder} to ${labelCustomer}...`, 'success');
+
     const previewReady = document.getElementById('waInvPreviewArea')?.style.display === 'block';
     const ensureReady = previewReady ? Promise.resolve() : new Promise(function(resolve) {
-        fetch('/messages/invoice-image/' + currentOrderId, {headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'}})
+        fetch('/messages/invoice-image/' + orderIdSnap, {headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'}})
             .then(function(r) { return r.json(); })
             .then(function(d) {
                 if (d && d.success && d.needs_capture) {
-                    return captureInvoiceImageOrders(d.invoice_url, currentOrderId).then(function(uploadRes) {
-                        var img = document.getElementById('waInvPreviewImg');
-                        var area = document.getElementById('waInvPreviewArea');
-                        if (img) img.src = uploadRes.image_url;
-                        if (area) area.style.display = 'block';
-                        resolve();
-                    }).catch(function() { resolve(); });
-                }
-                if (d && d.success && d.image_url) {
-                    var img = document.getElementById('waInvPreviewImg');
-                    var area = document.getElementById('waInvPreviewArea');
-                    if (img) img.src = d.image_url;
-                    if (area) area.style.display = 'block';
+                    return captureInvoiceImageOrders(d.invoice_url, orderIdSnap).then(function() { resolve(); }).catch(function() { resolve(); });
                 }
                 resolve();
             })
@@ -3129,26 +3144,54 @@ function sendInvoiceWhatsApp() {
         return fetch('/messages/send-invoice', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'},
-            body: JSON.stringify({order_id: currentOrderId, phone: phone, template_name: templateName, body_params: bodyParams})
+            body: JSON.stringify({order_id: orderIdSnap, phone: phone, template_name: templateName, body_params: bodyParams})
         });
     })
     .then(r => r.json())
     .then(d => {
         if (d.success) {
-            statusEl.style.display = 'block';
-            statusEl.style.color = '#16a34a';
-            statusEl.textContent = 'Invoice sent successfully!';
-            btn.textContent = 'Sent!';
-            setTimeout(() => { document.getElementById('waInvoiceDialog')?.remove(); }, 2000);
+            showToast(`Invoice ${labelOrder} sent to ${labelCustomer}`, 'success');
         } else {
-            statusEl.style.display = 'block';
-            statusEl.style.color = '#dc2626';
-            statusEl.textContent = d.message || 'Failed to send';
-            btn.textContent = 'Send Invoice';
-            btn.disabled = false;
+            showInvoiceSendFailure(labelOrder, labelCustomer, d.message || 'Failed to send', orderIdSnap);
         }
     })
-    .catch(e => { statusEl.style.display = 'block'; statusEl.style.color = '#dc2626'; statusEl.textContent = e.message; btn.textContent = 'Send Invoice'; btn.disabled = false; });
+    .catch(e => {
+        showInvoiceSendFailure(labelOrder, labelCustomer, e.message || 'Network error', orderIdSnap);
+    });
+}
+
+// Sticky red banner for invoice-send failures — see sendInvoiceWhatsApp.
+// We render at most one banner per (order, customer) pair; if a second
+// failure arrives for the same order, the existing banner is updated
+// instead of stacking. The operator dismisses manually once they've
+// taken action (re-opened the order, retried via the orders table, etc.)
+function showInvoiceSendFailure(orderLabel, customerLabel, reason, orderId) {
+    let host = document.getElementById('waInvFailureStack');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'waInvFailureStack';
+        host.style.cssText = 'position:fixed;top:80px;right:20px;z-index:10001;display:flex;flex-direction:column;gap:8px;max-width:380px;';
+        document.body.appendChild(host);
+    }
+    const key = 'fail-' + (orderId || orderLabel);
+    let banner = host.querySelector('[data-key="' + key + '"]');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.dataset.key = key;
+        banner.style.cssText = 'background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;padding:12px 14px;border-radius:8px;box-shadow:0 4px 12px rgba(220,38,38,0.15);font-size:13px;color:#991b1b;line-height:1.4;';
+        host.appendChild(banner);
+    }
+    const safe = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    banner.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div style="font-weight:700;color:#991b1b;">⚠ Invoice send failed</div>
+            <button onclick="this.closest('[data-key]').remove()" style="background:none;border:none;color:#991b1b;cursor:pointer;font-size:18px;line-height:1;padding:0;margin:-4px -4px 0 0;">&times;</button>
+        </div>
+        <div style="margin-top:6px;color:#7f1d1d;">
+            Order <strong>${safe(orderLabel)}</strong> · Customer <strong>${safe(customerLabel)}</strong>
+        </div>
+        <div style="margin-top:6px;color:#7f1d1d;font-size:12px;">${safe(reason)}</div>
+    `;
 }
 
 // Edit order from view modal

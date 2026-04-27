@@ -493,6 +493,19 @@ class WhatsAppService
                 Log::debug('WhatsApp: Push notification failed (non-fatal)', ['error' => $pushErr->getMessage()]);
             }
 
+            // Auto-reply (Apr-2026). Fires inside the 24h customer-care window
+            // that this very inbound just opened, so it's a free-form text
+            // send (no Meta template approval required). All checks —
+            // feature toggle, time/day/date matching, per-conversation
+            // cooldown — live inside maybeSendAutoReply. Non-fatal on any
+            // error because a failed auto-reply must NEVER prevent the
+            // inbound from being saved or notifying staff.
+            try {
+                $this->maybeSendAutoReply($conversation, $from, $type);
+            } catch (\Exception $autoErr) {
+                Log::debug('WhatsApp: Auto-reply skipped (non-fatal)', ['error' => $autoErr->getMessage()]);
+            }
+
             Log::info('WhatsApp: Incoming message saved', [
                 'conversation_id' => $conversation->id,
                 'from' => $from,
@@ -632,7 +645,7 @@ class WhatsAppService
     /**
      * Save an outbound message to the database after sending
      */
-    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null): ?MessageModel
+    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false): ?MessageModel
     {
         $waMessageId = $apiResponse['messages'][0]['id'] ?? null;
 
@@ -640,7 +653,7 @@ class WhatsAppService
             return null;
         }
 
-        $message = MessageModel::create([
+        $payload = [
             'conversation_id' => $conversationId,
             'wa_message_id' => $waMessageId,
             'direction' => 'outbound',
@@ -651,7 +664,18 @@ class WhatsAppService
             'status' => 'sent',
             'sent_by' => $sentBy,
             'created_at' => now(),
-        ]);
+        ];
+
+        // Audit column added by add_marketing_dedup_apr2026.sql. Only stamp
+        // the flag when (a) the column actually exists in this DB instance
+        // (so we degrade gracefully on databases that haven't run the
+        // migration yet) and (b) the operator actually overrode the rule —
+        // we don't want every outbound row carrying a redundant 0.
+        if ($forcedDedupOverride && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'forced_dedup_override')) {
+            $payload['forced_dedup_override'] = 1;
+        }
+
+        $message = MessageModel::create($payload);
 
         // Update conversation
         ConversationModel::where('id', $conversationId)->update([
@@ -767,6 +791,451 @@ class WhatsAppService
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Returns true when the given user is allowed to bypass the
+     * "marketing template already sent recently" guard via the
+     * "Send Anyway" prompt. Granted via the
+     * `whatsapp_marketing_dedup_override` mobile permission, seeded for
+     * Taimur, Management, and Admin roles by the marketing-dedup migration.
+     *
+     * Without this permission the chat UI shows a hard block message and
+     * the server-side guard rejects the send with HTTP 409 even when
+     * `force=true` is passed (so an old or scripted client cannot bypass
+     * the rule). Always returns false for null users (unauthenticated
+     * web requests).
+     */
+    public function canOverrideMarketingDedup($user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+        try {
+            return method_exists($user, 'hasMobilePermission')
+                && $user->hasMobilePermission('whatsapp_marketing_dedup_override');
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Read the global "marketing template dedup window" (in days) from
+     * `t_fin_config`. Cached for a single request via a static so the
+     * settings lookup doesn't fire on every send-time check.
+     *
+     * Returns 0 when the setting is missing/blank/explicitly zero, which
+     * the caller treats as "feature disabled" (no pre-flight check, no
+     * server-side guard, no pinned indicator).
+     */
+    public function getMarketingDedupWindowDays(): int
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $value = \Illuminate\Support\Facades\DB::table('t_fin_config')
+                ->where('config_key', 'wa_marketing_dedup_window_days')
+                ->value('config_value');
+            $cached = max(0, (int) ($value ?? 0));
+        } catch (\Exception $e) {
+            $cached = 0;
+        }
+        return $cached;
+    }
+
+    // =========================================================================
+    // Auto-Reply (Apr-2026)
+    // =========================================================================
+
+    /**
+     * Read the global auto-reply master switch. Returns false when the
+     * setting row is missing, blank, or "0" — anything else is treated as
+     * enabled. Cached per-request so the inbound webhook doesn't hit the
+     * config table N times when a customer sends a burst of messages.
+     */
+    public function isAutoReplyEnabled(): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $value = \Illuminate\Support\Facades\DB::table('t_fin_config')
+                ->where('config_key', 'wa_auto_reply_enabled')
+                ->value('config_value');
+            $cached = !empty($value) && $value !== '0' && strtolower((string) $value) !== 'false';
+        } catch (\Exception $e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+
+    /**
+     * Decide whether the inbound on this conversation should trigger an
+     * auto-reply, and if so, send + record it.
+     *
+     * The flow is intentionally defensive — every short-circuit is a
+     * deliberate "don't reply" branch documented in line comments below.
+     * We do NOT throw on any failure path; the caller wraps us in try/catch
+     * but we'd rather skip silently and let the inbound message still be
+     * persisted normally.
+     *
+     * @param mixed  $conversation The Eloquent ConversationModel for the inbound.
+     * @param string $from         E164-normalized phone number we send back to.
+     * @param string $type         Inbound message type ('text', 'image', etc.).
+     *                             We don't filter on this today, but it's
+     *                             passed through so future rules can opt out
+     *                             of auto-replying to e.g. 'reaction' pings.
+     */
+    protected function maybeSendAutoReply($conversation, string $from, string $type): void
+    {
+        if (!$this->isAutoReplyEnabled()) {
+            return;
+        }
+
+        // Reactions are conversational noise (👍, ❤). Auto-replying to them
+        // creates an awkward feedback loop and burns Meta session credits
+        // for no value, so we skip them outright.
+        if ($type === 'reaction') {
+            return;
+        }
+
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_wa_auto_replies')) {
+            // Migration hasn't been run yet — fail closed.
+            return;
+        }
+
+        // Match the first enabled rule (lowest priority number wins).
+        $rule = $this->findMatchingAutoReplyRule(now());
+        if (!$rule) {
+            return;
+        }
+
+        // Per-conversation cooldown applies across ALL rules so that if the
+        // operator stacks multiple rules (e.g. weekday-late + weekend-all-day)
+        // the customer never gets pelted with replies. We look at the most
+        // recent outbound auto-reply on this conversation regardless of which
+        // rule generated it.
+        $cooldownHours = (int) ($rule->cooldown_hours ?? 0);
+        if ($cooldownHours > 0 && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'auto_reply_rule_id')) {
+            $cutoff = now()->subHours($cooldownHours);
+            $recent = \Illuminate\Support\Facades\DB::table('t_wa_messages')
+                ->where('conversation_id', $conversation->id)
+                ->whereNotNull('auto_reply_rule_id')
+                ->where('created_at', '>=', $cutoff)
+                ->exists();
+            if ($recent) {
+                Log::debug('WhatsApp auto-reply: cooldown active, skipping', [
+                    'conversation_id' => $conversation->id,
+                    'rule_id'         => $rule->id,
+                    'cooldown_hours'  => $cooldownHours,
+                ]);
+                return;
+            }
+        }
+
+        // Send the WhatsApp text. If the API rejects it (e.g. the 24h window
+        // expired between the inbound landing on our webhook and us replying)
+        // we log and bail — we never store a failed auto-reply row because
+        // the cooldown would then suppress legitimate retries on the next
+        // inbound.
+        try {
+            $resp = $this->sendTextMessage($from, (string) $rule->message);
+        } catch (\Exception $e) {
+            Log::warning('WhatsApp auto-reply: send failed', [
+                'conversation_id' => $conversation->id,
+                'rule_id'         => $rule->id,
+                'error'           => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        if (empty($resp['messages'][0]['id'])) {
+            Log::warning('WhatsApp auto-reply: API returned no message id', [
+                'conversation_id' => $conversation->id,
+                'rule_id'         => $rule->id,
+                'response'        => $resp,
+            ]);
+            return;
+        }
+
+        $waMessageId = $resp['messages'][0]['id'];
+        $payload = [
+            'conversation_id' => $conversation->id,
+            'wa_message_id'   => $waMessageId,
+            'direction'       => 'outbound',
+            'type'            => 'text',
+            'content'         => (string) $rule->message,
+            'status'          => 'sent',
+            'sent_by'         => null, // System send.
+            'created_at'      => now(),
+        ];
+        if (\Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'auto_reply_rule_id')) {
+            $payload['auto_reply_rule_id'] = (int) $rule->id;
+        }
+
+        try {
+            MessageModel::create($payload);
+            // IMPORTANT: only `last_message_at` is touched here. We
+            // deliberately do NOT modify any of the read-state fields:
+            //   - t_wa_conversations.unread_count          (legacy fallback)
+            //   - t_wa_conversation_reads.last_read_at     (per-user read state)
+            //   - t_wa_conversation_reads.forced_unread_at (manual "mark unread")
+            // ...so the customer's inbound message stays unread for the staff
+            // user even after we auto-respond. Otherwise an out-of-hours reply
+            // would silently clear the unread badge and the operator would
+            // miss real customer requests in the morning. WhatsApp's blue
+            // ticks (read receipts) are also untouched — those only fire
+            // from markConversationReadForUser() which is called when a
+            // human actually opens the chat.
+            ConversationModel::where('id', $conversation->id)->update(['last_message_at' => now()]);
+        } catch (\Exception $e) {
+            Log::warning('WhatsApp auto-reply: failed to persist outbound row', [
+                'conversation_id' => $conversation->id,
+                'rule_id'         => $rule->id,
+                'error'           => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Return the single auto-reply rule that should fire at $now, or null.
+     * Public so the settings UI can preview "what would fire right now"
+     * without sending anything.
+     *
+     * Evaluation order:
+     *   1. enabled = 1
+     *   2. ORDER BY priority ASC, id ASC (deterministic on ties)
+     *   3. First rule whose match_mode + criteria accept $now wins.
+     */
+    public function findMatchingAutoReplyRule(\Carbon\Carbon $now)
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('t_wa_auto_replies')) {
+            return null;
+        }
+        $rules = \Illuminate\Support\Facades\DB::table('t_wa_auto_replies')
+            ->where('enabled', 1)
+            ->orderBy('priority', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        foreach ($rules as $rule) {
+            if ($this->autoReplyRuleMatches($rule, $now)) {
+                return $rule;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Test a single rule row against $now. Pulled out so unit tests / the
+     * settings UI can call it directly without standing up the inbox.
+     *
+     * Important: the rule row is an stdClass from a raw DB::table() query,
+     * so we read fields with the array-like ?? null pattern to tolerate
+     * older schemas.
+     */
+    public function autoReplyRuleMatches($rule, \Carbon\Carbon $now): bool
+    {
+        $mode = $rule->match_mode ?? 'time_window';
+
+        if ($mode === 'always') {
+            return true;
+        }
+
+        if ($mode === 'specific_dates') {
+            $list = $this->parseAutoReplyDateList($rule->specific_dates ?? null);
+            return in_array($now->format('Y-m-d'), $list, true);
+        }
+
+        // time_window (default).
+        $days = $this->parseAutoReplyDaysOfWeek($rule->days_of_week ?? null);
+        if (!empty($days) && !in_array((int) $now->dayOfWeek, $days, true)) {
+            return false;
+        }
+
+        $start = $rule->start_time ?? null;
+        $end   = $rule->end_time ?? null;
+
+        // Both null → match every minute of the selected days (acts like a
+        // "whole-day rule, restricted to these weekdays").
+        if (!$start && !$end) {
+            return true;
+        }
+        if (!$start || !$end) {
+            // Half-configured row — treat as non-matching to avoid surprises.
+            return false;
+        }
+
+        $current = $now->format('H:i:s');
+        if ($start <= $end) {
+            // Same-day window, e.g. 09:00 → 18:00 (replies fire OUTSIDE
+            // working hours, so the rule is typically the inverse: 18:00 →
+            // 09:00 next day, which is the cross-midnight branch below).
+            return ($current >= $start && $current < $end);
+        }
+        // Cross-midnight window, e.g. 18:00 → 09:00.
+        return ($current >= $start || $current < $end);
+    }
+
+    /**
+     * Days_of_week is stored as a CSV of 0..6 ints (0=Sun..6=Sat). Parse
+     * tolerantly: blank means "every day", garbage entries are dropped.
+     */
+    protected function parseAutoReplyDaysOfWeek($raw): array
+    {
+        if ($raw === null || $raw === '') {
+            return []; // Empty = no restriction.
+        }
+        $out = [];
+        foreach (explode(',', (string) $raw) as $piece) {
+            $piece = trim($piece);
+            if ($piece === '' || !ctype_digit($piece)) {
+                continue;
+            }
+            $n = (int) $piece;
+            if ($n >= 0 && $n <= 6) {
+                $out[] = $n;
+            }
+        }
+        return array_values(array_unique($out));
+    }
+
+    /**
+     * Specific_dates is stored as a JSON array of YYYY-MM-DD strings. Parse
+     * tolerantly: invalid JSON → empty list (no match) so a typo in the
+     * settings UI never blocks all auto-replies.
+     */
+    protected function parseAutoReplyDateList($raw): array
+    {
+        if ($raw === null || $raw === '') {
+            return [];
+        }
+        $decoded = json_decode((string) $raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+        $out = [];
+        foreach ($decoded as $d) {
+            if (!is_string($d)) {
+                continue;
+            }
+            $d = trim($d);
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+                $out[] = $d;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Server-side guard for the "marketing template already sent recently"
+     * rule. Called from every outbound-template entry point (web + mobile)
+     * BEFORE the actual send, so an old client or scripted request cannot
+     * bypass the dedup by simply not running the pre-flight UI check.
+     *
+     * Returns:
+     *   - null  → OK to send (template is utility/auth, feature disabled,
+     *             no recent send found, OR override granted to the user).
+     *   - array → block / require explicit confirmation. The caller should
+     *             return HTTP 409 with this payload as the JSON body so
+     *             the chat UI can show the confirm dialog.
+     *
+     * Override semantics:
+     *   - $force = true  AND user has whatsapp_marketing_dedup_override →
+     *              recorded as override on the outbound row, send proceeds.
+     *   - $force = true  but user lacks the permission → still blocked
+     *              (the UI hides the "Send Anyway" button for these users
+     *              but we double-guard server-side).
+     *   - $force = false AND there is a recent send → blocked with the
+     *              UI confirm payload.
+     *
+     * @param int|null    $conversationId The conversation we're sending into.
+     *                                    May be null when the caller only
+     *                                    has a phone number (e.g. one-off
+     *                                    sendInvoice flows); we'll resolve
+     *                                    or create the conversation first.
+     * @param string|null $phone          Used as a fallback to resolve the
+     *                                    conversation when $conversationId
+     *                                    is null. Already E164-formatted.
+     * @param string      $templateName   Cloud API template key, NOT the
+     *                                    display name.
+     * @param mixed       $user           The auth user. May be null for
+     *                                    unauthenticated requests, in
+     *                                    which case override is impossible.
+     * @param bool        $force          User explicitly chose Send Anyway.
+     */
+    public function enforceMarketingDedup(?int $conversationId, ?string $phone, string $templateName, $user, bool $force): ?array
+    {
+        $windowDays = $this->getMarketingDedupWindowDays();
+        if ($windowDays <= 0) {
+            return null; // Feature disabled globally.
+        }
+
+        $filter = app(\App\Services\CampaignFilterService::class);
+        if (!$filter->isMarketingTemplate($templateName)) {
+            return null; // Utility / auth templates are never deduped.
+        }
+
+        // Resolve the conversation if the caller only had a phone.
+        if ((!$conversationId || $conversationId <= 0) && $phone) {
+            try {
+                $conv = $this->findOrCreateConversation($phone);
+                if ($conv) {
+                    $conversationId = (int) $conv->id;
+                }
+            } catch (\Exception $e) {
+                // If we can't resolve a conversation we can't dedup, so
+                // fall through and let the send proceed — better to ship
+                // a possibly-duplicate marketing template than to lose
+                // the send entirely on a transient lookup failure.
+                return null;
+            }
+        }
+        if (!$conversationId || $conversationId <= 0) {
+            return null;
+        }
+
+        $hit = $filter->recentMarketingTemplateSendForConversation(
+            (int) $conversationId,
+            $templateName,
+            $windowDays
+        );
+        if (!$hit) {
+            return null; // No recent matching send.
+        }
+
+        // Recent send found. Decide between block and override.
+        $canOverride = $this->canOverrideMarketingDedup($user);
+
+        if ($force && $canOverride) {
+            return null; // Authorised override — let the send proceed.
+        }
+
+        return [
+            'blocked'               => true,
+            'reason'                => 'recent_marketing_send',
+            'template_name'         => $hit['template_name'],
+            'template_display_name' => $hit['template_display_name'],
+            'sent_at'               => $hit['sent_at'],
+            'sent_at_human'         => $hit['sent_at_human'],
+            'window_days'           => $hit['window_days'],
+            'can_override'          => $canOverride,
+            'message'               => $canOverride
+                ? sprintf(
+                    'This customer was sent the marketing template "%s" %s. Send it again?',
+                    $hit['template_display_name'],
+                    $hit['sent_at_human']
+                  )
+                : sprintf(
+                    'This customer was sent the marketing template "%s" %s. Re-sending the same marketing template within %d days is not allowed for your role.',
+                    $hit['template_display_name'],
+                    $hit['sent_at_human'],
+                    $hit['window_days']
+                  ),
+        ];
     }
 
     /**

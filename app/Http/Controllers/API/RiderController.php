@@ -17465,14 +17465,27 @@ class RiderController extends Controller
                     : \App\Models\FIN\ConfigModel::getOnlineBankAccount();
                 if (!$toAccount) throw new \Exception("Online account not configured");
                 $mode = LedgerModel::MODE_ONLINE;
-                $invoiceCategory = \App\Models\Request\RequestCategoryModel::getByCode('invoice_approval');
-                $approvalStatus = LedgerModel::STATUS_APPROVED;
-                if ($invoiceCategory) {
-                    $config = $invoiceCategory->approvalConfig;
-                    if ($config && $config->canAutoApprove($amount)) {
-                        $approvalStatus = LedgerModel::STATUS_APPROVED;
-                    } elseif ($invoiceCategory->requiresLevel1()) {
-                        $approvalStatus = LedgerModel::STATUS_PENDING_L1;
+
+                // Apr-2026: Qurbani online payments entered by Taimur /
+                // Management / Admin skip the L1+L2 approval queue entirely.
+                // The web equivalent (OrderController::addQurbaniPayment)
+                // already auto-approves for everyone who can use that screen,
+                // and we want the mobile path to behave the same way for
+                // trusted roles. Regular riders still flow through the
+                // invoice_approval rules below — i.e. Qurbani online payments
+                // they enter will land in the L1 queue as before.
+                if ($isQurbaniOrder && $isManager) {
+                    $approvalStatus = LedgerModel::STATUS_APPROVED;
+                } else {
+                    $invoiceCategory = \App\Models\Request\RequestCategoryModel::getByCode('invoice_approval');
+                    $approvalStatus = LedgerModel::STATUS_APPROVED;
+                    if ($invoiceCategory) {
+                        $config = $invoiceCategory->approvalConfig;
+                        if ($config && $config->canAutoApprove($amount)) {
+                            $approvalStatus = LedgerModel::STATUS_APPROVED;
+                        } elseif ($invoiceCategory->requiresLevel1()) {
+                            $approvalStatus = LedgerModel::STATUS_PENDING_L1;
+                        }
                     }
                 }
                 $settlementStatus = $approvalStatus === LedgerModel::STATUS_APPROVED ? 'settled' : 'open';

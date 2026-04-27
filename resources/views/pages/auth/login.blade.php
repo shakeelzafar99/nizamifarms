@@ -73,11 +73,32 @@
                class="kt-btn kt-btn-sm kt-btn-light flex items-center justify-center gap-2 w-full"
                download>
                 <i class="ki-filled ki-android text-lg"></i>
-                <span>Download Android App (v9.4.0)</span>
+                <span>Download Android App (v9.5.0)</span>
             </a>
             <p class="text-xs text-muted-foreground mt-2">
                 For riders only
             </p>
+
+            {{-- Temporary Qurbani-only companion APK. Only rendered when the
+                 file actually exists in public/downloads so the main app flow
+                 stays clean for operators who never use the secondary build.
+                 See routes/web.php → /apk/qurbani-latest. --}}
+            @if(file_exists(public_path('downloads/NizamiFarms-Qurbani.apk')))
+                <div class="mt-4 pt-4 border-t border-dashed border-gray-200">
+                    <p class="text-xs text-muted-foreground mb-2">
+                        Qurbani event companion (optional)
+                    </p>
+                    <a href="{{ asset('downloads/NizamiFarms-Qurbani.apk') }}"
+                       class="kt-btn kt-btn-sm kt-btn-outline flex items-center justify-center gap-2 w-full"
+                       download>
+                        <i class="ki-filled ki-android text-lg"></i>
+                        <span>Download Qurbani Companion APK</span>
+                    </a>
+                    <p class="text-[10px] text-muted-foreground mt-2">
+                        Installs side-by-side with the main app. Locked to Qurbani mode.
+                    </p>
+                </div>
+            @endif
         </div>
     </div>
 </div>

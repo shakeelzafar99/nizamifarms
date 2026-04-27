@@ -393,6 +393,25 @@ class QurbaniWebController extends Controller
         $categories = array_values(array_unique(array_keys($catsSet)));
         sort($categories);
 
+        // Apr-2026: also expose the global slot list (sorted by qurbani_slot
+        // display_order, with 'Unassigned' pinned last) so the redesigned
+        // summary card can render nested slot sub-rows under each day in a
+        // stable, predictable order across delivery-type cards. We collect
+        // every slot that actually appears in the rolled-up `detail` map —
+        // this covers any free-text legacy values the team typed into line
+        // items before the field-options table existed.
+        $slotsSet = [];
+        foreach ($detail as $dt => $daysOfDt) {
+            foreach ($daysOfDt as $day => $cats) {
+                foreach ($cats as $cat => $blob) {
+                    foreach (array_keys($blob['cell'] ?? []) as $slot) {
+                        $slotsSet[(string) $slot] = true;
+                    }
+                }
+            }
+        }
+        $slots = $sortByKnown(array_keys($slotsSet), $slotOrder);
+
         // ================================================================
         // Targets (soft caps). Returned as two maps so the frontend can
         // render "booked / target" without extra round-trips:
@@ -426,6 +445,7 @@ class QurbaniWebController extends Controller
             'success' => true,
             'days' => $days,
             'categories' => $categories,
+            'slots' => $slots,
             'summary' => $summary,
             'detail' => $detail,
             'targets' => [

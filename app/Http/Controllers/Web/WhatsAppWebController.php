@@ -50,9 +50,14 @@ class WhatsAppWebController extends Controller
         if (!$access['allowed']) {
             abort(403, 'You do not have permission to view WhatsApp Messages.');
         }
+        $user = auth()->user();
+        $waCanManageAutoReply = $user
+            && method_exists($user, 'hasMobilePermission')
+            && $user->hasMobilePermission('manage_wa_auto_reply');
         return view('pages.messages.index', [
             'waIsLimited' => $access['limited'],
             'waCutoffAt'  => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+            'waCanManageAutoReply' => $waCanManageAutoReply,
         ]);
     }
 
@@ -261,6 +266,37 @@ class WhatsAppWebController extends Controller
             }
         }
 
+        // Failed-send indicator: per conversation, flag the row if its most
+        // recent outbound message (last 7 days) has status='failed'. This
+        // surfaces send-failures on the inbox without forcing the operator
+        // to open the chat to discover them. We deliberately scope to the
+        // *latest* outbound (not "any failed") — once the operator retries
+        // and the next send succeeds, the indicator clears automatically.
+        $failedByConv = [];
+        if (!empty($convIds)) {
+            $cutoff = now()->subDays(7);
+            $latestOutboundIds = DB::table('t_wa_messages')
+                ->selectRaw('MAX(id) as id, conversation_id')
+                ->whereIn('conversation_id', $convIds)
+                ->where('direction', 'outbound')
+                ->where('created_at', '>=', $cutoff)
+                ->groupBy('conversation_id')
+                ->pluck('id');
+            if ($latestOutboundIds->isNotEmpty()) {
+                $failedRows = DB::table('t_wa_messages')
+                    ->whereIn('id', $latestOutboundIds)
+                    ->where('status', 'failed')
+                    ->get(['conversation_id', 'error_message', 'template_name', 'created_at']);
+                foreach ($failedRows as $fr) {
+                    $failedByConv[$fr->conversation_id] = [
+                        'failed_at'      => $fr->created_at,
+                        'error_message'  => $fr->error_message ?: 'Send failed',
+                        'template_name'  => $fr->template_name,
+                    ];
+                }
+            }
+        }
+
         // Labels: one batched query, keyed by conversation_id. Also counts
         // per-conversation unread @mentions for the current viewer (Phase 2).
         $labelsByConv = [];
@@ -292,9 +328,10 @@ class WhatsAppWebController extends Controller
             }
         }
 
-        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv) {
+        $conversations = $convs->map(function ($conv) use ($unreadByConv, $lastMsgByConv, $hasQurbaniCol, $matchByConvId, $labelsByConv, $mentionsByConv, $failedByConv) {
             $lastMsg = $lastMsgByConv[$conv->id] ?? null;
             $unread = $unreadByConv[$conv->id] ?? 0;
+            $failed = $failedByConv[$conv->id] ?? null;
 
             // Chat-mode extras: when this conversation was pulled in by a
             // content search we ship back the matched snippet + how many
@@ -324,6 +361,10 @@ class WhatsAppWebController extends Controller
                 'labels' => $labelsByConv[$conv->id] ?? [],
                 // Phase 2: unread @mentions targeted at the viewer.
                 'mentions_count' => (int) ($mentionsByConv[$conv->id] ?? 0),
+                // Apr-2026: failed-send indicator on inbox rows.
+                'last_send_failed' => $failed !== null,
+                'last_send_error'  => $failed['error_message'] ?? null,
+                'last_send_template' => $failed['template_name'] ?? null,
             ];
         });
 
@@ -450,6 +491,34 @@ class WhatsAppWebController extends Controller
         $hasQurbaniCol = Schema::hasColumn('t_wa_conversations', 'is_qurbani');
         $convLabels = $this->labelsForConversation($conversation->id);
 
+        // Defensive implicit mark-as-read on chat-open / poll. The explicit
+        // POST /mark-read endpoint runs the same write but is fire-and-forget
+        // on the client; if it races the inbox refresh (or fails silently)
+        // a previously "Marked Unread" conversation can stay forced-unread
+        // forever even though the user clearly opened the chat. Doing it
+        // here too is a belt-and-suspenders guarantee — by the time we
+        // return the messages payload the per-user read row is already
+        // updated, so the next inbox load can never report this conv as
+        // unread for the viewing user. We deliberately skip the WhatsApp
+        // blue-tick receipt API here; that side-effect stays on the
+        // explicit POST so we don't double-spend it on every poll.
+        $userId = auth()->id();
+        if ($userId && !$request->before && Schema::hasTable('t_wa_conversation_reads')) {
+            try {
+                $payload = ['last_read_at' => now()];
+                if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+                    $payload['forced_unread_at'] = null;
+                }
+                ConversationReadModel::updateOrCreate(
+                    ['user_id' => $userId, 'conversation_id' => $conversation->id],
+                    $payload
+                );
+                ConversationModel::where('id', $conversation->id)->update(['unread_count' => 0]);
+            } catch (\Exception $e) {
+                Log::debug('getMessages: implicit markRead skipped', ['error' => $e->getMessage()]);
+            }
+        }
+
         return response()->json([
             'success' => true,
             'conversation' => [
@@ -460,7 +529,7 @@ class WhatsAppWebController extends Controller
                 'customer_orders' => $totalOrders,
                 'wa_phone' => $conversation->wa_phone,
                 'status' => $conversation->status,
-                'unread_count' => $conversation->unread_count,
+                'unread_count' => 0,
                 'is_qurbani' => $hasQurbaniCol ? (bool) $conversation->is_qurbani : false,
                 'qurbani_flag_reason' => $hasQurbaniCol ? ($conversation->qurbani_flag_reason ?? null) : null,
                 'session_active' => $conversation->isSessionActive(),
@@ -528,6 +597,21 @@ class WhatsAppWebController extends Controller
         $service = app(WhatsAppService::class);
         $bodyParams = $request->body_params ?? [];
         $phone = $service->formatPhone($request->phone);
+        $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
+
+        // Marketing-dedup guard. Returns null if OK to send, or a payload
+        // describing the recent prior send (which we relay as 409 Conflict
+        // so the chat UI shows the confirm dialog).
+        $dedup = $service->enforceMarketingDedup(
+            $request->conversation_id ? (int) $request->conversation_id : null,
+            $phone,
+            $request->template_name,
+            auth()->user(),
+            $force
+        );
+        if ($dedup) {
+            return response()->json(['success' => false] + $dedup, 409);
+        }
 
         $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams);
 
@@ -548,10 +632,120 @@ class WhatsAppWebController extends Controller
                 "Template: {$request->template_name}" . ($paramText ? " ({$paramText})" : ''),
                 auth()->id(),
                 $request->template_name,
-                $bodyParams
+                $bodyParams,
+                $force && $service->canOverrideMarketingDedup(auth()->user())
             );
         }
         return response()->json(['success' => true]);
+    }
+
+    /**
+     * Pre-flight check for the chat-window template picker. Lets the UI
+     * decide BEFORE the user fills in template variables whether a confirm
+     * dialog should appear. Returns the same payload shape as the 409
+     * blocked response from sendTemplate, so the UI can reuse one renderer.
+     *
+     * Always returns HTTP 200 — `recently_sent=false` means "go ahead",
+     * `recently_sent=true` means "show the confirm".
+     */
+    public function templateRecentSendCheck(Request $request)
+    {
+        $request->validate([
+            'conversation_id' => 'nullable|integer',
+            'phone'           => 'nullable|string',
+            'template_name'   => 'required|string',
+        ]);
+
+        $service = app(WhatsAppService::class);
+        $filter  = app(\App\Services\CampaignFilterService::class);
+        $window  = $service->getMarketingDedupWindowDays();
+        $isMarketing = $filter->isMarketingTemplate($request->template_name);
+
+        $base = [
+            'success'       => true,
+            'is_marketing'  => $isMarketing,
+            'window_days'   => $window,
+            'recently_sent' => false,
+            'feature_enabled' => $window > 0,
+        ];
+
+        if ($window <= 0 || !$isMarketing) {
+            return response()->json($base);
+        }
+
+        // Resolve conversation by id, or by phone as a fallback.
+        $conversationId = $request->conversation_id ? (int) $request->conversation_id : 0;
+        if (!$conversationId && $request->filled('phone')) {
+            $phone = $service->formatPhone($request->phone);
+            $conv = ConversationModel::where('wa_phone', $phone)->first();
+            if ($conv) $conversationId = (int) $conv->id;
+        }
+        if (!$conversationId) {
+            return response()->json($base);
+        }
+
+        $hit = $filter->recentMarketingTemplateSendForConversation(
+            $conversationId,
+            $request->template_name,
+            $window
+        );
+        if (!$hit) {
+            return response()->json($base);
+        }
+
+        $canOverride = $service->canOverrideMarketingDedup(auth()->user());
+
+        return response()->json($base + [
+            'recently_sent'         => true,
+            'reason'                => 'recent_marketing_send',
+            'template_name'         => $hit['template_name'],
+            'template_display_name' => $hit['template_display_name'],
+            'sent_at'               => $hit['sent_at'],
+            'sent_at_human'         => $hit['sent_at_human'],
+            'can_override'          => $canOverride,
+            'message'               => $canOverride
+                ? sprintf(
+                    'This customer was sent the marketing template "%s" %s. Send it again?',
+                    $hit['template_display_name'],
+                    $hit['sent_at_human']
+                  )
+                : sprintf(
+                    'This customer was sent the marketing template "%s" %s. Re-sending the same marketing template within %d days is not allowed for your role.',
+                    $hit['template_display_name'],
+                    $hit['sent_at_human'],
+                    $hit['window_days']
+                  ),
+        ]);
+    }
+
+    /**
+     * Powers the pinned "marketing template sent recently" strip in the
+     * chat header. Returns the marketing-category templates sent to this
+     * conversation's customer in the configured window, newest first.
+     */
+    public function recentMarketingTemplates(Request $request, $conversationId)
+    {
+        $service = app(WhatsAppService::class);
+        $window  = $service->getMarketingDedupWindowDays();
+
+        if ($window <= 0) {
+            return response()->json([
+                'success'         => true,
+                'feature_enabled' => false,
+                'window_days'     => 0,
+                'templates'       => [],
+            ]);
+        }
+
+        $templates = app(\App\Services\CampaignFilterService::class)
+            ->recentMarketingTemplatesForConversation((int) $conversationId, $window);
+
+        return response()->json([
+            'success'         => true,
+            'feature_enabled' => true,
+            'window_days'     => $window,
+            'templates'       => $templates,
+        ]);
     }
 
     public function markRead(Request $request, $conversationId)
@@ -995,6 +1189,182 @@ class WhatsAppWebController extends Controller
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Auto-Reply settings (out-of-hours / day-off / custom rules)
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Permission gate for the auto-reply admin endpoints. We deliberately
+     * 403 instead of 404 so the operator who clicked the gear button gets
+     * a clear "you can't manage these" signal in DevTools — the gear is
+     * already permission-hidden in the UI for the same role check.
+     */
+    protected function requireAutoReplyPermission()
+    {
+        $user = auth()->user();
+        if (!$user || !method_exists($user, 'hasMobilePermission') || !$user->hasMobilePermission('manage_wa_auto_reply')) {
+            abort(403, 'You do not have permission to manage auto-reply settings.');
+        }
+    }
+
+    /**
+     * GET /messages/auto-reply
+     *
+     * Returns the master toggle plus the full ordered rule list. Used to
+     * hydrate the Auto-Reply settings modal. Anyone with manage permission
+     * can read; the regular WhatsApp inbox does not need this payload.
+     */
+    public function getAutoReplySettings()
+    {
+        $this->requireAutoReplyPermission();
+
+        if (!Schema::hasTable('t_wa_auto_replies')) {
+            return response()->json([
+                'success'  => false,
+                'message'  => 'Auto-reply migration has not been applied. Run database/migrations/add_wa_auto_reply_apr2026.sql.',
+            ], 503);
+        }
+
+        $enabled = (new WhatsAppService())->isAutoReplyEnabled();
+        $rules = DB::table('t_wa_auto_replies')
+            ->orderBy('priority', 'asc')
+            ->orderBy('id', 'asc')
+            ->get()
+            ->map(function ($r) {
+                return [
+                    'id'             => (int) $r->id,
+                    'name'           => $r->name,
+                    'message'        => $r->message,
+                    'enabled'        => (int) $r->enabled === 1,
+                    'priority'       => (int) $r->priority,
+                    'match_mode'     => $r->match_mode,
+                    'days_of_week'   => $r->days_of_week,
+                    'start_time'     => $r->start_time,
+                    'end_time'       => $r->end_time,
+                    'specific_dates' => $r->specific_dates ? (json_decode($r->specific_dates, true) ?: []) : [],
+                    'cooldown_hours' => (int) $r->cooldown_hours,
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'enabled' => $enabled,
+            'rules'   => $rules,
+        ]);
+    }
+
+    /**
+     * POST /messages/auto-reply/toggle
+     *
+     * Flip the master kill-switch. Kept as a separate endpoint from the
+     * rule CRUD because the toggle is the most-tapped action and we don't
+     * want the operator to have to load + re-save the entire rule list
+     * just to silence auto-replies during an event.
+     */
+    public function toggleAutoReply(Request $request)
+    {
+        $this->requireAutoReplyPermission();
+        $request->validate(['enabled' => 'required|boolean']);
+
+        DB::table('t_fin_config')->updateOrInsert(
+            ['config_key' => 'wa_auto_reply_enabled'],
+            ['config_value' => $request->boolean('enabled') ? '1' : '0', 'updated_at' => now()]
+        );
+
+        return response()->json([
+            'success' => true,
+            'enabled' => $request->boolean('enabled'),
+        ]);
+    }
+
+    /**
+     * POST /messages/auto-reply/rules        (create)
+     * POST /messages/auto-reply/rules/{id}   (update)
+     *
+     * Both routes share this handler — the existence of {id} drives the
+     * insert-vs-update branch. Validation happens up-front so we never
+     * write a half-baked row that maybeSendAutoReply would then refuse
+     * to match (see autoReplyRuleMatches, which fails closed on partial
+     * time_window configurations).
+     */
+    public function saveAutoReplyRule(Request $request, $id = null)
+    {
+        $this->requireAutoReplyPermission();
+
+        $request->validate([
+            'name'           => 'required|string|max:150',
+            'message'        => 'required|string|max:4000',
+            'enabled'        => 'sometimes|boolean',
+            'priority'       => 'sometimes|integer|min:0|max:9999',
+            'match_mode'     => 'required|in:time_window,specific_dates,always',
+            'days_of_week'   => 'nullable|string|max:50',
+            'start_time'     => 'nullable|date_format:H:i',
+            'end_time'       => 'nullable|date_format:H:i',
+            'specific_dates' => 'nullable|array',
+            'specific_dates.*' => 'date_format:Y-m-d',
+            'cooldown_hours' => 'sometimes|integer|min:0|max:168',
+        ]);
+
+        // Normalize days_of_week: drop anything that isn't 0..6, dedupe,
+        // sort. The renderer on the client tolerates any order but the DB
+        // value is easier to debug when canonical.
+        $days = '';
+        if ($request->filled('days_of_week')) {
+            $bits = array_unique(array_filter(array_map('intval', explode(',', (string) $request->input('days_of_week'))), function ($n) {
+                return $n >= 0 && $n <= 6;
+            }));
+            sort($bits);
+            $days = implode(',', $bits);
+        }
+
+        // start/end_time arrive as HH:MM from the time picker; the column
+        // expects HH:MM:SS. Pad here to keep the DB representation stable.
+        $start = $request->filled('start_time') ? $request->input('start_time') . ':00' : null;
+        $end   = $request->filled('end_time')   ? $request->input('end_time')   . ':00' : null;
+
+        $payload = [
+            'name'           => $request->input('name'),
+            'message'        => $request->input('message'),
+            'enabled'        => $request->boolean('enabled', true) ? 1 : 0,
+            'priority'       => (int) $request->input('priority', 100),
+            'match_mode'     => $request->input('match_mode'),
+            'days_of_week'   => $days ?: null,
+            'start_time'     => $start,
+            'end_time'       => $end,
+            'specific_dates' => $request->filled('specific_dates') ? json_encode(array_values($request->input('specific_dates'))) : null,
+            'cooldown_hours' => (int) $request->input('cooldown_hours', 6),
+            'updated_at'     => now(),
+        ];
+
+        if ($id) {
+            $affected = DB::table('t_wa_auto_replies')->where('id', $id)->update($payload);
+            if (!$affected && !DB::table('t_wa_auto_replies')->where('id', $id)->exists()) {
+                return response()->json(['success' => false, 'message' => 'Rule not found.'], 404);
+            }
+            return response()->json(['success' => true, 'id' => (int) $id]);
+        }
+
+        $payload['created_at'] = now();
+        $newId = DB::table('t_wa_auto_replies')->insertGetId($payload);
+        return response()->json(['success' => true, 'id' => (int) $newId]);
+    }
+
+    /**
+     * DELETE /messages/auto-reply/rules/{id}
+     *
+     * Hard delete (no soft-delete column on this table). Existing outbound
+     * t_wa_messages.auto_reply_rule_id rows pointing at this id are kept
+     * intact — they remain valid as a historical "this message was an
+     * auto-reply" stamp even after the rule itself is gone.
+     */
+    public function deleteAutoReplyRule($id)
+    {
+        $this->requireAutoReplyPermission();
+        DB::table('t_wa_auto_replies')->where('id', $id)->delete();
+        return response()->json(['success' => true]);
     }
 
     public function getTemplates(Request $request)

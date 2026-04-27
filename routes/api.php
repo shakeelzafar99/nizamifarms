@@ -84,6 +84,9 @@ Route::post('/auth/authenticate', [AuthController::class, 'authenticate']);
 
 // App version check - PUBLIC endpoint (no auth required - anyone can check for updates)
 Route::get('/app/version', [\App\Http\Controllers\API\AppController::class, 'getLatestVersion']);
+// Qurbani companion APK uses its own endpoint so a new main release doesn't
+// accidentally "upgrade" (= force-sideload) the Qurbani app with the main APK.
+Route::get('/app/version/qurbani', [\App\Http\Controllers\API\AppController::class, 'getLatestQurbaniVersion']);
 
 // Authenticated mobile routes
 Route::middleware('auth:sanctum')->group(function () {
@@ -529,6 +532,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/label-users',     [WhatsAppController::class, 'getLabelUsers']);
         Route::get('/mentions-count',  [WhatsAppController::class, 'getMentionsCount']);
         Route::post('/send-template', [WhatsAppController::class, 'sendTemplate']);
+        // Marketing-template dedup pre-flight + pinned indicator endpoints.
+        // See add_marketing_dedup_apr2026.sql migration.
+        Route::post('/template-recent-send-check', [WhatsAppController::class, 'templateRecentSendCheck']);
+        Route::get('/conversations/{id}/recent-marketing-templates', [WhatsAppController::class, 'recentMarketingTemplates']);
         Route::get('/unread-count', [WhatsAppController::class, 'getUnreadCount']);
         Route::get('/templates', [WhatsAppController::class, 'getTemplates']);
         Route::get('/cost-summary', [WhatsAppController::class, 'getCostSummary']);

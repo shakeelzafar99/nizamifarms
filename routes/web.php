@@ -24,6 +24,20 @@ Route::get('/apk/latest', function () {
     return abort(404, 'APK not found');
 })->name('apk.latest');
 
+// Qurbani companion APK — temporary secondary build during the Qurbani event
+// that locks the app to QURBANI mode so a rider can Alt-tab natively between
+// the primary NF app and a Qurbani-only build without switching modes.
+// Package id: com.nizamifarmsmobile.qurbani (installs side-by-side with main).
+Route::get('/apk/qurbani-latest', function () {
+    $path = public_path('downloads/NizamiFarms-Qurbani.apk');
+    if (file_exists($path)) {
+        return response()->download($path, 'NizamiFarms-Qurbani.apk', [
+            'Content-Type' => 'application/vnd.android.package-archive',
+        ]);
+    }
+    return abort(404, 'Qurbani APK not found');
+})->name('apk.qurbani.latest');
+
 // Serve files from storage/app/public without symlink (no auth required)
 Route::get('/public-storage/{path}', [\App\Http\Controllers\FileController::class, 'publicStorage'])->where('path', '.*');
 
@@ -330,6 +344,10 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/label-users',    [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getLabelUsers'])->name('messages.getLabelUsers');
         Route::get('/mentions-count', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getMentionsCount'])->name('messages.getMentionsCount');
         Route::post('/send-template', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendTemplate'])->name('messages.sendTemplate');
+        // Marketing-template dedup pre-flight + pinned indicator endpoints.
+        // See add_marketing_dedup_apr2026.sql migration.
+        Route::post('/template-recent-send-check', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'templateRecentSendCheck'])->name('messages.templateRecentSendCheck');
+        Route::get('/conversations/{id}/recent-marketing-templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'recentMarketingTemplates'])->name('messages.recentMarketingTemplates');
         Route::get('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getTemplates'])->name('messages.templates');
         Route::post('/templates', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'storeTemplate'])->name('messages.storeTemplate');
         Route::put('/templates/{id}', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'updateTemplate'])->name('messages.updateTemplate');
@@ -344,6 +362,15 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/qurbani-settings', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getQurbaniSettings'])->name('messages.qurbaniSettings');
         Route::post('/qurbani-settings', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'updateQurbaniSettings'])->name('messages.updateQurbaniSettings');
         Route::post('/qurbani-rescan', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'rescanQurbani'])->name('messages.qurbaniRescan');
+
+        // Auto-reply (out-of-hours / day-off / custom rules) — Apr 2026.
+        // All four endpoints are gated on the manage_wa_auto_reply
+        // permission inside the controller. See add_wa_auto_reply_apr2026.sql.
+        Route::get('/auto-reply',                 [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getAutoReplySettings'])->name('messages.autoReply.get');
+        Route::post('/auto-reply/toggle',         [\App\Http\Controllers\Web\WhatsAppWebController::class, 'toggleAutoReply'])->name('messages.autoReply.toggle');
+        Route::post('/auto-reply/rules',          [\App\Http\Controllers\Web\WhatsAppWebController::class, 'saveAutoReplyRule'])->name('messages.autoReply.create');
+        Route::post('/auto-reply/rules/{id}',     [\App\Http\Controllers\Web\WhatsAppWebController::class, 'saveAutoReplyRule'])->name('messages.autoReply.update');
+        Route::delete('/auto-reply/rules/{id}',   [\App\Http\Controllers\Web\WhatsAppWebController::class, 'deleteAutoReplyRule'])->name('messages.autoReply.delete');
     });
 
     // Campaign Management Routes
