@@ -138,6 +138,7 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/active', [\App\Http\Controllers\API\RiderController::class, 'getActiveRidersForMap'])->name('orders.riders-map.active');
     Route::get('/orders/riders-map/all-open-orders', [\App\Http\Controllers\API\RiderController::class, 'getAllOpenOrdersForMap'])->name('orders.riders-map.all-open');
     Route::get('/orders/riders-map/delivery-history', [\App\Http\Controllers\API\RiderController::class, 'getDeliveryHistory'])->name('orders.riders-map.history');
+    Route::get('/orders/riders-map/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport'])->name('orders.riders-map.dispatch-report');
     Route::get('/orders/riders-map/riders-for-history', [\App\Http\Controllers\API\RiderController::class, 'getRidersForHistory'])->name('orders.riders-map.riders-for-history');
     Route::get('/orders/riders-map/rider-history/{riderId}', [\App\Http\Controllers\API\RiderController::class, 'getRiderDeliveryHistory'])->name('orders.riders-map.rider-delivery-history');
     Route::get('/orders/riders-map/{riderId}/location-history', [\App\Http\Controllers\API\RiderController::class, 'getRiderLocationHistory'])->name('orders.riders-map.rider-history');
@@ -296,6 +297,7 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/reorder', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'reorderOptions'])->name('qurbani-settings.api.reorder');
         Route::post('/api/shipping-price', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateShippingPrice'])->name('qurbani-settings.api.shipping-price');
         Route::post('/api/default-payment-method', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateDefaultPaymentMethod'])->name('qurbani-settings.api.default-payment-method');
+        Route::post('/api/cancellation-code', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateCancellationCode'])->name('qurbani-settings.api.cancellation-code');
     });
 
     // Qurbani Web Pages (orders, dashboard)
@@ -333,6 +335,8 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/conversations/{id}/send', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'sendMessage'])->name('messages.send');
         Route::post('/conversations/{id}/mark-read', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markRead'])->name('messages.markRead');
         Route::post('/conversations/{id}/mark-unread', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markUnread'])->name('messages.markUnread');
+        // Apr-2026: Bulk Mark-All-Read — super-reader only (Taimur role).
+        Route::post('/mark-all-read', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'markAllRead'])->name('messages.markAllRead');
         // Labels (Phase 1)
         Route::get('/labels', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'getLabels'])->name('messages.getLabels');
         Route::post('/labels', [\App\Http\Controllers\Web\WhatsAppWebController::class, 'createLabel'])->name('messages.createLabel');
@@ -831,3 +835,15 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/mine', [\App\Http\Controllers\CRM\AttendanceController::class, 'mine'])->name('attendance.mine');
     Route::get('/attendance/mine/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'mineData'])->name('attendance.mine.data');
 });
+
+// ── Analytics Sandbox ────────────────────────────────────────────────────────
+// A walled-off prototype area for dashboard development. Only loaded when:
+//   1. ANALYTICS_SANDBOX_ENABLED=true is set in .env, AND
+//   2. the analytics-sandbox/ folder physically exists on disk.
+// So if this routes/web.php ever ships to production by accident, with or
+// without the env flag, it cannot error out — it just silently skips.
+$sandboxRoutes = base_path('analytics-sandbox/routes.php');
+if (filter_var(env('ANALYTICS_SANDBOX_ENABLED', false), FILTER_VALIDATE_BOOLEAN)
+    && file_exists($sandboxRoutes)) {
+    require $sandboxRoutes;
+}

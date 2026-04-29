@@ -1063,8 +1063,8 @@ class OrderController extends Controller
             // PARTIAL UPDATE DETECTION (Pop-out Mode)
             // ================================================================
             // Pop-out mode sends _partial_update=true and only includes:
-            // - items, subtotal_price, shipping_total, total_price, discounts, note, order_date
-            // It does NOT include: order_status, expected_packets, payment_method, customer_id, address
+            // - items, subtotal_price, shipping_total, total_price, discounts, note, order_date, customer_id, name
+            // It does NOT include: order_status, expected_packets, payment_method, address, rider
             $isPartialUpdate = $request->boolean('_partial_update') || $request->boolean('_popout_mode');
             
             if ($isPartialUpdate) {
@@ -1078,6 +1078,7 @@ class OrderController extends Controller
             // Validate request - use different rules for partial vs full update
             $validationRules = [
                 'customer_id' => 'nullable|exists:t_crm_prod_customer,id',
+                'name' => 'nullable|string|max:255',
                 'order_date' => 'required|date',
                 'contact_email' => 'nullable|email',
                 'subtotal_price' => 'required|numeric',
@@ -1123,8 +1124,6 @@ class OrderController extends Controller
                 $validationRules['order_status'] = 'required|string|exists:t_crm_order_status_master,status_code';
                 $validationRules['payment_method'] = 'nullable|string';
                 $validationRules['expected_packets'] = 'nullable|integer|min:0';
-                // Customer name (stored directly on order for display)
-                $validationRules['name'] = 'nullable|string|max:255';
                 // Address fields
                 $validationRules['address_first_name'] = 'nullable|string';
                 $validationRules['address_last_name'] = 'nullable|string';
@@ -1347,20 +1346,21 @@ class OrderController extends Controller
             // ================================================================
             // CAPTURE OLD PAYMENT METHOD (Before Order Update)
             // ================================================================
-            // IMPORTANT: Capture the old payment method BEFORE updating the order
-            // This is needed to detect if payment method changed
+            // IMPORTANT: Capture old values BEFORE updating the order
             $oldPaymentMethod = $order->payment_method;
+            $oldCustomerId = $order->customer_id;
             
             // ================================================================
             // UPDATE ORDER (with Partial Update Support)
             // ================================================================
-            // For partial updates (pop-out mode), only update financial fields
-            // Preserve: order_status, expected_packets, payment_method, customer_id, address, rider
+            // For partial updates (pop-out mode), only update financial fields + customer
+            // Preserve: order_status, expected_packets, payment_method, address, rider
             if ($isPartialUpdate) {
                 // Remove operational fields from update - they should be preserved
+                // customer_id and name are allowed through so customer changes work in pop-out
                 $fieldsToExclude = [
                     'order_status', 'expected_packets', 'actual_packets', 'payment_method',
-                    'customer_id', 'assigned_rider_user_id',
+                    'assigned_rider_user_id',
                     'address_first_name', 'address_last_name', 'address_email', 'address_phone',
                     'address_line1', 'address_line2', 'address_city', 'address_province', 
                     'address_postal_code', 'address_country',
@@ -1382,6 +1382,33 @@ class OrderController extends Controller
                 ]);
                 
                 $order->update($updateData);
+
+                // If customer_id changed, sync the new customer's details onto the order
+                $newCustomerId = $updateData['customer_id'] ?? null;
+                if ($newCustomerId && (int)$newCustomerId !== (int)$oldCustomerId) {
+                    $newCustomer = \App\Models\CRM\CustomerModel::find($newCustomerId);
+                    if ($newCustomer) {
+                        $order->update([
+                            'name' => trim(($newCustomer->first_name ?? '') . ' ' . ($newCustomer->last_name ?? '')),
+                            'address_first_name' => $newCustomer->first_name,
+                            'address_last_name' => $newCustomer->last_name,
+                            'address_email' => $newCustomer->email,
+                            'address_phone' => $newCustomer->phone_original,
+                            'address_line1' => $newCustomer->address1,
+                            'address_line2' => $newCustomer->address2,
+                            'address_city' => $newCustomer->city,
+                            'address_province' => $newCustomer->province,
+                            'address_postal_code' => $newCustomer->postal_code,
+                            'address_country' => $newCustomer->country ?: 'Pakistan',
+                        ]);
+                        \Log::info('Partial update - synced new customer details onto order', [
+                            'order_id' => $order->id,
+                            'old_customer_id' => $oldCustomerId,
+                            'new_customer_id' => $newCustomerId,
+                            'new_customer_name' => trim($newCustomer->first_name . ' ' . $newCustomer->last_name),
+                        ]);
+                    }
+                }
             } else {
                 // Full update - update all validated fields
                 // Remove internal flags before updating
@@ -1969,16 +1996,16 @@ class OrderController extends Controller
             if ($isQurbaniOrder) {
                 // QUR format: QUR26-001 (2-digit year + sequential 3-digit number, resets each year)
                 $orderNumber = \DB::transaction(function() {
-                    $yearSuffix = date('y'); // e.g. "26"
+                    $yearSuffix = date('y');
                     $prefix = 'QUR' . $yearSuffix . '-';
                     $prefixLen = strlen($prefix) + 1;
-                    // Check both order tables to avoid collisions with Shopify-converted qurbani orders
                     $maxSeq1 = \DB::table('t_crm_prod_order')
                         ->where('order_number', 'LIKE', $prefix . '%')
                         ->lockForUpdate()
                         ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
                     $maxSeq2 = \DB::table('t_crm_shopify_order')
                         ->where('order_number', 'LIKE', $prefix . '%')
+                        ->lockForUpdate()
                         ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
                     $nextSeq = max(($maxSeq1 ?? 0), ($maxSeq2 ?? 0)) + 1;
                     return $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
@@ -2408,10 +2435,38 @@ class OrderController extends Controller
             $orderData['external_id'] = null;
             $orderData['external_customer_id'] = null;
             
-            // KS- orders keep their number; Shopify orders get SH- prefix
-            $orderData['order_number'] = $isKhaasStorage
-                ? $originalOrder->order_number
-                : 'SH-' . $originalOrder->order_number;
+            // Determine order number: QUR for qurbani items, SH- for regular Shopify, keep for khaas_storage
+            if ($isKhaasStorage) {
+                $orderData['order_number'] = $originalOrder->order_number;
+            } else {
+                // Check if any recalculated line item is a qurbani product
+                $lineItemProductIds = collect($validationResult['recalculated_line_items'])
+                    ->pluck('product_id')->filter()->unique();
+                $hasQurbani = $lineItemProductIds->isNotEmpty() && \DB::table('t_crm_prod_product')
+                    ->whereIn('id', $lineItemProductIds)
+                    ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+                    ->exists();
+
+                if ($hasQurbani) {
+                    $orderData['order_number'] = \DB::transaction(function() {
+                        $yearSuffix = date('y');
+                        $prefix = 'QUR' . $yearSuffix . '-';
+                        $prefixLen = strlen($prefix) + 1;
+                        $maxSeq1 = \DB::table('t_crm_prod_order')
+                            ->where('order_number', 'LIKE', $prefix . '%')
+                            ->lockForUpdate()
+                            ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                        $maxSeq2 = \DB::table('t_crm_shopify_order')
+                            ->where('order_number', 'LIKE', $prefix . '%')
+                            ->lockForUpdate()
+                            ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                        $nextSeq = max(($maxSeq1 ?? 0), ($maxSeq2 ?? 0)) + 1;
+                        return $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
+                    });
+                } else {
+                    $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
+                }
+            }
 
             // Force creation in t_crm_prod_order (bypass approval queue routing)
             $orderData['_force_prod_order'] = true;

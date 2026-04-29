@@ -271,6 +271,27 @@
                   </div>
                   @endif
 
+                  {{-- Analytics Sandbox — only visible when the .env flag is on. --}}
+                  @if(filter_var(env('ANALYTICS_SANDBOX_ENABLED', false), FILTER_VALIDATE_BOOLEAN))
+                  <div class="kt-menu-item pt-2.25 pb-px">
+                      <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">
+                          Analytics (Sandbox)
+                      </span>
+                  </div>
+                  <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                      <a href="/sandbox">
+                          <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                              <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]">
+                                  <i class="ki-filled ki-chart-line-up text-lg"></i>
+                              </span>
+                              <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">
+                                  Sandbox dashboards
+                              </span>
+                          </div>
+                      </a>
+                  </div>
+                  @endif
+
                   <!-- Products Section -->
                   <div class="kt-menu-item pt-2.25 pb-px">
                       <span class="kt-menu-heading uppercase text-xs font-medium text-gray-500 ps-[10px] pe-[10px]">

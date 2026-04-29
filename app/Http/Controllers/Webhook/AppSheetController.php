@@ -173,8 +173,32 @@ class AppSheetController extends Controller
             $orderData['external_id'] = null;
             $orderData['external_customer_id'] = null;
             
-            // Use same order number as Shopify order with SH- prefix for easy identification
-            $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
+            // Check if any line item is a qurbani product (by SKU lookup to local products)
+            $hasQurbani = false;
+            $skus = $originalOrder->lineItems->pluck('sku')->filter()->unique();
+            if ($skus->isNotEmpty()) {
+                $hasQurbani = \DB::table('t_crm_prod_product_variant as v')
+                    ->join('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
+                    ->whereIn('v.sku', $skus)
+                    ->whereRaw("LOWER(p.attribute_1) = 'qurbani'")
+                    ->exists();
+            }
+
+            if ($hasQurbani) {
+                $yearSuffix = date('y');
+                $prefix = 'QUR' . $yearSuffix . '-';
+                $prefixLen = strlen($prefix) + 1;
+                $maxSeq1 = \DB::table('t_crm_prod_order')
+                    ->where('order_number', 'LIKE', $prefix . '%')
+                    ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                $maxSeq2 = \DB::table('t_crm_shopify_order')
+                    ->where('order_number', 'LIKE', $prefix . '%')
+                    ->max(\DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
+                $nextSeq = max(($maxSeq1 ?? 0), ($maxSeq2 ?? 0)) + 1;
+                $orderData['order_number'] = $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
+            } else {
+                $orderData['order_number'] = 'SH-' . $originalOrder->order_number;
+            }
             
             // Set current timestamp for order date
             $orderData['order_date'] = now();

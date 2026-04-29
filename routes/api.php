@@ -164,6 +164,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/open-orders-light', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrdersLight']); // Lightweight for list
     Route::get('/store/open-orders/{id}/details', [\App\Http\Controllers\API\RiderController::class, 'getStoreOpenOrderDetails']); // Full details when expanded
     Route::get('/store/delivered-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreDeliveredOrders']); // ⭐ Delivered orders grouped by date
+    Route::get('/store/dispatch-report', [\App\Http\Controllers\API\RiderController::class, 'getDateDeliveryReport']); // ⭐ Dispatch tracker report by date
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
@@ -521,6 +522,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/conversations/{id}/send-voice', [WhatsAppController::class, 'sendVoiceNote']);
         Route::post('/conversations/{id}/mark-read', [WhatsAppController::class, 'markRead']);
         Route::post('/conversations/{id}/mark-unread', [WhatsAppController::class, 'markUnread']);
+        // Apr-2026: Bulk Mark-All-Read — super-reader only (Taimur role).
+        Route::post('/mark-all-read', [WhatsAppController::class, 'markAllRead']);
         // Labels (Phase 1)
         Route::get('/labels', [WhatsAppController::class, 'getLabels']);
         Route::post('/labels', [WhatsAppController::class, 'createLabel']);

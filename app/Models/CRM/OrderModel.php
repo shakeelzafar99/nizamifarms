@@ -733,24 +733,29 @@ class OrderModel extends BaseModel
             // or auto-deducted when the order moves to "out_for_delivery".
             // This applies to all order sources (webapp, Shopify conversions, etc.).
 
-            // Rename Shopify qurbani orders to QUR format
+            // Rename Shopify qurbani orders to QUR format (use SKU-based lookup since
+            // Shopify line items store external product IDs, not local CRM IDs)
             if ($isShopify && !$existingOrder) {
-                $liTable = $isShopify ? 't_crm_shopify_order_line_item' : 't_crm_prod_order_line_item';
+                $liTable = 't_crm_shopify_order_line_item';
                 $hasQurbani = DB::table($liTable . ' as li')
-                    ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                    ->join('t_crm_prod_product_variant as v', 'v.sku', '=', 'li.sku')
+                    ->join('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
                     ->where('li.order_id', $order->id)
+                    ->whereNotNull('li.sku')
                     ->whereRaw("LOWER(p.attribute_1) = 'qurbani'")
                     ->exists();
                 if ($hasQurbani && !str_starts_with($order->order_number ?? '', 'QUR')) {
                     $yearSuffix = date('y');
                     $prefix = 'QUR' . $yearSuffix . '-';
+                    $prefixLen = strlen($prefix) + 1;
                     $maxSeq = DB::table('t_crm_prod_order')
                         ->where('order_number', 'LIKE', $prefix . '%')
-                        ->max(DB::raw("CAST(SUBSTRING(order_number, " . (strlen($prefix) + 1) . ") AS UNSIGNED)"));
-                    // Also check shopify orders table
+                        ->lockForUpdate()
+                        ->max(DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
                     $maxSeqShopify = DB::table('t_crm_shopify_order')
                         ->where('order_number', 'LIKE', $prefix . '%')
-                        ->max(DB::raw("CAST(SUBSTRING(order_number, " . (strlen($prefix) + 1) . ") AS UNSIGNED)"));
+                        ->lockForUpdate()
+                        ->max(DB::raw("CAST(SUBSTRING(order_number, {$prefixLen}) AS UNSIGNED)"));
                     $nextSeq = max(($maxSeq ?? 0), ($maxSeqShopify ?? 0)) + 1;
                     $order->order_number = $prefix . str_pad($nextSeq, 3, '0', STR_PAD_LEFT);
                     $order->save();

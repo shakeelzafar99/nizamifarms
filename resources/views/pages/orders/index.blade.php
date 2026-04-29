@@ -6395,10 +6395,9 @@ function saveOrderChanges(orderId) {
     let orderData;
     
     if (isPopoutMode) {
-        // POP-OUT MODE: Only invoice/line item data
-        console.log('📋 Pop-out mode detected - sending partial update (line items + totals only)');
+        // POP-OUT MODE: Invoice/line item data + customer (safe to change in pop-out)
+        console.log('📋 Pop-out mode detected - sending partial update (line items + totals + customer)');
         orderData = {
-            // ✅ INCLUDE: Financial data that pop-out is meant to edit
             order_date: formattedOrderDate,
             subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
             shipping_total: parseFloat(formData.get('shipping_total')) || 0,
@@ -6407,15 +6406,15 @@ function saveOrderChanges(orderId) {
             note: formData.get('note'),
             items: items,
             discounts: discounts,
+            customer_id: formData.get('customer_id'),
+            name: formData.get('name'),
             
             // ❌ NOT INCLUDED (managed via mobile/quick actions):
             // - order_status (set via mobile Store/Rider mode)
             // - expected_packets (set via mobile Store mode)
             // - payment_method (set via mobile or dedicated button)
             // - assigned_rider_user_id (set via mobile Store mode or web quick action)
-            // - customer_id, address fields (not typically changed in pop-out)
             
-            // Flag to tell backend this is a partial update
             _partial_update: true,
             _popout_mode: true
         };
@@ -6646,8 +6645,8 @@ function saveAndCloseOrder(orderId) {
     let orderData;
     
     if (isPopoutMode) {
-        // POP-OUT MODE: Only invoice/line item data
-        console.log('📋 Pop-out mode (Save & Close) - sending partial update (line items + totals only)');
+        // POP-OUT MODE: Invoice/line item data + customer (safe to change in pop-out)
+        console.log('📋 Pop-out mode (Save & Close) - sending partial update (line items + totals + customer)');
         orderData = {
             order_date: formattedOrderDate,
             subtotal_price: parseFloat(formData.get('subtotal_price')) || 0,
@@ -6657,6 +6656,8 @@ function saveAndCloseOrder(orderId) {
             note: formData.get('note'),
             items: items,
             discounts: discounts,
+            customer_id: formData.get('customer_id'),
+            name: formData.get('name'),
             _partial_update: true,
             _popout_mode: true
         };
@@ -8471,19 +8472,32 @@ function populateItemSlotSelect(sel, fieldKey, optionsGrouped) {
         }
     }
 
+    // For qurbani_type and qurbani_paya, resolve category-specific defaults
+    const lineItem = sel.closest('.line-item') || sel.closest('[data-product-category]');
+    const productCategory = lineItem ? (lineItem.getAttribute('data-product-category') || '') : '';
+    const hasCatDefaults = (fieldKey === 'qurbani_type' || fieldKey === 'qurbani_paya');
+
     let defaultVal = null;
+    let categoryDefaultVal = null;
     fieldOpts.forEach(o => {
         if (!o.is_active) return;
         const opt = document.createElement('option');
         opt.value = o.option_value;
         opt.textContent = o.option_value;
         if (o.option_value === currentVal) opt.selected = true;
-        if (o.is_default) defaultVal = o.option_value;
+        if (o.is_default) {
+            if (hasCatDefaults && o.category_override && productCategory && o.category_override === productCategory) {
+                categoryDefaultVal = o.option_value;
+            } else if (!o.category_override) {
+                defaultVal = o.option_value;
+            }
+        }
         sel.appendChild(opt);
     });
 
-    if (isNewItem && !currentVal && defaultVal) {
-        sel.value = defaultVal;
+    const resolvedDefault = categoryDefaultVal || defaultVal;
+    if (isNewItem && !currentVal && resolvedDefault) {
+        sel.value = resolvedDefault;
     }
 }
 
@@ -11280,6 +11294,22 @@ function selectEditCustomer(customerIndex) {
         if (orderNameField) {
             orderNameField.value = customer.name || '';
             console.log('Updated order name field to:', customer.name);
+        }
+        
+        // Update the pop-out summary bar if it exists
+        const summaryBar = document.getElementById('orderDetailsSummary');
+        if (summaryBar) {
+            const newName = customer.name || ((customer.address?.first_name || '') + ' ' + (customer.address?.last_name || '')).trim() || 'N/A';
+            const newPhone = customer.address?.phone || customer.phone || 'N/A';
+            const addrParts = [customer.address?.address1, customer.address?.city].filter(Boolean);
+            const newAddress = addrParts.length > 0 ? addrParts.join(', ') : 'N/A';
+            
+            const nameEl = summaryBar.querySelectorAll('div[style*="font-weight: 600"][style*="color: #0c4a6e"]')[0];
+            const phoneEl = summaryBar.querySelectorAll('div[style*="font-size: 14px"][style*="color: #0c4a6e"]')[0];
+            const addressEl = summaryBar.querySelectorAll('div[style*="font-size: 14px"][style*="color: #0c4a6e"]')[1];
+            if (nameEl) nameEl.textContent = newName;
+            if (phoneEl) phoneEl.textContent = newPhone;
+            if (addressEl) addressEl.textContent = newAddress;
         }
         
         // Hide the selector

@@ -130,6 +130,36 @@
     border-color: #86efac;
 }
 
+/* Apr-2026: Mark-All-Read row. Lives directly under the filter pills,
+   only visible when the Unread tab is active AND the user is a
+   super-reader. Styled as an emphatic-but-safe action: green ink, light
+   tint, full-width pill so it's hard to miss but not alarming. */
+.wa-mark-all-read-row { display: flex; flex-direction: column; gap: 3px; }
+.wa-mark-all-read-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: 1.5px solid #86efac;
+    background: #dcfce7;
+    color: #166534;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.wa-mark-all-read-btn:hover { background: #bbf7d0; border-color: #4ade80; }
+.wa-mark-all-read-btn:disabled { opacity: 0.55; cursor: progress; }
+.wa-mark-all-read-hint {
+    font-size: 10.5px;
+    color: #6b7280;
+    text-align: center;
+    line-height: 1.3;
+}
+
 /* Search-mode toggle (Names / Chats). Minimal, pill-shaped, picks up
    the same green accent as filters when active so the UI stays cohesive. */
 .wa-searchmode-btn {
@@ -999,6 +1029,59 @@
 .wa-load-more a { font-size: 13px; color: #16a34a; font-weight: 500; cursor: pointer; text-decoration: none; }
 .wa-load-more a:hover { text-decoration: underline; }
 
+/* Conversation list "Load older chats" footer (Apr 2026 — see
+   loadMoreConversations() in JS). Sits at the bottom of the inbox.
+   Hidden during chat-search; the static end-state ditto. */
+.wa-conv-loadmore {
+    padding: 14px 16px 18px;
+    text-align: center;
+    border-top: 1px dashed #e5e7eb;
+    background: #fafafa;
+}
+.wa-conv-loadmore-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 18px;
+    background: #fff;
+    border: 1px solid #16a34a;
+    color: #15803d;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.wa-conv-loadmore-btn:hover:not(:disabled) {
+    background: #16a34a;
+    color: #fff;
+}
+.wa-conv-loadmore-btn:disabled {
+    opacity: .7;
+    cursor: progress;
+}
+.wa-conv-loadmore-spin {
+    width: 12px; height: 12px;
+    border: 2px solid #d1fae5;
+    border-top-color: #15803d;
+    border-radius: 50%;
+    animation: waConvSpin .8s linear infinite;
+}
+@keyframes waConvSpin { to { transform: rotate(360deg); } }
+.wa-conv-loadmore-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #9ca3af;
+}
+.wa-conv-loadmore-end {
+    padding: 10px 16px 18px;
+    text-align: center;
+    font-size: 11px;
+    color: #9ca3af;
+    border-top: 1px dashed #e5e7eb;
+    background: #fafafa;
+}
+
 /* ── Loading ── */
 .wa-loading {
     display: flex;
@@ -1314,6 +1397,29 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             <div style="margin-top:8px;padding:7px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#92400e;display:flex;align-items:center;gap:6px;line-height:1.35;" title="Your account has Limited Messages access. Older conversations are hidden.">
                 <span>⚠</span>
                 <span><strong>Limited view</strong> — showing messages from today and yesterday only.</span>
+            </div>
+            @endif
+            {{-- Apr-2026: Mark-All-Read action row.
+                 Visibility rules:
+                   - Server gate: only rendered for users where
+                     WhatsAppService::isSuperReader() returns true (i.e.
+                     the Taimur role with the `whatsapp_super_reader`
+                     permission). Regular users will never see this even
+                     by inspecting the DOM, since the wrapper div isn't
+                     emitted at all for them.
+                   - Client gate: hidden until the operator switches to
+                     the Unread tab — there's nothing to "mark all read"
+                     on the All / @me / Qurbani / label tabs.
+                 Action: posts to /messages/mark-all-read which stamps
+                 global_read_at on every currently-unread conversation, so
+                 the inbox is cleared for the whole team in one shot. --}}
+            @if(($waIsSuperReader ?? false))
+            <div class="wa-mark-all-read-row" id="waMarkAllReadRow" style="display:none;margin-top:8px;">
+                <button type="button" class="wa-mark-all-read-btn" id="waMarkAllReadBtn" onclick="confirmMarkAllRead()">
+                    <span>✓</span>
+                    <span>Mark all <strong id="waMarkAllReadCount"></strong> as read</span>
+                </button>
+                <div class="wa-mark-all-read-hint">Clears the inbox for everyone.</div>
             </div>
             @endif
         </div>
@@ -1814,6 +1920,34 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     let templates = [];
     var _cachedApiTemplates = null;
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Apr-2026: Conversation list pagination state.
+    //
+    // Server returns up to 200 most-recent conversations on a "fresh" call
+    // (default page). To go deeper, frontend asks for older rows by passing
+    // ?before_last_message_at=<oldest visible's last_message_at> and gets
+    // up to 100 more per page.
+    //
+    // We keep two arrays:
+    //   convListLive  — refreshed on every loadConversations() call (the
+    //                   poll, filter changes, search). Always the top 200.
+    //   convListExtra — appended to by loadMoreConversations(). Static
+    //                   between polls; the next poll preserves it (we
+    //                   only refetch the live head). On render we dedupe
+    //                   so a tail conv that bubbled up into the live head
+    //                   doesn't appear twice.
+    //
+    // convListMoreCursor / convListMoreExhausted track whether the Load
+    // More button should be shown and what cursor to send next.
+    // ─────────────────────────────────────────────────────────────────────
+    let convListLive = [];
+    let convListExtra = [];
+    let convListMoreCursor = null;
+    let convListMoreExhausted = false;
+    let convListLoadingMore = false;
+    let convListLastSearch = '';
+    let convListLastFilter = 'all';
+
     // Qurbani tab / badge master switch. Refreshed from the backend on init
     // and after the settings drawer is saved.
     let waQurbaniEnabled = true;
@@ -2208,8 +2342,32 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     }
 
     // ── Conversations ──
+    //
+    // loadConversations() refreshes the LIVE head — i.e. the top 200 most-
+    // recent conversations server-side. Called by the 10s poll, the search
+    // box, the filter pills, and post-action callbacks. Whenever the user
+    // changes search/filter we also drop the extras tail because the cursor
+    // becomes meaningless under the new criteria.
+    //
+    // loadMoreConversations() pulls the NEXT page (100 older rows) using
+    // the cursor we got back from the previous call. It only ever appends
+    // to convListExtra; the live head keeps updating independently.
     function loadConversations() {
         const search = document.getElementById('waSearch').value.trim();
+        // Treat search/filter changes as a reset for the "Load more" tail.
+        // The cursor from the previous query no longer applies once the
+        // server-side WHERE clause has changed.
+        const sigChanged = (search !== convListLastSearch) ||
+                           (currentFilter !== convListLastFilter);
+        if (sigChanged) {
+            convListExtra = [];
+            convListMoreCursor = null;
+            convListMoreExhausted = false;
+            convListLoadingMore = false;
+            convListLastSearch = search;
+            convListLastFilter = currentFilter;
+        }
+
         let url = '/messages/conversations?filter=' + currentFilter;
         if (search) {
             url += '&search=' + encodeURIComponent(search);
@@ -2219,8 +2377,131 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         }
         apiFetch(url).then(d => {
             if (!d.success) return;
-            renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
+            convListLive = d.conversations || [];
+            // Only adopt the head's cursor when the user hasn't already
+            // paged into the tail — otherwise convListMoreCursor must keep
+            // pointing at the bottom of the LATEST loaded page, not the
+            // bottom of the live head.
+            if (!convListExtra.length) {
+                convListMoreCursor   = d.next_cursor || null;
+                convListMoreExhausted = !d.has_more;
+            }
+            // Apr-2026: refresh the Mark-All-Read row. The server returns
+            // total_unread only when filter=unread; on any other filter we
+            // hide the row entirely. Count is the DB-wide unread total
+            // (not just what's currently in the loaded list).
+            updateMarkAllReadVisibility(typeof d.total_unread === 'number' ? d.total_unread : 0);
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
         });
+    }
+
+    // Apr-2026: Mark-All-Read row visibility helper. Three gates:
+    //   1. Server-side: button only rendered for super-readers (Blade
+    //      gate) — so for regular users this function is harmless,
+    //      it just no-ops on a missing row element.
+    //   2. Filter: only show on the Unread tab (currentFilter==='unread').
+    //   3. Count > 0: nothing to clear → don't show the action.
+    function updateMarkAllReadVisibility(totalUnread) {
+        const row = document.getElementById('waMarkAllReadRow');
+        if (!row) return; // not a super-reader
+        const show = (currentFilter === 'unread') && (totalUnread > 0);
+        row.style.display = show ? 'flex' : 'none';
+        if (show) {
+            const cntEl = document.getElementById('waMarkAllReadCount');
+            if (cntEl) cntEl.textContent = totalUnread;
+        }
+    }
+    window.updateMarkAllReadVisibility = updateMarkAllReadVisibility;
+
+    // Confirm + post handler. Disables the button while in flight so a
+    // double-click doesn't fire two requests, both of which would succeed
+    // — the second would just clear 0 and report no harm — but it's tidier
+    // to gate it client-side too.
+    window.confirmMarkAllRead = function() {
+        const cntEl = document.getElementById('waMarkAllReadCount');
+        const total = cntEl ? (cntEl.textContent || '?') : '?';
+        const ok = window.confirm(
+            'Mark all ' + total + ' unread conversations as read for everyone?\n\n' +
+            'This will clear the inbox badge for the entire team. ' +
+            'You can still mark individual chats unread again afterwards.'
+        );
+        if (!ok) return;
+        const btn = document.getElementById('waMarkAllReadBtn');
+        if (btn) { btn.disabled = true; btn.querySelector('span:last-child').textContent = 'Clearing…'; }
+        apiFetch('/messages/mark-all-read', { method: 'POST' })
+            .then(d => {
+                if (!d || !d.success) {
+                    alert(d && d.message ? d.message : 'Failed to mark all as read');
+                    if (btn) { btn.disabled = false; }
+                    return;
+                }
+                // Reload the conversation list (will be empty for Unread)
+                // and refresh the sidebar badge so the team sees zero too
+                // on their next poll.
+                loadConversations();
+                if (typeof window.refreshUnreadBadge === 'function') {
+                    try { window.refreshUnreadBadge(); } catch (e) {}
+                }
+            })
+            .catch(() => {
+                alert('Network error while marking all as read');
+                if (btn) { btn.disabled = false; }
+            });
+    };
+
+    // Fetch the NEXT page using the stored cursor and append to extras.
+    // Idempotent re-entrancy guard via convListLoadingMore so a rapid
+    // double-click doesn't fetch the same page twice.
+    function loadMoreConversations() {
+        if (convListLoadingMore || convListMoreExhausted || !convListMoreCursor) return;
+        convListLoadingMore = true;
+        // Reflect "Loading..." on the button immediately so the user knows
+        // the click was registered even on a slow connection.
+        repaintConvList({
+            searchMode: currentSearchMode,
+            searchTerm: (document.getElementById('waSearch').value || '').trim(),
+        });
+
+        const search = (document.getElementById('waSearch').value || '').trim();
+        let url = '/messages/conversations?filter=' + currentFilter
+                + '&before_last_message_at=' + encodeURIComponent(convListMoreCursor);
+        if (search) {
+            url += '&search=' + encodeURIComponent(search);
+            url += '&search_mode=' + encodeURIComponent(currentSearchMode);
+        }
+        apiFetch(url).then(d => {
+            convListLoadingMore = false;
+            if (!d || !d.success) {
+                repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+                return;
+            }
+            const incoming = Array.isArray(d.conversations) ? d.conversations : [];
+            // Append to extras. Dedup happens at render time, so we don't
+            // need to splice anything out here even if the server returned
+            // a row that's now also in the live head.
+            convListExtra = convListExtra.concat(incoming);
+            convListMoreCursor    = d.next_cursor || null;
+            convListMoreExhausted = !d.has_more || !convListMoreCursor;
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+        }).catch(() => {
+            convListLoadingMore = false;
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+        });
+    }
+    window.loadMoreConversations = loadMoreConversations;
+
+    // Merge live + extras (deduping by id, live wins because it's fresher),
+    // hand to renderConversations, and append the Load More footer.
+    function repaintConvList(opts) {
+        const seen = new Set();
+        const merged = [];
+        (convListLive || []).forEach(c => { if (!seen.has(c.id)) { seen.add(c.id); merged.push(c); } });
+        (convListExtra || []).forEach(c => { if (!seen.has(c.id)) { seen.add(c.id); merged.push(c); } });
+        renderConversations(merged, Object.assign({
+            showLoadMore: !convListMoreExhausted && !!convListMoreCursor,
+            loadingMore: convListLoadingMore,
+            extraCount: convListExtra.length,
+        }, opts || {}));
     }
 
     // Phase 2 — poll the mentions count every 30s and keep the red pip
@@ -2256,7 +2537,7 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 : '<div class="wa-loading">No conversations found</div>';
             return;
         }
-        el.innerHTML = convs.map(c => {
+        const rowsHtml = convs.map(c => {
             const isActive = c.id === activeConvId;
             const isUnread = c.unread_count > 0;
             let cls = 'wa-conv-item';
@@ -2299,6 +2580,35 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 </div>
             </div>`;
         }).join('');
+
+        // Load-more footer. Hidden during chat-search (results are already
+        // capped + ranked server-side and an "older messages" pagination
+        // there would surface noise). For the regular inbox it sits at the
+        // bottom of the list and triggers loadMoreConversations() — which
+        // appends the next 100 older conversations to convListExtra.
+        let footerHtml = '';
+        if (!inChatSearch) {
+            if (opts.showLoadMore) {
+                footerHtml = `
+                    <div class="wa-conv-loadmore">
+                        <button type="button"
+                                class="wa-conv-loadmore-btn"
+                                onclick="loadMoreConversations()"
+                                ${opts.loadingMore ? 'disabled' : ''}>
+                            ${opts.loadingMore
+                                ? '<span class="wa-conv-loadmore-spin"></span>Loading…'
+                                : 'Load older chats'}
+                        </button>
+                        ${opts.extraCount > 0
+                            ? `<div class="wa-conv-loadmore-hint">${opts.extraCount} older chat${opts.extraCount === 1 ? '' : 's'} loaded · click for 100 more</div>`
+                            : '<div class="wa-conv-loadmore-hint">Showing the most recent 200 — older chats are still searchable</div>'}
+                    </div>`;
+            } else if (opts.extraCount > 0) {
+                footerHtml = `<div class="wa-conv-loadmore-end">No more chats to load · ${opts.extraCount} older chat${opts.extraCount === 1 ? '' : 's'} loaded.</div>`;
+            }
+        }
+
+        el.innerHTML = rowsHtml + footerHtml;
     }
 
     // Escape-and-highlight helper for chat-search snippets. Escapes the
@@ -2578,6 +2888,13 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
             document.querySelectorAll('.wa-filter-btn').forEach(b => b.classList.remove('active'));
             this.classList.add('active');
             currentFilter = this.dataset.filter;
+            // Hide Mark-All-Read pre-emptively when leaving Unread so the
+            // operator never sees it linger on the wrong tab while the
+            // conversation fetch is still in flight. It'll re-show with a
+            // fresh count once the Unread response comes back.
+            if (typeof window.updateMarkAllReadVisibility === 'function') {
+                window.updateMarkAllReadVisibility(0);
+            }
             loadConversations();
         });
     });
@@ -2814,6 +3131,29 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 document.getElementById('waChatSub').textContent = phone + ' · New conversation';
                 document.getElementById('waChatMessages').innerHTML = '<div class="wa-loading"><div style="font-size:40px;">👋</div><div style="font-size:15px;color:#374151;font-weight:500;">Start a conversation</div><div style="font-size:13px;color:#6b7280;">Send a template message to begin</div></div>';
                 updateSessionUI({session_active: false, session_expires_at: null});
+
+                // Apr-2026 bugfix: clear chat-header strips that belong to
+                // the previously-open conversation. The chat header DOM
+                // (labels strip, marketing-template strip) is reused
+                // across chats, so without an explicit clear here the
+                // user sees the previous customer's pinned data on top
+                // of the new "Start a conversation" placeholder until
+                // they refresh. The openConv() path goes through
+                // wrappers that already do this; this manual-setup path
+                // bypasses them, hence the duplicated reset. We also
+                // reset the marketing-strip cache so the next switch
+                // back to a real conversation forces a fresh fetch.
+                try {
+                    if (typeof renderRecentMarketingStrip === 'function') {
+                        renderRecentMarketingStrip([]);
+                    }
+                    if (typeof _mktStripFor !== 'undefined') {
+                        _mktStripFor = null;
+                        _mktStripRaw = null;
+                    }
+                    const labelsStrip = document.getElementById('waChatHdrLabels');
+                    if (labelsStrip) labelsStrip.innerHTML = '';
+                } catch (_) {}
             }
         });
     };
@@ -3770,23 +4110,90 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
     // Hook loadConversations once more — append label_id / assigned_to_me to
     // the URL if either filter is active. When neither is set we just defer
     // to the original implementation so we don't run two requests in a row.
+    //
+    // Apr-2026: this branch also has to keep the conversation pagination
+    // state (live head + extras + cursor) in sync, otherwise switching to
+    // a label/@me filter loses the Load More button entirely. We mirror
+    // _origLoadConversations' state-update logic; the only thing different
+    // is the URL we hit and the filter signature we compare against.
     const _origLoadConversations = loadConversations;
     loadConversations = function() {
         if (!labelFilterId && !assignedToMe) {
             _origLoadConversations();
             return;
         }
-        let url = '/messages/conversations?filter=' + currentFilter;
         const searchInput = document.getElementById('waSearch');
         const search = (searchInput && searchInput.value || '').trim();
+
+        // Filter "signature" — any change resets the extras tail.
+        const sig = currentFilter + '|' + (labelFilterId || '') + '|' + (assignedToMe ? 'me' : '');
+        if (search !== convListLastSearch || sig !== convListLastFilter) {
+            convListExtra = [];
+            convListMoreCursor = null;
+            convListMoreExhausted = false;
+            convListLoadingMore = false;
+            convListLastSearch = search;
+            convListLastFilter = sig;
+        }
+
+        let url = '/messages/conversations?filter=' + currentFilter;
         if (search) url += '&search=' + encodeURIComponent(search) + '&search_mode=' + (currentSearchMode || 'customers');
         if (labelFilterId) url += '&label_id=' + labelFilterId;
         if (assignedToMe)  url += '&assigned_to_me=1';
         apiFetch(url).then(d => {
             if (!d.success) return;
-            renderConversations(d.conversations, { searchMode: currentSearchMode, searchTerm: search });
+            convListLive = d.conversations || [];
+            if (!convListExtra.length) {
+                convListMoreCursor    = d.next_cursor || null;
+                convListMoreExhausted = !d.has_more;
+            }
+            // Keep Mark-All-Read in sync when the label/@me-aware wrapper
+            // is the active loader (label or @me toggled on). Same logic
+            // as the unwrapped path: hide unless filter=unread + count>0.
+            if (typeof window.updateMarkAllReadVisibility === 'function') {
+                window.updateMarkAllReadVisibility(typeof d.total_unread === 'number' ? d.total_unread : 0);
+            }
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
         });
     };
+
+    // The standalone loadMoreConversations() also needs to pick up the
+    // active label/@me filters, since the operator might click Load More
+    // while filtered. Wrap the original to splice those params in.
+    const _origLoadMoreConversations = loadMoreConversations;
+    loadMoreConversations = function() {
+        if (!labelFilterId && !assignedToMe) {
+            _origLoadMoreConversations();
+            return;
+        }
+        if (convListLoadingMore || convListMoreExhausted || !convListMoreCursor) return;
+        convListLoadingMore = true;
+        const searchInput = document.getElementById('waSearch');
+        const search = (searchInput && searchInput.value || '').trim();
+        repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+
+        let url = '/messages/conversations?filter=' + currentFilter
+                + '&before_last_message_at=' + encodeURIComponent(convListMoreCursor);
+        if (search) url += '&search=' + encodeURIComponent(search) + '&search_mode=' + (currentSearchMode || 'customers');
+        if (labelFilterId) url += '&label_id=' + labelFilterId;
+        if (assignedToMe)  url += '&assigned_to_me=1';
+        apiFetch(url).then(d => {
+            convListLoadingMore = false;
+            if (!d || !d.success) {
+                repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+                return;
+            }
+            const incoming = Array.isArray(d.conversations) ? d.conversations : [];
+            convListExtra = convListExtra.concat(incoming);
+            convListMoreCursor    = d.next_cursor || null;
+            convListMoreExhausted = !d.has_more || !convListMoreCursor;
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+        }).catch(() => {
+            convListLoadingMore = false;
+            repaintConvList({ searchMode: currentSearchMode, searchTerm: search });
+        });
+    };
+    window.loadMoreConversations = loadMoreConversations;
 
     // =========================================================================
     // Marketing-template dedup module (Apr 2026 — see add_marketing_dedup_apr2026.sql).

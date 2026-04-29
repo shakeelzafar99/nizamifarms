@@ -1,0 +1,50 @@
+#!/bin/sh
+# ------------------------------------------------------------------------
+# Analytics-sandbox guardrail.
+#
+# When the current branch starts with `analytics-sandbox`, this hook
+# refuses any commit that touches files outside `analytics-sandbox/`.
+#
+# Branches NOT starting with `analytics-sandbox` are unaffected — the
+# repo owner working on `main` is free to edit anything.
+#
+# Install once per clone:
+#   git config core.hooksPath .githooks
+# (the `.githooks/install.ps1` helper does this on Windows)
+# ------------------------------------------------------------------------
+
+set -e
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+
+case "$branch" in
+    analytics-sandbox|analytics-sandbox/*|analytics-sandbox-*)
+        ;;
+    *)
+        # Not a sandbox branch — let the commit through unchanged.
+        exit 0
+        ;;
+esac
+
+# Files staged for commit.
+changed=$(git diff --cached --name-only --diff-filter=ACMRTD)
+
+# Anything not under analytics-sandbox/ is forbidden on this branch.
+bad=$(echo "$changed" | grep -v -E '^analytics-sandbox/' || true)
+
+if [ -n "$bad" ]; then
+    echo ""
+    echo "❌  COMMIT BLOCKED — branch '$branch' may only modify analytics-sandbox/"
+    echo ""
+    echo "    The following staged files are outside the sandbox:"
+    echo "$bad" | sed 's/^/      • /'
+    echo ""
+    echo "    What to do:"
+    echo "      • Unstage them:    git restore --staged <file>"
+    echo "      • Or, if the change really belongs in the operational code,"
+    echo "        ask the repo owner to apply it on 'main'."
+    echo ""
+    exit 1
+fi
+
+exit 0

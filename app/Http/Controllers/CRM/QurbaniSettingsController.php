@@ -22,19 +22,26 @@ class QurbaniSettingsController extends Controller
             ->groupBy('field_name');
 
         $shippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
-        // Default payment method for brand-new qurbani orders. Stored in
-        // t_fin_config so both web + mobile read the same value. Only 'cash'
-        // or 'online' are accepted (matches the Qurbani payment modal).
         $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
         if (!in_array($defaultPaymentMethod, ['cash', 'online'], true)) {
             $defaultPaymentMethod = 'cash';
         }
+
+        $qurbaniCategories = DB::table('t_crm_prod_product')
+            ->whereRaw("LOWER(attribute_1) = 'qurbani'")
+            ->whereNotNull('attribute_2')
+            ->where('attribute_2', '!=', '')
+            ->distinct()
+            ->orderBy('attribute_2')
+            ->pluck('attribute_2')
+            ->toArray();
 
         return response()->json([
             'success' => true,
             'options' => $options,
             'qurbani_shipping_price' => $shippingPrice,
             'qurbani_default_payment_method' => $defaultPaymentMethod,
+            'qurbani_categories' => $qurbaniCategories,
         ]);
     }
 
@@ -105,6 +112,7 @@ class QurbaniSettingsController extends Controller
             'show_in_invoice' => 'sometimes|boolean',
             'parent_id' => 'sometimes|nullable|integer',
             'delivery_type_parent_id' => 'sometimes|nullable|integer',
+            'category_override' => 'sometimes|nullable|string|max:100',
         ]);
 
         $option = DB::table('t_crm_qurbani_field_options')->where('id', $id)->first();
@@ -118,14 +126,25 @@ class QurbaniSettingsController extends Controller
         if (isset($validated['is_active'])) $update['is_active'] = $validated['is_active'] ? 1 : 0;
         if (array_key_exists('parent_id', $validated)) $update['parent_id'] = $validated['parent_id'];
         if (array_key_exists('delivery_type_parent_id', $validated)) $update['delivery_type_parent_id'] = $validated['delivery_type_parent_id'];
+        if (array_key_exists('category_override', $validated)) $update['category_override'] = $validated['category_override'];
 
         if (isset($validated['is_default'])) {
             $newDefault = $validated['is_default'] ? 1 : 0;
             if ($newDefault) {
-                DB::table('t_crm_qurbani_field_options')
+                // Clear other defaults for the same field + same category scope
+                $clearQuery = DB::table('t_crm_qurbani_field_options')
                     ->where('field_name', $option->field_name)
-                    ->where('is_default', 1)
-                    ->update(['is_default' => 0, 'updated_at' => now()]);
+                    ->where('is_default', 1);
+
+                $targetCategory = $validated['category_override'] ?? ($option->category_override ?? null);
+                if ($targetCategory) {
+                    $clearQuery->where('category_override', $targetCategory);
+                } else {
+                    $clearQuery->where(function ($q) {
+                        $q->whereNull('category_override')->orWhere('category_override', '');
+                    });
+                }
+                $clearQuery->update(['is_default' => 0, 'updated_at' => now()]);
             }
             $update['is_default'] = $newDefault;
         }
@@ -190,6 +209,29 @@ class QurbaniSettingsController extends Controller
             'success' => true,
             'message' => 'Default payment method updated',
             'method' => $validated['method'],
+        ]);
+    }
+
+    public function updateCancellationCode(Request $request)
+    {
+        $validated = $request->validate([
+            'code' => 'nullable|string|max:4',
+        ]);
+
+        $code = $validated['code'] ?? '';
+        if ($code !== '' && (!ctype_digit($code) || strlen($code) !== 4)) {
+            return response()->json(['success' => false, 'message' => 'Code must be exactly 4 digits'], 422);
+        }
+
+        \App\Models\FIN\ConfigModel::set(
+            'qurbani_cancellation_code',
+            $code,
+            '4-digit code required to cancel qurbani orders'
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => $code ? 'Cancellation code saved' : 'Cancellation code removed',
         ]);
     }
 

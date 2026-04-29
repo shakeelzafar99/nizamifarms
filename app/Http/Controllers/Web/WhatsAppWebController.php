@@ -44,6 +44,85 @@ class WhatsAppWebController extends Controller
         ];
     }
 
+    /**
+     * Apr-2026: Single source of truth for "which conversations are
+     * currently unread for this user". Used by:
+     *   1. getConversations() when filter=unread, so the Unread tab can
+     *      span the whole DB instead of being a client-side filter on
+     *      the loaded 200.
+     *   2. markAllRead() to know which conversations to flip.
+     *
+     * Mirrors the badge query in getUnreadCount() byte-for-byte:
+     *   - inbound only
+     *   - newer than this user's last_read_at (or no read row)
+     *   - newer than global_read_at (super-reader marker, when present)
+     *   - no outbound staff reply AFTER this inbound
+     *   - if user is "limited", restrict to their visible window
+     * Plus we union in any conversation explicitly Mark-Unread-ed by this
+     * user via t_wa_conversation_reads.forced_unread_at, since those are
+     * conversations the operator INTENTIONALLY left in the unread bucket.
+     *
+     * Returns an array<int> of conversation ids. Empty when the user has
+     * no unread (or no schema support).
+     */
+    protected function unreadConversationIdsForCurrentUser(array $access): array
+    {
+        $userId = auth()->id();
+        if (!$userId || !Schema::hasTable('t_wa_conversation_reads')) {
+            return [];
+        }
+
+        $q = DB::table('t_wa_messages as m')
+            ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($userId) {
+                $j->on('r.conversation_id', '=', 'm.conversation_id')
+                  ->where('r.user_id', '=', $userId);
+            })
+            ->where('m.direction', 'inbound')
+            ->where(function ($w) {
+                $w->whereNull('r.last_read_at')
+                  ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+            })
+            ->whereRaw('NOT EXISTS (
+                SELECT 1 FROM t_wa_messages m2
+                WHERE m2.conversation_id = m.conversation_id
+                  AND m2.direction = \'outbound\'
+                  AND m2.created_at > m.created_at
+            )');
+
+        if (Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+            $q->leftJoin('t_wa_conversations as c', 'c.id', '=', 'm.conversation_id')
+              ->where(function ($w) {
+                  $w->whereNull('c.global_read_at')
+                    ->orWhereColumn('m.created_at', '>', 'c.global_read_at');
+              });
+        }
+
+        if ($access['limited']) {
+            $q->where('m.created_at', '>=', $access['cutoff']);
+        }
+
+        $organicIds = $q->distinct()->pluck('m.conversation_id')->all();
+
+        // Forced-unread bucket — Mark-as-Unread-ed by this user. We add
+        // these on top of the organic set; the inbox's job is to surface
+        // every conversation the operator considers "still pending".
+        $forcedIds = [];
+        if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
+            $forcedIds = DB::table('t_wa_conversation_reads')
+                ->where('user_id', $userId)
+                ->whereNotNull('forced_unread_at')
+                ->pluck('conversation_id')
+                ->all();
+        }
+
+        // array_values + array_unique so callers get a clean integer list.
+        $merged = array_values(array_unique(array_merge(
+            array_map('intval', $organicIds),
+            array_map('intval', $forcedIds)
+        )));
+        return $merged;
+    }
+
     public function index()
     {
         $access = $this->resolveWhatsAppAccess();
@@ -54,10 +133,16 @@ class WhatsAppWebController extends Controller
         $waCanManageAutoReply = $user
             && method_exists($user, 'hasMobilePermission')
             && $user->hasMobilePermission('manage_wa_auto_reply');
+        // Apr-2026: super-reader flag drives the Mark-All-Read button on
+        // the Unread tab. Only Taimur's role gets `whatsapp_super_reader`,
+        // and only super-readers can mark globally — for everyone else the
+        // bulk button is hidden and they continue clearing one by one.
+        $waIsSuperReader = app(WhatsAppService::class)->isSuperReader($user);
         return view('pages.messages.index', [
             'waIsLimited' => $access['limited'],
             'waCutoffAt'  => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
             'waCanManageAutoReply' => $waCanManageAutoReply,
+            'waIsSuperReader' => $waIsSuperReader,
         ]);
     }
 
@@ -89,6 +174,31 @@ class WhatsAppWebController extends Controller
         // Qurbani tab shows only conversations auto-flagged as qurbani.
         if ($request->filter === 'qurbani' && $hasQurbaniCol) {
             $query->where('is_qurbani', 1);
+        }
+
+        // Unread tab — Apr-2026: prefilter to a DB-wide list of this user's
+        // unread conversation ids instead of relying on the post-fetch filter
+        // (line ~482) inside the top-200 window. Users with hundreds of stale
+        // unread one-message threads were seeing a tiny subset of their actual
+        // unread list because the older threads sat below the cursor. Now we
+        // compute the full unread set up front and let the rest of the query
+        // (sort, limit, search) operate on it. The post-fetch filter is still
+        // there as a belt-and-braces guard.
+        $unreadOnly = ($request->filter === 'unread');
+        if ($unreadOnly) {
+            $unreadIds = $this->unreadConversationIdsForCurrentUser($access);
+            if (empty($unreadIds)) {
+                return response()->json([
+                    'success' => true,
+                    'conversations' => [],
+                    'is_limited' => $access['limited'],
+                    'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
+                    'has_more' => false,
+                    'next_cursor' => null,
+                    'total_unread' => 0,
+                ]);
+            }
+            $query->whereIn('id', $unreadIds);
         }
 
         // Two search modes, driven by the UI toggle next to the input:
@@ -158,9 +268,50 @@ class WhatsAppWebController extends Controller
             }
         }
 
+        // Apr-2026: switched from a hard 150-cap to cursor pagination.
+        //   - First page (no cursor) returns up to 200 most-recent conversations.
+        //   - Subsequent pages pass `before_last_message_at` (ISO8601) as the
+        //     cursor and request up to 100 older rows. Cursor uses
+        //     last_message_at because the list is sorted on it; page numbers
+        //     would shift any time a tail conversation got new activity.
+        //   - Hard ceiling of 300 on a single request to keep payload + the
+        //     downstream COUNT(*) joins predictable. Frontend can chain
+        //     pages by using the oldest visible last_message_at as the next
+        //     cursor.
+        $isPagedFetch = (bool) $request->input('before_last_message_at');
+        $perPage = (int) ($request->input('limit') ?: ($isPagedFetch ? 100 : 200));
+        $perPage = max(1, min($perPage, 300));
+
+        // For the Unread tab we already restricted the candidate set to the
+        // user's actual unread ids — return the whole list in one go (capped
+        // at 500 to be safe) and skip cursor pagination. The list is
+        // self-bounded in practice and Mark-as-Read is per-row, so the
+        // operator needs to see all of them at once.
+        if ($unreadOnly) {
+            $perPage = min(count($unreadIds), 500);
+            $isPagedFetch = false;
+        }
+
+        if ($isPagedFetch) {
+            try {
+                $cursor = \Carbon\Carbon::parse($request->input('before_last_message_at'));
+                // <= rather than strict <. The boundary conversation can
+                // slide out of the top 200 between the moment the cursor
+                // was captured and the moment the operator clicks Load
+                // More — strict < would leave it in a gap (not in the
+                // live head, not in extras). We tolerate one duplicate
+                // row at the boundary because the frontend dedupes by id
+                // before rendering, so users never see it twice.
+                $query->where('last_message_at', '<=', $cursor);
+            } catch (\Exception $e) {
+                // Bad cursor → treat as first-page fetch.
+                $isPagedFetch = false;
+            }
+        }
+
         // Fetch conversations + last-read timestamps for this user in one shot.
         $lastReadMap = [];
-        $convs = $query->limit(150)->get();
+        $convs = $query->limit($perPage)->get();
         $convIds = $convs->pluck('id')->all();
 
         if ($hasReadsTable && $userId && !empty($convIds)) {
@@ -392,13 +543,47 @@ class WhatsAppWebController extends Controller
             })->values();
         }
 
-        return response()->json([
+        // Pagination cursor for "Load more chats". The frontend only needs
+        // a value to pass back as `before_last_message_at`; page-numbering
+        // is intentionally avoided because conversations re-order whenever
+        // new activity bubbles them up. We expose `has_more = true` only
+        // when the fetched batch was full — otherwise we know we hit the
+        // tail and the button can hide. Note this is computed BEFORE the
+        // post-fetch filters (unread/@me/label) since those just hide rows
+        // client-side; older conversations matching the same filters might
+        // still exist and the button should still be available.
+        $nextCursor = null;
+        $hasMore    = $convs->count() >= $perPage;
+        if ($hasMore && !$convs->isEmpty()) {
+            $oldest = $convs->last();
+            $nextCursor = $oldest->last_message_at
+                ? \Carbon\Carbon::parse($oldest->last_message_at)->toIso8601String()
+                : null;
+        }
+
+        // Unread mode is single-shot (no cursor pagination), so unconditionally
+        // close out has_more. Also surface the DB-wide unread total so the
+        // confirm dialog on Mark-All-Read can quote a real number to the
+        // operator before they pull the trigger.
+        if ($unreadOnly) {
+            $hasMore = false;
+            $nextCursor = null;
+        }
+
+        $resp = [
             'success' => true,
             'conversations' => $conversations,
             'is_limited' => $access['limited'],
             'cutoff_at' => $access['limited'] ? $access['cutoff']->toIso8601String() : null,
             'search_mode' => $searchMode,
-        ]);
+            'has_more' => $hasMore,
+            'next_cursor' => $nextCursor,
+            'is_paged_fetch' => $isPagedFetch,
+        ];
+        if ($unreadOnly) {
+            $resp['total_unread'] = isset($unreadIds) ? count($unreadIds) : 0;
+        }
+        return response()->json($resp);
     }
 
     /**
@@ -801,6 +986,118 @@ class WhatsAppWebController extends Controller
     }
 
     /**
+     * Bulk "Mark all unread conversations as read" — super-reader only.
+     *
+     * Apr-2026. Background: the inbox accumulated a long tail of stale
+     * one-message threads from before staff started replying systematically.
+     * For ordinary operators those still need to be cleared one by one
+     * (their Mark-as-Read is a personal action), but the Taimur role has the
+     * `whatsapp_super_reader` permission, which means a single action of
+     * theirs is global — anything they read is read for EVERY user. This
+     * endpoint is the bulk version of that: stamp `global_read_at = NOW()`
+     * on every conversation that's currently unread for this super-reader,
+     * inside one transaction.
+     *
+     * Behaviour decisions (kept deliberately narrow):
+     *  - Hard 403 for non-super-readers. There is no per-user equivalent —
+     *    the user explicitly asked that everyone else clear individually.
+     *  - We use unreadConversationIdsForCurrentUser() so the candidate set
+     *    matches exactly what the operator sees in the Unread tab and the
+     *    sidebar badge. No "approximate match" surprises.
+     *  - We do NOT push WhatsApp blue ticks for the bulk action. Doing so
+     *    would fire one outbound API call per conversation (potentially
+     *    hundreds), spam the customer with read receipts on threads they
+     *    long since forgot about, and risk rate-limit hits. Individual
+     *    Mark-as-Read still pushes blue ticks; bulk does not.
+     *  - Idempotent: re-running with no unread is a no-op returning 0.
+     */
+    public function markAllRead(Request $request)
+    {
+        $access = $this->resolveWhatsAppAccess();
+        if (!$access['allowed']) {
+            return response()->json(['success' => false, 'message' => 'No permission'], 403);
+        }
+
+        $user = auth()->user();
+        if (!app(WhatsAppService::class)->isSuperReader($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Mark-all-read is restricted to super-readers.',
+            ], 403);
+        }
+
+        if (!Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'global_read_at column missing — run the labels/super-reader migration first.',
+            ], 500);
+        }
+
+        $unreadIds = $this->unreadConversationIdsForCurrentUser($access);
+        if (empty($unreadIds)) {
+            return response()->json(['success' => true, 'cleared' => 0]);
+        }
+
+        $now = now();
+        DB::transaction(function () use ($unreadIds, $now, $user) {
+            // Stamp the global marker + zero the legacy column. chunk()
+            // keeps the IN(...) list at a sane size for very large clears.
+            foreach (array_chunk($unreadIds, 500) as $chunk) {
+                ConversationModel::whereIn('id', $chunk)->update([
+                    'global_read_at' => $now,
+                    'unread_count'   => 0,
+                ]);
+            }
+
+            // Also stamp the super-reader's own per-user read row, so the
+            // forced_unread_at flag (if any) is cleared and their personal
+            // last_read_at advances. Mirrors what markRead() does for a
+            // single conversation.
+            $userId = $user ? $user->id : null;
+            if ($userId && Schema::hasTable('t_wa_conversation_reads')) {
+                $hasForced = Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at');
+                $rows = [];
+                foreach ($unreadIds as $cid) {
+                    $row = [
+                        'user_id'         => $userId,
+                        'conversation_id' => $cid,
+                        'last_read_at'    => $now,
+                        'updated_at'      => $now,
+                        'created_at'      => $now,
+                    ];
+                    if ($hasForced) {
+                        $row['forced_unread_at'] = null;
+                    }
+                    $rows[] = $row;
+                }
+                // upsert() handles both inserts (first-time read) and
+                // updates (existing row gets its last_read_at advanced).
+                $updateCols = $hasForced
+                    ? ['last_read_at', 'forced_unread_at', 'updated_at']
+                    : ['last_read_at', 'updated_at'];
+                foreach (array_chunk($rows, 500) as $chunk) {
+                    ConversationReadModel::upsert(
+                        $chunk,
+                        ['user_id', 'conversation_id'],
+                        $updateCols
+                    );
+                }
+            }
+        });
+
+        Log::info('WhatsApp mark-all-read', [
+            'user_id'   => $user ? $user->id : null,
+            'user_name' => $user ? $user->name : null,
+            'cleared'   => count($unreadIds),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'cleared' => count($unreadIds),
+        ]);
+    }
+
+    /**
      * Mark a conversation UNREAD for this user — and for everyone if the
      * current user is a super-reader. Mirrors the mobile API's behaviour.
      */
@@ -1102,11 +1399,19 @@ class WhatsAppWebController extends Controller
 
         $userId = auth()->id();
         if (!$userId || !Schema::hasTable('t_wa_conversation_reads')) {
-            // Fallback: legacy summed column.
-            $count = ConversationModel::where('unread_count', '>', 0)->sum('unread_count');
+            // Fallback: legacy summed column. Approximates "conversations
+            // with unread" by counting rows where unread_count > 0.
+            $count = ConversationModel::where('unread_count', '>', 0)->count();
             return response()->json(['success' => true, 'unread_count' => (int) $count]);
         }
 
+        // Apr-2026: badge counts CONVERSATIONS-with-unread (not raw messages).
+        // The Unread filter in the inbox shows distinct chats; counting raw
+        // inbound messages here was inflating the badge well past the visible
+        // chat count (e.g. badge "68" while Unread tab shows "2 chats" because
+        // most messages live in old chats nobody ever replied to). Using
+        // COUNT(DISTINCT m.conversation_id) keeps the badge in lockstep with
+        // what the operator sees when they click the Messages menu item.
         $query = DB::table('t_wa_messages as m')
             ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($userId) {
                 $j->on('r.conversation_id', '=', 'm.conversation_id')
@@ -1139,10 +1444,14 @@ class WhatsAppWebController extends Controller
             $query->where('m.created_at', '>=', $access['cutoff']);
         }
 
-        $count = (int) $query->count();
+        $count = (int) $query
+            ->selectRaw('COUNT(DISTINCT m.conversation_id) as cnt')
+            ->value('cnt');
 
-        // Ensure forced-unread conversations contribute to the badge even
-        // when they have no eligible inbound messages left.
+        // Forced-unread conversations always count for at least 1 each
+        // (one row per conversation in t_wa_conversation_reads), so the
+        // existing max() reconciliation still does the right thing now
+        // that we're counting conversations on both sides.
         if (Schema::hasColumn('t_wa_conversation_reads', 'forced_unread_at')) {
             $forcedCount = DB::table('t_wa_conversation_reads')
                 ->where('user_id', $userId)

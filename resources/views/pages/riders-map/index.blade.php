@@ -268,6 +268,230 @@
         font-size: 48px;
         margin-bottom: 12px;
     }
+
+    /* ===== DISPATCH TRACKER STYLES ===== */
+    .dt-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 0 16px;
+    }
+    .dt-controls input[type="date"] {
+        padding: 7px 12px;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        font-size: 13px;
+    }
+    .dt-controls .dt-btn {
+        padding: 7px 14px;
+        border-radius: 6px;
+        border: none;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        color: white;
+        background: #f59e0b;
+    }
+    .dt-controls .dt-btn:hover { background: #d97706; }
+
+    .dt-summary-bar {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+    }
+    .dt-stat {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px 16px;
+        min-width: 120px;
+        text-align: center;
+    }
+    .dt-stat .dt-val {
+        font-size: 20px;
+        font-weight: 700;
+        color: #1f2937;
+    }
+    .dt-stat .dt-label {
+        font-size: 11px;
+        color: #6b7280;
+        margin-top: 2px;
+    }
+    .dt-stat.green .dt-val { color: #059669; }
+    .dt-stat.red .dt-val { color: #dc2626; }
+    .dt-stat.blue .dt-val { color: #2563eb; }
+    .dt-stat.amber .dt-val { color: #d97706; }
+
+    .dt-rider-card {
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        margin-bottom: 12px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .dt-rider-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 16px;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .dt-rider-header:hover { background: #f9fafb; }
+    .dt-rider-name {
+        font-size: 15px;
+        font-weight: 600;
+        color: #1f2937;
+    }
+    .dt-rider-meta {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 3px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .dt-rider-badges {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .dt-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    .dt-badge.green { background: #d1fae5; color: #065f46; }
+    .dt-badge.red { background: #fee2e2; color: #991b1b; }
+    .dt-badge.blue { background: #dbeafe; color: #1e40af; }
+    .dt-badge.amber { background: #fef3c7; color: #92400e; }
+    .dt-badge.purple { background: #ede9fe; color: #5b21b6; }
+    .dt-badge.gray { background: #f3f4f6; color: #374151; }
+
+    .dt-rider-body {
+        display: none;
+        border-top: 1px solid #e5e7eb;
+    }
+    .dt-rider-body.open { display: block; }
+
+    .dt-batch {
+        border-bottom: 1px solid #f3f4f6;
+    }
+    .dt-batch:last-child { border-bottom: none; }
+    .dt-batch-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 16px;
+        background: #f0fdf4;
+        border-bottom: 1px solid #e5e7eb;
+        cursor: pointer;
+    }
+    .dt-batch-header:hover { background: #ecfdf5; }
+    .dt-batch-header.undispatched {
+        background: #fef2f2;
+    }
+    .dt-batch-header.undispatched:hover { background: #fee2e2; }
+    .dt-batch-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #1f2937;
+    }
+    .dt-batch-stats {
+        display: flex;
+        gap: 8px;
+        font-size: 11px;
+        align-items: center;
+    }
+    .dt-batch-orders {
+        display: none;
+    }
+    .dt-batch-orders.open { display: block; }
+
+    .dt-order-row {
+        border-bottom: none;
+    }
+    .dt-order-row:last-child .dt-order-main { border-bottom: none; }
+    .dt-order-row { cursor: pointer; }
+    .dt-order-main {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 16px 8px 28px;
+        border-bottom: 1px solid #f9fafb;
+        font-size: 12px;
+        gap: 8px;
+    }
+    .dt-order-details {
+        display: none;
+        padding: 4px 16px 8px 56px;
+        font-size: 11px;
+        color: #6b7280;
+        background: #f9fafb;
+        border-bottom: 1px solid #f3f4f6;
+    }
+    .dt-order-details.open { display: block; }
+    .dt-order-details span { margin-right: 16px; }
+    .dt-order-details .dt-detail-label { color: #9ca3af; font-weight: 500; }
+    .dt-order-details .dt-detail-value { color: #374151; }
+    .dt-order-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+    .dt-order-seq {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #e5e7eb;
+        color: #374151;
+        font-weight: 700;
+        font-size: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    .dt-order-seq.match { background: #d1fae5; color: #065f46; }
+    .dt-order-seq.mismatch { background: #fee2e2; color: #991b1b; }
+    .dt-order-num {
+        font-weight: 600;
+        color: #3b82f6;
+        white-space: nowrap;
+    }
+    .dt-order-customer {
+        color: #374151;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .dt-order-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+    .dt-time {
+        font-size: 11px;
+        color: #6b7280;
+        white-space: nowrap;
+    }
+    .dt-eta-ok { color: #059669; font-weight: 600; }
+    .dt-eta-late { color: #dc2626; font-weight: 600; }
+    .dt-amount {
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .dt-amount.cash { color: #059669; }
+    .dt-amount.online { color: #2563eb; }
 </style>
 @endpush
 
@@ -282,6 +506,7 @@
                 <button id="viewRidersBtn" onclick="switchView('riders')" class="active">📍 Rider Map</button>
                 <button id="viewOrdersBtn" onclick="switchView('orders')">📦 Open Orders</button>
                 <button id="viewHistoryBtn" onclick="switchView('history')">📅 History</button>
+                <button id="viewDispatchBtn" onclick="switchView('dispatch')">🚀 Dispatch Tracker</button>
             </div>
             
             <!-- Date Picker (for riders view) -->
@@ -388,6 +613,20 @@
                 <div id="historyOrdersList" class="orders-list"></div>
             </div>
         </div>
+        
+        <!-- ========== DISPATCH TRACKER VIEW ========== -->
+        <div id="dispatchView" style="display: none;">
+            <div class="dt-controls">
+                <label style="font-weight:500; font-size:13px; color:#374151;">Date:</label>
+                <input type="date" id="dtDateInput" onchange="loadDispatchReport(this.value)">
+                <button class="dt-btn" onclick="dtSetToday()">Today</button>
+                <button class="dt-btn" style="background:#6b7280;" onclick="dtPrevDay()">← Prev Day</button>
+                <button class="dt-btn" style="background:#6b7280;" onclick="dtNextDay()">Next Day →</button>
+                <span id="dtDateLabel" style="font-size:14px; font-weight:600; color:#1f2937; margin-left:8px;"></span>
+            </div>
+            <div id="dtSummaryBar" class="dt-summary-bar"></div>
+            <div id="dtRidersContainer"></div>
+        </div>
     </div>
 </div>
 
@@ -398,7 +637,7 @@
 // =============================================
 // STATE VARIABLES
 // =============================================
-let currentView = 'riders'; // 'riders', 'orders', 'history'
+let currentView = 'riders'; // 'riders', 'orders', 'history', 'dispatch'
 let currentDate = null; // null = today/live
 let autoRefreshInterval = null;
 
@@ -417,6 +656,10 @@ let allOrdersData = null;
 // History state
 let historyRiderId = null;
 let historyRiderName = null;
+
+// Dispatch Tracker state
+let dtCurrentDate = null;
+let dtReportData = null;
 
 // =============================================
 // INITIALIZATION
@@ -440,12 +683,14 @@ function switchView(view) {
     document.getElementById('viewRidersBtn').classList.toggle('active', view === 'riders');
     document.getElementById('viewOrdersBtn').classList.toggle('active', view === 'orders');
     document.getElementById('viewHistoryBtn').classList.toggle('active', view === 'history');
+    document.getElementById('viewDispatchBtn').classList.toggle('active', view === 'dispatch');
     
     // Hide all views
     document.getElementById('ridersListView').style.display = 'none';
     document.getElementById('singleRiderView').style.display = 'none';
     document.getElementById('openOrdersView').style.display = 'none';
     document.getElementById('historyView').style.display = 'none';
+    document.getElementById('dispatchView').style.display = 'none';
     document.getElementById('filtersSection').style.display = 'none';
     document.getElementById('historyBanner').style.display = 'none';
     
@@ -469,6 +714,12 @@ function switchView(view) {
         stopAutoRefresh();
         resetHistoryView();
         loadHistoryRiders();
+    } else if (view === 'dispatch') {
+        document.getElementById('datePicker').style.display = 'none';
+        document.getElementById('dispatchView').style.display = 'block';
+        document.getElementById('pageTitle').textContent = '🚀 Dispatch Tracker';
+        stopAutoRefresh();
+        dtInit();
     }
 }
 
@@ -1381,6 +1632,337 @@ function loadDeliveryJourney(orderId, orderNumber) {
         console.error('Journey load error:', err);
         panel.innerHTML = '<div style="padding: 12px 16px; color: #ef4444; font-size: 12px;">❌ Error loading journey data</div>';
     });
+}
+
+// =============================================
+// DISPATCH TRACKER
+// =============================================
+function dtInit() {
+    if (!dtCurrentDate) {
+        dtCurrentDate = new Date().toISOString().split('T')[0];
+    }
+    const inp = document.getElementById('dtDateInput');
+    inp.value = dtCurrentDate;
+    inp.max = new Date().toISOString().split('T')[0];
+    loadDispatchReport(dtCurrentDate);
+}
+
+function dtSetToday() {
+    dtCurrentDate = new Date().toISOString().split('T')[0];
+    document.getElementById('dtDateInput').value = dtCurrentDate;
+    loadDispatchReport(dtCurrentDate);
+}
+
+function dtPrevDay() {
+    const d = new Date(dtCurrentDate);
+    d.setDate(d.getDate() - 1);
+    dtCurrentDate = d.toISOString().split('T')[0];
+    document.getElementById('dtDateInput').value = dtCurrentDate;
+    loadDispatchReport(dtCurrentDate);
+}
+
+function dtNextDay() {
+    const d = new Date(dtCurrentDate);
+    d.setDate(d.getDate() + 1);
+    const today = new Date().toISOString().split('T')[0];
+    if (d.toISOString().split('T')[0] > today) return;
+    dtCurrentDate = d.toISOString().split('T')[0];
+    document.getElementById('dtDateInput').value = dtCurrentDate;
+    loadDispatchReport(dtCurrentDate);
+}
+
+async function loadDispatchReport(date) {
+    dtCurrentDate = date;
+    const container = document.getElementById('dtRidersContainer');
+    const summaryBar = document.getElementById('dtSummaryBar');
+
+    container.innerHTML = '<div style="padding:40px; text-align:center; color:#6b7280;"><svg class="loading-spinner" style="width:32px; height:32px; margin:0 auto 12px;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>Loading dispatch report...</div>';
+    summaryBar.innerHTML = '';
+
+    try {
+        const response = await fetch(`/orders/riders-map/dispatch-report?date=${date}`, {
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content') }
+        });
+        const data = await response.json();
+
+        if (!data.success) throw new Error(data.message || 'Failed');
+
+        dtReportData = data;
+        document.getElementById('dtDateLabel').textContent = data.date_display;
+
+        dtRenderSummary(data.summary);
+        dtRenderRiders(data.riders);
+    } catch (err) {
+        console.error('Dispatch report error:', err);
+        container.innerHTML = `<div style="padding:40px; text-align:center; color:#ef4444;">Failed to load: ${err.message}</div>`;
+    }
+}
+
+function dtRenderSummary(s) {
+    const bar = document.getElementById('dtSummaryBar');
+    const complianceColor = s.dispatch_compliance_pct >= 80 ? 'green' : (s.dispatch_compliance_pct >= 50 ? 'amber' : 'red');
+    const etaColor = (s.eta_accuracy_pct !== null && s.eta_accuracy_pct >= 70) ? 'green' : ((s.eta_accuracy_pct !== null && s.eta_accuracy_pct >= 40) ? 'amber' : 'red');
+
+    bar.innerHTML = `
+        <div class="dt-stat blue">
+            <div class="dt-val">${s.total_delivered}</div>
+            <div class="dt-label">Delivered</div>
+        </div>
+        <div class="dt-stat">${'<div class="dt-val">' + s.total_riders + '</div><div class="dt-label">Riders</div>'}</div>
+        <div class="dt-stat ${complianceColor}">
+            <div class="dt-val">${s.dispatch_compliance_pct}%</div>
+            <div class="dt-label">Dispatched (${s.total_dispatched}/${s.total_delivered})</div>
+        </div>
+        <div class="dt-stat ${s.total_undispatched > 0 ? 'red' : 'green'}">
+            <div class="dt-val">${s.total_undispatched}</div>
+            <div class="dt-label">Not Dispatched</div>
+        </div>
+        ${s.eta_accuracy_pct !== null ? `
+        <div class="dt-stat ${etaColor}">
+            <div class="dt-val">${s.eta_accuracy_pct}%</div>
+            <div class="dt-label">ETA On-Time (${s.eta_on_time}/${s.eta_total})</div>
+        </div>` : ''}
+        <div class="dt-stat green">
+            <div class="dt-val">Rs. ${Math.round(s.cash_total).toLocaleString()}</div>
+            <div class="dt-label">Cash</div>
+        </div>
+        <div class="dt-stat blue">
+            <div class="dt-val">Rs. ${Math.round(s.online_total).toLocaleString()}</div>
+            <div class="dt-label">Online</div>
+        </div>
+        <div class="dt-stat ${s.has_verified_count > 0 ? (s.delivered_at_verified_count === s.has_verified_count ? 'green' : 'amber') : 'gray'}">
+            <div class="dt-val">${s.delivered_at_verified_count}/${s.has_verified_count}</div>
+            <div class="dt-label">At Verified Loc</div>
+        </div>
+    `;
+}
+
+function dtRenderRiders(riders) {
+    const container = document.getElementById('dtRidersContainer');
+
+    if (!riders || riders.length === 0) {
+        container.innerHTML = '<div style="padding:60px; text-align:center; color:#6b7280;"><div style="font-size:48px; margin-bottom:12px;">📭</div>No delivered orders for this date</div>';
+        return;
+    }
+
+    container.innerHTML = riders.map((rider, rIdx) => {
+        const compPct = rider.dispatch_compliance_pct;
+        const compClass = compPct >= 80 ? 'green' : (compPct >= 50 ? 'amber' : 'red');
+        const etaPct = rider.eta_accuracy_pct;
+        const etaClass = etaPct !== null ? (etaPct >= 70 ? 'green' : (etaPct >= 40 ? 'amber' : 'red')) : 'gray';
+
+        return `
+        <div class="dt-rider-card" id="dtRider_${rIdx}">
+            <div class="dt-rider-header" onclick="dtToggleRider(${rIdx})">
+                <div>
+                    <div class="dt-rider-name">🏍️ ${rider.name}</div>
+                    <div class="dt-rider-meta">
+                        ${rider.login_time ? `<span>🟢 In: ${rider.login_time}</span>` : '<span style="color:#ef4444;">⚠️ No login</span>'}
+                        ${rider.logout_time ? `<span>🔴 Out: ${rider.logout_time}</span>` : '<span style="color:#9ca3af;">— Still active</span>'}
+                        ${rider.first_dispatch_delay_display ? `<span>⏱️ First dispatch: ${rider.first_dispatch_delay_display} after login</span>` : ''}
+                        <span>📦 ${rider.total_orders} orders</span>
+                        <span>${rider.num_dispatches} dispatch${rider.num_dispatches !== 1 ? 'es' : ''}</span>
+                    </div>
+                </div>
+                <div class="dt-rider-badges">
+                    <span class="dt-badge ${compClass}">${compPct}% dispatched</span>
+                    ${rider.undispatched_count > 0 ? `<span class="dt-badge red">⚠️ ${rider.undispatched_count} missed</span>` : ''}
+                    ${etaPct !== null ? `<span class="dt-badge ${etaClass}">${etaPct}% on-time</span>` : ''}
+                    ${rider.has_verified_count > 0 ? `<span class="dt-badge ${rider.delivered_at_verified_count === rider.has_verified_count ? 'green' : 'amber'}">📍 ${rider.delivered_at_verified_count}/${rider.has_verified_count} at verified</span>` : '<span class="dt-badge gray">📍 0 verified</span>'}
+                    <span class="dt-badge green">💵 ${rider.cash_count} · Rs.${Math.round(rider.cash_total).toLocaleString()}</span>
+                    <span class="dt-badge blue">💳 ${rider.online_count} · Rs.${Math.round(rider.online_total).toLocaleString()}</span>
+                    <span style="font-size:16px; color:#9ca3af; transition:transform 0.2s;" id="dtChevron_${rIdx}">▶</span>
+                </div>
+            </div>
+            <div class="dt-rider-body" id="dtBody_${rIdx}">
+                <div style="padding: 6px 16px; text-align: right; border-bottom: 1px solid #f3f4f6;">
+                    <button onclick="event.stopPropagation(); dtExpandAllOrders(${rIdx})" style="font-size:11px; padding:3px 10px; border:1px solid #d1d5db; border-radius:4px; background:#fff; cursor:pointer; color:#374151;">⬇ Expand All</button>
+                    <button onclick="event.stopPropagation(); dtCollapseAllOrders(${rIdx})" style="font-size:11px; padding:3px 10px; border:1px solid #d1d5db; border-radius:4px; background:#fff; cursor:pointer; color:#374151; margin-left:4px;">⬆ Collapse All</button>
+                </div>
+                ${dtRenderBatches(rider.dispatch_batches, rider.undispatched_group, rIdx)}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function dtToggleRider(rIdx) {
+    const body = document.getElementById('dtBody_' + rIdx);
+    const chevron = document.getElementById('dtChevron_' + rIdx);
+    const isOpen = body.classList.contains('open');
+    body.classList.toggle('open');
+    chevron.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+function dtExpandAllOrders(rIdx) {
+    const body = document.getElementById('dtBody_' + rIdx);
+    if (!body) return;
+    body.querySelectorAll('.dt-order-details').forEach(el => el.classList.add('open'));
+}
+
+function dtCollapseAllOrders(rIdx) {
+    const body = document.getElementById('dtBody_' + rIdx);
+    if (!body) return;
+    body.querySelectorAll('.dt-order-details').forEach(el => el.classList.remove('open'));
+}
+
+function dtRenderBatches(batches, undispatchedGroup, rIdx) {
+    let html = '';
+
+    if (batches && batches.length > 0) {
+        batches.forEach((batch, bIdx) => {
+            const batchId = `dt_b_${rIdx}_${bIdx}`;
+            const etaLabel = batch.eta_total > 0 ? `${batch.eta_on_time}/${batch.eta_total} on-time` : 'No ETAs';
+            const priLabel = batch.priority_total > 0 ? `${batch.priority_match}/${batch.priority_total} in sequence` : '';
+            const avgGap = batch.time_gaps.length > 0 ? Math.round(batch.time_gaps.reduce((a,b)=>a+b,0) / batch.time_gaps.length) : null;
+
+            const durDisplay = batch.batch_duration_min >= 60
+                ? `${Math.floor(batch.batch_duration_min/60)}h ${batch.batch_duration_min%60}m`
+                : `${batch.batch_duration_min}m`;
+
+            html += `
+            <div class="dt-batch">
+                <div class="dt-batch-header" onclick="dtToggleBatch('${batchId}')">
+                    <div>
+                        <span class="dt-batch-title">🚀 Dispatch at ${batch.dispatch_time_display}${batch.ofd_time_display && batch.ofd_time_display !== batch.dispatch_time_display ? ` · OFD ${batch.ofd_time_display}` : ''}</span>
+                        <span style="font-size:11px; color:#6b7280; margin-left:8px;">${batch.order_count} orders</span>
+                    </div>
+                    <div class="dt-batch-stats">
+                        ${batch.first_delivery && batch.last_delivery ? `<span class="dt-badge gray">🕐 ${batch.first_delivery} → ${batch.last_delivery} (${durDisplay})</span>` : ''}
+                        <span class="dt-badge ${batch.eta_total > 0 && batch.eta_on_time === batch.eta_total ? 'green' : (batch.eta_total > 0 ? 'amber' : 'gray')}">${etaLabel}</span>
+                        ${priLabel ? `<span class="dt-badge ${batch.priority_match === batch.priority_total ? 'green' : 'amber'}">📋 ${priLabel}</span>` : ''}
+                        ${avgGap !== null ? `<span class="dt-badge gray">~${avgGap}m between stops</span>` : ''}
+                        <span style="font-size:14px; color:#9ca3af;" id="dtBChev_${batchId}">▶</span>
+                    </div>
+                </div>
+                <div class="dt-batch-orders" id="${batchId}">
+                    ${dtRenderOrdersWithOfficeReturns(batch.orders, batch.office_returns || [], true)}
+                </div>
+            </div>`;
+        });
+    }
+
+    if (undispatchedGroup && undispatchedGroup.order_count > 0) {
+        const uBatchId = `dt_b_${rIdx}_undispatched`;
+        html += `
+        <div class="dt-batch">
+            <div class="dt-batch-header undispatched" onclick="dtToggleBatch('${uBatchId}')">
+                <div>
+                    <span class="dt-batch-title">⚠️ Not Dispatched</span>
+                    <span style="font-size:11px; color:#991b1b; margin-left:8px;">${undispatchedGroup.order_count} orders — dispatch button was not pressed</span>
+                </div>
+                <div class="dt-batch-stats">
+                    <span style="font-size:14px; color:#9ca3af;" id="dtBChev_${uBatchId}">▶</span>
+                </div>
+            </div>
+            <div class="dt-batch-orders" id="${uBatchId}">
+                ${dtRenderOrders(undispatchedGroup.orders, false)}
+            </div>
+        </div>`;
+    }
+
+    if (!html) {
+        html = '<div style="padding:16px; text-align:center; color:#6b7280; font-size:13px;">No orders</div>';
+    }
+
+    return html;
+}
+
+function dtToggleBatch(batchId) {
+    const el = document.getElementById(batchId);
+    const chev = document.getElementById('dtBChev_' + batchId);
+    const isOpen = el.classList.contains('open');
+    el.classList.toggle('open');
+    if (chev) chev.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+function dtRenderOrdersWithOfficeReturns(orders, officeReturns, showDispatchInfo) {
+    if (!orders || orders.length === 0) return '<div style="padding:12px 16px; color:#6b7280; font-size:12px;">No orders</div>';
+    const returnMap = {};
+    (officeReturns || []).forEach(r => { returnMap[r.after_order_idx] = r.visits; });
+
+    let html = '';
+    orders.forEach((o, idx) => {
+        html += dtRenderSingleOrder(o, showDispatchInfo);
+        if (returnMap[idx]) {
+            returnMap[idx].forEach(v => {
+                const durH = Math.floor(v.duration_min / 60);
+                const durM = v.duration_min % 60;
+                const durStr = durH > 0 ? `${durH}h ${durM}m` : `${durM}m`;
+                html += `<div class="dt-order-row" style="background:#eff6ff; border-left:3px solid #3b82f6;">
+                    <div class="dt-order-left" style="gap:6px;">
+                        <div style="width:22px; height:22px; border-radius:50%; background:#3b82f6; color:white; font-size:10px; display:flex; align-items:center; justify-content:center;">🏢</div>
+                        <span style="font-weight:600; color:#1e40af; font-size:11px;">Returned to office</span>
+                    </div>
+                    <div class="dt-order-right">
+                        <span class="dt-time" style="color:#1e40af;">🏢 ${v.arrived} → ${v.left} (${durStr})</span>
+                    </div>
+                </div>`;
+            });
+        }
+    });
+    return html;
+}
+
+function dtRenderSingleOrder(o, showDispatchInfo) {
+    const seqMatch = o.delivery_priority !== null && o.actual_sequence === o.delivery_priority;
+    const seqClass = o.delivery_priority !== null ? (seqMatch ? 'match' : 'mismatch') : '';
+    const seqTitle = o.delivery_priority !== null
+        ? (seqMatch ? `Priority ${o.delivery_priority} — delivered in correct sequence` : `Priority ${o.delivery_priority} — delivered as #${o.actual_sequence}`)
+        : 'No priority set';
+
+    let etaHtml = '';
+    if (showDispatchInfo && o.eta_comparison) {
+        etaHtml = `<span class="dt-time">ETA: ${o.eta_comparison.eta_display}</span>
+                   <span class="${o.eta_comparison.on_time ? 'dt-eta-ok' : 'dt-eta-late'}" style="font-size:10px;">${o.eta_comparison.label}</span>`;
+    } else if (showDispatchInfo && !o.eta_comparison) {
+        etaHtml = '<span class="dt-time" style="color:#d1d5db;">No ETA</span>';
+    }
+
+    const priorityHtml = o.delivery_priority !== null
+        ? `<span class="dt-badge ${seqMatch ? 'green' : 'red'}" style="font-size:10px; padding:1px 5px;" title="${seqTitle}">P${o.delivery_priority}${!seqMatch ? '→#' + o.actual_sequence : ''}</span>`
+        : (showDispatchInfo ? '<span class="dt-badge gray" style="font-size:10px; padding:1px 5px;">No priority</span>' : '');
+
+    let locHtml = '';
+    if (o.delivered_at_verified) {
+        const distLabel = o.verification_distance_m !== null ? `${o.verification_distance_m}m` : '';
+        locHtml = `<span class="dt-badge green" style="font-size:9px; padding:1px 4px;" title="Delivered at verified location (${distLabel})">📍✓</span>`;
+    } else if (o.has_verified_location && !o.delivered_at_verified) {
+        const distLabel = o.verification_distance_m !== null
+            ? (o.verification_distance_m >= 1000 ? `${(o.verification_distance_m/1000).toFixed(1)}km away` : `${o.verification_distance_m}m away`)
+            : 'no GPS';
+        locHtml = `<span class="dt-badge red" style="font-size:9px; padding:1px 4px;" title="Not at verified location (${distLabel})">📍✗</span>`;
+    } else {
+        locHtml = `<span class="dt-badge gray" style="font-size:9px; padding:1px 4px;" title="No verified location set">📍—</span>`;
+    }
+
+    const regionHtml = o.delivery_region ? `<span><span class="dt-detail-label">Region:</span> <span class="dt-detail-value">${o.delivery_region}</span></span>` : '';
+    const addressHtml = o.customer_address ? `<span><span class="dt-detail-label">Address:</span> <span class="dt-detail-value">${o.customer_address}</span></span>` : '';
+    const cityHtml = o.customer_city ? `<span><span class="dt-detail-label">City:</span> <span class="dt-detail-value">${o.customer_city}</span></span>` : '';
+
+    return `
+    <div class="dt-order-row" onclick="this.querySelector('.dt-order-details').classList.toggle('open')">
+        <div class="dt-order-main">
+            <div class="dt-order-left">
+                <div class="dt-order-seq ${seqClass}" title="${seqTitle}">${o.actual_sequence}</div>
+                <span class="dt-order-num">${o.order_number}</span>
+                <span class="dt-order-customer">${o.customer_name}${o.customer_city ? ' · ' + o.customer_city : ''}</span>
+                ${priorityHtml}
+                ${locHtml}
+            </div>
+            <div class="dt-order-right">
+                ${o.ofd_display ? `<span class="dt-time" title="Marked out for delivery">📤 ${o.ofd_display}</span>` : ''}
+                <span class="dt-time" title="Delivered at">✅ ${o.delivered_at_display}</span>
+                ${etaHtml}
+                <span class="dt-amount ${o.payment_type}">${o.payment_type === 'cash' ? '💵' : '💳'} Rs.${Math.round(o.amount).toLocaleString()}</span>
+            </div>
+        </div>
+        <div class="dt-order-details">${addressHtml}${cityHtml}${regionHtml}</div>
+    </div>`;
+}
+
+function dtRenderOrders(orders, showDispatchInfo) {
+    if (!orders || orders.length === 0) return '<div style="padding:12px 16px; color:#6b7280; font-size:12px;">No orders</div>';
+    return orders.map(o => dtRenderSingleOrder(o, showDispatchInfo)).join('');
 }
 
 // Geocode customer address

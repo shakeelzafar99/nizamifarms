@@ -52,6 +52,13 @@
     (function() {
         var badge = document.getElementById('wa-unread-badge');
         if (!badge) return;
+        // The browser's Notification API is undefined on insecure origins
+        // in some browsers (e.g. Chrome on plain http://). Reading
+        // Notification.permission unguarded throws there, which used to
+        // abort this whole IIFE before pollUnread() ever ran and left the
+        // sidebar badge stuck on "hidden" in dev. Cache a single
+        // capability flag so the rest of the script never has to care.
+        var hasNotifications = (typeof Notification !== 'undefined');
         function pollUnread() {
             fetch('/messages/unread-count', {
                 headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '', 'Accept': 'application/json' }
@@ -61,8 +68,10 @@
                 if (d.success && d.unread_count > 0) {
                     badge.textContent = d.unread_count;
                     badge.classList.remove('hidden');
-                    if (Notification.permission === 'granted' && d.unread_count > (window._lastWaUnread || 0)) {
-                        new Notification('Nizami Farms - New WhatsApp Message', { body: d.unread_count + ' unread message(s)', icon: '/favicon.ico' });
+                    if (hasNotifications && Notification.permission === 'granted' && d.unread_count > (window._lastWaUnread || 0)) {
+                        try {
+                            new Notification('Nizami Farms - New WhatsApp Message', { body: d.unread_count + ' unread message(s)', icon: '/favicon.ico' });
+                        } catch (_) { /* insecure-origin throw — ignore */ }
                     }
                     window._lastWaUnread = d.unread_count;
                 } else {
@@ -72,9 +81,16 @@
             })
             .catch(function(){});
         }
-        if (Notification.permission === 'default') Notification.requestPermission();
+        if (hasNotifications && Notification.permission === 'default') {
+            try { Notification.requestPermission(); } catch (_) { /* same as above */ }
+        }
         pollUnread();
         setInterval(pollUnread, 15000);
+        // Apr-2026: expose a manual-refresh hook so other scripts (e.g.
+        // the Unread tab's Mark-All-Read action) can force the sidebar
+        // badge to recompute immediately instead of waiting up to 15s
+        // for the next poll.
+        window.refreshUnreadBadge = pollUnread;
     })();
     </script>
     @endauth

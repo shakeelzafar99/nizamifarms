@@ -314,6 +314,32 @@
                 </table>
             </div>
         </div>
+
+        <!-- Cancelled Orders Section -->
+        <div id="cancelledOrdersSection" class="mt-6">
+            <button onclick="toggleCancelledOrders()" class="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors">
+                <span id="cancelledToggleIcon">&#9654;</span>
+                <span>Cancelled Orders</span>
+                <span id="cancelledCount" class="bg-red-200 text-red-800 px-2 py-0.5 rounded-full text-xs font-bold">0</span>
+            </button>
+            <div id="cancelledOrdersBody" style="display:none;" class="mt-3 bg-white border border-red-200 rounded-lg overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead class="bg-red-50">
+                        <tr>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-red-700 uppercase">#</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-red-700 uppercase">Customer</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-red-700 uppercase">Product</th>
+                            <th class="px-3 py-2 text-center text-xs font-medium text-red-700 uppercase">Qty</th>
+                            <th class="px-3 py-2 text-right text-xs font-medium text-red-700 uppercase">Total</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-red-700 uppercase">Date</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cancelledOrdersTableBody">
+                        <tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">Click to load...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- ======= DASHBOARD TAB ======= -->
@@ -390,6 +416,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+const qurbaniCancellationCode = '{{ \App\Models\FIN\ConfigModel::get("qurbani_cancellation_code", "") }}';
 let yearlyChart = null;
 let allOrders = [];
 let hasItemFilters = false;
@@ -784,6 +811,7 @@ function renderOrders(orders) {
                     ${(o.payment_status === 'paid') ? `<button onclick="openStampEditorModal(${o.id})" style="padding:3px 8px; background:#7C2D12; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Edit invoice PAID stamp (display only)">📜 Stamp</button>` : ''}
                     <button onclick="window.open('/orders/${o.id}/invoice', '_blank')" style="padding:3px 8px; background:#4F46E5; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="View Invoice">📄 Invoice</button>
                     <button onclick="openWhatsAppInvoiceModal(${o.id}, '${(o.customer_name || '').replace(/'/g, "\\'")}', '${o.order_number || ''}', '${(o.customer_phone || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#25D366; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Send WhatsApp Invoice">📱 WA</button>
+                    <button onclick="cancelQurbaniOrder(${o.id}, '${(o.order_number || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#7C3AED; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Cancel Order">❌ Cancel</button>
                     ${canDeleteOrders ? `<button onclick="deleteQurbaniOrder(${o.id}, '${(o.order_number || '').replace(/'/g, "\\'")}')" style="padding:3px 8px; background:#DC2626; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Delete Order">🗑️ Del</button>` : ''}
                 </div>
             </td>
@@ -2500,6 +2528,31 @@ function renderQurbaniSummary() {
     summary.innerHTML = sortedTypes.map(dt => qstatsBuildSummaryCard(dt, days, categories, summaryMap[dt] || {})).join('');
 }
 
+// Apr-2026: per-card category filter.
+//
+// Rajanpur charity products are always booked with a blank delivery_type
+// (operator workflow — they get assigned later, sometimes never), so the
+// global category list contains a "Charity Rajanpur - …" column that
+// renders as all-zeros under the Delivery and Self Collection cards.
+// That's pure noise and was making the cards harder to scan.
+//
+// Behaviour:
+//   - Hide any category whose name contains "rajanpur" (case-insensitive)
+//     ONLY on the Delivery and Self Collection cards.
+//   - Keep them visible on the Unassigned card (and any other future
+//     fallback bucket) so operators can still see+act on them.
+//
+// Side effect on totals: filtering reduces colTotals and the card's
+// grand total by exactly the rajanpur counts in that card. In practice
+// this is 0 (rajanpur is always Unassigned), but if a row ever leaks in
+// it'll be correctly excluded from the Delivery/Self-Collection card
+// total too — better than silently double-counting.
+function qstatsCategoryHiddenInCard(category, deliveryType) {
+    const dt = String(deliveryType || '').toLowerCase().trim();
+    if (dt !== 'delivery' && dt !== 'self collection') return false;
+    return /rajanpur/i.test(String(category || ''));
+}
+
 function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
     // Apr-2026 layout swap.
     //   X-axis (columns)        : categories (Cow Share, Goat, Lamb, ...).
@@ -2526,6 +2579,15 @@ function qstatsBuildSummaryCard(deliveryType, days, categories, byDayCat) {
     const allTargets = ((qStatsData && qStatsData.targets) || {}).summary || {};
     const byDayCatTarget = allTargets[deliveryType] || {};
     const isEditing = qStatsSummaryEditing.has(deliveryType);
+
+    // Apr-2026: hide rajanpur-charity columns on Delivery / Self Collection
+    // cards (see qstatsCategoryHiddenInCard for the rationale). We rebind
+    // the local `categories` rather than scattering the filter through
+    // every loop below; every downstream calculation (column totals,
+    // day-row cells, slot sub-rows, target inputs) then uses the same
+    // filtered list, keeping Delivery & Self Collection grand totals
+    // perfectly consistent with their visible cells.
+    categories = (categories || []).filter(c => !qstatsCategoryHiddenInCard(c, deliveryType));
     // Pre-declare the JS-arg-safe deliveryType string. We need this BEFORE
     // building the table HTML below because the bottom Total row's click
     // handlers reference it. (Apr-2026: previously this was declared
@@ -2843,7 +2905,12 @@ function renderQurbaniBreakdown(deliveryType) {
     if (!qStatsData || !breakdown) return;
 
     const days = qStatsData.days || [];
-    const categories = qStatsData.categories || [];
+    // Apr-2026: same per-card rajanpur filter as the summary card. The
+    // breakdown view already skips zero-qty buckets so rajanpur lines
+    // would naturally drop out, but keeping the filter explicit avoids
+    // ever rendering a target row for a hidden category and matches the
+    // summary card's behaviour exactly.
+    const categories = (qStatsData.categories || []).filter(c => !qstatsCategoryHiddenInCard(c, deliveryType));
     const detail = (qStatsData.detail || {})[deliveryType] || {};
     const summaryForType = (qStatsData.summary || {})[deliveryType] || {};
     // Breakdown-level targets: targets.breakdown[dt][day][cat][slot][region].
@@ -3007,6 +3074,11 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSubRegionDropdown();
     loadOrders();
     initQurbaniStatsPanel();
+    // Load cancelled orders count for the badge
+    fetch('/qurbani/api/orders?status=cancelled', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(data => { document.getElementById('cancelledCount').textContent = (data.orders || []).length; })
+        .catch(() => {});
 
     // Add edit icons to filter labels for Taimur role
     if (isTaimurOrMgmt) {
@@ -3024,6 +3096,116 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+
+async function cancelQurbaniOrder(orderId, orderNumber) {
+    if (qurbaniCancellationCode) {
+        const entered = prompt(`Cancel order #${orderNumber}?\n\nEnter the 4-digit cancellation code to confirm:`);
+        if (entered === null) return;
+        if (entered.trim() !== qurbaniCancellationCode) {
+            alert('Incorrect cancellation code.');
+            return;
+        }
+    } else {
+        if (!confirm(`Cancel order #${orderNumber}?\n\nThis will reverse any ledger entries and mark the order as cancelled.`)) return;
+    }
+
+    try {
+        const response = await fetch('/order-status/api/change-status', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
+            body: JSON.stringify({
+                order_id: orderId,
+                status_code: 'cancelled',
+                notes: 'Cancelled from Qurbani Orders page',
+                confirmed: true
+            })
+        });
+        const data = await response.json();
+        if (data.success) {
+            alert(data.message || `Order #${orderNumber} cancelled successfully`);
+            loadOrders();
+            loadCancelledOrders();
+            loadQurbaniStats();
+        } else if (data.requires_confirmation) {
+            if (confirm(data.message + '\n\nProceed with cancellation?')) {
+                const r2 = await fetch('/order-status/api/change-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                    body: JSON.stringify({ order_id: orderId, status_code: 'cancelled', notes: 'Cancelled from Qurbani Orders page', confirmed: true })
+                });
+                const d2 = await r2.json();
+                if (d2.success) {
+                    alert(d2.message || `Order #${orderNumber} cancelled successfully`);
+                    loadOrders();
+                    loadCancelledOrders();
+                    loadQurbaniStats();
+                } else {
+                    alert(d2.message || 'Failed to cancel order');
+                }
+            }
+        } else {
+            alert(data.message || 'Failed to cancel order');
+        }
+    } catch (e) {
+        console.error('Cancel error:', e);
+        alert('Network error while cancelling order');
+    }
+}
+
+let cancelledOrdersLoaded = false;
+let cancelledOrdersVisible = false;
+
+function toggleCancelledOrders() {
+    cancelledOrdersVisible = !cancelledOrdersVisible;
+    document.getElementById('cancelledOrdersBody').style.display = cancelledOrdersVisible ? '' : 'none';
+    document.getElementById('cancelledToggleIcon').innerHTML = cancelledOrdersVisible ? '&#9660;' : '&#9654;';
+    if (cancelledOrdersVisible && !cancelledOrdersLoaded) {
+        loadCancelledOrders();
+    }
+}
+
+function loadCancelledOrders() {
+    cancelledOrdersLoaded = true;
+    document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">Loading...</td></tr>';
+
+    fetch('/qurbani/api/orders?status=cancelled', {
+        headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        const orders = data.orders || [];
+        document.getElementById('cancelledCount').textContent = orders.length;
+        if (orders.length === 0) {
+            document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">No cancelled orders</td></tr>';
+            return;
+        }
+        const html = orders.map(o => {
+            const dateStr = o.order_date ? new Date(o.order_date).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '-';
+            const items = o.line_items || [];
+            const productHtml = items.map(li => (parseInt(li.quantity) || 0) + 'x ' + (li.name || '-')).join(', ') || (o.product_names || '-');
+            const totalQty = items.reduce((s, li) => s + (parseInt(li.quantity) || 0), 0);
+            return `<tr class="border-b border-gray-100 hover:bg-red-50 cursor-pointer" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
+                <td class="px-3 py-2 font-medium text-gray-900">${o.order_number || o.id}</td>
+                <td class="px-3 py-2">
+                    <div class="text-gray-900">${(o.customer_name || '').trim() || '-'}</div>
+                    <div class="text-xs text-gray-400">${o.customer_phone || ''}</div>
+                </td>
+                <td class="px-3 py-2 text-xs text-gray-700">${productHtml}</td>
+                <td class="px-3 py-2 text-center font-medium">${totalQty || '-'}</td>
+                <td class="px-3 py-2 text-right font-medium">PKR ${Number(o.total_price || 0).toLocaleString()}</td>
+                <td class="px-3 py-2 text-gray-500 text-xs">${dateStr}</td>
+            </tr>`;
+        }).join('');
+        document.getElementById('cancelledOrdersTableBody').innerHTML = html;
+    })
+    .catch(() => {
+        document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-red-400 text-sm">Error loading cancelled orders</td></tr>';
+    });
+}
 
 async function deleteQurbaniOrder(orderId, orderNumber) {
     if (!confirm(`Are you sure you want to permanently delete order #${orderNumber}?\n\nThis will remove the order, all line items, payments, and ledger entries. This action cannot be undone.`)) return;

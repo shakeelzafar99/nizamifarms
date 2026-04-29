@@ -5816,6 +5816,477 @@ class RiderController extends Controller
     }
 
     /**
+     * DISPATCH TRACKER: Date-first delivery report with dispatch batch grouping
+     * Shows all delivered orders for a date, grouped by rider then by dispatch batch.
+     * Includes compliance metrics, ETA accuracy, priority sequence analysis.
+     */
+    public function getDateDeliveryReport(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if ($user && method_exists($user, 'hasMobilePermission')
+                && $request->is('api/*')
+                && !$user->hasMobilePermission('view_dispatch_tracker')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to view the dispatch tracker'
+                ], 403);
+            }
+
+            $date = $request->get('date', now()->format('Y-m-d'));
+            $batchThresholdSeconds = 120; // Orders dispatched within 2 min = same batch
+
+            // 1. Get all delivered orders for this date with ETA/priority/rider data + location columns
+            $orders = \DB::table('t_crm_prod_order as o')
+                ->join('t_crm_order_status_history as osh_del', function($join) use ($date) {
+                    $join->on('o.id', '=', 'osh_del.order_id')
+                         ->where('osh_del.status_code', '=', 'delivered')
+                         ->whereDate('osh_del.changed_at', $date);
+                })
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+                ->select([
+                    'o.id',
+                    'o.order_number',
+                    'o.total_price',
+                    'o.payment_method',
+                    'o.assigned_rider_user_id as rider_id',
+                    'u.fullname as rider_name',
+                    'o.delivery_priority',
+                    'o.estimated_delivery_at',
+                    'o.eta_calculated_at',
+                    'osh_del.changed_at as delivered_at',
+                    \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
+                    'c.city as customer_city',
+                    'c.address1 as customer_address',
+                    'c.delivery_region_id',
+                    'osh_del.delivery_latitude',
+                    'osh_del.delivery_longitude',
+                    'c.latitude as verified_lat',
+                    'c.longitude as verified_lng',
+                ])
+                ->orderBy('osh_del.changed_at', 'asc')
+                ->get();
+
+            // 2. Get out_for_delivery timestamps for these orders
+            $orderIds = $orders->pluck('id')->toArray();
+            $ofdTimestamps = [];
+            if (!empty($orderIds)) {
+                $ofdRows = \DB::table('t_crm_order_status_history')
+                    ->whereIn('order_id', $orderIds)
+                    ->where('status_code', 'out_for_delivery')
+                    ->select('order_id', \DB::raw('MAX(changed_at) as ofd_at'))
+                    ->groupBy('order_id')
+                    ->get();
+                foreach ($ofdRows as $row) {
+                    $ofdTimestamps[$row->order_id] = $row->ofd_at;
+                }
+            }
+
+            // 3. Get attendance for all riders on this date
+            $attendances = \DB::table('t_ops_attendance')
+                ->whereDate('attendance_date', $date)
+                ->whereNotNull('login_time')
+                ->get()
+                ->keyBy('user_id');
+
+            // 3b. Get delivery region names
+            $regionMap = \DB::table('t_ops_delivery_region')
+                ->where('is_active', 1)
+                ->pluck('name', 'id')
+                ->toArray();
+
+            // 3c. Get office location for return-to-office detection
+            $officeLocation = \DB::table('t_ops_company_locations')
+                ->where('is_primary', 1)->where('is_active', 1)->first();
+            $officeLat = $officeLocation ? (float)$officeLocation->latitude : null;
+            $officeLng = $officeLocation ? (float)$officeLocation->longitude : null;
+            $officeRadiusMeters = 300;
+
+            // 3c. Get rider GPS trails for the day (for office-return detection)
+            $riderIds = $orders->pluck('rider_id')->unique()->filter()->toArray();
+            $riderGpsTrails = [];
+            if ($officeLat && !empty($riderIds)) {
+                $gpsPoints = \DB::table('t_ops_rider_location')
+                    ->whereIn('user_id', $riderIds)
+                    ->whereDate('captured_at', $date)
+                    ->select('user_id', 'latitude', 'longitude', 'captured_at')
+                    ->orderBy('captured_at', 'asc')
+                    ->get();
+                foreach ($gpsPoints as $pt) {
+                    $riderGpsTrails[$pt->user_id][] = $pt;
+                }
+            }
+
+            // 4. Group orders by rider
+            $riderMap = [];
+            foreach ($orders as $order) {
+                $riderId = $order->rider_id ?: 0;
+                if (!isset($riderMap[$riderId])) {
+                    $attendance = $attendances->get($riderId);
+                    $loginDatetime = null;
+                    $logoutDatetime = null;
+                    if ($attendance && $attendance->login_time) {
+                        $loginDatetime = \Carbon\Carbon::parse($date . ' ' . $attendance->login_time);
+                    }
+                    if ($attendance && $attendance->logout_time) {
+                        $logoutDatetime = \Carbon\Carbon::parse($date . ' ' . $attendance->logout_time);
+                    }
+                    $riderMap[$riderId] = [
+                        'id' => $riderId,
+                        'name' => $order->rider_name ?: 'Unassigned',
+                        'login_time' => $loginDatetime ? $loginDatetime->format('h:i A') : null,
+                        'logout_time' => $logoutDatetime ? $logoutDatetime->format('h:i A') : null,
+                        'login_datetime' => $loginDatetime,
+                        'logout_datetime' => $logoutDatetime,
+                        'orders' => [],
+                    ];
+                }
+
+                $paymentMethod = strtolower($order->payment_method ?? 'cash');
+                $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
+
+                $etaComparison = null;
+                if ($order->estimated_delivery_at) {
+                    $est = \Carbon\Carbon::parse($order->estimated_delivery_at);
+                    $act = \Carbon\Carbon::parse($order->delivered_at);
+                    $diffMin = (int) round($act->diffInMinutes($est, false));
+                    $isOnTimeOrEarly = $diffMin >= 0;
+                    $etaComparison = [
+                        'eta_display' => $est->format('h:i A'),
+                        'diff_minutes' => $diffMin,
+                        'on_time' => $isOnTimeOrEarly,
+                        'label' => $isOnTimeOrEarly
+                            ? ($diffMin == 0 ? 'On time' : "{$diffMin}m early")
+                            : (abs($diffMin) . 'm late'),
+                    ];
+                }
+
+                $hasVerifiedLoc = !empty($order->verified_lat) && !empty($order->verified_lng);
+                $hasDeliveryGps = !empty($order->delivery_latitude) && !empty($order->delivery_longitude);
+                $deliveredAtVerified = false;
+                $verificationDistance = null;
+                if ($hasDeliveryGps && $hasVerifiedLoc) {
+                    $dist = $this->haversineDistance(
+                        (float)$order->delivery_latitude, (float)$order->delivery_longitude,
+                        (float)$order->verified_lat, (float)$order->verified_lng
+                    );
+                    $verificationDistance = $dist;
+                    $deliveredAtVerified = $dist <= 1000; // within 1km
+                }
+
+                $riderMap[$riderId]['orders'][] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_name' => trim($order->customer_name) ?: 'Unknown',
+                    'customer_city' => $order->customer_city,
+                    'customer_address' => $order->customer_address ?: '',
+                    'delivery_region' => isset($order->delivery_region_id) && isset($regionMap[$order->delivery_region_id])
+                        ? $regionMap[$order->delivery_region_id] : null,
+                    'amount' => (float)$order->total_price,
+                    'payment_type' => $isCash ? 'cash' : 'online',
+                    'delivery_priority' => $order->delivery_priority,
+                    'estimated_delivery_at' => $order->estimated_delivery_at,
+                    'eta_calculated_at' => $order->eta_calculated_at,
+                    'delivered_at' => $order->delivered_at,
+                    'delivered_at_display' => \Carbon\Carbon::parse($order->delivered_at)->format('h:i A'),
+                    'eta_display' => $order->estimated_delivery_at
+                        ? \Carbon\Carbon::parse($order->estimated_delivery_at)->format('h:i A') : null,
+                    'dispatch_time_display' => $order->eta_calculated_at
+                        ? \Carbon\Carbon::parse($order->eta_calculated_at)->format('h:i A') : null,
+                    'ofd_at' => $ofdTimestamps[$order->id] ?? null,
+                    'ofd_display' => isset($ofdTimestamps[$order->id])
+                        ? \Carbon\Carbon::parse($ofdTimestamps[$order->id])->format('h:i A') : null,
+                    'eta_comparison' => $etaComparison,
+                    'was_dispatched' => !empty($order->eta_calculated_at),
+                    'has_verified_location' => $hasVerifiedLoc,
+                    'has_delivery_gps' => $hasDeliveryGps,
+                    'delivered_at_verified' => $deliveredAtVerified,
+                    'verification_distance_m' => $verificationDistance !== null ? (int)round($verificationDistance) : null,
+                ];
+            }
+
+            // Helper: detect office visits between two timestamps from GPS trail
+            $detectOfficeVisits = function($gpsList, $fromTime, $toTime) use ($officeLat, $officeLng, $officeRadiusMeters) {
+                if (!$officeLat || !$gpsList) return [];
+                $from = \Carbon\Carbon::parse($fromTime);
+                $to = \Carbon\Carbon::parse($toTime);
+                $nearOffice = [];
+                foreach ($gpsList as $pt) {
+                    $t = \Carbon\Carbon::parse($pt->captured_at);
+                    if ($t->lt($from) || $t->gt($to)) continue;
+                    $dist = $this->haversineDistance($officeLat, $officeLng, (float)$pt->latitude, (float)$pt->longitude);
+                    if ($dist <= $officeRadiusMeters) {
+                        $nearOffice[] = $t;
+                    }
+                }
+                if (count($nearOffice) < 2) return [];
+                $visits = [];
+                $visitStart = $nearOffice[0];
+                $visitEnd = $nearOffice[0];
+                for ($i = 1; $i < count($nearOffice); $i++) {
+                    if ($nearOffice[$i]->diffInMinutes($visitEnd) <= 10) {
+                        $visitEnd = $nearOffice[$i];
+                    } else {
+                        if ($visitStart->diffInMinutes($visitEnd) >= 2) {
+                            $visits[] = ['arrived' => $visitStart->format('h:i A'), 'left' => $visitEnd->format('h:i A'),
+                                         'duration_min' => $visitStart->diffInMinutes($visitEnd)];
+                        }
+                        $visitStart = $nearOffice[$i];
+                        $visitEnd = $nearOffice[$i];
+                    }
+                }
+                if ($visitStart->diffInMinutes($visitEnd) >= 2) {
+                    $visits[] = ['arrived' => $visitStart->format('h:i A'), 'left' => $visitEnd->format('h:i A'),
+                                 'duration_min' => $visitStart->diffInMinutes($visitEnd)];
+                }
+                return $visits;
+            };
+
+            // 5. For each rider, group orders into dispatch batches
+            $riders = [];
+            foreach ($riderMap as $riderId => $riderData) {
+                $riderOrders = collect($riderData['orders']);
+                $gpsList = $riderGpsTrails[$riderId] ?? null;
+
+                // Separate dispatched vs undispatched
+                $dispatched = $riderOrders->filter(fn($o) => $o['was_dispatched']);
+                $undispatched = $riderOrders->filter(fn($o) => !$o['was_dispatched'])->values();
+
+                // Group dispatched orders into waves using OFD timestamp as primary key.
+                // Orders that went OFD within 1 hour of each other = same wave.
+                // Fall back to eta_calculated_at for orders with no OFD.
+                $ofdWaveThresholdMinutes = 60;
+                $sortedDispatched = $dispatched->sortBy(function($o) {
+                    return $o['ofd_at'] ?? $o['eta_calculated_at'] ?? '9999-12-31';
+                })->values();
+
+                $batches = [];
+                $currentBatch = null;
+                foreach ($sortedDispatched as $order) {
+                    $orderTime = $order['ofd_at']
+                        ? \Carbon\Carbon::parse($order['ofd_at'])
+                        : \Carbon\Carbon::parse($order['eta_calculated_at']);
+                    if ($currentBatch === null) {
+                        $currentBatch = ['_anchor' => $orderTime, 'orders' => [$order]];
+                    } else {
+                        $gap = $currentBatch['_anchor']->diffInMinutes($orderTime);
+                        if ($gap <= $ofdWaveThresholdMinutes) {
+                            $currentBatch['orders'][] = $order;
+                        } else {
+                            $batches[] = $currentBatch;
+                            $currentBatch = ['_anchor' => $orderTime, 'orders' => [$order]];
+                        }
+                    }
+                }
+                if ($currentBatch !== null) {
+                    $batches[] = $currentBatch;
+                }
+
+                // Resolve dispatch_time for each batch from eta_calculated_at of its orders
+                foreach ($batches as &$batch) {
+                    $batchCalcTimes = collect($batch['orders'])->pluck('eta_calculated_at')->filter()->unique();
+                    if ($batchCalcTimes->count() === 1) {
+                        $batch['dispatch_time'] = $batchCalcTimes->first();
+                    } else {
+                        $batch['dispatch_time'] = collect($batch['orders'])->min('eta_calculated_at')
+                            ?? ($batch['orders'][0]['ofd_at'] ?? now()->toDateTimeString());
+                    }
+                    $batch['dispatch_time_display'] = \Carbon\Carbon::parse($batch['dispatch_time'])->format('h:i A');
+                    $firstOfd = collect($batch['orders'])->pluck('ofd_at')->filter()->min();
+                    $batch['ofd_time_display'] = $firstOfd ? \Carbon\Carbon::parse($firstOfd)->format('h:i A') : null;
+                    unset($batch['_anchor']);
+                }
+                unset($batch);
+
+                // Compute per-batch metrics + office return detection
+                foreach ($batches as &$batch) {
+                    $batchOrders = collect($batch['orders']);
+                    $sortedByDelivery = $batchOrders->sortBy('delivered_at')->values();
+
+                    $prioritySequenceMatch = 0;
+                    $totalWithPriority = 0;
+                    $prevDeliveryTime = null;
+                    $timeGaps = [];
+                    $officeReturns = [];
+
+                    foreach ($sortedByDelivery as $idx => $o) {
+                        if ($o['delivery_priority'] !== null) {
+                            $totalWithPriority++;
+                            $expectedIdx = $batchOrders->sortBy('delivery_priority')->values()->search(fn($x) => $x['id'] === $o['id']);
+                            if ($expectedIdx === $idx) {
+                                $prioritySequenceMatch++;
+                            }
+                        }
+                        if ($prevDeliveryTime !== null) {
+                            $gap = \Carbon\Carbon::parse($prevDeliveryTime)->diffInMinutes(\Carbon\Carbon::parse($o['delivered_at']));
+                            $timeGaps[] = $gap;
+                            $visits = $detectOfficeVisits($gpsList, $prevDeliveryTime, $o['delivered_at']);
+                            if (!empty($visits)) {
+                                $officeReturns[] = ['after_order_idx' => $idx - 1, 'visits' => $visits];
+                            }
+                        }
+                        $prevDeliveryTime = $o['delivered_at'];
+                    }
+
+                    $withEta = $batchOrders->filter(fn($o) => $o['eta_comparison'] !== null);
+                    $onTimeCount = $withEta->filter(fn($o) => $o['eta_comparison']['on_time'])->count();
+
+                    $firstDelivery = $sortedByDelivery->first();
+                    $lastDelivery = $sortedByDelivery->last();
+                    $batchDurationMin = $firstDelivery && $lastDelivery
+                        ? \Carbon\Carbon::parse($firstDelivery['delivered_at'])->diffInMinutes(\Carbon\Carbon::parse($lastDelivery['delivered_at']))
+                        : 0;
+
+                    $batchHasVerified = $batchOrders->filter(fn($o) => $o['has_verified_location'])->count();
+                    $batchDeliveredAtVerified = $batchOrders->filter(fn($o) => $o['delivered_at_verified'])->count();
+
+                    $batch['order_count'] = $batchOrders->count();
+                    $batch['eta_on_time'] = $onTimeCount;
+                    $batch['eta_total'] = $withEta->count();
+                    $batch['priority_match'] = $prioritySequenceMatch;
+                    $batch['priority_total'] = $totalWithPriority;
+                    $batch['time_gaps'] = $timeGaps;
+                    $batch['batch_duration_min'] = $batchDurationMin;
+                    $batch['first_delivery'] = $firstDelivery ? \Carbon\Carbon::parse($firstDelivery['delivered_at'])->format('h:i A') : null;
+                    $batch['last_delivery'] = $lastDelivery ? \Carbon\Carbon::parse($lastDelivery['delivered_at'])->format('h:i A') : null;
+                    $batch['office_returns'] = $officeReturns;
+                    $batch['has_verified_count'] = $batchHasVerified;
+                    $batch['delivered_at_verified_count'] = $batchDeliveredAtVerified;
+                    $batch['orders'] = $sortedByDelivery->map(function($o, $idx) {
+                        $o['actual_sequence'] = $idx + 1;
+                        return $o;
+                    })->toArray();
+                }
+                unset($batch);
+
+                // Build undispatched group
+                $undispatchedGroup = null;
+                if ($undispatched->count() > 0) {
+                    $sortedUndispatched = $undispatched->sortBy('delivered_at')->values();
+                    $undispatchedGroup = [
+                        'order_count' => $undispatched->count(),
+                        'orders' => $sortedUndispatched->map(function($o, $idx) {
+                            $o['actual_sequence'] = $idx + 1;
+                            return $o;
+                        })->toArray(),
+                    ];
+                }
+
+                // Rider-level metrics
+                $totalOrders = $riderOrders->count();
+                $dispatchedCount = $dispatched->count();
+                $allWithEta = $riderOrders->filter(fn($o) => $o['eta_comparison'] !== null);
+                $allOnTime = $allWithEta->filter(fn($o) => $o['eta_comparison']['on_time'])->count();
+
+                $cashOrders = $riderOrders->filter(fn($o) => $o['payment_type'] === 'cash');
+                $onlineOrders = $riderOrders->filter(fn($o) => $o['payment_type'] !== 'cash');
+
+                $riderHasVerified = $riderOrders->filter(fn($o) => $o['has_verified_location'])->count();
+                $riderDeliveredAtVerified = $riderOrders->filter(fn($o) => $o['delivered_at_verified'])->count();
+
+                // First dispatch delay (login to first dispatch of the day)
+                $firstDispatchDelay = null;
+                $firstDispatchDelayDisplay = null;
+                if ($riderData['login_datetime'] && $dispatched->count() > 0) {
+                    $loginDt = $riderData['login_datetime'];
+                    $firstDispatchDt = \Carbon\Carbon::parse($dispatched->first()['eta_calculated_at']);
+                    $delayMin = (int) $loginDt->diffInMinutes($firstDispatchDt);
+                    $firstDispatchDelay = $delayMin;
+                    $hours = intdiv($delayMin, 60);
+                    $mins = $delayMin % 60;
+                    $firstDispatchDelayDisplay = $hours > 0 ? "{$hours}h {$mins}m" : "{$mins}m";
+                }
+
+                $riders[] = [
+                    'id' => $riderId,
+                    'name' => $riderData['name'],
+                    'login_time' => $riderData['login_time'],
+                    'logout_time' => $riderData['logout_time'],
+                    'total_orders' => $totalOrders,
+                    'dispatched_count' => $dispatchedCount,
+                    'undispatched_count' => $totalOrders - $dispatchedCount,
+                    'dispatch_compliance_pct' => $totalOrders > 0 ? round(($dispatchedCount / $totalOrders) * 100) : 0,
+                    'eta_on_time' => $allOnTime,
+                    'eta_total' => $allWithEta->count(),
+                    'eta_accuracy_pct' => $allWithEta->count() > 0 ? round(($allOnTime / $allWithEta->count()) * 100) : null,
+                    'num_dispatches' => count($batches),
+                    'first_dispatch_delay_min' => $firstDispatchDelay,
+                    'first_dispatch_delay_display' => $firstDispatchDelayDisplay,
+                    'cash_count' => $cashOrders->count(),
+                    'cash_total' => $cashOrders->sum('amount'),
+                    'online_count' => $onlineOrders->count(),
+                    'online_total' => $onlineOrders->sum('amount'),
+                    'has_verified_count' => $riderHasVerified,
+                    'delivered_at_verified_count' => $riderDeliveredAtVerified,
+                    'dispatch_batches' => $batches,
+                    'undispatched_group' => $undispatchedGroup,
+                ];
+            }
+
+            // Sort riders by total orders desc
+            usort($riders, fn($a, $b) => $b['total_orders'] <=> $a['total_orders']);
+
+            // Day-level summary
+            $totalDelivered = $orders->count();
+            $totalDispatched = $orders->filter(fn($o) => !empty($o->eta_calculated_at))->count();
+            $allEta = $orders->filter(fn($o) => !empty($o->estimated_delivery_at));
+            $allOnTimeDay = 0;
+            foreach ($allEta as $o) {
+                $est = \Carbon\Carbon::parse($o->estimated_delivery_at);
+                $act = \Carbon\Carbon::parse($o->delivered_at);
+                if ($act->diffInMinutes($est, false) >= 0) $allOnTimeDay++;
+            }
+
+            $dayHasVerified = $orders->filter(fn($o) => !empty($o->verified_lat) && !empty($o->verified_lng))->count();
+            $dayDeliveredAtVerified = 0;
+            foreach ($orders as $o) {
+                if (!empty($o->delivery_latitude) && !empty($o->delivery_longitude)
+                    && !empty($o->verified_lat) && !empty($o->verified_lng)) {
+                    $dist = $this->haversineDistance(
+                        (float)$o->delivery_latitude, (float)$o->delivery_longitude,
+                        (float)$o->verified_lat, (float)$o->verified_lng
+                    );
+                    if ($dist <= 1000) $dayDeliveredAtVerified++;
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'date' => $date,
+                'date_display' => \Carbon\Carbon::parse($date)->format('D, M j, Y'),
+                'riders' => $riders,
+                'summary' => [
+                    'total_delivered' => $totalDelivered,
+                    'total_dispatched' => $totalDispatched,
+                    'total_undispatched' => $totalDelivered - $totalDispatched,
+                    'dispatch_compliance_pct' => $totalDelivered > 0 ? round(($totalDispatched / $totalDelivered) * 100) : 0,
+                    'eta_on_time' => $allOnTimeDay,
+                    'eta_total' => $allEta->count(),
+                    'eta_accuracy_pct' => $allEta->count() > 0 ? round(($allOnTimeDay / $allEta->count()) * 100) : null,
+                    'total_riders' => count($riders),
+                    'cash_total' => $orders->filter(fn($o) => in_array(strtolower($o->payment_method ?? 'cash'), ['cash','cash_on_delivery','cod']))->sum('total_price'),
+                    'online_total' => $orders->filter(fn($o) => !in_array(strtolower($o->payment_method ?? 'cash'), ['cash','cash_on_delivery','cod']))->sum('total_price'),
+                    'has_verified_count' => $dayHasVerified,
+                    'delivered_at_verified_count' => $dayDeliveredAtVerified,
+                ],
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Failed to get date delivery report', [
+                'date' => $request->get('date'),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load dispatch report'
+            ], 500);
+        }
+    }
+
+    /**
      * Get monthly attendance (reuses salary service logic for consistency)
      */
     public function getMonthlyAttendance(Request $request)
@@ -7550,8 +8021,73 @@ class RiderController extends Controller
                     ->toArray();
             } catch (\Exception $e) {}
 
+            // Batch WhatsApp unread check: find which customers have unread messages for this user
+            $unreadCustomerIds = [];
+            $hasWaAccess = false;
+            try {
+                $hasFull = $user->hasMobilePermission('view_whatsapp_messages');
+                $hasLimited = $user->hasMobilePermission('view_whatsapp_messages_limited');
+                $hasWaAccess = $hasFull || $hasLimited;
+
+                if ($hasWaAccess) {
+                    $customerIds = $orders->pluck('customer_id')->filter()->unique()->values()->toArray();
+                    if (!empty($customerIds)) {
+                        $convMap = DB::table('t_wa_conversations')
+                            ->whereIn('customer_id', $customerIds)
+                            ->pluck('id', 'customer_id')
+                            ->toArray();
+
+                        if (!empty($convMap)) {
+                            $convIds = array_values($convMap);
+                            $cutoff = $hasLimited ? now()->subDay()->startOfDay() : null;
+
+                            $unreadConvQ = DB::table('t_wa_messages as m')
+                                ->leftJoin('t_wa_conversation_reads as r', function ($j) use ($user) {
+                                    $j->on('r.conversation_id', '=', 'm.conversation_id')
+                                      ->where('r.user_id', '=', $user->id);
+                                })
+                                ->whereIn('m.conversation_id', $convIds)
+                                ->where('m.direction', 'inbound')
+                                ->where(function ($w) {
+                                    $w->whereNull('r.last_read_at')
+                                      ->orWhereColumn('m.created_at', '>', 'r.last_read_at');
+                                })
+                                ->whereRaw('NOT EXISTS (
+                                    SELECT 1 FROM t_wa_messages m2
+                                    WHERE m2.conversation_id = m.conversation_id
+                                      AND m2.direction = \'outbound\'
+                                      AND m2.created_at > m.created_at
+                                )');
+
+                            if (\Schema::hasColumn('t_wa_conversations', 'global_read_at')) {
+                                $unreadConvQ->leftJoin('t_wa_conversations as wc', 'wc.id', '=', 'm.conversation_id')
+                                    ->where(function ($w) {
+                                        $w->whereNull('wc.global_read_at')
+                                          ->orWhereColumn('m.created_at', '>', 'wc.global_read_at');
+                                    });
+                            }
+
+                            if ($cutoff) {
+                                $unreadConvQ->where('m.created_at', '>=', $cutoff);
+                            }
+
+                            $unreadConvIds = $unreadConvQ->distinct()->pluck('m.conversation_id')->all();
+                            $unreadConvIdSet = array_flip(array_map('intval', $unreadConvIds));
+
+                            foreach ($convMap as $custId => $convId) {
+                                if (isset($unreadConvIdSet[(int) $convId])) {
+                                    $unreadCustomerIds[(int) $custId] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::debug('Open orders unread check skipped', ['error' => $e->getMessage()]);
+            }
+
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -7668,6 +8204,8 @@ class RiderController extends Controller
                     'has_verified_location' => $hasVerifiedLocation,
                     'verified_location' => $verifiedLocation,
                     'has_khaas_item' => $khaasOrderIds->contains($order->id), // ❄️ Khaas product indicator
+                    'has_unread_message' => isset($unreadCustomerIds[(int) $order->customer_id]),
+                    'has_wa_access' => $hasWaAccess,
                     // ⭐ Customer location data for route map
                     'customer' => $order->customer ? [
                         'latitude' => $order->customer->latitude,
@@ -8704,6 +9242,7 @@ class RiderController extends Controller
                     'li.product_id as line_item_product_id',
                     'li.variant_id as line_item_variant_id',
                     'li.name as line_item_name',
+                    'li.instructions as line_item_instructions',
                     'p.id as product_id',
                     'p.title as product_title',
                     'p.product_type',
@@ -8803,6 +9342,7 @@ class RiderController extends Controller
                                 'status' => $row->order_status,
                                 'order_date' => $row->order_date ? Carbon::parse($row->order_date)->toIso8601String() : null,
                                 'customer_name' => $row->customer_name,
+                                'instructions' => null,
                                 'filters' => array_merge($currentFilters, ['order_id' => $row->order_id]),
                                 'children' => [],
                                 '_children_map' => [],
@@ -8838,7 +9378,17 @@ class RiderController extends Controller
                             $currentMap[$orderKey]['prepared_quantity'] += $qty;
                         }
                         
-                        // Now update the actual array in $currentList
+                        // Collect line item instructions for this order node
+                        $lineInstructions = trim((string) ($row->line_item_instructions ?? ''));
+                        if ($lineInstructions !== '') {
+                            if ($currentMap[$orderKey]['instructions'] === null) {
+                                $currentMap[$orderKey]['instructions'] = $lineInstructions;
+                            } elseif (strpos($currentMap[$orderKey]['instructions'], $lineInstructions) === false) {
+                                $currentMap[$orderKey]['instructions'] .= ' | ' . $lineInstructions;
+                            }
+                        }
+
+                        // Sync updated values back to the actual array in $currentList
                         foreach ($currentList as $idx => &$listItem) {
                             if (isset($listItem['order_id']) && $listItem['order_id'] == $row->order_id) {
                                 $listItem['quantity'] = $currentMap[$orderKey]['quantity'];
@@ -8846,9 +9396,10 @@ class RiderController extends Controller
                                 $listItem['non_lean_quantity'] = $currentMap[$orderKey]['non_lean_quantity'];
                                 $listItem['processing_quantity'] = $currentMap[$orderKey]['processing_quantity'];
                                 $listItem['prepared_quantity'] = $currentMap[$orderKey]['prepared_quantity'];
-                                    break;
-                                }
+                                $listItem['instructions'] = $currentMap[$orderKey]['instructions'];
+                                break;
                             }
+                        }
                         unset($listItem);
 
                         if ($row->line_item_product_id) {
@@ -8899,6 +9450,7 @@ class RiderController extends Controller
 
                         if ($field === 'product_name') {
                             $newNode['product_ids'] = [];
+                            $newNode['has_instructions'] = false;
                         }
 
                         // Add to current list
@@ -8933,6 +9485,11 @@ class RiderController extends Controller
                         $node['filters']['product_name'] = $label;
                         if (!empty($node['product_ids'])) {
                             $node['filters']['product_ids'] = implode(',', array_keys($node['product_ids']));
+                        }
+
+                        // Mark product_name node if any contributing line item has instructions
+                        if (!empty(trim((string) ($row->line_item_instructions ?? '')))) {
+                            $node['has_instructions'] = true;
                         }
                     }
 
@@ -9391,7 +9948,8 @@ class RiderController extends Controller
                     DB::raw('SUM(CASE WHEN p.is_lean = 1 THEN li.quantity ELSE 0 END) as lean_quantity'),
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
-                    DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity')
+                    DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity'),
+                    DB::raw("GROUP_CONCAT(DISTINCT NULLIF(TRIM(li.instructions), '') SEPARATOR ' | ') as instructions")
                 ])
                 ->groupBy('o.id', 'o.order_number', 'o.name', 'o.address_first_name', 'o.address_last_name', 'o.order_status')
                 ->orderBy('o.order_number', 'desc')
@@ -9406,7 +9964,8 @@ class RiderController extends Controller
                     DB::raw('SUM(CASE WHEN p.is_lean = 0 THEN li.quantity ELSE 0 END) as non_lean_quantity'),
                     DB::raw('SUM(CASE WHEN o.order_status = "processing" THEN li.quantity ELSE 0 END) as processing_quantity'),
                     DB::raw('SUM(CASE WHEN li.preparation_status = "preparing" THEN li.quantity ELSE 0 END) as prepared_quantity'),
-                    DB::raw('COUNT(DISTINCT o.id) as order_count')
+                    DB::raw('COUNT(DISTINCT o.id) as order_count'),
+                    DB::raw("CASE WHEN COUNT(DISTINCT NULLIF(TRIM(li.instructions), '')) > 0 THEN 1 ELSE 0 END as has_instructions")
                 ])
                 ->groupBy('li.name')
                 ->orderBy('quantity', 'desc')
@@ -9474,11 +10033,17 @@ class RiderController extends Controller
                     $result['order_id'] = $item->order_id ?? null;
                     $result['order_number'] = $item->order_number ?? null;
                     $result['status'] = $item->status ?? 'new';
+                    if (!empty($item->instructions)) {
+                        $result['instructions'] = $item->instructions;
+                    }
                 } else {
                     $result['order_count'] = (int) ($item->order_count ?? 0);
                     $result['product_count'] = isset($item->product_count) ? (int) $item->product_count : null;
                     if ($currentField === 'product_name') {
                         $result['product_id'] = $item->product_id ?? null;
+                        if (!empty($item->has_instructions)) {
+                            $result['has_instructions'] = true;
+                        }
                     }
                 }
                 
@@ -17151,6 +17716,7 @@ class RiderController extends Controller
                         if ($item->parent_id) $opt['parent_id'] = $item->parent_id;
                         if (isset($item->delivery_type_parent_id) && $item->delivery_type_parent_id) $opt['delivery_type_parent_id'] = $item->delivery_type_parent_id;
                         if ($item->is_default) $opt['is_default'] = true;
+                        if (!empty($item->category_override)) $opt['category_override'] = $item->category_override;
                         return $opt;
                     })->values();
                 });

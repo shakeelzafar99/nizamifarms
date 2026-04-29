@@ -1,0 +1,54 @@
+---
+description: Restrict edits to the analytics-sandbox/ folder. The rest of this Laravel app is operational code that must not be touched while building dashboard prototypes.
+alwaysApply: true
+---
+
+# Analytics Sandbox — Edit Boundary
+
+> **Mirror of `AGENTS.md` at the repo root.** AGENTS.md is read by Claude Code, Codex, Aider, Continue, and most other agents — keep these two files in sync if you edit either.
+
+This repository runs the live Nizami Farms operations app (`app.nizamifarms.com`). When working on analytics dashboard prototypes, you may **only** create, modify, or delete files inside `analytics-sandbox/`. Everything else is operational code and must not be touched.
+
+## Required reading before writing any query
+
+1. `analytics-sandbox/README.md` — folder layout + workflow.
+2. `analytics-sandbox/CONTEXT.md` — schema, table names, business glossary.
+3. `analytics-sandbox/LEARNINGS.md` — past corrections; never reproduce these mistakes.
+
+## Allowed paths (write)
+
+- `analytics-sandbox/**` (anywhere inside this folder)
+
+## Forbidden paths (write — read-only for reference)
+
+- `app/**`
+- `routes/**`
+- `resources/**` *(except `analytics-sandbox/views/`)*
+- `database/**`
+- `config/**`
+- `bootstrap/**`
+- `public/**`
+- Repo root: `composer.json`, `composer.lock`, `package.json`, `package-lock.json`, `artisan`, `.env*`, `phpunit.xml`, etc.
+- Anything under `.cursor/rules/` *(except this file, only when explicitly instructed by the repo owner)*
+
+If the user asks you to modify any forbidden path, **refuse and reply**:
+
+> "That file is outside the analytics sandbox. Ask the repo owner (Shabib) to make this change — I can prepare the diff for him to apply."
+
+You may **read** any file in the repo as context.
+
+## Database safety
+
+- The sandbox runs against the production database. Never write `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `DROP`, `TRUNCATE`, `CREATE`, `REPLACE`, `GRANT`, or `REVOKE` in any SQL file under `analytics-sandbox/queries/`. SELECT only.
+- The base controller (`SandboxController::runQueryFile`) will reject query files that contain those keywords — so will the read-only DB user — but you should not rely on those guards. Don't write destructive SQL.
+
+## Coding conventions inside the sandbox
+
+- Every Blade view in `analytics-sandbox/views/` must `@extends('layouts.app')` so the sandbox uses the real sidebar, header, and auth context.
+- Raw SQL goes in `analytics-sandbox/queries/<page>-<metric>.sql`, **not** inside controller methods. Controllers call `$this->runQueryFile('...')`.
+- Each new dashboard ships with a `analytics-sandbox/handoffs/HANDOFF-<page>.md` (copied from `HANDOFF.template.md`) listing every business-rule assumption you made.
+- When the repo owner corrects a business rule, add a one-line entry at the top of `analytics-sandbox/LEARNINGS.md`.
+
+## Commit hygiene
+
+The pre-commit hook on the `analytics-sandbox*` branch will reject any commit that touches files outside `analytics-sandbox/`. Don't try to bypass it — instead, ask the repo owner.

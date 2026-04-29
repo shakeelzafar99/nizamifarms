@@ -175,6 +175,12 @@ class QurbaniWebController extends Controller
         }
         if ($request->filled('status')) {
             $query->where('o.order_status', $request->status);
+        } else {
+            // By default, exclude cancelled orders from the main listing
+            $query->where(function ($q) {
+                $q->whereNull('o.order_status')
+                  ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            });
         }
         // Payment status filter: paid | partial | unpaid. Preferred over legacy `status`.
         if ($request->filled('payment_status')) {
@@ -563,13 +569,17 @@ class QurbaniWebController extends Controller
         $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
         $hasHistoryLineItems = DB::getSchemaBuilder()->hasTable('t_crm_history_order_line_item');
 
-        // Current orders tagged qurbani (by attribute or explicit qurbani fields)
+        // Current orders tagged qurbani (by attribute or explicit qurbani fields), excluding cancelled
         $currentOrders = DB::table('t_crm_prod_order as o')
             ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
             ->leftJoin('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
             ->where(function ($q) {
                 $q->whereRaw("LOWER(COALESCE(p.attribute_1,'')) = 'qurbani'")
                   ->orWhereNotNull('o.qurbani_day');
+            })
+            ->where(function ($q) {
+                $q->whereNull('o.order_status')
+                  ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
             })
             ->select(
                 DB::raw("YEAR(o.order_date) as year"),

@@ -50,6 +50,7 @@
         $riderDeliveredEnabled = \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
         $qurbaniShippingPrice = \App\Models\FIN\ConfigModel::get('qurbani_shipping_price', '1000');
         $deleteEnabled = \App\Models\FIN\ConfigModel::get('qurbani_delete_enabled', '0') === '1';
+        $cancellationCode = \App\Models\FIN\ConfigModel::get('qurbani_cancellation_code', '');
         $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
         if (!in_array($defaultPaymentMethod, ['cash','online'], true)) { $defaultPaymentMethod = 'cash'; }
     @endphp
@@ -149,6 +150,28 @@
         </div>
     </div>
 
+    {{-- Cancellation Code Section --}}
+    <div class="field-section" style="margin-bottom: 20px;">
+        <div class="field-header">
+            <div>
+                <div class="field-title">🔐 Cancellation Code</div>
+                <div class="field-subtitle">4-digit code required to cancel a qurbani order. Leave empty to disable (simple confirm only).</div>
+            </div>
+        </div>
+        <div class="field-body">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+                <input type="text" id="cancellationCodeInput" value="{{ $cancellationCode }}" maxlength="4" placeholder="e.g. 1234" style="width: 120px; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 18px; font-weight: 700; text-align: center; letter-spacing: 6px;">
+                <button onclick="saveCancellationCode()" class="btn-add">Save</button>
+                <span id="cancCodeSaved" style="display:none; font-size: 12px; color: #059669; font-weight: 600;">✓ Saved</span>
+                @if($cancellationCode)
+                    <span style="padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; background:#d1fae5; color:#065f46;">ACTIVE</span>
+                @else
+                    <span style="padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; background:#f3f4f6; color:#6b7280;">NOT SET</span>
+                @endif
+            </div>
+        </div>
+    </div>
+
     <div id="fieldsContainer">
         <div style="text-align: center; padding: 40px;"><span style="font-size: 24px;">⏳</span> Loading...</div>
     </div>
@@ -211,6 +234,31 @@ function toggleRiderDelivered() {
     .catch(() => { showToast('Error updating setting', 'error'); btn.disabled = false; btn.textContent = 'Retry'; });
 }
 
+function saveCancellationCode() {
+    const code = document.getElementById('cancellationCodeInput').value.trim();
+    if (code && (code.length !== 4 || !/^\d{4}$/.test(code))) {
+        showToast('Code must be exactly 4 digits', 'error');
+        return;
+    }
+    fetch('{{ url("qurbani-settings/api/cancellation-code") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ code: code })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            var saved = document.getElementById('cancCodeSaved');
+            saved.style.display = 'inline';
+            setTimeout(() => saved.style.display = 'none', 2000);
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.message || 'Failed to save', 'error');
+        }
+    })
+    .catch(() => showToast('Error saving code', 'error'));
+}
+
 // NOTE: Order here also drives the render sequence on the settings page.
 // qurbani_type / qurbani_paya are simple flat dropdowns (no parent) so
 // they slot in with the same renderer used for qurbani_delivery_type.
@@ -230,6 +278,7 @@ const FIELD_LABELS = {
 };
 
 let allOptions = {};
+let qurbaniCategories = [];
 
 function showToast(message, type = 'success') {
     const toast = document.createElement('div');
@@ -299,6 +348,7 @@ async function loadOptions() {
         const data = await response.json();
         if (data.success) {
             allOptions = data.options || {};
+            qurbaniCategories = data.qurbani_categories || [];
             renderAll();
         }
     } catch (error) {
@@ -346,13 +396,22 @@ function renderAll() {
         }
 
         activeOptions.sort((a, b) => a.display_order - b.display_order);
+        const hasCategoryDefaults = (fieldName === 'qurbani_type' || fieldName === 'qurbani_paya');
         activeOptions.forEach((opt, idx) => {
             const isDefault = opt.is_default ? true : false;
+            const catOverride = opt.category_override || '';
+            const catLabel = catOverride ? catOverride : 'All';
             html += `<div class="option-row" data-id="${opt.id}">
                 <span class="option-order">${idx + 1}</span>
-                <span class="option-value" id="val-${opt.id}">${escapeHtml(opt.option_value)}</span>
-                <div class="option-actions">
-                    <button class="btn-sm" style="background:${isDefault ? '#d1fae5' : '#f3f4f6'}; color:${isDefault ? '#065f46' : '#6b7280'}; font-size:11px;" onclick="toggleDefault(${opt.id}, ${isDefault ? 'false' : 'true'})">${isDefault ? '★ Default' : '☆ Set Default'}</button>
+                <span class="option-value" id="val-${opt.id}">${escapeHtml(opt.option_value)}${isDefault && catOverride ? ` <span style="font-size:10px;background:#EFF6FF;color:#1D4ED8;padding:1px 6px;border-radius:4px;">Default for: ${escapeHtml(catOverride)}</span>` : ''}${isDefault && !catOverride ? ` <span style="font-size:10px;background:#D1FAE5;color:#065F46;padding:1px 6px;border-radius:4px;">Global Default</span>` : ''}</span>
+                <div class="option-actions" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">`;
+            if (hasCategoryDefaults) {
+                html += `<select style="font-size:10px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;max-width:110px;" onchange="setCategoryOverride(${opt.id}, this.value)" title="Default applies to">
+                    <option value="">All</option>
+                    ${qurbaniCategories.map(c => `<option value="${escapeAttr(c)}" ${catOverride === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                </select>`;
+            }
+            html += `<button class="btn-sm" style="background:${isDefault ? '#d1fae5' : '#f3f4f6'}; color:${isDefault ? '#065f46' : '#6b7280'}; font-size:11px;" onclick="toggleDefault(${opt.id}, ${isDefault ? 'false' : 'true'})">${isDefault ? '★ Default' : '☆ Set Default'}</button>
                     <button class="btn-sm btn-edit" onclick="editOption(${opt.id}, '${escapeAttr(opt.option_value)}')">Edit</button>
                     <button class="btn-sm btn-delete" onclick="deleteOption(${opt.id}, '${escapeAttr(opt.option_value)}')">Remove</button>
                 </div>
@@ -691,6 +750,19 @@ async function toggleDefault(id, setDefault) {
         const data = await response.json();
         if (data.success) { showToast(setDefault ? 'Set as default' : 'Default removed'); loadOptions(); }
     } catch (e) { showToast('Error', 'error'); }
+}
+
+async function setCategoryOverride(id, category) {
+    try {
+        const response = await fetch(`{{ url("qurbani-settings/api/options") }}/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+            body: JSON.stringify({ category_override: category || null }),
+        });
+        const data = await response.json();
+        if (data.success) { showToast(category ? `Scoped to ${category}` : 'Set to global'); loadOptions(); }
+        else showToast(data.message || 'Failed', 'error');
+    } catch (e) { showToast('Error updating', 'error'); }
 }
 
 async function addOption(fieldName) {
