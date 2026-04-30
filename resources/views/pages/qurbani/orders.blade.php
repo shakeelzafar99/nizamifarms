@@ -301,6 +301,7 @@
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Region</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Payment Type</th>
+                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                             <th class="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Rider</th>
@@ -309,7 +310,7 @@
                         </tr>
                     </thead>
                     <tbody id="ordersBody">
-                        <tr><td colspan="11" class="px-4 py-8 text-center text-gray-400">Loading orders...</td></tr>
+                        <tr><td colspan="15" class="px-4 py-8 text-center text-gray-400">Loading orders...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -332,10 +333,11 @@
                             <th class="px-3 py-2 text-center text-xs font-medium text-red-700 uppercase">Qty</th>
                             <th class="px-3 py-2 text-right text-xs font-medium text-red-700 uppercase">Total</th>
                             <th class="px-3 py-2 text-left text-xs font-medium text-red-700 uppercase">Date</th>
+                            <th class="px-3 py-2 text-center text-xs font-medium text-red-700 uppercase">Action</th>
                         </tr>
                     </thead>
                     <tbody id="cancelledOrdersTableBody">
-                        <tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">Click to load...</td></tr>
+                        <tr><td colspan="7" class="px-4 py-4 text-center text-gray-400 text-sm">Click to load...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -625,7 +627,7 @@ function loadOrders() {
     if (qType) params.set('qurbani_type', qType);
     if (qPaya) params.set('qurbani_paya', qPaya);
 
-    document.getElementById('ordersBody').innerHTML = '<tr><td colspan="14" class="px-4 py-8 text-center text-gray-400">Loading...</td></tr>';
+    document.getElementById('ordersBody').innerHTML = '<tr><td colspan="15" class="px-4 py-8 text-center text-gray-400">Loading...</td></tr>';
 
     fetch('/qurbani/api/orders?' + params.toString(), {
         headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -642,7 +644,7 @@ function loadOrders() {
         renderOrders(allOrders);
     })
     .catch(err => {
-        document.getElementById('ordersBody').innerHTML = '<tr><td colspan="14" class="px-4 py-8 text-center text-red-500">Error loading orders</td></tr>';
+        document.getElementById('ordersBody').innerHTML = '<tr><td colspan="15" class="px-4 py-8 text-center text-red-500">Error loading orders</td></tr>';
     });
 }
 
@@ -704,7 +706,7 @@ function renderOrders(orders) {
     }
     document.getElementById('ordersCount').textContent = countLabel;
     if (displayOrders.length === 0) {
-        document.getElementById('ordersBody').innerHTML = '<tr><td colspan="14" class="px-4 py-8 text-center text-gray-400">No orders found</td></tr>';
+        document.getElementById('ordersBody').innerHTML = '<tr><td colspan="15" class="px-4 py-8 text-center text-gray-400">No orders found</td></tr>';
         return;
     }
     const html = displayOrders.map(o => {
@@ -765,9 +767,7 @@ function renderOrders(orders) {
             : '';
         const rowInlineStyle = paidInline ? ` style="${paidInline}"` : '';
 
-        // Payment-type badge (replaces the old order_status column). We keep
-        // `statusClass` computed above so any downstream consumer isn't broken,
-        // but the visible cell now shows cash / online.
+        // Payment-type badge (cash / online)
         const rawPayMethod = (o.payment_method || '').toLowerCase();
         const payMethodLabel = rawPayMethod === 'online'
             ? 'Online'
@@ -792,6 +792,7 @@ function renderOrders(orders) {
             <td class="px-3 py-2">${regionHtml}</td>
             <td class="px-3 py-2">${dtypeHtml}</td>
             <td class="px-3 py-2"><span class="status-badge" style="${payMethodStyle}">${payMethodLabel}</span></td>
+            <td class="px-3 py-2"><span class="status-badge ${statusClass}">${(o.order_status || 'new').replace(/_/g, ' ')}</span></td>
             <td class="px-3 py-2 text-right font-medium">PKR ${Number(o.total_price || 0).toLocaleString()}</td>
             <td class="px-3 py-2">
                 <span class="status-badge ${payClass}">${o.payment_status || 'unpaid'}</span>
@@ -3170,7 +3171,7 @@ function toggleCancelledOrders() {
 
 function loadCancelledOrders() {
     cancelledOrdersLoaded = true;
-    document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">Loading...</td></tr>';
+    document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="7" class="px-4 py-4 text-center text-gray-400 text-sm">Loading...</td></tr>';
 
     fetch('/qurbani/api/orders?status=cancelled', {
         headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
@@ -3180,7 +3181,7 @@ function loadCancelledOrders() {
         const orders = data.orders || [];
         document.getElementById('cancelledCount').textContent = orders.length;
         if (orders.length === 0) {
-            document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400 text-sm">No cancelled orders</td></tr>';
+            document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="7" class="px-4 py-4 text-center text-gray-400 text-sm">No cancelled orders</td></tr>';
             return;
         }
         const html = orders.map(o => {
@@ -3188,9 +3189,9 @@ function loadCancelledOrders() {
             const items = o.line_items || [];
             const productHtml = items.map(li => (parseInt(li.quantity) || 0) + 'x ' + (li.name || '-')).join(', ') || (o.product_names || '-');
             const totalQty = items.reduce((s, li) => s + (parseInt(li.quantity) || 0), 0);
-            return `<tr class="border-b border-gray-100 hover:bg-red-50 cursor-pointer" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
-                <td class="px-3 py-2 font-medium text-gray-900">${o.order_number || o.id}</td>
-                <td class="px-3 py-2">
+            return `<tr class="border-b border-gray-100 hover:bg-red-50">
+                <td class="px-3 py-2 font-medium text-gray-900 cursor-pointer" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">${o.order_number || o.id}</td>
+                <td class="px-3 py-2 cursor-pointer" onclick="window.open('/orders?edit_order_id=${o.id}', '_blank')">
                     <div class="text-gray-900">${(o.customer_name || '').trim() || '-'}</div>
                     <div class="text-xs text-gray-400">${o.customer_phone || ''}</div>
                 </td>
@@ -3198,13 +3199,61 @@ function loadCancelledOrders() {
                 <td class="px-3 py-2 text-center font-medium">${totalQty || '-'}</td>
                 <td class="px-3 py-2 text-right font-medium">PKR ${Number(o.total_price || 0).toLocaleString()}</td>
                 <td class="px-3 py-2 text-gray-500 text-xs">${dateStr}</td>
+                <td class="px-3 py-2 text-center">
+                    <button onclick="restoreQurbaniOrder(${o.id}, '${(o.order_number || '').replace(/'/g, "\\'")}')" style="padding:4px 10px; background:#059669; color:#fff; border:none; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap;" title="Restore order to active">↩ Restore</button>
+                </td>
             </tr>`;
         }).join('');
         document.getElementById('cancelledOrdersTableBody').innerHTML = html;
     })
     .catch(() => {
-        document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-red-400 text-sm">Error loading cancelled orders</td></tr>';
+        document.getElementById('cancelledOrdersTableBody').innerHTML = '<tr><td colspan="7" class="px-4 py-4 text-center text-red-400 text-sm">Error loading cancelled orders</td></tr>';
     });
+}
+
+async function restoreQurbaniOrder(orderId, orderNumber) {
+    if (!confirm(`Restore order #${orderNumber} back to active orders?\n\nThis will set the status to "new" and it will appear in the main Qurbani orders list.`)) return;
+
+    try {
+        const response = await fetch('/order-status/api/change-status', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
+            body: JSON.stringify({ order_id: orderId, status_code: 'new', notes: 'Restored from cancelled (Qurbani Orders page)' })
+        });
+        const data = await response.json();
+        if (data.success) {
+            alert(data.message || `Order #${orderNumber} restored successfully`);
+            loadOrders();
+            loadCancelledOrders();
+            loadQurbaniStats();
+        } else if (data.requires_confirmation) {
+            if (confirm(data.message + '\n\nProceed with restore?')) {
+                const r2 = await fetch('/order-status/api/change-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+                    body: JSON.stringify({ order_id: orderId, status_code: 'new', notes: 'Restored from cancelled (Qurbani Orders page)', confirmed: true })
+                });
+                const d2 = await r2.json();
+                if (d2.success) {
+                    alert(d2.message || `Order #${orderNumber} restored successfully`);
+                    loadOrders();
+                    loadCancelledOrders();
+                    loadQurbaniStats();
+                } else {
+                    alert(d2.message || 'Failed to restore order');
+                }
+            }
+        } else {
+            alert(data.message || 'Failed to restore order');
+        }
+    } catch (e) {
+        console.error('Restore error:', e);
+        alert('Network error while restoring order');
+    }
 }
 
 async function deleteQurbaniOrder(orderId, orderNumber) {

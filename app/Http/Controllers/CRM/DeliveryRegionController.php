@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CRM;
 
 use App\Http\Controllers\Controller;
+use App\Models\CRM\OrderModel;
 use App\Services\RegionDetectionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -701,6 +702,8 @@ class DeliveryRegionController extends Controller
         $skipped = 0;
         $changed = 0;
 
+        $assignedByUserId = auth()->check() ? (int) auth()->id() : null;
+
         foreach ($orders as $order) {
             $newRiderId = $regionToRider[$order->delivery_region_id] ?? null;
             if (!$newRiderId) {
@@ -708,20 +711,26 @@ class DeliveryRegionController extends Controller
                 continue;
             }
 
-            if ($order->assigned_rider_user_id == $newRiderId) {
+            // Check both order table AND history to detect if already correct
+            $currentHistoryRider = DB::table('t_ops_order_rider_history')
+                ->where('order_id', $order->id)
+                ->where('is_current', 1)
+                ->value('rider_user_id');
+
+            $alreadyCorrect = ($order->assigned_rider_user_id == $newRiderId)
+                && ($currentHistoryRider == $newRiderId);
+
+            if ($alreadyCorrect) {
                 $skipped++;
                 continue;
             }
 
-            $wasAssigned = !empty($order->assigned_rider_user_id);
+            $wasAssigned = !empty($order->assigned_rider_user_id) || !empty($currentHistoryRider);
 
-            DB::table('t_crm_prod_order')
-                ->where('id', $order->id)
-                ->update([
-                    'assigned_rider_user_id' => $newRiderId,
-                    'rider_sync_required' => true,
-                    'updated_at' => now(),
-                ]);
+            $orderModel = OrderModel::find($order->id);
+            if ($orderModel) {
+                $orderModel->assignRider($newRiderId, 'Auto-assigned by region', $assignedByUserId);
+            }
 
             if ($wasAssigned) {
                 $changed++;

@@ -17750,6 +17750,8 @@ class RiderController extends Controller
             foreach ($desiredOrder as $f) { if (in_array($f, $rawInvoiceFields)) $invoiceFields[] = $f; }
             foreach ($rawInvoiceFields as $f) { if (!in_array($f, $invoiceFields)) $invoiceFields[] = $f; }
 
+            $cancellationCode = \App\Models\FIN\ConfigModel::get('qurbani_cancellation_code', '');
+
             return response()->json([
                 'success' => true,
                 'options' => $options,
@@ -17757,6 +17759,7 @@ class RiderController extends Controller
                 'qurbani_shipping_price' => $shippingPrice,
                 'qurbani_default_payment_method' => $defaultPaymentMethod,
                 'invoice_fields' => $invoiceFields,
+                'qurbani_cancellation_code' => $cancellationCode,
             ]);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
