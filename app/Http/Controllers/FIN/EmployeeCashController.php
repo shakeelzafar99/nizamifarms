@@ -3137,9 +3137,13 @@ class EmployeeCashController extends Controller
 
             $companyAccount = AccountModel::findOrFail($id);
             
-            // Check sufficient balance if auto-approved
             if (!$request->requires_approval && $request->amount > $companyAccount->current_balance) {
-                throw new \Exception("Insufficient balance in {$companyAccount->account_name}");
+                Log::warning('Company payment will result in negative balance', [
+                    'account' => $companyAccount->account_name,
+                    'current_balance' => $companyAccount->current_balance,
+                    'payment_amount' => $request->amount,
+                    'user_id' => auth()->id(),
+                ]);
             }
             
             // Determine approval status
@@ -3232,9 +3236,13 @@ class EmployeeCashController extends Controller
                 throw new \Exception("Transfers are only allowed between company accounts");
             }
             
-            // Check sufficient balance
             if ($request->amount > $fromAccount->current_balance) {
-                throw new \Exception("Insufficient balance in {$fromAccount->account_name}");
+                Log::warning('Company transfer will result in negative balance', [
+                    'from_account' => $fromAccount->account_name,
+                    'current_balance' => $fromAccount->current_balance,
+                    'transfer_amount' => $request->amount,
+                    'user_id' => auth()->id(),
+                ]);
             }
 
             // Internal transfers don't require approval
