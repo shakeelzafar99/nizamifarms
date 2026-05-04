@@ -1842,7 +1842,7 @@ function showPaymentReminderConfirmation(items, customerName, customerPhone) {
     const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
     const invoiceNumbers = items.map(i => i.order_number || i.number).filter(Boolean);
     const isSingle = items.length === 1;
-    const templateName = isSingle ? 'payment_reminder_single' : 'payment_reminder_multiple';
+    const templateName = isSingle ? 'payment_reminder_single' : 'payment_reminder_multiples';
 
     const nameForTemplate = isSingle
         ? customerName
@@ -1856,11 +1856,13 @@ function showPaymentReminderConfirmation(items, customerName, customerPhone) {
         template_name: templateName,
         body_params: [nameForTemplate, invoicesStr, amountStr],
         customerName: customerName,
+        orderId: isSingle ? items[0].order_id : null,
+        isSingle: isSingle,
     };
 
     const messagePreview = isSingle
         ? `Assalamoalikum ${escapeHtml(nameForTemplate)},\n\nWe hope this message finds you well. We are writing to kindly remind you of an outstanding invoice ${escapeHtml(invoicesStr)} on your account. Please settle the payment of Rs ${amountStr} at your earliest convenience.\n\nIf you have already made the payment, kindly share a screenshot of the transaction so we can update our records accordingly.\n\nThank you for your understanding and cooperation`
-        : `Assalamoalikum ${escapeHtml(nameForTemplate)},\n\nWe hope this message finds you well. We are writing to kindly remind you of outstanding invoices ${escapeHtml(invoicesStr)} on your account. Please settle the payment amount ${amountStr} at your earliest convenience.\n\nIf you have already made the payment, kindly share a screenshot of the transaction so we can update our records accordingly.\n\nThank you for your understanding and cooperation.\n\nBest regards,`;
+        : `Dear ${escapeHtml(nameForTemplate)},\n\nThis is a payment reminder from Nizami Farms for invoice(s): ${escapeHtml(invoicesStr)}.\n\nTotal pending amount: PKR ${amountStr}.\n\nIf payment has already been made, please reply with the payment confirmation so we can update your account.\n\nThank you,\nNizami Farms`;
 
     let invoiceListHtml = '';
     items.forEach((item, idx) => {
@@ -1923,12 +1925,58 @@ function closePaymentReminderModal() {
     pendingReminderData = null;
 }
 
+function captureReminderInvoiceImage(invoiceUrl, orderId) {
+    return new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;height:1400px;border:none;opacity:0;';
+        document.body.appendChild(iframe);
+        iframe.src = invoiceUrl;
+        iframe.onload = async function() {
+            try {
+                const addScript = (doc, src) => new Promise(r => { const s = doc.createElement('script'); s.src = src; s.onload = r; doc.head.appendChild(s); });
+                const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+                await addScript(iDoc, 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+                const node = iDoc.querySelector('.invoice-container');
+                if (!node) { iframe.remove(); reject(new Error('Invoice container not found')); return; }
+                const canvas = await iframe.contentWindow.html2canvas(node, {scale: 2, useCORS: true, allowTaint: true});
+                const dataUrl = canvas.toDataURL('image/png');
+                iframe.remove();
+
+                const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+                const uploadRes = await fetch('/messages/upload-invoice-image', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken},
+                    body: JSON.stringify({order_id: orderId, image_data: dataUrl})
+                }).then(r => r.json());
+
+                if (uploadRes.success) {
+                    resolve(uploadRes.image_url);
+                } else {
+                    reject(new Error(uploadRes.message || 'Upload failed'));
+                }
+            } catch (err) { iframe.remove(); reject(err); }
+        };
+        iframe.onerror = function() { iframe.remove(); reject(new Error('Failed to load invoice')); };
+    });
+}
+
+async function getOrGenerateInvoiceImage(orderId) {
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const imgRes = await fetch(`/messages/invoice-image/${orderId}`, {
+        headers: {'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken}
+    }).then(r => r.json());
+
+    if (!imgRes.success) throw new Error(imgRes.message || 'Failed to check invoice image');
+    if (!imgRes.needs_capture) return imgRes.image_url;
+
+    return await captureReminderInvoiceImage(imgRes.invoice_url, orderId);
+}
+
 async function confirmSendPaymentReminder() {
     if (!pendingReminderData) return;
 
     const btn = document.getElementById('paymentReminderSendBtn');
     const originalText = btn.innerHTML;
-    btn.innerHTML = '⏳ Sending...';
     btn.disabled = true;
     btn.style.opacity = '0.6';
 
@@ -1938,47 +1986,43 @@ async function confirmSendPaymentReminder() {
         body_params: pendingReminderData.body_params,
     };
 
-    // payment_reminder_single has an image header on Meta
-    if (pendingReminderData.template_name === 'payment_reminder_single') {
-        payload.header_params = [
-            {type: 'image', image: {link: 'https://nizamifarms.com/assets/media/logos/nizami-farms-logo.png'}}
-        ];
-    }
-
     try {
-        const response = await fetch('/messages/send-template', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
+        if (pendingReminderData.isSingle && pendingReminderData.orderId) {
+            btn.innerHTML = '⏳ Preparing invoice...';
+            const imageUrl = await getOrGenerateInvoiceImage(pendingReminderData.orderId);
+            payload.header_params = [{type: 'image', image: {link: imageUrl}}];
+        }
 
-        const data = await response.json();
+        btn.innerHTML = '⏳ Sending...';
+
+        const sendPayload = async (force) => {
+            const p = {...payload};
+            if (force) p.force = true;
+            const response = await fetch('/messages/send-template', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(p)
+            });
+            return {response, data: await response.json()};
+        };
+
+        const {response, data} = await sendPayload(false);
 
         if (data.success) {
             showToast(`Payment reminder sent to ${pendingReminderData.customerName}!`, 'success');
             closePaymentReminderModal();
         } else if (response.status === 409 && data.recently_sent) {
             if (confirm(`A template was recently sent to this customer (${data.last_template || 'unknown'}).\n\nSend anyway?`)) {
-                payload.force = true;
-                const forceResponse = await fetch('/messages/send-template', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
-                });
-                const forceData = await forceResponse.json();
-                if (forceData.success) {
+                const force = await sendPayload(true);
+                if (force.data.success) {
                     showToast(`Payment reminder sent to ${pendingReminderData.customerName}!`, 'success');
                     closePaymentReminderModal();
                 } else {
-                    showToast(forceData.message || 'Failed to send reminder', 'error');
+                    showToast(force.data.message || 'Failed to send reminder', 'error');
                 }
             }
         } else {
@@ -1986,7 +2030,7 @@ async function confirmSendPaymentReminder() {
         }
     } catch (error) {
         console.error('Payment reminder error:', error);
-        showToast('Network error sending reminder', 'error');
+        showToast(error.message || 'Failed to prepare/send reminder', 'error');
     } finally {
         btn.innerHTML = originalText;
         btn.disabled = false;
