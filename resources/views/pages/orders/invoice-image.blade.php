@@ -445,11 +445,14 @@
             </thead>
             <tbody>
                 @foreach($order->lineItems as $item)
-                @php $hasItemNote = !empty(trim((string)($item->instructions ?? ''))); @endphp
+                @php
+                    $isQurbaniInvoice = !empty($qurbaniInvoiceFields ?? []);
+                    $hasItemNote = $isQurbaniInvoice && !empty(trim((string)($item->instructions ?? '')));
+                @endphp
                 <tr{!! $hasItemNote ? ' style="background-color: #fefce8;"' : '' !!}>
                     <td>
                         <div class="product-name">{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="display: inline-block; padding: 1px 5px; background: #dcfce7; color: #16a34a; border-radius: 3px; font-size: 9px; font-weight: 700; margin-left: 3px;">FREE</span>@endif</div>
-                        @if(!empty($qurbaniInvoiceFields ?? []))
+                        @if($isQurbaniInvoice)
                         @php
                             $attrParts = [];
                             $fieldMap = ['qurbani_day' => 'Day', 'qurbani_delivery_type' => 'Type', 'qurbani_slot' => 'Slot', 'qurbani_region' => 'Region', 'qurbani_sub_region' => 'Sub Region', 'qurbani_type' => 'Qurbani Type', 'qurbani_paya' => 'Paya'];
@@ -483,7 +486,7 @@
             <strong>TOTAL ITEM NUMBER:</strong> {{ $order->lineItems->count() }}
         </div>
 
-        @if(!empty(trim((string)($order->note ?? ''))))
+        @if(!empty($qurbaniInvoiceFields ?? []) && !empty(trim((string)($order->note ?? ''))))
         <div style="margin: 6px 0; padding: 6px 10px; background: #fefce8; border: 1px solid #fde68a; border-radius: 4px;">
             <div style="font-size: 11px; color: #92400e; font-weight: 600;">📝 Order Notes:</div>
             <div style="font-size: 11px; color: #78350f; margin-top: 2px;">{{ $order->note }}</div>

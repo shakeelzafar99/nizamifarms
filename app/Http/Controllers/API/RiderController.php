@@ -17825,6 +17825,21 @@ class RiderController extends Controller
                 $detail[$dt][$day][$cat]['cell'][$slot][$region] = ($detail[$dt][$day][$cat]['cell'][$slot][$region] ?? 0) + $qty;
             }
 
+            $hiddenCatsJson = \App\Models\FIN\ConfigModel::get('qurbani_hidden_stats_categories', '[]');
+            $hiddenCats = json_decode($hiddenCatsJson, true) ?: [];
+            if (!empty($hiddenCats)) {
+                foreach ($summary as $dt => $dayMap) {
+                    foreach ($dayMap as $day => $catMap) {
+                        foreach ($hiddenCats as $hc) { unset($summary[$dt][$day][$hc]); }
+                    }
+                }
+                foreach ($detail as $dt => $dayMap) {
+                    foreach ($dayMap as $day => $catMap) {
+                        foreach ($hiddenCats as $hc) { unset($detail[$dt][$day][$hc]); }
+                    }
+                }
+            }
+
             $targetSummary = [];
             $targetBreakdown = [];
             if (\DB::getSchemaBuilder()->hasTable('t_crm_qurbani_targets')) {

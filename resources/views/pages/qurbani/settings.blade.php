@@ -53,6 +53,16 @@
         $cancellationCode = \App\Models\FIN\ConfigModel::get('qurbani_cancellation_code', '');
         $defaultPaymentMethod = \App\Models\FIN\ConfigModel::get('qurbani_default_payment_method', 'cash');
         if (!in_array($defaultPaymentMethod, ['cash','online'], true)) { $defaultPaymentMethod = 'cash'; }
+        $hiddenCategoriesJson = \App\Models\FIN\ConfigModel::get('qurbani_hidden_stats_categories', '[]');
+        $hiddenCategories = json_decode($hiddenCategoriesJson, true) ?: [];
+        $allStatsCategories = \DB::table('t_crm_prod_product')
+            ->whereRaw("LOWER(COALESCE(attribute_1,'')) = 'qurbani'")
+            ->whereNotNull('attribute_2')
+            ->where('attribute_2', '<>', '')
+            ->distinct()
+            ->orderBy('attribute_2')
+            ->pluck('attribute_2')
+            ->toArray();
     @endphp
 
     {{-- Delivery Fee Section --}}
@@ -172,6 +182,29 @@
         </div>
     </div>
 
+    {{-- Stats Category Visibility --}}
+    <div class="field-section" style="margin-bottom: 20px;">
+        <div class="field-header">
+            <div>
+                <div class="field-title">📊 Stats Category Visibility</div>
+                <div class="field-subtitle">Choose which product categories appear in the Booked Summary stats table. Unchecked categories will be hidden for all users (web &amp; mobile).</div>
+            </div>
+        </div>
+        <div class="field-body">
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; background: #f9fafb; border-radius: 8px;">
+                @forelse($allStatsCategories as $cat)
+                <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; font-size: 13px; font-weight: 500; user-select: none;">
+                    <input type="checkbox" class="stats-cat-cb" value="{{ $cat }}" {{ !in_array($cat, $hiddenCategories) ? 'checked' : '' }} onchange="saveHiddenCategories()" style="accent-color: #059669; width: 16px; height: 16px;">
+                    {{ $cat }}
+                </label>
+                @empty
+                <span style="color: #9ca3af; font-size: 13px;">No qurbani product categories found.</span>
+                @endforelse
+            </div>
+            <span id="hiddenCatSaved" style="display:none; font-size: 12px; color: #059669; font-weight: 600; margin-top: 6px;">✓ Saved</span>
+        </div>
+    </div>
+
     <div id="fieldsContainer">
         <div style="text-align: center; padding: 40px;"><span style="font-size: 24px;">⏳</span> Loading...</div>
     </div>
@@ -232,6 +265,28 @@ function toggleRiderDelivered() {
         btn.disabled = false;
     })
     .catch(() => { showToast('Error updating setting', 'error'); btn.disabled = false; btn.textContent = 'Retry'; });
+}
+
+function saveHiddenCategories() {
+    const checked = document.querySelectorAll('.stats-cat-cb');
+    const hidden = [];
+    checked.forEach(cb => { if (!cb.checked) hidden.push(cb.value); });
+    fetch('{{ url("qurbani-settings/api/hidden-categories") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ hidden: hidden })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            var saved = document.getElementById('hiddenCatSaved');
+            saved.style.display = 'inline';
+            setTimeout(() => saved.style.display = 'none', 2000);
+        } else {
+            showToast(data.message || 'Failed to save', 'error');
+        }
+    })
+    .catch(() => showToast('Error saving category visibility', 'error'));
 }
 
 function saveCancellationCode() {

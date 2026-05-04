@@ -928,6 +928,7 @@ class WhatsAppController extends Controller
                 'phone' => 'required|string',
                 'template_name' => 'required|string',
                 'body_params' => 'nullable|array',
+                'header_params' => 'nullable|array',
                 'customer_id' => 'nullable|integer',
                 'conversation_id' => 'nullable|integer',
                 'force' => 'nullable|boolean',
@@ -936,6 +937,7 @@ class WhatsAppController extends Controller
             $phone = $this->whatsapp->formatPhone($request->input('phone'));
             $templateName = $request->input('template_name');
             $bodyParams = $request->input('body_params', []);
+            $headerParams = $request->input('header_params', []);
             $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
 
             // Marketing-dedup guard. Returns null if OK to send, or a payload
@@ -952,7 +954,7 @@ class WhatsAppController extends Controller
                 return response()->json(['success' => false] + $dedup, 409);
             }
 
-            $response = $this->whatsapp->sendTemplateMessage($phone, $templateName, 'en', $bodyParams);
+            $response = $this->whatsapp->sendTemplateMessage($phone, $templateName, 'en', $bodyParams, $headerParams);
 
             if (!($response['success'] ?? false)) {
                 return response()->json([

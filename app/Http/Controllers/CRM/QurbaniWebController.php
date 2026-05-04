@@ -104,74 +104,91 @@ class QurbaniWebController extends Controller
                 });
             });
 
+        // Helper: apply a qurbani attribute filter.
+        // '__unassigned__' matches NULL or empty string (line items without the value set).
+        // Uses OR: order-level match OR any line item match (same pattern as regular values).
+        $applyQurbaniFilter = function ($query, $orderCol, $liCol, $value) {
+            if ($value === '__unassigned__') {
+                $query->where(function ($q) use ($orderCol, $liCol) {
+                    $q->where(function ($iq) use ($orderCol) {
+                        $iq->whereNull($orderCol)->orWhere($orderCol, '');
+                    })->orWhereExists(function ($sub) use ($liCol) {
+                        $sub->select(DB::raw(1))
+                            ->from('t_crm_prod_order_line_item as fli')
+                            ->whereColumn('fli.order_id', 'o.id')
+                            ->where(function ($sq) use ($liCol) {
+                                $sq->whereNull($liCol)->orWhere($liCol, '');
+                            });
+                    });
+                });
+            } else {
+                $query->where(function ($q) use ($orderCol, $liCol, $value) {
+                    $q->where($orderCol, $value)
+                      ->orWhereExists(function ($sub) use ($liCol, $value) {
+                          $sub->select(DB::raw(1))
+                              ->from('t_crm_prod_order_line_item as fli')
+                              ->whereColumn('fli.order_id', 'o.id')
+                              ->where($liCol, $value);
+                      });
+                });
+            }
+        };
+
         if ($request->filled('region')) {
-            $region = $request->region;
-            $query->where(function($q) use ($region) {
-                $q->where('o.qurbani_region', $region)
-                  ->orWhereExists(function($sub) use ($region) {
-                      $sub->select(DB::raw(1))
-                          ->from('t_crm_prod_order_line_item as fli')
-                          ->whereColumn('fli.order_id', 'o.id')
-                          ->where('fli.qurbani_region', $region);
-                  });
-            });
+            $applyQurbaniFilter($query, 'o.qurbani_region', 'fli.qurbani_region', $request->region);
         }
         if ($request->filled('day')) {
-            $day = $request->day;
-            $query->where(function($q) use ($day) {
-                $q->where('o.qurbani_day', $day)
-                  ->orWhereExists(function($sub) use ($day) {
-                      $sub->select(DB::raw(1))
-                          ->from('t_crm_prod_order_line_item as fli')
-                          ->whereColumn('fli.order_id', 'o.id')
-                          ->where('fli.qurbani_day', $day);
-                  });
-            });
+            $applyQurbaniFilter($query, 'o.qurbani_day', 'fli.qurbani_day', $request->day);
         }
         if ($request->filled('slot')) {
-            $slot = $request->slot;
-            $query->where(function($q) use ($slot) {
-                $q->where('o.qurbani_slot', $slot)
-                  ->orWhereExists(function($sub) use ($slot) {
-                      $sub->select(DB::raw(1))
-                          ->from('t_crm_prod_order_line_item as fli')
-                          ->whereColumn('fli.order_id', 'o.id')
-                          ->where('fli.qurbani_slot', $slot);
-                  });
-            });
+            $applyQurbaniFilter($query, 'o.qurbani_slot', 'fli.qurbani_slot', $request->slot);
         }
         if ($request->filled('delivery_type')) {
-            $dtype = $request->delivery_type;
-            $query->where(function($q) use ($dtype) {
-                $q->where('o.qurbani_delivery_type', $dtype)
-                  ->orWhereExists(function($sub) use ($dtype) {
-                      $sub->select(DB::raw(1))
-                          ->from('t_crm_prod_order_line_item as fli')
-                          ->whereColumn('fli.order_id', 'o.id')
-                          ->where('fli.qurbani_delivery_type', $dtype);
-                  });
-            });
+            $applyQurbaniFilter($query, 'o.qurbani_delivery_type', 'fli.qurbani_delivery_type', $request->delivery_type);
         }
-        // qurbani_type + qurbani_paya filters — these columns exist only on
-        // the line-item row (no order-level mirror), so narrow the order set
-        // to those with at least one matching line item.
+        if ($request->filled('sub_region')) {
+            $applyQurbaniFilter($query, 'o.qurbani_sub_region', 'fli.qurbani_sub_region', $request->sub_region);
+        }
+        // qurbani_type + qurbani_paya: line-item only columns
         if ($request->filled('qurbani_type')) {
             $qtype = $request->qurbani_type;
-            $query->whereExists(function ($sub) use ($qtype) {
-                $sub->select(DB::raw(1))
-                    ->from('t_crm_prod_order_line_item as fli')
-                    ->whereColumn('fli.order_id', 'o.id')
-                    ->where('fli.qurbani_type', $qtype);
-            });
+            if ($qtype === '__unassigned__') {
+                $query->whereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as fli')
+                        ->whereColumn('fli.order_id', 'o.id')
+                        ->where(function ($sq) {
+                            $sq->whereNull('fli.qurbani_type')->orWhere('fli.qurbani_type', '');
+                        });
+                });
+            } else {
+                $query->whereExists(function ($sub) use ($qtype) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as fli')
+                        ->whereColumn('fli.order_id', 'o.id')
+                        ->where('fli.qurbani_type', $qtype);
+                });
+            }
         }
         if ($request->filled('qurbani_paya')) {
             $paya = $request->qurbani_paya;
-            $query->whereExists(function ($sub) use ($paya) {
-                $sub->select(DB::raw(1))
-                    ->from('t_crm_prod_order_line_item as fli')
-                    ->whereColumn('fli.order_id', 'o.id')
-                    ->where('fli.qurbani_paya', $paya);
-            });
+            if ($paya === '__unassigned__') {
+                $query->whereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as fli')
+                        ->whereColumn('fli.order_id', 'o.id')
+                        ->where(function ($sq) {
+                            $sq->whereNull('fli.qurbani_paya')->orWhere('fli.qurbani_paya', '');
+                        });
+                });
+            } else {
+                $query->whereExists(function ($sub) use ($paya) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as fli')
+                        ->whereColumn('fli.order_id', 'o.id')
+                        ->where('fli.qurbani_paya', $paya);
+                });
+            }
         }
         if ($request->filled('status')) {
             $query->where('o.order_status', $request->status);
@@ -192,13 +209,25 @@ class QurbaniWebController extends Controller
         // item filter so counts/items shown in the row are consistent.
         if ($request->filled('category')) {
             $cat = $request->category;
-            $query->whereExists(function ($sub) use ($cat) {
-                $sub->select(DB::raw(1))
-                    ->from('t_crm_prod_order_line_item as cli')
-                    ->join('t_crm_prod_product as cp', 'cli.product_id', '=', 'cp.id')
-                    ->whereColumn('cli.order_id', 'o.id')
-                    ->where('cp.attribute_2', $cat);
-            });
+            if ($cat === '__unassigned__') {
+                $query->whereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as cli')
+                        ->join('t_crm_prod_product as cp', 'cli.product_id', '=', 'cp.id')
+                        ->whereColumn('cli.order_id', 'o.id')
+                        ->where(function ($sq) {
+                            $sq->whereNull('cp.attribute_2')->orWhere('cp.attribute_2', '');
+                        });
+                });
+            } else {
+                $query->whereExists(function ($sub) use ($cat) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as cli')
+                        ->join('t_crm_prod_product as cp', 'cli.product_id', '=', 'cp.id')
+                        ->whereColumn('cli.order_id', 'o.id')
+                        ->where('cp.attribute_2', $cat);
+                });
+            }
         }
         if ($request->filled('customer')) {
             $customerSearch = $request->customer;
@@ -255,7 +284,12 @@ class QurbaniWebController extends Controller
             if ($hasItemFilters) {
                 $filtered = $allItems->filter(function ($item) use ($itemFilters) {
                     foreach ($itemFilters as $key => $val) {
-                        if (($item->$key ?? null) !== $val) return false;
+                        $itemVal = $item->$key ?? null;
+                        if ($val === '__unassigned__') {
+                            if (!empty($itemVal)) return false;
+                        } else {
+                            if ($itemVal !== $val) return false;
+                        }
                     }
                     return true;
                 });
@@ -398,6 +432,22 @@ class QurbaniWebController extends Controller
         $days = $sortByKnown(array_keys($daysSet), $dayOrder);
         $categories = array_values(array_unique(array_keys($catsSet)));
         sort($categories);
+
+        $hiddenCatsJson = ConfigModel::get('qurbani_hidden_stats_categories', '[]');
+        $hiddenCats = json_decode($hiddenCatsJson, true) ?: [];
+        if (!empty($hiddenCats)) {
+            $categories = array_values(array_filter($categories, fn($c) => !in_array($c, $hiddenCats)));
+            foreach ($summary as $dt => $dayMap) {
+                foreach ($dayMap as $day => $catMap) {
+                    foreach ($hiddenCats as $hc) { unset($summary[$dt][$day][$hc]); }
+                }
+            }
+            foreach ($detail as $dt => $dayMap) {
+                foreach ($dayMap as $day => $catMap) {
+                    foreach ($hiddenCats as $hc) { unset($detail[$dt][$day][$hc]); }
+                }
+            }
+        }
 
         // Apr-2026: also expose the global slot list (sorted by qurbani_slot
         // display_order, with 'Unassigned' pinned last) so the redesigned
@@ -747,6 +797,62 @@ class QurbaniWebController extends Controller
         }
 
         return $allOrders;
+    }
+
+    public function getPaymentAccountSummary(Request $request)
+    {
+        // Aggregate payments for qurbani orders grouped by method + receiving bank.
+        // Uses EXISTS for the qurbani check to avoid row multiplication from the
+        // line-items join (one payment must not be counted once per line item).
+        $cleanTotals = DB::table('t_crm_order_payments as p')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'p.order_id')
+            ->where(function ($q) {
+                $q->whereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as li')
+                        ->join('t_crm_prod_product as prod', 'prod.id', '=', 'li.product_id')
+                        ->whereColumn('li.order_id', 'o.id')
+                        ->whereRaw("LOWER(COALESCE(prod.attribute_1,'')) = 'qurbani'");
+                })->orWhereNotNull('o.qurbani_day');
+            })
+            ->where('p.status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('o.order_status')
+                  ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            })
+            ->select(
+                'p.payment_method',
+                'p.receiving_account_id',
+                DB::raw("COUNT(p.id) as payment_count"),
+                DB::raw("COUNT(DISTINCT o.id) as order_count"),
+                DB::raw("SUM(p.amount) as total_amount")
+            )
+            ->groupBy('p.payment_method', 'p.receiving_account_id')
+            ->get();
+
+        $accounts = \App\Models\FIN\OnlineReceivingAccountModel::orderBy('name')->get(['id', 'name', 'short_code', 'color_hex']);
+        $accountMap = $accounts->keyBy('id');
+
+        $rows = $cleanTotals->map(function ($r) use ($accountMap) {
+            $acct = $r->receiving_account_id ? ($accountMap[$r->receiving_account_id] ?? null) : null;
+            return [
+                'payment_method' => $r->payment_method,
+                'account_name' => $acct ? $acct->name : ($r->payment_method === 'online' ? 'Unknown Bank' : null),
+                'account_code' => $acct ? $acct->short_code : null,
+                'account_color' => $acct ? $acct->color_hex : null,
+                'payment_count' => (int) $r->payment_count,
+                'order_count' => (int) $r->order_count,
+                'total_amount' => round((float) $r->total_amount, 2),
+            ];
+        });
+
+        $grandTotal = $rows->sum('total_amount');
+
+        return response()->json([
+            'success' => true,
+            'rows' => $rows->values(),
+            'grand_total' => $grandTotal,
+        ]);
     }
 
     public function toggleQurbaniMode(Request $request)

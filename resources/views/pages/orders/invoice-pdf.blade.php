@@ -371,10 +371,13 @@
             </thead>
             <tbody>
                 @foreach($order->lineItems as $item)
-                @php $hasItemNote = !empty(trim((string)($item->instructions ?? ''))); @endphp
+                @php
+                    $isQurbaniInvoice = !empty($qurbaniInvoiceFields ?? []);
+                    $hasItemNote = $isQurbaniInvoice && !empty(trim((string)($item->instructions ?? '')));
+                @endphp
                 <tr{!! $hasItemNote ? ' style="background-color: #fefce8;"' : '' !!}>
                     <td>{{ $item->name ?: 'N/A' }}@if($item->is_free) <span style="font-size: 9px; font-weight: 700; color: #16a34a;">[FREE]</span>@endif
-                        @if(!empty($qurbaniInvoiceFields ?? []))
+                        @if($isQurbaniInvoice)
                         @php
                             $attrParts = [];
                             $fieldMap = ['qurbani_day' => 'Day', 'qurbani_delivery_type' => 'Type', 'qurbani_slot' => 'Slot', 'qurbani_region' => 'Region', 'qurbani_sub_region' => 'Sub Region', 'qurbani_type' => 'Qurbani Type', 'qurbani_paya' => 'Paya'];
@@ -396,7 +399,7 @@
             </tbody>
         </table>
 
-        @if(!empty(trim((string)($order->note ?? ''))))
+        @if(!empty($qurbaniInvoiceFields ?? []) && !empty(trim((string)($order->note ?? ''))))
         <div style="margin: 6px 0; padding: 6px 8px; background: #fefce8; border: 1px solid #fde68a; border-radius: 4px;">
             <span style="font-size: 9px; color: #92400e; font-weight: 700;">📝 Order Notes:</span>
             <span style="font-size: 9px; color: #78350f;"> {{ $order->note }}</span>

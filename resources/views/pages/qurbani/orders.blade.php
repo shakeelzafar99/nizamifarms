@@ -136,6 +136,9 @@
                 <button id="dashboardMainTab" class="qurbani-tab border-b-2 py-2 px-1 text-sm" onclick="switchMainTab('dashboard')">
                     <i class="ki-filled ki-chart-line mr-1"></i> Dashboard
                 </button>
+                <button id="paymentsMainTab" class="qurbani-tab border-b-2 py-2 px-1 text-sm" onclick="switchMainTab('payments')">
+                    <i class="ki-filled ki-wallet mr-1"></i> Payments
+                </button>
             </nav>
         </div>
     </div>
@@ -171,6 +174,7 @@
                         @foreach($days as $d)
                         <option value="{{ $d }}">{{ $d }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Unassigned --</option>
                     </select>
                 </div>
                 <div>
@@ -182,6 +186,7 @@
                         @foreach($deliveryTypes as $dt)
                         <option value="{{ $dt }}">{{ $dt }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Unassigned --</option>
                     </select>
                 </div>
                 <div>
@@ -199,6 +204,7 @@
                         @foreach($regions as $r)
                         <option value="{{ $r }}">{{ $r }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Unassigned --</option>
                     </select>
                 </div>
                 <div>
@@ -216,6 +222,7 @@
                         @foreach(($categories ?? []) as $cat)
                         <option value="{{ $cat }}">{{ $cat }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Uncategorized --</option>
                     </select>
                 </div>
                 {{-- New Apr-2026 qurbani attributes. Rendered only when the
@@ -229,6 +236,7 @@
                         @foreach($qurbaniTypes as $qt)
                         <option value="{{ $qt }}">{{ $qt }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Unassigned --</option>
                     </select>
                 </div>
                 @endif
@@ -240,6 +248,7 @@
                         @foreach($payaOptions as $po)
                         <option value="{{ $po }}">{{ $po }}</option>
                         @endforeach
+                        <option value="__unassigned__" style="color:#DC2626;">-- Unassigned --</option>
                     </select>
                 </div>
                 @endif
@@ -344,6 +353,18 @@
         </div>
     </div>
 
+    <!-- ======= PAYMENTS TAB ======= -->
+    <div id="paymentsContent" style="display:none;">
+        <div class="bg-white border border-gray-200 rounded-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-900">Payment Account Summary</h2>
+                <button onclick="loadPaymentSummary()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200">↻ Refresh</button>
+            </div>
+            <div id="paymentSummaryLoading" class="py-8 text-center text-gray-400">Loading...</div>
+            <div id="paymentSummaryContainer" style="display:none;"></div>
+        </div>
+    </div>
+
     <!-- ======= DASHBOARD TAB ======= -->
     <div id="dashboardContent" style="display:none;">
         <!-- Yearly Summary Chart -->
@@ -420,6 +441,7 @@
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 const qurbaniCancellationCode = '{{ \App\Models\FIN\ConfigModel::get("qurbani_cancellation_code", "") }}';
 let yearlyChart = null;
+let paymentSummaryLoaded = false;
 let allOrders = [];
 let hasItemFilters = false;
 let activeCategoryFilter = null;
@@ -437,9 +459,104 @@ window._qurbaniRiders = @json($riders);
 function switchMainTab(tab) {
     document.getElementById('ordersMainTab').classList.toggle('active', tab === 'orders');
     document.getElementById('dashboardMainTab').classList.toggle('active', tab === 'dashboard');
+    document.getElementById('paymentsMainTab').classList.toggle('active', tab === 'payments');
     document.getElementById('ordersContent').style.display = tab === 'orders' ? '' : 'none';
     document.getElementById('dashboardContent').style.display = tab === 'dashboard' ? '' : 'none';
+    document.getElementById('paymentsContent').style.display = tab === 'payments' ? '' : 'none';
     if (tab === 'dashboard' && !yearlyChart) loadDashboard();
+    if (tab === 'payments' && !paymentSummaryLoaded) loadPaymentSummary();
+}
+
+function loadPaymentSummary() {
+    const loading = document.getElementById('paymentSummaryLoading');
+    const container = document.getElementById('paymentSummaryContainer');
+    loading.style.display = ''; container.style.display = 'none';
+
+    fetch('/qurbani/api/payment-summary', { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error('Bad response');
+        paymentSummaryLoaded = true;
+        loading.style.display = 'none'; container.style.display = '';
+
+        const rows = data.rows || [];
+        const grand = data.grand_total || 0;
+
+        const onlineRows = rows.filter(r => r.payment_method === 'online');
+        const cashRows = rows.filter(r => r.payment_method === 'cash');
+        const otherRows = rows.filter(r => r.payment_method !== 'online' && r.payment_method !== 'cash');
+
+        const fmt = (v) => Number(v || 0).toLocaleString('en-PK', { minimumFractionDigits: 0 });
+        const pct = (v) => grand > 0 ? ((v / grand) * 100).toFixed(1) + '%' : '0%';
+
+        const colorDot = (hex) => hex ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${hex};margin-right:6px;"></span>` : '';
+
+        let html = `<div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 border-b">
+                    <tr>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment Method</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Payments</th>
+                        <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Orders</th>
+                        <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount (Rs)</th>
+                        <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">% of Total</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        const renderGroup = (label, groupRows, bgColor, textColor) => {
+            if (groupRows.length === 0) return '';
+            const groupTotal = groupRows.reduce((s, r) => s + r.total_amount, 0);
+            let h = '';
+            groupRows.forEach(r => {
+                h += `<tr class="border-b hover:bg-gray-50">
+                    <td class="px-4 py-3 font-medium text-gray-700">${label}</td>
+                    <td class="px-4 py-3">${colorDot(r.account_color)}${r.account_name || '—'} ${r.account_code ? '<span style="color:#9ca3af;font-size:11px;">(' + r.account_code + ')</span>' : ''}</td>
+                    <td class="px-4 py-3 text-center">${r.payment_count}</td>
+                    <td class="px-4 py-3 text-center">${r.order_count}</td>
+                    <td class="px-4 py-3 text-right font-semibold">Rs ${fmt(r.total_amount)}</td>
+                    <td class="px-4 py-3 text-right text-gray-500">${pct(r.total_amount)}</td>
+                </tr>`;
+            });
+            if (groupRows.length > 1) {
+                h += `<tr class="border-b" style="background:${bgColor};">
+                    <td class="px-4 py-2 font-bold" style="color:${textColor};" colspan="2">${label} Subtotal</td>
+                    <td class="px-4 py-2 text-center font-bold" style="color:${textColor};">${groupRows.reduce((s,r)=>s+r.payment_count,0)}</td>
+                    <td class="px-4 py-2 text-center font-bold" style="color:${textColor};">${groupRows.reduce((s,r)=>s+r.order_count,0)}</td>
+                    <td class="px-4 py-2 text-right font-bold" style="color:${textColor};">Rs ${fmt(groupTotal)}</td>
+                    <td class="px-4 py-2 text-right font-bold" style="color:${textColor};">${pct(groupTotal)}</td>
+                </tr>`;
+            }
+            return h;
+        };
+
+        html += renderGroup('Online', onlineRows, '#ECFDF5', '#065F46');
+        html += renderGroup('Cash', cashRows, '#FEF3C7', '#92400E');
+        html += renderGroup('Other', otherRows, '#F3F4F6', '#374151');
+
+        html += `</tbody>
+                <tfoot>
+                    <tr class="bg-gray-800 text-white">
+                        <td class="px-4 py-3 font-bold" colspan="2">Grand Total</td>
+                        <td class="px-4 py-3 text-center font-bold">${rows.reduce((s,r)=>s+r.payment_count,0)}</td>
+                        <td class="px-4 py-3 text-center font-bold">${rows.reduce((s,r)=>s+r.order_count,0)}</td>
+                        <td class="px-4 py-3 text-right font-bold">Rs ${fmt(grand)}</td>
+                        <td class="px-4 py-3 text-right font-bold">100%</td>
+                    </tr>
+                </tfoot>
+            </table></div>`;
+
+        if (rows.length === 0) {
+            html = '<div class="py-12 text-center text-gray-400">No payment records found for qurbani orders.</div>';
+        }
+
+        container.innerHTML = html;
+    })
+    .catch(err => {
+        loading.innerHTML = '<span style="color:#EF4444;">Failed to load payment summary. <a href="javascript:loadPaymentSummary()" style="text-decoration:underline;">Retry</a></span>';
+        console.error('Payment summary error:', err);
+    });
 }
 
 function selectRegionTab(btn, region) {
@@ -540,9 +657,13 @@ function updateSlotDropdown() {
         if (o.option_value === currentSlot) opt.selected = true;
         slotSel.appendChild(opt);
     });
-    // If the previously-selected slot is no longer a valid option, drop it so backend
-    // filtering isn't done against a stale invisible value.
-    if (currentSlot && !seenSlot.has(currentSlot)) slotSel.value = '';
+    const unOpt = document.createElement('option');
+    unOpt.value = '__unassigned__';
+    unOpt.textContent = '-- Unassigned --';
+    unOpt.style.color = '#DC2626';
+    if (currentSlot === '__unassigned__') unOpt.selected = true;
+    slotSel.appendChild(unOpt);
+    if (currentSlot && currentSlot !== '__unassigned__' && !seenSlot.has(currentSlot)) slotSel.value = '';
 }
 
 function updateSubRegionDropdown() {
@@ -571,7 +692,13 @@ function updateSubRegionDropdown() {
         if (o.option_value === currentSub) opt.selected = true;
         subRegionSel.appendChild(opt);
     });
-    if (currentSub && !seenSR.has(currentSub)) subRegionSel.value = '';
+    const unOpt = document.createElement('option');
+    unOpt.value = '__unassigned__';
+    unOpt.textContent = '-- Unassigned --';
+    unOpt.style.color = '#DC2626';
+    if (currentSub === '__unassigned__') unOpt.selected = true;
+    subRegionSel.appendChild(unOpt);
+    if (currentSub && currentSub !== '__unassigned__' && !seenSR.has(currentSub)) subRegionSel.value = '';
 }
 
 function onDayFilterChange() {
@@ -690,7 +817,10 @@ function renderOrders(orders) {
     let displayOrders = orders;
     if (activeCategoryFilter !== null) {
         displayOrders = orders.map(o => {
-            const matchingItems = (o.line_items || []).filter(li => (li.category_level_2 || '') === activeCategoryFilter);
+            const matchingItems = (o.line_items || []).filter(li => {
+                if (activeCategoryFilter === '__unassigned__') return !li.category_level_2;
+                return (li.category_level_2 || '') === activeCategoryFilter;
+            });
             if (matchingItems.length === 0) return null;
             return {...o, line_items: matchingItems, product_names: matchingItems.map(li => li.name).join(', '), total_qty: matchingItems.reduce((s, li) => s + (parseInt(li.quantity) || 0), 0), filtered: true, all_items_count: o.all_items_count || (o.line_items || []).length};
         }).filter(Boolean);
@@ -2286,31 +2416,13 @@ window.qstatsToggleCardExpandAll = function(deliveryType) {
     renderQurbaniSummary();
 };
 
-// Apr-2026 Phase 2: clicking a summary cell drives the orders-table
-// filters below. Each cell carries data attributes naming the
-// (deliveryType, day, category, slot) tuple it represents; this
-// helper applies them to the existing filter <select>s in the
-// "Filters Row" panel and triggers loadOrders().
-//
-// Empty / undefined values are treated as "clear that filter".
-// 'Unassigned' values are also treated as clear because:
-//   1. Filter <select>s are populated from t_crm_qurbani_field_options
-//      and don't carry an "Unassigned" option (the COALESCE label
-//      only appears in the *aggregate* SQL, never in the option
-//      table). Setting select.value = 'Unassigned' silently fails
-//      and the dropdown reverts to its previous value, leaving the
-//      user with a stale filter — confusing.
-//   2. Filtering by literal 'Unassigned' on the backend would also
-//      require a special whereNull/whereEmpty branch that doesn't
-//      exist today. Keeping that out of scope for this Phase 2.
-// We surface a small toast in this case so the user understands why
-// nothing happened and can navigate manually if needed.
+// Clicking a summary cell drives the orders-table filters.
+// 'Unassigned' / 'Uncategorized' maps to the __unassigned__ sentinel.
 function qstatsApplyFilterValue(selId, val) {
     const sel = document.getElementById(selId);
     if (!sel) return false;
     const isUnassigned = (val === 'Unassigned' || val === 'Uncategorized');
-    const target = (val === undefined || val === null || isUnassigned) ? '' : String(val);
-    // Only set if the option exists; otherwise we'd silently mis-filter.
+    const target = (val === undefined || val === null) ? '' : (isUnassigned ? '__unassigned__' : String(val));
     if (target !== '') {
         const opt = Array.prototype.find.call(sel.options, o => o.value === target);
         if (!opt) return false;
@@ -2354,7 +2466,7 @@ window.qstatsApplyFilter = function(opts) {
         if (!had.cat && o.category && o.category !== 'Uncategorized') skipped.push('category');
         // Also keep the "category cards" tab strip in sync.
         if (typeof activeCategoryFilter !== 'undefined') {
-            try { activeCategoryFilter = (o.category && o.category !== 'Uncategorized') ? o.category : null; } catch(_){}
+            try { activeCategoryFilter = o.category ? (o.category === 'Uncategorized' ? '__unassigned__' : o.category) : null; } catch(_){}
         }
     }
     if (o.slot !== undefined) {
@@ -2376,16 +2488,6 @@ window.qstatsApplyFilter = function(opts) {
     // Region / sub-region / payment / qurbani_type / paya are NOT touched
     // by summary clicks — keeping those independent so the user can stack
     // a region filter on top of a "Day 1 / Cow Share" cell click.
-
-    // Inform the user when an Unassigned bucket was clicked.
-    const unassignedHits = [];
-    if (o.day === 'Unassigned') unassignedHits.push('day');
-    if (o.deliveryType === 'Unassigned') unassignedHits.push('delivery type');
-    if (o.category === 'Uncategorized') unassignedHits.push('category');
-    if (o.slot === 'Unassigned') unassignedHits.push('slot');
-    if (unassignedHits.length > 0) {
-        qstatsToast('Unassigned ' + unassignedHits.join(', ') + ' cannot be filtered directly. Showing closest match — please assign these line items at the order level.');
-    }
 
     if (typeof loadOrders === 'function') loadOrders();
 

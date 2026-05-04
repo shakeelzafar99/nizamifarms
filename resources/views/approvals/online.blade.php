@@ -495,6 +495,7 @@
     <div id="selectionBar" class="selection-bar" style="display: none;">
         <span class="count"><span id="selectedCount">0</span> selected &bull; <span style="color: #34D399; font-weight: 700;">Rs. <span id="selectedAmount">0</span></span></span>
         <button class="clear-btn" onclick="clearSelection()">✕ Clear</button>
+        <button style="background: #25D366; color: white; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" onclick="sendPaymentReminder()">💬 Payment Reminder</button>
         <button class="full-approve-btn" onclick="fullApproveSelected()">✓ Full Approve</button>
         <button class="l1-approve-btn" onclick="l1ApproveSelected()">→ L1 Only</button>
     </div>
@@ -609,6 +610,27 @@
             </div>
             <button id="reportWhatsAppBtn" onclick="" style="display: none; width: 100%; background: #25D366; color: white; font-weight: 700; padding: 14px 20px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; align-items: center; justify-content: center; gap: 8px; transition: transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 12px rgba(37,211,102,0.4)';" onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
                 💬 Send to Customer via WhatsApp
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ⭐ Payment Reminder Confirmation Modal -->
+<div id="paymentReminderModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 10000; justify-content: center; align-items: center;" onclick="if(event.target === this) closePaymentReminderModal()">
+    <div style="background: white; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); width: 100%; max-width: 520px; margin: 20px; overflow: hidden; max-height: 90vh; display: flex; flex-direction: column;" onclick="event.stopPropagation()">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+            <h3 style="font-size: 18px; font-weight: 700; color: #111827; margin: 0;">💬 Send Payment Reminder</h3>
+            <button onclick="closePaymentReminderModal()" style="background: none; border: none; font-size: 24px; color: #9ca3af; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+        </div>
+        <div id="paymentReminderBody" style="padding: 24px; overflow-y: auto; flex: 1;">
+            <!-- Populated by JS -->
+        </div>
+        <div style="padding: 16px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 10px; flex-shrink: 0;">
+            <button onclick="closePaymentReminderModal()" style="flex: 1; background: #F3F4F6; color: #374151; font-weight: 600; padding: 12px 16px; border-radius: 10px; border: 1px solid #D1D5DB; cursor: pointer; font-size: 14px;">
+                Cancel
+            </button>
+            <button id="paymentReminderSendBtn" onclick="confirmSendPaymentReminder()" style="flex: 1; background: #25D366; color: white; font-weight: 700; padding: 12px 16px; border-radius: 10px; border: none; cursor: pointer; font-size: 14px;">
+                💬 Send via WhatsApp
             </button>
         </div>
     </div>
@@ -878,6 +900,11 @@ function renderItems(groups) {
                         </a>
                         ` : ''}
                         ${!isApproved ? `
+                        ${group.customer_phone && formatPhoneForWhatsApp(group.customer_phone) ? `
+                        <button class="approve-group-btn" style="background: #ECFDF5; color: #059669; border: 1px solid #A7F3D0; font-size: 11px;" onclick="sendPaymentReminderForGroup('${escapeHtml(group.customer)}')" title="Send payment reminder via WhatsApp API">
+                            💬 Remind
+                        </button>
+                        ` : ''}
                         <button class="approve-group-btn" style="background: #EEF2FF; color: #4F46E5; border: 1px solid #C7D2FE;" onclick="openCustomerReport('${escapeHtml(group.customer)}')" title="Generate report for ${escapeHtml(group.customer)}">
                             📋
                         </button>
@@ -930,6 +957,7 @@ function renderInvoiceRow(item, isApproved) {
             <span class="invoice-amount">Rs. ${numberFormat(item.amount)}</span>
             <div class="invoice-actions">
                 ${!isApproved ? `
+                ${item.customer_phone ? `<button class="view-btn" style="background: #ECFDF5; color: #059669; border-color: #A7F3D0;" onclick="sendPaymentReminderForItem(${item.id})" title="Send payment reminder">💬</button>` : ''}
                 <button class="view-btn" onclick="openApprovalModal(${item.id}, ${item.level})">Review</button>
                 ` : `
                 <a href="${orderViewUrl}" target="_blank" class="view-btn">View Order</a>
@@ -1609,15 +1637,15 @@ function escapeHtml(str) {
 }
 
 function showToast(message, type) {
-    // Simple toast implementation
     const toast = document.createElement('div');
-    toast.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 font-semibold ${type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`;
+    toast.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg font-semibold ${type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`;
+    toast.style.zIndex = '99999';
     toast.textContent = message;
     document.body.appendChild(toast);
     
     setTimeout(() => {
         toast.remove();
-    }, 3000);
+    }, 4000);
 }
 
 // ⭐ Format phone number with Pakistan country code (+92) for WhatsApp
@@ -1757,6 +1785,213 @@ function printReport() {
     `);
     printWindow.document.close();
     printWindow.print();
+}
+
+// =====================================================
+// ⭐ Payment Reminder via WhatsApp API
+// =====================================================
+let pendingReminderData = null;
+
+function sendPaymentReminderForItem(ledgerId) {
+    const item = allItems.find(i => i.id === ledgerId);
+    if (!item) {
+        showToast('Item not found', 'error');
+        return;
+    }
+    showPaymentReminderConfirmation([item], item.requester, item.customer_phone);
+}
+
+function sendPaymentReminderForGroup(customerName) {
+    const group = groupedItems.find(g => g.customer === customerName);
+    if (!group || !group.items || group.items.length === 0) {
+        showToast('No items found for this customer', 'error');
+        return;
+    }
+    showPaymentReminderConfirmation(group.items, group.customer, group.customer_phone);
+}
+
+function sendPaymentReminder() {
+    if (selectedItems.size === 0) {
+        showToast('Please select invoices first', 'error');
+        return;
+    }
+
+    const items = allItems.filter(item => selectedItems.has(`${item.type}_${item.id}`));
+    if (items.length === 0) {
+        showToast('No items found for selection', 'error');
+        return;
+    }
+
+    const customers = [...new Set(items.map(i => i.requester))];
+    if (customers.length > 1) {
+        showToast('Selected invoices belong to different customers. Please select invoices for one customer only.', 'error');
+        return;
+    }
+
+    const customerPhone = items[0].customer_phone;
+    showPaymentReminderConfirmation(items, customers[0], customerPhone);
+}
+
+function showPaymentReminderConfirmation(items, customerName, customerPhone) {
+    const waPhone = customerPhone ? formatPhoneForWhatsApp(customerPhone) : '';
+    if (!waPhone) {
+        showToast('No phone number available for this customer', 'error');
+        return;
+    }
+
+    const totalAmount = items.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0);
+    const invoiceNumbers = items.map(i => i.order_number || i.number).filter(Boolean);
+    const isSingle = items.length === 1;
+    const templateName = isSingle ? 'payment_reminder_single' : 'payment_reminder_multiple';
+
+    const nameForTemplate = isSingle
+        ? customerName
+        : (customerName || '').split(' ')[0] || customerName;
+
+    const invoicesStr = invoiceNumbers.join(', ');
+    const amountStr = numberFormat(totalAmount);
+
+    pendingReminderData = {
+        phone: waPhone,
+        template_name: templateName,
+        body_params: [nameForTemplate, invoicesStr, amountStr],
+        customerName: customerName,
+    };
+
+    const messagePreview = isSingle
+        ? `Assalamoalikum ${escapeHtml(nameForTemplate)},\n\nWe hope this message finds you well. We are writing to kindly remind you of an outstanding invoice ${escapeHtml(invoicesStr)} on your account. Please settle the payment of Rs ${amountStr} at your earliest convenience.\n\nIf you have already made the payment, kindly share a screenshot of the transaction so we can update our records accordingly.\n\nThank you for your understanding and cooperation`
+        : `Assalamoalikum ${escapeHtml(nameForTemplate)},\n\nWe hope this message finds you well. We are writing to kindly remind you of outstanding invoices ${escapeHtml(invoicesStr)} on your account. Please settle the payment amount ${amountStr} at your earliest convenience.\n\nIf you have already made the payment, kindly share a screenshot of the transaction so we can update our records accordingly.\n\nThank you for your understanding and cooperation.\n\nBest regards,`;
+
+    let invoiceListHtml = '';
+    items.forEach((item, idx) => {
+        invoiceListHtml += `
+            <tr style="background: ${idx % 2 === 0 ? '#FAFAFA' : '#fff'};">
+                <td style="padding: 8px 12px; font-weight: 600; color: #3B82F6; border-bottom: 1px solid #E5E7EB;">${item.order_number || item.number}</td>
+                <td style="padding: 8px 12px; font-weight: 600; color: #059669; border-bottom: 1px solid #E5E7EB; text-align: right;">Rs. ${numberFormat(item.amount)}</td>
+            </tr>`;
+    });
+
+    document.getElementById('paymentReminderBody').innerHTML = `
+        <div style="background: #FEF3C7; border: 1px solid #FCD34D; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: flex-start; gap: 10px;">
+            <span style="font-size: 18px;">⚠️</span>
+            <div style="font-size: 13px; color: #92400E;">
+                <strong>Review carefully before sending.</strong> This will send an official WhatsApp payment reminder to the customer.
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+            <div style="background: #EFF6FF; padding: 12px; border-radius: 8px;">
+                <div style="font-size: 11px; color: #3B82F6; font-weight: 600; margin-bottom: 4px;">CUSTOMER</div>
+                <div style="font-size: 14px; font-weight: 700; color: #1E40AF;">${escapeHtml(customerName)}</div>
+                <div style="font-size: 12px; color: #6B7280; margin-top: 2px;">${customerPhone || ''}</div>
+            </div>
+            <div style="background: #ECFDF5; padding: 12px; border-radius: 8px;">
+                <div style="font-size: 11px; color: #059669; font-weight: 600; margin-bottom: 4px;">TOTAL AMOUNT</div>
+                <div style="font-size: 18px; font-weight: 800; color: #059669;">Rs. ${amountStr}</div>
+            </div>
+        </div>
+        <div style="margin-bottom: 12px;">
+            <div style="font-size: 12px; font-weight: 600; color: #6B7280; margin-bottom: 6px;">TEMPLATE: <span style="color: #7C3AED;">${isSingle ? 'Single Invoice' : 'Multiple Invoices'}</span></div>
+        </div>
+        <div style="border: 1px solid #E5E7EB; border-radius: 8px; overflow: hidden; margin-bottom: 12px;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #F3F4F6;">
+                        <th style="padding: 8px 12px; text-align: left; font-size: 11px; font-weight: 700; color: #6B7280;">Invoice #</th>
+                        <th style="padding: 8px 12px; text-align: right; font-size: 11px; font-weight: 700; color: #6B7280;">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>${invoiceListHtml}</tbody>
+                ${items.length > 1 ? `<tfoot>
+                    <tr style="background: #ECFDF5; border-top: 2px solid #10B981;">
+                        <td style="padding: 10px 12px; font-weight: 700; color: #065F46;">${items.length} invoices</td>
+                        <td style="padding: 10px 12px; font-weight: 800; color: #059669; text-align: right;">Rs. ${amountStr}</td>
+                    </tr>
+                </tfoot>` : ''}
+            </table>
+        </div>
+        <div style="background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 10px; padding: 16px; margin-bottom: 0;">
+            <div style="font-size: 12px; font-weight: 700; color: #166534; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">💬 Message the customer will receive:</div>
+            <div style="background: white; border-radius: 8px; padding: 14px; font-size: 13px; color: #1F2937; line-height: 1.6; white-space: pre-wrap; border: 1px solid #D1FAE5; max-height: 220px; overflow-y: auto;">${messagePreview}</div>
+        </div>
+    `;
+
+    document.getElementById('paymentReminderModal').style.display = 'flex';
+}
+
+function closePaymentReminderModal() {
+    document.getElementById('paymentReminderModal').style.display = 'none';
+    pendingReminderData = null;
+}
+
+async function confirmSendPaymentReminder() {
+    if (!pendingReminderData) return;
+
+    const btn = document.getElementById('paymentReminderSendBtn');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ Sending...';
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+
+    const payload = {
+        phone: pendingReminderData.phone,
+        template_name: pendingReminderData.template_name,
+        body_params: pendingReminderData.body_params,
+    };
+
+    // payment_reminder_single has an image header on Meta
+    if (pendingReminderData.template_name === 'payment_reminder_single') {
+        payload.header_params = [
+            {type: 'image', image: {link: 'https://nizamifarms.com/assets/media/logos/nizami-farms-logo.png'}}
+        ];
+    }
+
+    try {
+        const response = await fetch('/messages/send-template', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            showToast(`Payment reminder sent to ${pendingReminderData.customerName}!`, 'success');
+            closePaymentReminderModal();
+        } else if (response.status === 409 && data.recently_sent) {
+            if (confirm(`A template was recently sent to this customer (${data.last_template || 'unknown'}).\n\nSend anyway?`)) {
+                payload.force = true;
+                const forceResponse = await fetch('/messages/send-template', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || '',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const forceData = await forceResponse.json();
+                if (forceData.success) {
+                    showToast(`Payment reminder sent to ${pendingReminderData.customerName}!`, 'success');
+                    closePaymentReminderModal();
+                } else {
+                    showToast(forceData.message || 'Failed to send reminder', 'error');
+                }
+            }
+        } else {
+            showToast(data.message || 'Failed to send reminder', 'error');
+        }
+    } catch (error) {
+        console.error('Payment reminder error:', error);
+        showToast('Network error sending reminder', 'error');
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
 }
 
 // =====================================================

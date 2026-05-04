@@ -298,6 +298,7 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/shipping-price', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateShippingPrice'])->name('qurbani-settings.api.shipping-price');
         Route::post('/api/default-payment-method', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateDefaultPaymentMethod'])->name('qurbani-settings.api.default-payment-method');
         Route::post('/api/cancellation-code', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateCancellationCode'])->name('qurbani-settings.api.cancellation-code');
+        Route::post('/api/hidden-categories', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateHiddenCategories'])->name('qurbani-settings.api.hidden-categories');
     });
 
     // Qurbani Web Pages (orders, dashboard)
@@ -305,6 +306,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'orders'])->name('qurbani.orders');
         Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
+        Route::get('/api/payment-summary', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountSummary'])->name('qurbani.api.payment-summary');
         Route::get('/api/order-stats', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrderStats'])->name('qurbani.api.order-stats');
         // Apr-2026: soft-cap target quantities per (delivery_type, day, category)
         // and optionally per (slot, region) on the booked-summary card.

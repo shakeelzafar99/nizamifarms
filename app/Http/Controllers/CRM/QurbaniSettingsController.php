@@ -252,4 +252,23 @@ class QurbaniSettingsController extends Controller
 
         return response()->json(['success' => true, 'message' => 'Order updated']);
     }
+
+    public function updateHiddenCategories(Request $request)
+    {
+        $validated = $request->validate([
+            'hidden' => 'present|array',
+            'hidden.*' => 'string',
+        ]);
+
+        \App\Models\FIN\ConfigModel::set(
+            'qurbani_hidden_stats_categories',
+            json_encode($validated['hidden']),
+            'Category level-2 names hidden from the booked summary stats table'
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Stats category visibility updated',
+        ]);
+    }
 }

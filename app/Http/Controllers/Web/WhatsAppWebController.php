@@ -781,6 +781,7 @@ class WhatsAppWebController extends Controller
 
         $service = app(WhatsAppService::class);
         $bodyParams = $request->body_params ?? [];
+        $headerParams = $request->header_params ?? [];
         $phone = $service->formatPhone($request->phone);
         $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
 
@@ -798,7 +799,7 @@ class WhatsAppWebController extends Controller
             return response()->json(['success' => false] + $dedup, 409);
         }
 
-        $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams);
+        $result = $service->sendTemplateMessage($phone, $request->template_name, 'en', $bodyParams, $headerParams);
 
         if (!($result['success'] ?? false)) {
             return response()->json(['success' => false, 'message' => $result['error'] ?? 'Failed to send template'], 422);
