@@ -929,6 +929,7 @@ class WhatsAppController extends Controller
                 'template_name' => 'required|string',
                 'body_params' => 'nullable|array',
                 'header_params' => 'nullable|array',
+                'order_id' => 'nullable|integer',
                 'customer_id' => 'nullable|integer',
                 'conversation_id' => 'nullable|integer',
                 'force' => 'nullable|boolean',
@@ -939,6 +940,23 @@ class WhatsAppController extends Controller
             $bodyParams = $request->input('body_params', []);
             $headerParams = $request->input('header_params', []);
             $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
+
+            // Auto-attach invoice image for payment_reminder_single when
+            // the mobile can't generate it client-side. Falls back to the
+            // existing server-stored image if available.
+            if ($templateName === 'payment_reminder_single' && empty($headerParams) && $request->input('order_id')) {
+                try {
+                    $imgResponse = $this->getInvoiceImageUrl($request, $request->input('order_id'));
+                    $imgData = json_decode($imgResponse->getContent(), true);
+                    if (($imgData['success'] ?? false) && !($imgData['needs_capture'] ?? false) && !empty($imgData['image_url'])) {
+                        $headerParams = [
+                            ['type' => 'image', 'image' => ['link' => $imgData['image_url']]],
+                        ];
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning('Payment reminder: failed to auto-attach invoice image', ['error' => $e->getMessage()]);
+                }
+            }
 
             // Marketing-dedup guard. Returns null if OK to send, or a payload
             // describing the recent prior send (relayed as 409 Conflict so
@@ -952,6 +970,15 @@ class WhatsAppController extends Controller
             );
             if ($dedup) {
                 return response()->json(['success' => false] + $dedup, 409);
+            }
+
+            // If payment_reminder_single still has no header image, fail
+            // early with a clear message rather than letting Meta reject it.
+            if ($templateName === 'payment_reminder_single' && empty($headerParams)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invoice image not available. Please send the reminder from the web first to generate the invoice image, or preview the invoice in Messages.',
+                ], 422);
             }
 
             $response = $this->whatsapp->sendTemplateMessage($phone, $templateName, 'en', $bodyParams, $headerParams);
