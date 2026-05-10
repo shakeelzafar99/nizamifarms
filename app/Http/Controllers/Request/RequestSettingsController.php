@@ -132,12 +132,33 @@ class RequestSettingsController extends Controller
             }
         }
         
+        $businessUnits = DB::table('t_fin_business_units')
+            ->where('is_active', 1)
+            ->orderBy('display_order')
+            ->get(['id', 'code', 'name', 'short_code']);
+
+        try {
+            $expenseSubCategories = DB::table('t_fin_config')
+                ->where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                ->orderBy('business_unit_id')
+                ->orderBy('config_value')
+                ->get(['id', 'config_key', 'config_value', 'description', 'business_unit_id', 'request_category_code']);
+        } catch (\Exception $e) {
+            $expenseSubCategories = DB::table('t_fin_config')
+                ->where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                ->orderBy('business_unit_id')
+                ->orderBy('config_value')
+                ->get(['id', 'config_key', 'config_value', 'description', 'business_unit_id']);
+        }
+
         return view('pages.requests.settings', compact(
             'categories',
             'roles',
             'level1Roles',
             'level2Roles',
-            'routingRulesByCategory'
+            'routingRulesByCategory',
+            'businessUnits',
+            'expenseSubCategories'
         ));
     }
 
@@ -298,22 +319,41 @@ class RequestSettingsController extends Controller
             'icon' => 'nullable|string|max:50',
             'color_class' => 'nullable|string|max:50',
             'is_active' => 'required|boolean',
-            'sequence_order' => 'required|integer|min:0'
+            'sequence_order' => 'required|integer|min:0',
+            'show_in_expenses' => 'nullable|boolean',
+            'expense_bu_type' => 'nullable|string|in:nf,khaas,all',
+            'form_type' => 'nullable|string|in:expense,leave,salary,general',
+            'mobile_permission_code' => 'nullable|string|max:100',
         ]);
 
         try {
             $category = RequestCategoryModel::findOrFail($id);
             $user = auth()->user();
 
-            $category->update([
+            $updateData = [
                 'category_name' => $validated['category_name'],
                 'description' => $validated['description'] ?? null,
                 'icon' => $validated['icon'] ?? null,
                 'color_class' => $validated['color_class'] ?? null,
                 'is_active' => $validated['is_active'],
                 'sequence_order' => $validated['sequence_order'],
-                'updated_by' => $user->id
-            ]);
+                'updated_by' => $user->id,
+            ];
+
+            if (array_key_exists('show_in_expenses', $validated)) {
+                $updateData['show_in_expenses'] = $validated['show_in_expenses'] ?? false;
+            }
+            if (array_key_exists('expense_bu_type', $validated)) {
+                $updateData['expense_bu_type'] = $validated['expense_bu_type'];
+            }
+            if (array_key_exists('form_type', $validated)) {
+                $updateData['form_type'] = $validated['form_type'] ?? 'general';
+            }
+            if (array_key_exists('mobile_permission_code', $validated)) {
+                $updateData['mobile_permission_code'] = $validated['mobile_permission_code'];
+            }
+
+            $category->update($updateData);
 
             return response()->json([
                 'success' => true,
@@ -343,7 +383,11 @@ class RequestSettingsController extends Controller
             'category_name' => 'required|string|max:100',
             'description' => 'nullable|string',
             'icon' => 'nullable|string|max:50',
-            'color_class' => 'nullable|string|max:50'
+            'color_class' => 'nullable|string|max:50',
+            'show_in_expenses' => 'nullable|boolean',
+            'expense_bu_type' => 'nullable|string|in:nf,khaas,all',
+            'form_type' => 'nullable|string|in:expense,leave,salary,general',
+            'mobile_permission_code' => 'nullable|string|max:100',
         ]);
 
         try {
@@ -351,21 +395,23 @@ class RequestSettingsController extends Controller
             
             $user = auth()->user();
 
-            // Get next sequence order
             $maxSequence = RequestCategoryModel::max('sequence_order') ?? 0;
 
             $category = RequestCategoryModel::create([
                 'category_code' => $validated['category_code'],
                 'category_name' => $validated['category_name'],
                 'description' => $validated['description'] ?? null,
-                'icon' => $validated['icon'] ?? 'file-text',
-                'color_class' => $validated['color_class'] ?? 'gray',
+                'icon' => $validated['icon'] ?? '',
+                'color_class' => $validated['color_class'] ?? 'bg-gray-500',
                 'is_active' => 1,
                 'sequence_order' => $maxSequence + 1,
+                'show_in_expenses' => $validated['show_in_expenses'] ?? false,
+                'expense_bu_type' => $validated['expense_bu_type'] ?? null,
+                'form_type' => $validated['form_type'] ?? 'general',
+                'mobile_permission_code' => $validated['mobile_permission_code'] ?? null,
                 'created_by' => $user->id
             ]);
 
-            // Create default approval config
             RequestCategoryApprovalConfigModel::create([
                 'category_id' => $category->id,
                 'requires_level_1' => 1,
@@ -859,6 +905,80 @@ class RequestSettingsController extends Controller
         }
     }
     
+    /**
+     * List expense sub-categories from t_fin_config
+     */
+    public function getExpenseSubCategories(Request $request)
+    {
+        $this->checkPermission();
+
+        $categories = DB::table('t_fin_config')
+            ->where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+            ->orderBy('business_unit_id')
+            ->orderBy('config_value')
+            ->get(['id', 'config_key', 'config_value', 'description', 'business_unit_id']);
+
+        $businessUnits = DB::table('t_fin_business_units')
+            ->where('is_active', 1)
+            ->orderBy('display_order')
+            ->get(['id', 'code', 'name', 'short_code']);
+
+        return response()->json([
+            'success' => true,
+            'categories' => $categories,
+            'business_units' => $businessUnits,
+        ]);
+    }
+
+    /**
+     * Update an expense sub-category name
+     */
+    public function updateExpenseSubCategory(Request $request, $id)
+    {
+        $this->checkPermission();
+
+        $validated = $request->validate([
+            'config_value' => 'required|string|max:100',
+        ]);
+
+        try {
+            $row = DB::table('t_fin_config')->where('id', $id)->first();
+            if (!$row || strpos($row->config_key, 'EXPENSE_CATEGORY_') !== 0) {
+                return response()->json(['success' => false, 'message' => 'Not found'], 404);
+            }
+
+            DB::table('t_fin_config')->where('id', $id)->update([
+                'config_value' => $validated['config_value'],
+                'updated_at' => now(),
+            ]);
+
+            return response()->json(['success' => true, 'message' => 'Updated']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Delete an expense sub-category
+     */
+    public function deleteExpenseSubCategory($id)
+    {
+        $this->checkPermission();
+
+        try {
+            $row = DB::table('t_fin_config')->where('id', $id)->first();
+            if (!$row || strpos($row->config_key, 'EXPENSE_CATEGORY_') !== 0) {
+                return response()->json(['success' => false, 'message' => 'Not found'], 404);
+            }
+
+            DB::table('t_fin_config')->where('id', $id)->delete();
+
+            return response()->json(['success' => true, 'message' => 'Deleted']);
+        } catch (\Exception $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
     /**
      * Helper to get display name for area identifier
      */

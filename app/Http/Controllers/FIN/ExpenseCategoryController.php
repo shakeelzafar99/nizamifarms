@@ -21,6 +21,7 @@ class ExpenseCategoryController extends Controller
         $request->validate([
             'category_name' => 'required|string|max:255',
             'business_unit_id' => 'nullable|integer',
+            'request_category_code' => 'nullable|string|max:50',
         ]);
 
         try {
@@ -76,13 +77,17 @@ class ExpenseCategoryController extends Controller
             // Create expense account using the helper method
             $account = AccountModel::createExpenseAccount($categoryName);
             
-            // Store category in config with business_unit_id
             $configData = [
                 'config_key' => $configKey,
                 'config_value' => $categoryName,
                 'description' => "Expense category: {$categoryName}. Account: {$account->account_code}",
                 'business_unit_id' => $businessUnitId,
             ];
+
+            $requestCategoryCode = $request->input('request_category_code');
+            if ($requestCategoryCode) {
+                $configData['request_category_code'] = $requestCategoryCode;
+            }
             
             $config = ConfigModel::create($configData);
 

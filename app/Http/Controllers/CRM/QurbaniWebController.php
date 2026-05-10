@@ -837,6 +837,7 @@ class QurbaniWebController extends Controller
             $acct = $r->receiving_account_id ? ($accountMap[$r->receiving_account_id] ?? null) : null;
             return [
                 'payment_method' => $r->payment_method,
+                'receiving_account_id' => $r->receiving_account_id,
                 'account_name' => $acct ? $acct->name : ($r->payment_method === 'online' ? 'Unknown Bank' : null),
                 'account_code' => $acct ? $acct->short_code : null,
                 'account_color' => $acct ? $acct->color_hex : null,
@@ -852,6 +853,68 @@ class QurbaniWebController extends Controller
             'success' => true,
             'rows' => $rows->values(),
             'grand_total' => $grandTotal,
+        ]);
+    }
+
+    public function getPaymentAccountDetails(Request $request)
+    {
+        $method = $request->query('payment_method');
+        $accountId = $request->query('receiving_account_id');
+
+        if (!$method) {
+            return response()->json(['success' => false, 'message' => 'payment_method required'], 422);
+        }
+
+        $query = DB::table('t_crm_order_payments as p')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'p.order_id')
+            ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
+            ->leftJoin('t_fin_online_receiving_accounts as acc', 'acc.id', '=', 'p.receiving_account_id')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.created_by')
+            ->where(function ($q) {
+                $q->whereExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('t_crm_prod_order_line_item as li')
+                        ->join('t_crm_prod_product as prod', 'prod.id', '=', 'li.product_id')
+                        ->whereColumn('li.order_id', 'o.id')
+                        ->whereRaw("LOWER(COALESCE(prod.attribute_1,'')) = 'qurbani'");
+                })->orWhereNotNull('o.qurbani_day');
+            })
+            ->where('p.status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('o.order_status')
+                  ->orWhereRaw("LOWER(o.order_status) <> 'cancelled'");
+            })
+            ->where('p.payment_method', $method);
+
+        if ($accountId === '' || $accountId === null || $accountId === 'null') {
+            $query->whereNull('p.receiving_account_id');
+        } else {
+            $query->where('p.receiving_account_id', $accountId);
+        }
+
+        $payments = $query->select(
+                'p.id as payment_id',
+                'p.amount',
+                'p.payment_date',
+                'p.reference',
+                'p.notes',
+                'p.created_at',
+                'o.id as order_id',
+                'o.order_number',
+                DB::raw("CONCAT_WS(' ', c.first_name, c.last_name) as customer_name"),
+                'c.phone as customer_phone',
+                'acc.name as account_name',
+                'acc.short_code as account_code',
+                'u.fullname as created_by_name'
+            )
+            ->orderBy('p.payment_date', 'desc')
+            ->orderBy('p.created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'payments' => $payments,
+            'total' => $payments->sum('amount'),
         ]);
     }
 

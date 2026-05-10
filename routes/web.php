@@ -307,6 +307,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/api/orders', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrders'])->name('qurbani.api.orders');
         Route::get('/api/dashboard', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getDashboardData'])->name('qurbani.api.dashboard');
         Route::get('/api/payment-summary', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountSummary'])->name('qurbani.api.payment-summary');
+        Route::get('/api/payment-details', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getPaymentAccountDetails'])->name('qurbani.api.payment-details');
         Route::get('/api/order-stats', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'getOrderStats'])->name('qurbani.api.order-stats');
         // Apr-2026: soft-cap target quantities per (delivery_type, day, category)
         // and optionally per (slot, region) on the booked-summary card.
@@ -530,6 +531,11 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/settings/categories', [\App\Http\Controllers\Request\RequestSettingsController::class, 'createCategory'])->name('requests.settings.category.create');
         Route::post('/settings/categories/{id}/routing', [\App\Http\Controllers\Request\RequestSettingsController::class, 'saveCategoryRouting'])->name('requests.settings.category.routing.save');
         
+        // Expense sub-categories management
+        Route::get('/settings/expense-subcategories', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getExpenseSubCategories'])->name('requests.settings.expense-subcategories');
+        Route::put('/settings/expense-subcategories/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'updateExpenseSubCategory'])->name('requests.settings.expense-subcategories.update');
+        Route::delete('/settings/expense-subcategories/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'deleteExpenseSubCategory'])->name('requests.settings.expense-subcategories.delete');
+
         // Routing Rules
         Route::get('/settings/routing-rules', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getRoutingRules'])->name('requests.settings.routing-rules.index');
         Route::get('/settings/routing-rules/{id}', [\App\Http\Controllers\Request\RequestSettingsController::class, 'getRoutingRule'])->name('requests.settings.routing-rules.show');
@@ -836,6 +842,39 @@ Route::middleware(['auth'])->group(function () {
 Route::middleware(['auth'])->group(function () {
     Route::get('/attendance/mine', [\App\Http\Controllers\CRM\AttendanceController::class, 'mine'])->name('attendance.mine');
     Route::get('/attendance/mine/data', [\App\Http\Controllers\CRM\AttendanceController::class, 'mineData'])->name('attendance.mine.data');
+});
+
+// Fix approved expense requests that are missing ledger entries (one-time admin tool)
+Route::middleware(['auth'])->get('/admin/fix-expense-ledger', function () {
+    $user = auth()->user();
+    $isTaimur = \DB::table('t_sys_user_role as ur')
+        ->join('t_sys_role as r', 'r.id', '=', 'ur.role_id')
+        ->where('ur.user_id', $user->id)
+        ->whereRaw('LOWER(r.urole_name) = ?', ['taimur'])
+        ->exists();
+    if (!$isTaimur) return response()->json(['error' => 'Unauthorized'], 403);
+    
+    $requests = \App\Models\Request\RequestModel::where('status', 'approved')
+        ->whereNull('ledger_transaction_id')
+        ->where('amount', '>', 0)
+        ->whereHas('category', function($q) {
+            $q->where(function($q2) {
+                $q2->where('form_type', 'expense')
+                   ->orWhere('show_in_expenses', 1);
+            })->whereNotIn('category_code', ['leave', 'salary_advance', 'invoice_approval']);
+        })
+        ->with(['category', 'requester'])
+        ->get();
+    
+    if ($requests->isEmpty()) return response()->json(['message' => 'No requests to fix', 'count' => 0]);
+    
+    $results = [];
+    $ledgerService = new \App\Services\FIN\LedgerPostingService();
+    foreach ($requests as $req) {
+        $result = $ledgerService->postExpenseFromRequest($req);
+        $results[] = ['request' => $req->request_number, 'result' => $result];
+    }
+    return response()->json(['fixed' => count($results), 'details' => $results]);
 });
 
 // ── Analytics Sandbox ────────────────────────────────────────────────────────

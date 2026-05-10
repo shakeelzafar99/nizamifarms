@@ -398,22 +398,39 @@ class RequestController extends Controller
                 'created_by' => $loggedInUser->id,
             ]);
 
-            // If auto-approved and it's an expense/salary advance, post to ledger
+            // If auto-approved and it's an expense-type request, post to ledger.
+            // Uses RequestModel::isExpenseTypeCategory() so any category with form_type='expense'
+            // (qurbani, future custom expense types) is handled the same as the original expense/khaas_expense.
             if ($overallStatus === RequestModel::STATUS_APPROVED) {
                 $categoryCode = $category->category_code;
-                if (in_array($categoryCode, ['expense', 'khaas_expense', 'salary_advance'])) {
+                $requestModel->setRelation('category', $category); // ensure relation is loaded for helper
+                
+                if ($requestModel->isExpenseTypeCategory() && $requestModel->amount > 0) {
                     try {
                         $ledgerService = app(\App\Services\FIN\LedgerPostingService::class);
                         $ledgerService->postExpenseFromRequest($requestModel);
                         Log::info("Auto-approved expense posted to ledger", [
                             'request_id' => $requestModel->id,
-                            'request_number' => $requestModel->request_number
+                            'request_number' => $requestModel->request_number,
+                            'category_code' => $categoryCode
                         ]);
                     } catch (\Exception $e) {
                         Log::error("Failed to post auto-approved expense to ledger: " . $e->getMessage(), [
                             'request_id' => $requestModel->id
                         ]);
                         // Don't fail the request creation, just log the error
+                    }
+                } elseif ($categoryCode === 'salary_advance' && $requestModel->amount > 0) {
+                    try {
+                        $requestModel->postSalaryAdvanceToLedger();
+                        Log::info("Auto-approved salary advance posted to ledger", [
+                            'request_id' => $requestModel->id,
+                            'request_number' => $requestModel->request_number
+                        ]);
+                    } catch (\Exception $e) {
+                        Log::error("Failed to post auto-approved salary advance to ledger: " . $e->getMessage(), [
+                            'request_id' => $requestModel->id
+                        ]);
                     }
                 }
             }

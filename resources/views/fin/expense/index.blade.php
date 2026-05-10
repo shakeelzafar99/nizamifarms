@@ -235,6 +235,21 @@ document.addEventListener('DOMContentLoaded', function() {
                     </div>
                 </div>
 
+                <!-- Request Type -->
+                @if(isset($requestTypes) && $requestTypes->count() > 1)
+                <div>
+                    <label class="text-xs font-medium text-gray-700 block mb-1">Request Type</label>
+                    <select name="request_type" class="rounded border-gray-300 text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500">
+                        <option value="" {{ empty($requestType) ? 'selected' : '' }}>All Types</option>
+                        @foreach($requestTypes as $rt)
+                            <option value="{{ $rt->category_code }}" {{ !empty($requestType) && $requestType == $rt->category_code ? 'selected' : '' }}>
+                                {{ $rt->category_name }}
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+                @endif
+
                 <!-- Category -->
                 <div>
                     <label class="text-xs font-medium text-gray-700 block mb-1">Category</label>
@@ -529,12 +544,21 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // Get request categories including khaas_expense (filtered by selected BU via JS)
-                    $limitedCategories = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
-                        ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
-                        ->where('is_active', 1)
-                        ->orderByRaw("FIELD(category_code, 'expense', 'salary_advance', 'leave', 'khaas_expense')")
-                        ->get();
+                    // Get request categories configured to show in expense management.
+                    // Graceful fallback: if show_in_expenses column doesn't exist yet, use hardcoded list.
+                    try {
+                        $limitedCategories = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
+                            ->where('show_in_expenses', 1)
+                            ->where('is_active', 1)
+                            ->orderBy('sequence_order')
+                            ->get();
+                    } catch (\Exception $e) {
+                        $limitedCategories = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
+                            ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
+                            ->where('is_active', 1)
+                            ->orderBy('sequence_order')
+                            ->get();
+                    }
                 @endphp
                 
                 <!-- Step 1: Create For (if admin/manager) -->
@@ -601,25 +625,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         <option value="">Select Request Type</option>
                         @foreach($limitedCategories as $category)
                         @php
-                            // Map request types to their BU: khaas_expense → non-NF BUs, others → BU 1 (NF)
-                            $categoryBuType = ($category->category_code === 'khaas_expense') ? 'khaas' : 'nf';
+                            $buTypeFallback = $category->expense_bu_type ?? ($category->category_code === 'khaas_expense' ? 'khaas' : 'nf');
+                            $formTypeFallback = $category->form_type ?? (in_array($category->category_code, ['expense', 'khaas_expense']) ? 'expense' : ($category->category_code === 'salary_advance' ? 'salary' : ($category->category_code === 'leave' ? 'leave' : 'general')));
                         @endphp
                         <option value="{{ $category->id }}" 
                                 data-code="{{ $category->category_code }}"
-                                data-bu-type="{{ $categoryBuType }}"
+                                data-form-type="{{ $formTypeFallback }}"
+                                data-bu-type="{{ $buTypeFallback }}"
                                 data-requires-l1="{{ $category->requiresLevel1() ? '1' : '0' }}"
                                 data-requires-l2="{{ $category->requiresLevel2() ? '1' : '0' }}">
-                            @if($category->category_code === 'expense')
-                                💸 Expense Reimbursement
-                            @elseif($category->category_code === 'salary_advance')
-                                💰 Salary Advance
-                            @elseif($category->category_code === 'leave')
-                                🏖️ Leave Request
-                            @elseif($category->category_code === 'khaas_expense')
-                                🌿 Khaas Expense
-                            @else
-                                {{ $category->category_name }}
-                            @endif
+                            {{ $category->category_name }}
                         </option>
                         @endforeach
                     </select>
@@ -653,12 +668,18 @@ document.addEventListener('DOMContentLoaded', function() {
                            <select name="expense_category" id="quick_expense_category" class="form-field-enhanced w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 text-base font-medium bg-white shadow-sm" onchange="handleQuickExpenseCategoryChange()">
                         <option value="">Select Expense Type</option>
                         @php
-                            $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
-                                ->orderBy('config_value')
-                                ->get(['config_value', 'business_unit_id']);
+                            try {
+                                $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                                    ->orderBy('config_value')
+                                    ->get(['config_value', 'business_unit_id', 'request_category_code']);
+                            } catch (\Exception $e) {
+                                $expenseCategories = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%')
+                                    ->orderBy('config_value')
+                                    ->get(['config_value', 'business_unit_id']);
+                            }
                         @endphp
                         @foreach($expenseCategories as $cat)
-                            <option value="{{ $cat->config_value }}" data-business-unit-id="{{ $cat->business_unit_id ?? 1 }}">{{ $cat->config_value }}</option>
+                            <option value="{{ $cat->config_value }}" data-business-unit-id="{{ $cat->business_unit_id ?? 1 }}" data-request-type="{{ $cat->request_category_code ?? '' }}">{{ $cat->config_value }}</option>
                         @endforeach
                         <option value="__ADD_NEW__" style="background-color: #f3f4f6; font-weight: bold; color: #059669;">➕ Add New Category...</option>
                     </select>
@@ -839,32 +860,30 @@ function handleQuickCategoryChange() {
     form.querySelector('[name="amount"]').required = false;
     expenseCategorySelect.required = false;
     
-    if (categoryCode === 'leave') {
+    const formType = selectedOption.dataset.formType || 'general';
+
+    if (formType === 'leave' || categoryCode === 'leave') {
         leaveFields.style.display = 'block';
         form.querySelector('[name="leave_start_date"]').required = true;
         form.querySelector('[name="leave_end_date"]').required = true;
         descriptionField.required = false;
         descriptionField.placeholder = 'Optional: Provide additional details about your leave';
         hiddenTitle.value = 'leave';
-    } else if (categoryCode === 'expense' || categoryCode === 'khaas_expense') {
-        // Both NF expense and Khaas expense show the same fields
+    } else if (formType === 'expense' || categoryCode === 'expense' || categoryCode === 'khaas_expense') {
         expenseCategoryField.style.display = 'block';
         amountField.style.display = 'block';
         expenseCategorySelect.required = true;
         form.querySelector('[name="amount"]').required = true;
         descriptionField.required = true;
         descriptionField.placeholder = 'Required: Provide details about this expense';
-        hiddenTitle.value = categoryCode === 'khaas_expense' ? 'khaas expense' : 'expense';
-        // ⭐ Show expense date field for expenses
+        hiddenTitle.value = categoryCode || 'expense';
         const expenseDateField = document.getElementById('quick-expense-date-field');
         if (expenseDateField) expenseDateField.style.display = 'block';
-        // ⭐ Show pay from field for expenses
         const payFromField = document.getElementById('quick-pay-from-field');
         if (payFromField) payFromField.style.display = 'block';
-        // ⭐ Filter payment sources and expense types to match the selected BU
         filterPaymentSourcesByBU();
         filterExpenseTypesByBU();
-    } else if (categoryCode === 'salary_advance') {
+    } else if (formType === 'salary' || categoryCode === 'salary_advance') {
         amountField.style.display = 'block';
         form.querySelector('[name="amount"]').required = true;
         descriptionField.required = true;
@@ -958,7 +977,7 @@ function filterRequestTypesByBU() {
     
     options.forEach(option => {
         const buType = option.dataset.buType; // 'nf' or 'khaas'
-        const shouldShow = (isNF && buType === 'nf') || (!isNF && buType === 'khaas');
+        const shouldShow = buType === 'all' || (isNF && buType === 'nf') || (!isNF && buType === 'khaas');
         
         if (shouldShow) {
             option.style.display = '';
@@ -981,29 +1000,34 @@ function filterRequestTypesByBU() {
     handleQuickCategoryChange();
 }
 
-// ⭐ Filter Expense Type options based on selected business unit
+// Filter Expense Type options based on selected BU and request type
 function filterExpenseTypesByBU() {
     const buSelect = document.getElementById('quick_business_unit');
     const expenseSelect = document.getElementById('quick_expense_category');
+    const categorySelect = document.getElementById('quick_category_id');
     if (!buSelect || !expenseSelect) return;
     
     const selectedBuId = buSelect.value;
+    const selectedCatCode = categorySelect ? (categorySelect.options[categorySelect.selectedIndex]?.dataset?.code || '') : '';
     const options = expenseSelect.querySelectorAll('option');
     let firstVisibleOption = null;
     let hasSelectedVisible = false;
     
     options.forEach(option => {
         const optionBuId = option.dataset.businessUnitId;
+        const optionReqType = option.dataset.requestType || '';
         
-        // Skip the placeholder and "Add New" options — always keep them visible
         if (!option.value || option.value === '__ADD_NEW__') {
             option.style.display = '';
             option.disabled = false;
             return;
         }
         
-        // Show only expense types matching the selected BU
-        if (optionBuId === selectedBuId) {
+        const buMatch = optionBuId === selectedBuId;
+        const isOriginalType = (selectedCatCode === 'expense' || selectedCatCode === 'khaas_expense');
+        const typeMatch = optionReqType === selectedCatCode || (isOriginalType && !optionReqType);
+        
+        if (buMatch && typeMatch) {
             option.style.display = '';
             option.disabled = false;
             if (!firstVisibleOption) firstVisibleOption = option;
@@ -1015,7 +1039,6 @@ function filterExpenseTypesByBU() {
         }
     });
     
-    // Reset to placeholder if current selection was hidden
     if (!hasSelectedVisible) {
         expenseSelect.value = '';
     }
@@ -1121,7 +1144,10 @@ function submitQuickInlineCategory() {
             'X-CSRF-TOKEN': '{{ csrf_token() }}',
             'X-Requested-With': 'XMLHttpRequest'
         },
-        body: JSON.stringify({ category_name: categoryName })
+        body: JSON.stringify({
+            category_name: categoryName,
+            request_category_code: (document.getElementById('quick_category_id')?.options[document.getElementById('quick_category_id').selectedIndex]?.dataset?.code) || ''
+        })
     })
     .then(response => {
         if (!response.ok) {

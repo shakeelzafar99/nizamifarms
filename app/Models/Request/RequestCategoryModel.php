@@ -25,12 +25,17 @@ class RequestCategoryModel extends BaseModel
         'color_class',
         'is_active',
         'sequence_order',
+        'show_in_expenses',
+        'expense_bu_type',
+        'form_type',
+        'mobile_permission_code',
         'created_by',
         'updated_by'
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'show_in_expenses' => 'boolean',
         'sequence_order' => 'integer'
     ];
 

@@ -281,8 +281,8 @@ class RequestModel extends BaseModel
                 elseif ($this->category->category_code === 'leave') {
                     $this->createAttendanceRecordsForLeave();
                 }
-                // If it's an expense request (including khaas_expense), post to ledger
-                elseif (in_array($this->category->category_code, ['expense', 'khaas_expense']) && $this->amount > 0) {
+                // If it's an expense-type request, post to ledger
+                elseif ($this->isExpenseTypeCategory() && $this->amount > 0) {
                     try {
                         $ledgerService = new \App\Services\FIN\LedgerPostingService();
                         $result = $ledgerService->postExpenseFromRequest($this);
@@ -330,6 +330,41 @@ class RequestModel extends BaseModel
             \Log::error('Request approval error: ' . $e->getMessage());
             return false;
         }
+    }
+
+    public function isExpenseTypeCategory(): bool
+    {
+        if (!$this->category) return false;
+        $code = $this->category->category_code;
+        if (in_array($code, ['expense', 'khaas_expense'])) return true;
+        
+        // Check form_type from model attribute
+        $formType = $this->category->form_type ?? null;
+        if ($formType === 'expense') return true;
+        
+        // Fallback: query DB directly in case the model attribute is stale or column was added late
+        if ($formType === null && !in_array($code, ['leave', 'salary_advance', 'invoice_approval'])) {
+            try {
+                $dbFormType = \DB::table('t_req_category')
+                    ->where('category_code', $code)
+                    ->value('form_type');
+                \Log::info('isExpenseTypeCategory fallback check', [
+                    'category_code' => $code,
+                    'model_form_type' => $formType,
+                    'db_form_type' => $dbFormType,
+                    'show_in_expenses' => $this->category->show_in_expenses ?? null,
+                ]);
+                if ($dbFormType === 'expense') return true;
+                
+                // Final fallback: if show_in_expenses is enabled and it's not a known non-expense type
+                $showInExpenses = $this->category->show_in_expenses ?? false;
+                if ($showInExpenses) return true;
+            } catch (\Exception $e) {
+                \Log::warning('isExpenseTypeCategory fallback failed', ['error' => $e->getMessage()]);
+            }
+        }
+        
+        return false;
     }
 
     protected function areAllApprovalsComplete(): bool

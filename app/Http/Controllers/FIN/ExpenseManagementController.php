@@ -45,10 +45,28 @@ class ExpenseManagementController extends Controller
         $paymentSource = $request->input('payment_source');
         $settlementStatus = $request->input('settlement_status');
         $employeeFilter = $request->input('employee');
+        $requestType = $request->input('request_type');
         
-        // Build base query for all expenses AND salary advances (both have settlement tracking)
-        $expensesQuery = RequestModel::whereHas('category', function($q) {
-                $q->whereIn('category_code', ['expense', 'salary_advance']);
+        // Dynamically get all category codes that are enabled for expense management
+        try {
+            $expenseCategoryCodes = \App\Models\Request\RequestCategoryModel::where('show_in_expenses', 1)
+                ->where('is_active', 1)
+                ->pluck('category_code')
+                ->toArray();
+        } catch (\Exception $e) {
+            $expenseCategoryCodes = ['expense', 'salary_advance', 'khaas_expense'];
+        }
+        if (empty($expenseCategoryCodes)) {
+            $expenseCategoryCodes = ['expense', 'salary_advance', 'khaas_expense'];
+        }
+        
+        // Build base query for all expense-type requests
+        $expensesQuery = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes, $requestType) {
+                if ($requestType) {
+                    $q->where('category_code', $requestType);
+                } else {
+                    $q->whereIn('category_code', $expenseCategoryCodes);
+                }
             })
             ->whereNotNull('ledger_transaction_id')
             ->where('status', RequestModel::STATUS_APPROVED) // Only approved expenses
@@ -170,9 +188,8 @@ class ExpenseManagementController extends Controller
         })->sortByDesc('settled_at')->take(20);
         
         // Get expense categories for filter - dynamically from actual expenses
-        // This ensures the dropdown always reflects real categories in use
-        $categoriesFromExpenses = RequestModel::whereHas('category', function($q) {
-                $q->whereIn('category_code', ['expense', 'salary_advance']);
+        $categoriesFromExpenses = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+                $q->whereIn('category_code', $expenseCategoryCodes);
             })
             ->whereNotNull('ledger_transaction_id')
             ->where('status', RequestModel::STATUS_APPROVED)
@@ -208,9 +225,8 @@ class ExpenseManagementController extends Controller
             ->get();
         
         // Get pending approvals (real-time, not filtered by date)
-        // Include both expenses and salary advances
-        $pendingApprovals = RequestModel::whereHas('category', function($q) {
-                $q->whereIn('category_code', ['expense', 'salary_advance']);
+        $pendingApprovals = RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+                $q->whereIn('category_code', $expenseCategoryCodes);
             })
             ->where('status', RequestModel::STATUS_PENDING)
             ->with(['requester', 'paymentSourceAccount', 'category'])
@@ -332,6 +348,17 @@ class ExpenseManagementController extends Controller
             $accessibleCompanyAccounts = $accessibleCompanyAccounts->filter(fn($a) => !$a->is_private);
         }
         
+        // Get request types for filter dropdown
+        try {
+            $requestTypes = \App\Models\Request\RequestCategoryModel::where('show_in_expenses', 1)
+                ->where('is_active', 1)
+                ->whereIn('form_type', ['expense', 'salary'])
+                ->orderBy('sequence_order')
+                ->get(['category_code', 'category_name']);
+        } catch (\Exception $e) {
+            $requestTypes = collect([]);
+        }
+        
         return view('fin.expense.index', compact(
             'allExpensesForDisplay',
             'allExpenses',
@@ -351,7 +378,9 @@ class ExpenseManagementController extends Controller
             'businessUnits',
             'accessibleCompanyAccounts',
             'userDefaultBuId',
-            'isTaimurRole'
+            'isTaimurRole',
+            'requestTypes',
+            'requestType'
         ));
     }
     

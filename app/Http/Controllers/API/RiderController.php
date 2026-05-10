@@ -1996,11 +1996,10 @@ class RiderController extends Controller
     {
         try {
             $businessUnitId = $request->input('business_unit_id');
+            $requestCategoryCode = $request->input('request_category_code');
             
             $query = \App\Models\FIN\ConfigModel::where('config_key', 'LIKE', 'EXPENSE_CATEGORY_%');
             
-            // ⭐ Filter by business unit if provided
-            // NF categories (BU 1) may have business_unit_id = NULL in config
             if ($businessUnitId) {
                 if ($businessUnitId == 1) {
                     $query->where(function($q) {
@@ -2009,6 +2008,18 @@ class RiderController extends Controller
                     });
                 } else {
                     $query->where('business_unit_id', $businessUnitId);
+                }
+            }
+
+            if ($requestCategoryCode) {
+                $isOriginalType = in_array($requestCategoryCode, ['expense', 'khaas_expense']);
+                if ($isOriginalType) {
+                    $query->where(function ($q) use ($requestCategoryCode) {
+                        $q->whereNull('request_category_code')
+                          ->orWhere('request_category_code', $requestCategoryCode);
+                    });
+                } else {
+                    $query->where('request_category_code', $requestCategoryCode);
                 }
             }
             
@@ -6623,20 +6634,37 @@ class RiderController extends Controller
         try {
             $businessUnitId = $request->input('business_unit_id');
             
-            // ⭐ In Khaas mode (BU filter provided), only show khaas_expense
-            // In normal mode, show expense, salary_advance, leave
-            if ($businessUnitId && $businessUnitId != 1) {
-                // Khaas mode: only show khaas_expense
-                $categoryCodes = ['khaas_expense'];
-            } else {
-                // Normal store/rider mode
-                $categoryCodes = ['expense', 'salary_advance', 'leave'];
+            $buType = ($businessUnitId && $businessUnitId != 1) ? 'khaas' : 'nf';
+
+            $user = $request->user();
+
+            // Use DB-driven filtering if columns exist, otherwise fallback to hardcoded
+            try {
+                $allCats = \App\Models\Request\RequestCategoryModel::where('show_in_expenses', 1)
+                    ->where('is_active', 1)
+                    ->where(function ($q) use ($buType) {
+                        $q->where('expense_bu_type', $buType)
+                          ->orWhere('expense_bu_type', 'all');
+                    })
+                    ->orderBy('sequence_order')
+                    ->get();
+            } catch (\Exception $e) {
+                $codes = ($businessUnitId && $businessUnitId != 1) ? ['khaas_expense'] : ['expense', 'salary_advance', 'leave'];
+                $allCats = \App\Models\Request\RequestCategoryModel::whereIn('category_code', $codes)
+                    ->where('is_active', 1)
+                    ->orderBy('sequence_order')
+                    ->get();
             }
-            
-            $categories = \App\Models\Request\RequestCategoryModel::whereIn('category_code', $categoryCodes)
-                ->where('is_active', 1)
-                ->orderBy('sequence_order')
-                ->get()
+
+            $categories = $allCats
+                ->filter(function ($cat) use ($user) {
+                    $perm = $cat->mobile_permission_code ?? null;
+                    if (!$perm) return true;
+                    return $user && method_exists($user, 'hasMobilePermission')
+                        ? $user->hasMobilePermission($perm)
+                        : false;
+                })
+                ->values()
                 ->map(function($cat) {
                     return [
                         'id' => $cat->id,
@@ -6644,6 +6672,7 @@ class RiderController extends Controller
                         'category_name' => $cat->category_name,
                         'description' => $cat->description,
                         'icon' => $cat->icon,
+                        'form_type' => $cat->form_type ?? 'general',
                     ];
                 });
 
@@ -6669,10 +6698,23 @@ class RiderController extends Controller
             $user = Auth::user();
             $status = $request->input('status', 'all'); // all, pending, approved, rejected
 
+            // Allowed category codes for "My Requests": expense-form types + salary_advance + leave
+            try {
+                $allowedCategoryCodes = \App\Models\Request\RequestCategoryModel::where('is_active', 1)
+                    ->where(function($q) {
+                        $q->where('show_in_expenses', 1)
+                          ->orWhereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense']);
+                    })
+                    ->pluck('category_code')
+                    ->toArray();
+            } catch (\Exception $e) {
+                $allowedCategoryCodes = ['expense', 'salary_advance', 'leave', 'khaas_expense'];
+            }
+            
             $query = \App\Models\Request\RequestModel::with(['category', 'approvals.approver'])
                 ->where('requester_user_id', $user->id)
-                ->whereHas('category', function($q) {
-                    $q->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense']);
+                ->whereHas('category', function($q) use ($allowedCategoryCodes) {
+                    $q->whereIn('category_code', $allowedCategoryCodes);
                 })
                 ->orderByDesc('created_at');
 
@@ -6846,9 +6888,21 @@ class RiderController extends Controller
                 }
             }
 
-            // Verify category is allowed (⭐ includes khaas_expense)
+            // Verify category is allowed: legacy types + any expense-management enabled type
+            try {
+                $allowedCategoryCodes = \App\Models\Request\RequestCategoryModel::where('is_active', 1)
+                    ->where(function($q) {
+                        $q->where('show_in_expenses', 1)
+                          ->orWhereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense']);
+                    })
+                    ->pluck('category_code')
+                    ->toArray();
+            } catch (\Exception $e) {
+                $allowedCategoryCodes = ['expense', 'salary_advance', 'leave', 'khaas_expense'];
+            }
+            
             $category = \App\Models\Request\RequestCategoryModel::with('approvalConfig')
-                ->whereIn('category_code', ['expense', 'salary_advance', 'leave', 'khaas_expense'])
+                ->whereIn('category_code', $allowedCategoryCodes)
                 ->findOrFail($validated['category_id']);
 
             DB::beginTransaction();
@@ -10235,10 +10289,18 @@ class RiderController extends Controller
                 ?? \App\Models\FIN\AccountModel::where('account_code', 'EXP_FUND')->first();
             $expenseFundAccountId = $expenseFundAccount ? $expenseFundAccount->id : null;
             
-            // Build base query for expenses and salary advances
-            // ⭐ In Khaas mode (BU filter): show 'khaas_expense' (and 'expense' for backwards compat)
-            // Salary advances are employee-level, not business-unit-level
-            $expenseCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
+            // Dynamically get all expense-management category codes
+            try {
+                $expenseCategoryCodes = \App\Models\Request\RequestCategoryModel::where('show_in_expenses', 1)
+                    ->where('is_active', 1)
+                    ->pluck('category_code')
+                    ->toArray();
+            } catch (\Exception $e) {
+                $expenseCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
+            }
+            if (empty($expenseCategoryCodes)) {
+                $expenseCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
+            }
             
             $expensesQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
                     $q->whereIn('category_code', $expenseCategoryCodes);
@@ -10372,6 +10434,8 @@ class RiderController extends Controller
                     'date' => ($expense->expense_date ?? $expense->created_at)->format('Y-m-d'),
                     'employee' => $expense->requester ? $expense->requester->fullname : 'Unknown',
                     'category' => $expense->expense_category ?? ($expense->category ? $expense->category->category_name : 'Uncategorized'),
+                    'request_type' => $expense->category ? $expense->category->category_name : 'Expense',
+                    'request_type_code' => $expense->category ? $expense->category->category_code : 'expense',
                     'amount' => $expense->amount,
                     'payment_source' => $expense->paymentSourceAccount ? $expense->paymentSourceAccount->account_name : 'Unknown',
                     'settlement_status' => $expense->settlement_status,
@@ -10440,12 +10504,8 @@ class RiderController extends Controller
             }
             
             // Get pending approvals (real-time, not filtered by month)
-            // Include approvals relationship to check L1/L2 status
-            // ⭐ In Khaas mode: show 'khaas_expense' (and 'expense' for backwards compat)
-            $pendingCategoryCodes = $businessUnitId ? ['expense', 'khaas_expense'] : ['expense', 'salary_advance'];
-            
-            $pendingApprovalsQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($pendingCategoryCodes) {
-                    $q->whereIn('category_code', $pendingCategoryCodes);
+            $pendingApprovalsQuery = \App\Models\Request\RequestModel::whereHas('category', function($q) use ($expenseCategoryCodes) {
+                    $q->whereIn('category_code', $expenseCategoryCodes);
                 })
                 ->where('status', \App\Models\Request\RequestModel::STATUS_PENDING)
                 ->with(['requester', 'paymentSourceAccount', 'category', 'approvals.approver'])

@@ -19,6 +19,7 @@ class ConfigModel extends BaseModel
         'config_value',
         'description',
         'business_unit_id',
+        'request_category_code',
     ];
 
     protected $casts = [

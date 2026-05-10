@@ -505,19 +505,23 @@ function loadPaymentSummary() {
                 </thead>
                 <tbody>`;
 
+        let detailRowCounter = 0;
         const renderGroup = (label, groupRows, bgColor, textColor) => {
             if (groupRows.length === 0) return '';
             const groupTotal = groupRows.reduce((s, r) => s + r.total_amount, 0);
             let h = '';
             groupRows.forEach(r => {
-                h += `<tr class="border-b hover:bg-gray-50">
+                const rowId = 'payDetail_' + (detailRowCounter++);
+                const acctParam = r.receiving_account_id !== undefined && r.receiving_account_id !== null ? r.receiving_account_id : 'null';
+                h += `<tr class="border-b hover:bg-blue-50 cursor-pointer" onclick="togglePaymentDetails('${rowId}', '${r.payment_method}', '${acctParam}')">
                     <td class="px-4 py-3 font-medium text-gray-700">${label}</td>
                     <td class="px-4 py-3">${colorDot(r.account_color)}${r.account_name || '—'} ${r.account_code ? '<span style="color:#9ca3af;font-size:11px;">(' + r.account_code + ')</span>' : ''}</td>
                     <td class="px-4 py-3 text-center">${r.payment_count}</td>
                     <td class="px-4 py-3 text-center">${r.order_count}</td>
                     <td class="px-4 py-3 text-right font-semibold">Rs ${fmt(r.total_amount)}</td>
                     <td class="px-4 py-3 text-right text-gray-500">${pct(r.total_amount)}</td>
-                </tr>`;
+                </tr>
+                <tr id="${rowId}" style="display:none;" class="bg-gray-50"><td colspan="6" class="p-0"><div class="px-6 py-3 text-center text-gray-400">Loading...</div></td></tr>`;
             });
             if (groupRows.length > 1) {
                 h += `<tr class="border-b" style="background:${bgColor};">
@@ -556,6 +560,76 @@ function loadPaymentSummary() {
     .catch(err => {
         loading.innerHTML = '<span style="color:#EF4444;">Failed to load payment summary. <a href="javascript:loadPaymentSummary()" style="text-decoration:underline;">Retry</a></span>';
         console.error('Payment summary error:', err);
+    });
+}
+
+function togglePaymentDetails(rowId, paymentMethod, accountId) {
+    const detailRow = document.getElementById(rowId);
+    if (!detailRow) return;
+
+    if (detailRow.style.display !== 'none') {
+        detailRow.style.display = 'none';
+        return;
+    }
+    detailRow.style.display = '';
+
+    if (detailRow.dataset.loaded === '1') return;
+
+    const td = detailRow.querySelector('td');
+    td.innerHTML = '<div class="px-6 py-3 text-center text-gray-400">Loading payments...</div>';
+
+    const params = new URLSearchParams({ payment_method: paymentMethod, receiving_account_id: accountId });
+    fetch('/qurbani/api/payment-details?' + params, { headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error('Bad response');
+        detailRow.dataset.loaded = '1';
+
+        const payments = data.payments || [];
+        const fmt = (v) => Number(v || 0).toLocaleString('en-PK', { minimumFractionDigits: 0 });
+
+        if (payments.length === 0) {
+            td.innerHTML = '<div class="px-6 py-4 text-center text-gray-400">No individual payments found.</div>';
+            return;
+        }
+
+        let html = `<div class="px-4 py-3"><table class="w-full text-xs border border-gray-200 rounded">
+            <thead class="bg-gray-100 border-b"><tr>
+                <th class="px-3 py-2 text-left text-gray-600">#</th>
+                <th class="px-3 py-2 text-left text-gray-600">Order</th>
+                <th class="px-3 py-2 text-left text-gray-600">Customer</th>
+                <th class="px-3 py-2 text-left text-gray-600">Date</th>
+                <th class="px-3 py-2 text-right text-gray-600">Amount</th>
+                <th class="px-3 py-2 text-left text-gray-600">Reference</th>
+                <th class="px-3 py-2 text-left text-gray-600">Notes</th>
+                <th class="px-3 py-2 text-left text-gray-600">Recorded By</th>
+            </tr></thead><tbody>`;
+
+        payments.forEach((p, i) => {
+            const dateStr = p.payment_date || (p.created_at ? p.created_at.substring(0, 10) : '—');
+            html += `<tr class="border-b hover:bg-white">
+                <td class="px-3 py-2 text-gray-400">${i + 1}</td>
+                <td class="px-3 py-2 font-medium text-blue-700">${p.order_number || '—'}</td>
+                <td class="px-3 py-2">${p.customer_name || '—'}${p.customer_phone ? ' <span class="text-gray-400">(' + p.customer_phone + ')</span>' : ''}</td>
+                <td class="px-3 py-2">${dateStr}</td>
+                <td class="px-3 py-2 text-right font-semibold">Rs ${fmt(p.amount)}</td>
+                <td class="px-3 py-2 text-gray-500">${p.reference || '—'}</td>
+                <td class="px-3 py-2 text-gray-500">${p.notes || '—'}</td>
+                <td class="px-3 py-2 text-gray-500">${p.created_by_name || '—'}</td>
+            </tr>`;
+        });
+
+        html += `</tbody><tfoot><tr class="bg-gray-100 font-semibold">
+            <td class="px-3 py-2" colspan="4">${payments.length} payment(s)</td>
+            <td class="px-3 py-2 text-right">Rs ${fmt(data.total)}</td>
+            <td colspan="3"></td>
+        </tr></tfoot></table></div>`;
+
+        td.innerHTML = html;
+    })
+    .catch(err => {
+        td.innerHTML = '<div class="px-6 py-3 text-center text-red-500">Failed to load details. <a href="javascript:void(0)" onclick="event.stopPropagation();document.getElementById(\'' + rowId + '\').dataset.loaded=\'0\';togglePaymentDetails(\'' + rowId + '\',\'' + paymentMethod + '\',\'' + accountId + '\')" style="text-decoration:underline;">Retry</a></div>';
+        console.error('Payment details error:', err);
     });
 }
 
