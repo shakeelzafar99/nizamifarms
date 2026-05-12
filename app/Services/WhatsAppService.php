@@ -643,6 +643,50 @@ class WhatsAppService
     }
 
     /**
+     * Try to link a customer to a conversation that currently has no linked customer.
+     * Looks up the customer by the conversation's phone (last 10 digits, ignoring merged ones).
+     * Safe to call repeatedly — it only updates if a match is found and conversation is unlinked.
+     *
+     * Returns the customer_id that was linked, or null if nothing changed.
+     */
+    public function relinkConversationCustomer(ConversationModel $conversation): ?int
+    {
+        if ($conversation->customer_id) {
+            return $conversation->customer_id;
+        }
+        if (!$conversation->wa_phone) {
+            return null;
+        }
+
+        try {
+            $normalizedPhone = substr(ltrim($conversation->wa_phone, '+'), -10);
+            // Prefer the most recently updated unmerged customer matching this phone,
+            // so newly-created customers (which is the common case for late-link) win.
+            $customer = \App\Models\CRM\CustomerModel::where('phone_normalized', $normalizedPhone)
+                ->whereNull('merged_into_customer_id')
+                ->orderByDesc('updated_at')
+                ->first();
+
+            if ($customer) {
+                $conversation->update(['customer_id' => $customer->id]);
+                Log::info('WhatsApp: Auto-linked conversation to customer', [
+                    'conversation_id' => $conversation->id,
+                    'wa_phone' => $conversation->wa_phone,
+                    'customer_id' => $customer->id,
+                ]);
+                return $customer->id;
+            }
+        } catch (\Exception $e) {
+            Log::debug('WhatsApp: relinkConversationCustomer failed', [
+                'conversation_id' => $conversation->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    /**
      * Save an outbound message to the database after sending
      */
     public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false): ?MessageModel

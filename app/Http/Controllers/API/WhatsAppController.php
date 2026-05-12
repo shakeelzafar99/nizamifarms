@@ -288,6 +288,48 @@ class WhatsAppController extends Controller
                 ->limit($perPage)
                 ->get();
 
+            // Backfill missing customer_id links for conversations whose
+            // customer record was created AFTER the conversation existed.
+            // Cheap batched lookup — only fires for unlinked rows in this
+            // page so most loads are a no-op. Subsequent loads see the
+            // customer linked already (orders panel, name resolution, etc).
+            $unlinked = $conversations->filter(fn($c) => empty($c->customer_id) && !empty($c->wa_phone));
+            if ($unlinked->isNotEmpty()) {
+                $phoneSuffixMap = [];
+                foreach ($unlinked as $c) {
+                    $suffix = substr(ltrim($c->wa_phone, '+'), -10);
+                    if ($suffix !== '') {
+                        $phoneSuffixMap[$suffix] = $c;
+                    }
+                }
+                if (!empty($phoneSuffixMap)) {
+                    try {
+                        $matchedCustomers = \App\Models\CRM\CustomerModel::whereIn('phone_normalized', array_keys($phoneSuffixMap))
+                            ->whereNull('merged_into_customer_id')
+                            ->orderByDesc('updated_at')
+                            ->get(['id', 'first_name', 'last_name', 'phone_normalized', 'city']);
+                        $customerByPhone = [];
+                        foreach ($matchedCustomers as $cust) {
+                            if (!isset($customerByPhone[$cust->phone_normalized])) {
+                                $customerByPhone[$cust->phone_normalized] = $cust;
+                            }
+                        }
+                        foreach ($phoneSuffixMap as $suffix => $conv) {
+                            if (isset($customerByPhone[$suffix])) {
+                                $cust = $customerByPhone[$suffix];
+                                $conv->customer_id = $cust->id;
+                                $conv->setRelation('customer', $cust);
+                                ConversationModel::where('id', $conv->id)
+                                    ->whereNull('customer_id')
+                                    ->update(['customer_id' => $cust->id]);
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        Log::debug('Mobile getConversations: customer auto-relink batch failed', ['error' => $e->getMessage()]);
+                    }
+                }
+            }
+
             $conversationIds = $conversations->pluck('id')->toArray();
             $lastMessages = MessageModel::whereIn('conversation_id', $conversationIds)
                 ->whereIn('id', function ($q) use ($conversationIds) {
@@ -567,6 +609,16 @@ class WhatsAppController extends Controller
             // them as "not visible" (same as the list filter).
             if ($access['limited'] && $conversation->last_message_at && $conversation->last_message_at->lt($access['cutoff'])) {
                 return response()->json(['success' => false, 'message' => 'Conversation not found'], 404);
+            }
+
+            // Lazy auto-link: if the conversation was created before the
+            // matching customer existed, customer_id stays NULL forever.
+            // Try to backfill it now (cheap, only fires when missing).
+            if (!$conversation->customer_id) {
+                $linkedId = $this->whatsapp->relinkConversationCustomer($conversation);
+                if ($linkedId) {
+                    $conversation->load('customer:id,first_name,last_name,phone_normalized,city,total_orders,total_spent');
+                }
             }
 
             $before = $request->get('before'); // for pagination - load older messages
