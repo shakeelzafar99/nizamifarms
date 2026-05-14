@@ -467,7 +467,7 @@ class RequestController extends Controller
     /**
      * Show request details
      */
-    public function show($id)
+    public function show($id, \Illuminate\Http\Request $httpRequest)
     {
         // Store the previous URL (with filters) in session for smart back navigation
         if (url()->previous() !== url()->current()) {
@@ -494,6 +494,52 @@ class RequestController extends Controller
             && $request->canBeApprovedByLevel(1);
         $canApproveLevel2 = RoleApprovalLevelModel::userHasApprovalLevel($user->id, 2) 
             && $request->canBeApprovedByLevel(2);
+
+        if ($httpRequest->wantsJson() || $httpRequest->query('format') === 'json') {
+            $l1 = $request->getLevel1Approver();
+            $l2 = $request->getLevel2Approver();
+            return response()->json([
+                'success' => true,
+                'request' => [
+                    'id' => $request->id,
+                    'request_number' => $request->request_number,
+                    'status' => $request->status,
+                    'priority' => $request->priority,
+                    'category_name' => $request->category->category_name ?? '-',
+                    'requester_name' => $request->requester->fullname ?? '-',
+                    'created_by_name' => $request->createdBy->fullname ?? null,
+                    'created_by_differs' => $request->created_by !== $request->requester_user_id,
+                    'submitted_at' => $request->submitted_at?->format('Y-m-d H:i'),
+                    'completed_at' => $request->completed_at?->format('Y-m-d H:i'),
+                    'amount' => $request->amount,
+                    'expense_category' => $request->expense_category,
+                    'expense_date' => $request->expense_date?->format('Y-m-d'),
+                    'payment_source' => $request->paymentSourceAccount?->account_name,
+                    'title' => $request->title,
+                    'description' => $request->description,
+                    'rejection_reason' => $request->rejection_reason,
+                    'leave_start_date' => $request->leave_start_date?->format('Y-m-d'),
+                    'leave_end_date' => $request->leave_end_date?->format('Y-m-d'),
+                    'leave_days' => $request->leave_days,
+                    'leave_type' => $request->leave_type,
+                    'attachments' => $request->attachments,
+                    'requires_level_1' => $request->requires_level_1,
+                    'requires_level_2' => $request->requires_level_2,
+                    'level_1_status' => $request->level_1_status,
+                    'level_2_status' => $request->level_2_status,
+                    'l1_approver_name' => $l1?->approver?->fullname,
+                    'l1_action_date' => $l1?->action_date?->format('Y-m-d H:i'),
+                    'l1_comments' => $l1?->comments,
+                    'l1_status' => $l1?->status,
+                    'l2_approver_name' => $l2?->approver?->fullname,
+                    'l2_action_date' => $l2?->action_date?->format('Y-m-d H:i'),
+                    'l2_comments' => $l2?->comments,
+                    'l2_status' => $l2?->status,
+                    'can_approve_level_1' => $canApproveLevel1,
+                    'can_approve_level_2' => $canApproveLevel2,
+                ],
+            ]);
+        }
 
         return view('pages.requests.show', compact('request', 'canApproveLevel1', 'canApproveLevel2'));
     }

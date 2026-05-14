@@ -49,6 +49,19 @@ function openNewRequestModal() {
         alert('Form not ready. Please refresh the page.');
         return;
     }
+
+    // Refresh expense_date to the browser's local "today" so it stays
+    // correct even if the page was loaded hours ago or the server
+    // timezone differs from the user's wall clock.
+    const dateInput = document.getElementById('quick_expense_date');
+    if (dateInput) {
+        const now = new Date();
+        const ymd = now.getFullYear() + '-' +
+                    String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                    String(now.getDate()).padStart(2, '0');
+        dateInput.value = ymd;
+        if (dateInput.getAttribute('max')) dateInput.max = ymd;
+    }
     
     // Make modal visible
     modal.classList.remove('hidden');
@@ -1269,173 +1282,142 @@ function closePendingApprovalsModal() {
     }
 }
 
-// Open request detail modal (loads via AJAX to stay on same page)
+// Build request detail HTML from JSON data (avoids CSS conflicts from loading full page)
+function _buildRequestDetailHtml(r) {
+    const statusColors = {pending:'background:#fef3c7;color:#92400e',approved:'background:#d1fae5;color:#065f46',rejected:'background:#fee2e2;color:#991b1b',cancelled:'background:#f3f4f6;color:#4b5563'};
+    const statusStyle = statusColors[r.status] || statusColors.cancelled;
+
+    let html = '<div style="padding:24px;">';
+
+    // Header
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">';
+    html += '<div style="display:flex;align-items:center;gap:12px;">';
+    html += '<button onclick="closeRequestDetailModal()" style="background:#f3f4f6;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;color:#2563eb;">←</button>';
+    html += '<span style="font-size:18px;font-weight:600;color:#111;">Request #' + r.request_number + '</span>';
+    html += '</div>';
+    html += '<span style="padding:4px 12px;border-radius:9999px;font-size:12px;font-weight:700;' + statusStyle + '">' + (r.status||'').toUpperCase() + '</span>';
+    html += '</div>';
+
+    // Fields grid
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">';
+    html += _field('Category', r.category_name);
+    html += _field('Requester (Employee)', r.requester_name + (r.created_by_differs && r.created_by_name ? '<br><span style="font-size:11px;color:#2563eb;">Created by ' + r.created_by_name + ' on behalf</span>' : ''));
+    if (r.submitted_at) html += _field('Submitted', r.submitted_at);
+    if (r.completed_at) html += _field('Completed', r.completed_at);
+    if (r.amount) html += _field('Amount', 'Rs. ' + Number(r.amount).toLocaleString(undefined,{minimumFractionDigits:2}));
+    if (r.expense_category) html += _field('Expense Category', r.expense_category);
+    if (r.expense_date) html += _field('Expense Date', r.expense_date);
+    if (r.payment_source) html += _field('💳 Payment Source', r.payment_source + ' <span style="font-size:11px;color:#6b7280;">(Selected by requester)</span>');
+    if (r.leave_start_date) html += _field('Leave Period', r.leave_start_date + ' to ' + r.leave_end_date + ' (' + r.leave_days + ' days)');
+    if (r.leave_type) html += _field('Leave Type', r.leave_type);
+    html += '<div style="grid-column:span 2;">' + _fieldInner('Title', r.title || '-') + '</div>';
+    html += '<div style="grid-column:span 2;">' + _fieldInner('Description', (r.description || '-').replace(/\n/g,'<br>')) + '</div>';
+    if (r.rejection_reason) html += '<div style="grid-column:span 2;">' + _fieldInner('<span style="color:#991b1b;">Rejection Reason</span>', '<span style="color:#dc2626;">' + r.rejection_reason + '</span>') + '</div>';
+    html += '</div>';
+
+    // Approval Timeline
+    html += '<div style="border-top:1px solid #e5e7eb;padding-top:20px;margin-bottom:16px;">';
+    html += '<h3 style="font-size:16px;font-weight:600;margin-bottom:16px;color:#111;">Approval Timeline</h3>';
+    if (r.requires_level_1) html += _approvalLevel(1, r.level_1_status, r.l1_approver_name, r.l1_action_date, r.l1_comments, r.l1_status);
+    if (r.requires_level_2) html += _approvalLevel(2, r.level_2_status, r.l2_approver_name, r.l2_action_date, r.l2_comments, r.l2_status);
+    if (!r.requires_level_1 && !r.requires_level_2) html += '<p style="color:#6b7280;">No approval required for this request.</p>';
+    html += '</div>';
+
+    // Approval actions (if user can approve)
+    if (r.can_approve_level_1 || r.can_approve_level_2) {
+        const level = r.can_approve_level_1 ? 1 : 2;
+        html += '<div style="border-top:1px solid #e5e7eb;padding-top:20px;">';
+        html += '<h3 style="font-size:16px;font-weight:600;margin-bottom:12px;color:#111;">Take Action</h3>';
+        html += '<div style="margin-bottom:12px;"><label style="font-size:13px;font-weight:600;color:#374151;">Comments</label>';
+        html += '<textarea id="reqDetailComments" rows="3" style="width:100%;margin-top:4px;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;" placeholder="Add comments (required for rejection)"></textarea></div>';
+        html += '<div style="display:flex;gap:12px;">';
+        html += '<button onclick="approveRequestFromModal(' + r.id + ',' + level + ')" style="flex:1;padding:10px 20px;background:#059669;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">✓ Approve</button>';
+        html += '<button onclick="rejectRequestFromModal(' + r.id + ',' + level + ')" style="flex:1;padding:10px 20px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">✗ Reject</button>';
+        html += '</div></div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+function _field(label, value) { return '<div>' + _fieldInner(label, value) + '</div>'; }
+function _fieldInner(label, value) { return '<div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:2px;">' + label + '</div><div style="font-size:14px;color:#111;">' + (value||'-') + '</div>'; }
+function _approvalLevel(level, status, approverName, actionDate, comments, actionStatus) {
+    const color = status === 'approved' ? '#059669' : status === 'rejected' ? '#dc2626' : '#9ca3af';
+    let h = '<div style="display:flex;gap:12px;margin-bottom:16px;">';
+    h += '<div style="width:36px;height:36px;border-radius:50%;background:' + color + ';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;">' + level + '</div>';
+    h += '<div>';
+    h += '<div style="font-size:15px;font-weight:600;">Level ' + level + ' Approval</div>';
+    h += '<div style="font-size:13px;color:#6b7280;">Status: <strong>' + ((status||'pending').charAt(0).toUpperCase() + (status||'pending').slice(1)) + '</strong></div>';
+    if (approverName) {
+        h += '<div style="font-size:13px;margin-top:4px;"><strong>' + (actionStatus === 'approved' ? 'Approved' : 'Rejected') + ' by:</strong> ' + approverName + '</div>';
+        if (actionDate) h += '<div style="font-size:12px;color:#6b7280;">' + actionDate + '</div>';
+        if (comments) h += '<div style="font-size:13px;margin-top:4px;font-style:italic;color:#374151;">"' + comments + '"</div>';
+    }
+    h += '</div></div>';
+    return h;
+}
+
+// Approve/reject from the modal
+function approveRequestFromModal(requestId, level) {
+    if (!confirm('Are you sure you want to approve this request?')) return;
+    const comments = (document.getElementById('reqDetailComments')?.value || '').trim();
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || document.querySelector('[name="_token"]')?.value || '';
+    fetch('/requests/' + requestId + '/approve', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','X-CSRF-TOKEN':csrf},
+        body: JSON.stringify({level: level, comments: comments})
+    }).then(r => r.json()).then(d => {
+        if (d.success) { alert('Request approved successfully!'); closeRequestDetailModal(false); if (typeof closePendingApprovalsModal === 'function') closePendingApprovalsModal(); location.reload(); }
+        else alert('Error: ' + (d.message||'Unknown error'));
+    }).catch(e => { console.error(e); alert('An error occurred.'); });
+}
+function rejectRequestFromModal(requestId, level) {
+    const comments = (document.getElementById('reqDetailComments')?.value || '').trim();
+    if (!comments) { alert('Please enter comments explaining the rejection.'); document.getElementById('reqDetailComments')?.focus(); return; }
+    if (!confirm('Are you sure you want to reject this request?')) return;
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || document.querySelector('[name="_token"]')?.value || '';
+    fetch('/requests/' + requestId + '/reject', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','X-CSRF-TOKEN':csrf},
+        body: JSON.stringify({level: level, comments: comments})
+    }).then(r => r.json()).then(d => {
+        if (d.success) { alert('Request rejected.'); closeRequestDetailModal(false); if (typeof closePendingApprovalsModal === 'function') closePendingApprovalsModal(); location.reload(); }
+        else alert('Error: ' + (d.message||'Unknown error'));
+    }).catch(e => { console.error(e); alert('An error occurred.'); });
+}
+
+// Open request detail modal (fetches JSON, builds HTML client-side)
 async function openRequestDetailModal(requestId) {
     const modal = document.getElementById('requestDetailModal');
     const content = document.getElementById('requestDetailContent');
-    
     if (!modal || !content) return;
-    
-    // Force proper modal display
-    // ⭐ z-index must be higher than pendingApprovalsModal (99999)
+
     modal.classList.remove('hidden');
     Object.assign(modal.style, {
-        display: 'flex',
+        display: 'block',
         position: 'fixed',
-        top: '0',
-        left: '0',
-        right: '0',
-        bottom: '0',
+        top: '0', left: '0', right: '0', bottom: '0',
         zIndex: '999999',
-        alignItems: 'center',
-        justifyContent: 'center',
+        overflowY: 'auto',
+        padding: '2rem 1rem',
         backgroundColor: 'rgba(0,0,0,0.5)'
     });
     document.body.style.overflow = 'hidden';
-    
+
+    // Show loading
+    content.innerHTML = '<div style="text-align:center;padding:48px 0;"><div style="width:36px;height:36px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 0.6s linear infinite;margin:0 auto;"></div><p style="margin-top:12px;color:#6b7280;">Loading request details...</p></div>';
+
     try {
-        // Fetch request details
-        const response = await fetch(`/requests/${requestId}`, {
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
+        const response = await fetch('/requests/' + requestId + '?format=json', {
+            headers: {'Accept':'application/json','X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''}
         });
-        
-        if (!response.ok) throw new Error('Failed to load request');
-        
-        const html = await response.text();
-        
-        // Extract just the content section (not the full page)
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const mainContent = doc.querySelector('.container, .container-fluid, main, [role="main"]') || doc.body;
-        
-        content.innerHTML = mainContent.innerHTML;
-        
-        // Wrap content in padding container if not already wrapped
-        const wrapper = content.querySelector('.p-6') || content.querySelector('.p-4');
-        if (!wrapper) {
-            const paddingDiv = document.createElement('div');
-            paddingDiv.className = 'p-6';
-            paddingDiv.innerHTML = content.innerHTML;
-            content.innerHTML = '';
-            content.appendChild(paddingDiv);
-        }
-        
-        // Add close button at the top
-        const closeBtn = document.createElement('button');
-        closeBtn.className = 'absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-3xl leading-none z-50';
-        closeBtn.innerHTML = '&times;';
-        closeBtn.onclick = closeRequestDetailModal;
-        closeBtn.style.cssText = 'background: none; border: none; cursor: pointer;';
-        content.querySelector('.p-6, .p-4, div')?.prepend(closeBtn);
-        
-        // Re-inject approval/rejection JavaScript functions into the modal context
-        // These functions are defined in the original request page but need to be available here
-        const scriptContent = doc.querySelectorAll('script');
-        scriptContent.forEach(script => {
-            if (script.textContent.includes('approveRequest') || script.textContent.includes('rejectRequest')) {
-                // Extract the request ID from the loaded content
-                const requestIdMatch = html.match(/\/requests\/(\d+)/);
-                if (requestIdMatch) {
-                    const loadedRequestId = requestIdMatch[1];
-                    
-                    // Create wrapper functions that work in modal context
-                    window.approveRequest = function() {
-                        const form = document.getElementById('approval-form');
-                        if (!form) return;
-                        
-                        const formData = new FormData(form);
-                        const data = Object.fromEntries(formData.entries());
-                        
-                        if (!confirm('Are you sure you want to approve this request?')) {
-                            return;
-                        }
-                        
-                        fetch(`/requests/${loadedRequestId}/approve`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'X-CSRF-TOKEN': document.querySelector('[name="_token"]').value
-                            },
-                            body: JSON.stringify(data)
-                        })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                alert('Request approved successfully!');
-                                closeRequestDetailModal(false);
-                                closePendingApprovalsModal();
-                                location.reload();
-                            } else {
-                                alert('Error: ' + data.message);
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error:', error);
-                            alert('An error occurred. Please try again.');
-                        });
-                    };
-                    
-                    window.rejectRequest = function() {
-                        const comments = document.querySelector('[name="comments"]').value.trim();
-                        
-                        if (!comments) {
-                            alert('Please enter comments explaining the rejection.');
-                            document.querySelector('[name="comments"]').focus();
-                            return;
-                        }
-                        
-                        if (!confirm('Are you sure you want to reject this request?')) {
-                            return;
-                        }
-                        
-                        const form = document.getElementById('approval-form');
-                        if (!form) return;
-                        
-                        const formData = new FormData(form);
-                        const data = Object.fromEntries(formData.entries());
-                        
-                        fetch(`/requests/${loadedRequestId}/reject`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'X-CSRF-TOKEN': document.querySelector('[name="_token"]').value
-                            },
-                            body: JSON.stringify(data)
-                        })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                alert('Request rejected.');
-                                closeRequestDetailModal(false);
-                                closePendingApprovalsModal();
-                                location.reload();
-                            } else {
-                                alert('Error: ' + data.message);
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error:', error);
-                            alert('An error occurred. Please try again.');
-                        });
-                    };
-                }
-            }
-        });
-        
+        if (!response.ok) throw new Error('Failed to load request (HTTP ' + response.status + ')');
+        const data = await response.json();
+        if (!data.success) throw new Error(data.message || 'Failed');
+        content.innerHTML = _buildRequestDetailHtml(data.request);
     } catch (error) {
         console.error('Error loading request:', error);
-        content.innerHTML = `
-            <div class="p-6 text-center">
-                <div class="text-red-600 text-xl mb-2">&#10060;</div>
-                <p class="text-gray-700 font-medium">Failed to load request details</p>
-                <p class="text-gray-500 text-sm mt-2">${error.message}</p>
-                <button onclick="closeRequestDetailModal()" class="mt-4 px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded">
-                    Close
-                </button>
-            </div>
-        `;
+        content.innerHTML = '<div style="padding:24px;text-align:center;"><div style="font-size:20px;margin-bottom:8px;">❌</div><p style="font-weight:500;color:#374151;">Failed to load request details</p><p style="font-size:13px;color:#6b7280;margin-top:4px;">' + error.message + '</p><button onclick="closeRequestDetailModal()" style="margin-top:16px;padding:8px 20px;background:#e5e7eb;border:none;border-radius:6px;cursor:pointer;">Close</button></div>';
     }
 }
 
@@ -1630,13 +1612,14 @@ window.confirmDeleteExpense = confirmDeleteExpense;
 
 <!-- Request Detail Modal (for approving without leaving page) -->
 <!-- ⭐ z-index must be higher than pendingApprovalsModal (99999) so it appears on top when opened from there -->
-<div id="requestDetailModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style="z-index: 999999;">
-    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto relative" onclick="event.stopPropagation()" style="margin: auto;">
-        <div id="requestDetailContent" class="relative">
+<!-- Using inline styles (not Tailwind classes) because the JS opener overrides styles anyway -->
+<div id="requestDetailModal" class="hidden" onclick="if(event.target===this)closeRequestDetailModal()" style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:999999;background:rgba(0,0,0,0.5);overflow-y:auto;padding:2rem 1rem;">
+    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:12px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);max-width:48rem;width:100%;margin:0 auto;position:relative;">
+        <div id="requestDetailContent" style="position:relative;">
             <!-- Content will be loaded here via AJAX -->
-            <div class="text-center py-12">
-                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-                <p class="mt-4 text-gray-600">Loading request details...</p>
+            <div style="text-align:center;padding:3rem 0;">
+                <div style="width:3rem;height:3rem;border:2px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 0.6s linear infinite;margin:0 auto;"></div>
+                <p style="margin-top:1rem;color:#6b7280;">Loading request details...</p>
             </div>
         </div>
     </div>

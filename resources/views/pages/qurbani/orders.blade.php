@@ -76,8 +76,12 @@
 .qstats-table td.filterable.zero { cursor:default; }
 .qstats-table td.filterable.zero:hover { background:inherit; box-shadow:none; }
 
-.qstats-mini-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px; margin-top:10px; }
-.qstats-mini { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; }
+.qstats-mini-grid { margin-top:10px; }
+.qstats-day-section { margin-bottom:16px; }
+.qstats-day-header { font-size:13px; font-weight:700; color:#1f2937; padding:6px 0 8px; border-bottom:2px solid #e5e7eb; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+.qstats-day-header .day-count { font-size:11px; font-weight:600; color:#6b7280; background:#f3f4f6; padding:2px 8px; border-radius:10px; }
+.qstats-day-row { display:flex; gap:10px; overflow-x:auto; padding-bottom:4px; }
+.qstats-mini { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; min-width:260px; flex-shrink:0; }
 .qstats-mini-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; padding-bottom:6px; border-bottom:1px dashed #e5e7eb; }
 .qstats-mini-title { font-size:12px; font-weight:700; color:#111827; }
 .qstats-mini-total { font-size:11px; color:#d97706; font-weight:700; background:#fef3c7; padding:2px 6px; border-radius:4px; }
@@ -3101,12 +3105,16 @@ function renderQurbaniBreakdown(deliveryType) {
 
     const dotColor = qstatsDotColor(deliveryType);
 
-    // Build mini-tables for every (day × category) combination that has data.
-    const miniHtml = [];
+    // Build mini-tables grouped by day. Each day gets its own horizontal
+    // scrollable row so tables with many region columns aren't cut off.
+    const daySections = [];
     days.forEach(day => {
+        const tablesForDay = [];
+        let dayTotal = 0;
         categories.forEach(cat => {
             const qtyTotal = ((summaryForType[day] || {})[cat]) || 0;
             if (qtyTotal === 0) return;   // skip empty buckets
+            dayTotal += qtyTotal;
             const cellMap = (((detail[day] || {})[cat] || {}).cell) || {};
             const slots = ((detail[day] || {})[cat] || {}).slots || [];
             const regions = ((detail[day] || {})[cat] || {}).regions || [];
@@ -3128,8 +3136,6 @@ function renderQurbaniBreakdown(deliveryType) {
                 return `<tr><td class="row-label">${qstatsEscape(slot)}</td>${cellsHtml}</tr>`;
             }).join('');
 
-            // Each mini-table gets its own Set / Save / Cancel toolbar so
-            // admins can focus on one (day × category) at a time.
             const dtJs  = qstatsEscape(deliveryType).replace(/'/g, "\\'");
             const dayJs = qstatsEscape(day).replace(/'/g, "\\'");
             const catJs = qstatsEscape(cat).replace(/'/g, "\\'");
@@ -3142,10 +3148,10 @@ function renderQurbaniBreakdown(deliveryType) {
                     ? `<button class="qstats-ghostbtn secondary" style="font-size:10px; padding:2px 8px;" onclick="qstatsStartBreakdownEdit('${dtJs}','${dayJs}','${catJs}')">🎯 Set Targets</button>`
                     : '');
 
-            miniHtml.push(`
+            tablesForDay.push(`
                 <div class="qstats-mini" data-edit-key="${qstatsEscape(editKey)}">
                     <div class="qstats-mini-head">
-                        <div class="qstats-mini-title">${qstatsEscape(day)} &middot; ${qstatsEscape(cat)}${isEditing ? ' <span style="color:#d97706; font-weight:600; font-size:10px;">(editing)</span>' : ''}</div>
+                        <div class="qstats-mini-title">${qstatsEscape(cat)}${isEditing ? ' <span style="color:#d97706; font-weight:600; font-size:10px;">(editing)</span>' : ''}</div>
                         <div style="display:flex; align-items:center; gap:6px;">
                             <div class="qstats-mini-total">${qtyTotal}</div>
                             ${toolbarHtml}
@@ -3163,10 +3169,21 @@ function renderQurbaniBreakdown(deliveryType) {
                 </div>
             `);
         });
+        if (tablesForDay.length > 0) {
+            daySections.push(`
+                <div class="qstats-day-section">
+                    <div class="qstats-day-header">
+                        ${qstatsEscape(day)}
+                        <span class="day-count">${dayTotal} orders</span>
+                    </div>
+                    <div class="qstats-day-row">${tablesForDay.join('')}</div>
+                </div>
+            `);
+        }
     });
 
-    const body = miniHtml.length
-        ? `<div class="qstats-mini-grid">${miniHtml.join('')}</div>`
+    const body = daySections.length
+        ? `<div class="qstats-mini-grid">${daySections.join('')}</div>`
         : '<div class="qstats-empty" style="background:#fff; border:1px solid #e5e7eb; border-radius:10px;">No detailed breakdown yet.</div>';
 
     breakdown.innerHTML = `

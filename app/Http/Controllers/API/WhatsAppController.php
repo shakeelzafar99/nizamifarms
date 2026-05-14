@@ -994,13 +994,16 @@ class WhatsAppController extends Controller
             $force = filter_var($request->input('force', false), FILTER_VALIDATE_BOOLEAN);
 
             // Auto-attach invoice image for payment_reminder_single when
-            // the mobile can't generate it client-side. Falls back to the
-            // existing server-stored image if available.
+            // the mobile can't generate it client-side. Reads the file
+            // directly (with mtime cache buster) so Meta sees a fresh
+            // URL on each send. Skips silently if the file isn't on
+            // disk yet — the mobile UI's own validation already nudges
+            // the user to preview/send from web first in that case.
             if ($templateName === 'payment_reminder_single' && empty($headerParams) && $request->input('order_id')) {
                 try {
-                    $imgResponse = $this->getInvoiceImageUrl($request, $request->input('order_id'));
-                    $imgData = json_decode($imgResponse->getContent(), true);
-                    if (($imgData['success'] ?? false) && !($imgData['needs_capture'] ?? false) && !empty($imgData['image_url'])) {
+                    $webController = app(\App\Http\Controllers\Web\WhatsAppWebController::class);
+                    $imgData = $webController->readInvoiceImageUrlForSend($request->input('order_id'));
+                    if (($imgData['success'] ?? false) && !empty($imgData['image_url'])) {
                         $headerParams = [
                             ['type' => 'image', 'image' => ['link' => $imgData['image_url']]],
                         ];
@@ -2302,7 +2305,15 @@ class WhatsAppController extends Controller
     }
 
     /**
-     * Generate invoice image URL for an order
+     * Generate invoice image URL for an order.
+     *
+     * Mobile clients can't run html2canvas, so unlike the web (which now
+     * always re-captures fresh), mobile always uses the last-captured
+     * image written by the web flow. Hits readInvoiceImageUrlForSend()
+     * directly to bypass the web controller's force-needs_capture
+     * behaviour. If the file isn't on disk yet, returns needs_capture
+     * + a hint to send/preview from web first (same behaviour as before
+     * the May-2026 cache-removal change).
      */
     public function getInvoiceImageUrl(Request $request, $orderId)
     {
@@ -2313,7 +2324,20 @@ class WhatsAppController extends Controller
             }
 
             $webController = app(\App\Http\Controllers\Web\WhatsAppWebController::class);
-            return $webController->getInvoiceImageUrl($request, $orderId);
+            $result = $webController->readInvoiceImageUrlForSend($orderId);
+
+            if (!($result['success'] ?? false)) {
+                // Surface as a 200 with needs_capture flag (matches the
+                // pre-May-2026 contract the mobile UI was built against).
+                return response()->json([
+                    'success' => true,
+                    'needs_capture' => true,
+                    'message' => $result['message'] ?? 'Invoice image not yet generated. Please send/preview from web first.',
+                    'order_number' => $result['order_number'] ?? null,
+                ]);
+            }
+
+            return response()->json($result);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
@@ -2358,11 +2382,17 @@ class WhatsAppController extends Controller
 
             $phone = $this->whatsapp->formatPhone($request->input('phone'));
 
-            $imgResponse = $this->getInvoiceImageUrl($request, $request->input('order_id'));
-            $imgData = json_decode($imgResponse->getContent(), true);
+            // May-2026: read directly from storage. The mobile picker
+            // doesn't have html2canvas so it relies on whatever the web
+            // last captured. If it's missing, fail clearly with a 422 so
+            // the mobile UI shows the "preview from web first" hint.
+            $webController = app(\App\Http\Controllers\Web\WhatsAppWebController::class);
+            $imgData = $webController->readInvoiceImageUrlForSend($request->input('order_id'));
 
             if (!($imgData['success'] ?? false)) {
-                return response()->json(['success' => false, 'message' => $imgData['message'] ?? 'Failed to generate invoice image'], 500);
+                $isNeedsCapture = $imgData['needs_capture'] ?? false;
+                $statusCode = $isNeedsCapture ? 422 : 500;
+                return response()->json(['success' => false, 'message' => $imgData['message'] ?? 'Failed to read invoice image'], $statusCode);
             }
 
             $imageUrl = $imgData['image_url'];

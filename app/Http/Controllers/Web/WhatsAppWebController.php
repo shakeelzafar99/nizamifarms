@@ -1963,29 +1963,36 @@ class WhatsAppWebController extends Controller
     }
 
     /**
-     * Get invoice image URL.
-     * If a cached image exists, returns it immediately.
-     * Otherwise returns the invoice page URL so the client can render & capture it.
+     * Get invoice image URL — ALWAYS forces fresh capture.
+     *
+     * May-2026: removed the on-disk cache lookup. Returning a cached image
+     * caused two problems:
+     *   (1) Shopify orders sharing the same `order_number` (different DB
+     *       order_ids) collide on the same filename, so previewing one
+     *       order would surface the other one's image.
+     *   (2) Edits to an existing order (line items, totals, notes) didn't
+     *       always trigger a cache-bust if the edit went through a flow
+     *       other than OrderController::update(), so users saw the
+     *       pre-edit invoice image even though body params (totals, etc.)
+     *       were correct.
+     *
+     * Every preview now re-captures and overwrites the file on disk. The
+     * Send flow (sendInvoice / mobile auto-attach) reads that just-written
+     * file via readInvoiceImageUrlForSend() and tacks an mtime query
+     * string on the URL so Meta sees a unique URL each send and never
+     * re-uses its own cached copy.
+     *
+     * Mobile clients (no html2canvas) can still call this endpoint, but
+     * they'll always get needs_capture=true. The mobile picker is
+     * intentionally pointed at readInvoiceImageUrlForSend() instead so it
+     * surfaces whatever the last web capture wrote — same pre-existing
+     * behaviour, no regression.
      */
     public function getInvoiceImageUrl(Request $request, $orderId)
     {
         try {
-            $dir = 'whatsapp-invoices';
-            $disk = 'public';
-
             $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($orderId);
             $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
-            $filename = 'Invoice-' . $orderNum;
-            $storagePath = $dir . '/' . $filename . '.png';
-
-            if (Storage::disk($disk)->exists($storagePath)) {
-                $base = request()->getSchemeAndHttpHost();
-                return response()->json([
-                    'success' => true,
-                    'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath,
-                    'order_number' => $orderNum,
-                ]);
-            }
 
             return response()->json([
                 'success' => true,
@@ -1998,6 +2005,51 @@ class WhatsAppWebController extends Controller
         } catch (\Exception $e) {
             Log::error('Invoice image generation failed', ['order_id' => $orderId, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Read an already-captured invoice image's URL, with an mtime cache
+     * buster so both browsers and Meta see a unique URL whenever the file
+     * is overwritten by a fresh capture. Returns ['success' => false]
+     * when the file hasn't been generated yet (mobile-without-prior-web-
+     * capture case).
+     *
+     * Internal — used by sendInvoice (web), sendInvoice (mobile API) and
+     * the payment_reminder_single auto-attach. Not exposed as a route.
+     */
+    public function readInvoiceImageUrlForSend($orderId): array
+    {
+        try {
+            $dir = 'whatsapp-invoices';
+            $disk = 'public';
+
+            $order = app(\App\Http\Controllers\CRM\OrderController::class)->findOrderPublic($orderId);
+            $orderNum = $order->order_number ?? ('NF-' . str_pad($order->id, 4, '0', STR_PAD_LEFT));
+            $storagePath = $dir . '/Invoice-' . $orderNum . '.png';
+
+            if (!Storage::disk($disk)->exists($storagePath)) {
+                return [
+                    'success' => false,
+                    'needs_capture' => true,
+                    'message' => 'Invoice image not generated yet. Please preview the invoice first.',
+                    'order_number' => $orderNum,
+                ];
+            }
+
+            // mtime cache buster: defeats both browser HTTP cache and Meta's
+            // image cache. Same filename keeps the storage tidy; the URL is
+            // unique per overwrite which is all Meta cares about.
+            $mtime = Storage::disk($disk)->lastModified($storagePath);
+            $base = request()->getSchemeAndHttpHost();
+            return [
+                'success' => true,
+                'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath . '?v=' . $mtime,
+                'order_number' => $orderNum,
+            ];
+        } catch (\Exception $e) {
+            Log::error('readInvoiceImageUrlForSend failed', ['order_id' => $orderId, 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => $e->getMessage()];
         }
     }
 
@@ -2031,10 +2083,16 @@ class WhatsAppWebController extends Controller
 
             Storage::disk($disk)->put($storagePath, $decoded);
 
+            // Append mtime cache buster so the browser preview shows the
+            // freshly-uploaded image (rather than a stale http-cached one
+            // from a previous capture) and so any subsequent send picks
+            // up the new URL too. See readInvoiceImageUrlForSend() for
+            // the full rationale.
+            $mtime = Storage::disk($disk)->lastModified($storagePath);
             $base = request()->getSchemeAndHttpHost();
             return response()->json([
                 'success' => true,
-                'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath,
+                'image_url' => rtrim($base, '/') . '/public-storage/' . $storagePath . '?v=' . $mtime,
                 'order_number' => $orderNum,
             ]);
 
@@ -2061,15 +2119,20 @@ class WhatsAppWebController extends Controller
             $service = app(WhatsAppService::class);
             $phone = $service->formatPhone($request->phone);
 
-            $imgResponse = $this->getInvoiceImageUrl($request, $request->order_id);
-            $imgData = json_decode($imgResponse->getContent(), true);
+            // May-2026: read the freshly-captured file directly from storage
+            // rather than going through getInvoiceImageUrl() (which now
+            // always says needs_capture to force preview re-capture). The
+            // preview flow on every UI page (orders, qurbani, messages,
+            // customers, approvals) auto-captures + uploads BEFORE the
+            // user can click Send, so by the time we get here the file
+            // on disk reflects the order being sent.
+            $imgData = $this->readInvoiceImageUrlForSend($request->order_id);
 
             if (!($imgData['success'] ?? false)) {
-                return response()->json(['success' => false, 'message' => $imgData['message'] ?? 'Failed to generate invoice image'], 500);
-            }
-
-            if ($imgData['needs_capture'] ?? false) {
-                return response()->json(['success' => false, 'message' => 'Please preview the invoice first to generate the image.'], 422);
+                $isNeedsCapture = $imgData['needs_capture'] ?? false;
+                $statusCode = $isNeedsCapture ? 422 : 500;
+                $message = $imgData['message'] ?? 'Failed to read invoice image';
+                return response()->json(['success' => false, 'message' => $message], $statusCode);
             }
 
             $imageUrl = $imgData['image_url'];
