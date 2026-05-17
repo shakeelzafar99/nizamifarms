@@ -17500,7 +17500,19 @@ class RiderController extends Controller
                     $q->select('id', 'fullname');
                 }])
                 ->with(['lineItems' => function($q) {
-                    $q->select('id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total', 'preparation_status', 'is_free', 'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya', 'instructions');
+                    $q->select(
+                        'id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total',
+                        'preparation_status', 'is_free',
+                        'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type',
+                        'qurbani_type', 'qurbani_paya',
+                        // May-2026: per-line-item Qurbani lifecycle status + rider assignment.
+                        // These are intentionally separate from preparation_status (regular
+                        // orders' "Mark as Prepared" flow) and from t_crm_prod_order.assigned_rider_user_id
+                        // (order-level rider) so the two systems don't bleed into each other.
+                        'qurbani_item_status', 'qurbani_assigned_rider_user_id',
+                        'qurbani_status_updated_at', 'qurbani_status_updated_by',
+                        'instructions'
+                    );
                 }])
                 ->with(['lineItems.product' => function($q) {
                     $q->select('id', 'attribute_2');
@@ -17517,24 +17529,37 @@ class RiderController extends Controller
             // qurbani_type and qurbani_paya live ONLY on line items (no order-level
             // column). Everything else exists on both — keep the legacy behaviour
             // of matching against either the order row or any line-item row.
+            //
+            // May-2026: Each filter accepts EITHER a scalar (legacy single-select)
+            // OR an array (multi-select chips on the mobile sidebar). Internally
+            // we always coerce to an array of trimmed non-empty strings and use
+            // whereIn — single-element arrays still hit the same index path.
             $lineOnlyFields = ['qurbani_type', 'qurbani_paya'];
             foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya'] as $field) {
-                if ($request->get($field)) {
-                    $filterVal = $request->get($field);
-                    $isLineOnly = in_array($field, $lineOnlyFields, true);
-                    $query->where(function($q) use ($field, $filterVal, $isLineOnly) {
-                        if ($isLineOnly) {
-                            $q->whereHas('lineItems', function($sub) use ($field, $filterVal) {
-                                $sub->where($field, $filterVal);
-                            });
-                        } else {
-                            $q->where($field, $filterVal)
-                              ->orWhereHas('lineItems', function($sub) use ($field, $filterVal) {
-                                  $sub->where($field, $filterVal);
-                              });
-                        }
-                    });
-                }
+                $raw = $request->input($field);
+                if ($raw === null || $raw === '') continue;
+
+                $values = is_array($raw) ? $raw : [$raw];
+                $values = array_values(array_filter(array_map(function ($v) {
+                    return is_string($v) ? trim($v) : $v;
+                }, $values), function ($v) {
+                    return $v !== null && $v !== '';
+                }));
+                if (empty($values)) continue;
+
+                $isLineOnly = in_array($field, $lineOnlyFields, true);
+                $query->where(function($q) use ($field, $values, $isLineOnly) {
+                    if ($isLineOnly) {
+                        $q->whereHas('lineItems', function($sub) use ($field, $values) {
+                            $sub->whereIn($field, $values);
+                        });
+                    } else {
+                        $q->whereIn($field, $values)
+                          ->orWhereHas('lineItems', function($sub) use ($field, $values) {
+                              $sub->whereIn($field, $values);
+                          });
+                    }
+                });
             }
 
             $orders = $query->orderBy('order_date', 'desc')->get();
@@ -17547,6 +17572,27 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('order_id');
 
+            // May-2026: Resolve per-line-item rider names in a single query so the
+            // mobile app can render the assigned-rider chip without an N+1 lookup.
+            // We collect every distinct qurbani_assigned_rider_user_id across the
+            // page's line items, fetch their fullnames once, and inject the name
+            // into each line-item payload below.
+            $perItemRiderIds = collect();
+            foreach ($orders as $o) {
+                foreach ($o->lineItems as $li) {
+                    if ($li->qurbani_assigned_rider_user_id) {
+                        $perItemRiderIds->push($li->qurbani_assigned_rider_user_id);
+                    }
+                }
+            }
+            $perItemRiderMap = [];
+            if ($perItemRiderIds->isNotEmpty()) {
+                $perItemRiderMap = \DB::table('t_sys_user')
+                    ->whereIn('id', $perItemRiderIds->unique()->values())
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+            }
+
             $regionMap = [];
             try {
                 $regionMap = \DB::table('t_ops_delivery_region')
@@ -17555,7 +17601,29 @@ class RiderController extends Controller
                     ->toArray();
             } catch (\Exception $e) {}
 
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $regionMap) {
+            // May-2026: smart-box bundle calculation. We compute bundle_key,
+            // bundle_size, and (start, end) packet positions for every line
+            // item so the mobile row card can show "3/5" and the bulk-action
+            // soft-warn can detect cross-bundle / partial-bundle selections.
+            // No DB writes — pure derivation. See QurbaniBundleService.
+            $bundleInputs = [];
+            foreach ($orders as $o) {
+                foreach ($o->lineItems as $li) {
+                    $bundleInputs[] = [
+                        'id'                    => $li->id,
+                        'order_id'              => $li->order_id,
+                        'quantity'              => $li->quantity,
+                        'qurbani_day'           => $li->qurbani_day,
+                        'qurbani_slot'          => $li->qurbani_slot,
+                        'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                        'category_level_2'      => $li->product->attribute_2 ?? null,
+                        'product_id'            => $li->product_id,
+                    ];
+                }
+            }
+            $bundleMap = (new \App\Services\QurbaniBundleService())->computeBundles($bundleInputs);
+
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $regionMap, $perItemRiderMap, $bundleMap) {
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
                     $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
@@ -17627,7 +17695,9 @@ class RiderController extends Controller
                     'discounts' => $order->discounts ? $order->discounts->map(function($d) {
                         return ['discount_amount' => $d->discount_amount, 'discount_type' => $d->discount_type];
                     })->toArray() : [],
-                    'line_items' => $order->lineItems->map(function($item) {
+                    'line_items' => $order->lineItems->map(function($item) use ($perItemRiderMap, $bundleMap) {
+                        $riderId = $item->qurbani_assigned_rider_user_id;
+                        $bundle = $bundleMap[$item->id] ?? null;
                         return [
                             'id' => $item->id,
                             'name' => $item->name ?? 'N/A',
@@ -17646,8 +17716,26 @@ class RiderController extends Controller
                             'qurbani_delivery_type' => $item->qurbani_delivery_type,
                             'qurbani_type' => $item->qurbani_type,
                             'qurbani_paya' => $item->qurbani_paya,
+                            // May-2026: per-line-item Qurbani lifecycle status + rider.
+                            // qurbani_item_status defaults to NULL which the mobile
+                            // client treats as "open"/unassigned (sorts to the top).
+                            'qurbani_item_status' => $item->qurbani_item_status,
+                            'qurbani_assigned_rider_user_id' => $riderId,
+                            'qurbani_assigned_rider_name' => $riderId ? ($perItemRiderMap[$riderId] ?? null) : null,
+                            'qurbani_status_updated_at' => $item->qurbani_status_updated_at
+                                ? (string) $item->qurbani_status_updated_at
+                                : null,
                             'category_level_2' => $item->product->attribute_2 ?? null,
                             'instructions' => $item->instructions,
+                            // Smart-box bundle metadata (May-2026). Mobile uses
+                            // bundle_position_end / bundle_size to render the
+                            // "3/5" chip on each row, and bundle_key for the
+                            // partial / cross-bundle soft-warn dialogs.
+                            'bundle_key'             => $bundle['bundle_key'] ?? null,
+                            'bundle_size'            => $bundle['bundle_size'] ?? null,
+                            'bundle_position_start'  => $bundle['bundle_position_start'] ?? null,
+                            'bundle_position_end'    => $bundle['bundle_position_end'] ?? null,
+                            'bundle_item_count'      => $bundle['bundle_item_count'] ?? null,
                         ];
                     })->values()->toArray(),
                     'external_source' => $order->external_source,
@@ -17755,6 +17843,766 @@ class RiderController extends Controller
             return response()->json(['success' => true, 'message' => 'Instructions updated']);
         } catch (\Exception $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    // =========================================================================
+    // QURBANI: Per-line-item status & rider assignment (May-2026)
+    //
+    // These four endpoints are deliberately scoped at the LINE ITEM level
+    // (not the order level) so bulk operations cannot accidentally cascade
+    // to every product in an order — that was the long-standing bug
+    // operations reported with the regular-orders Mark-as-Prepared flow.
+    //
+    // Auth: every endpoint requires `access_qurbani_mode` mobile permission,
+    // matching the rest of the Qurbani API surface.
+    //
+    // Status updates ONLY touch:
+    //   - qurbani_item_status
+    //   - qurbani_status_updated_at / by
+    // Critically NOT preparation_status, so the regular Mark-as-Prepared
+    // inventory deduction flow stays untouched even if the same line items
+    // exist on a non-Qurbani path.
+    // =========================================================================
+
+    /**
+     * Bulk update Qurbani per-line-item status.
+     *
+     * POST /api/rider/qurbani/line-items/bulk-update-status
+     * Body:
+     *   line_item_ids: int[]            (the SPECIFIC line items to update)
+     *   qurbani_item_status: string|null  (one of the option_value slugs in
+     *                                      t_crm_qurbani_field_options where
+     *                                      field_name='qurbani_item_status',
+     *                                      or null/empty for "open"/unassigned)
+     *
+     * Note: there is NO order_id in the URL — callers pass exact line item
+     * IDs and only those rows are touched.
+     */
+    public function bulkUpdateQurbaniItemStatus(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $validated = $request->validate([
+                'line_item_ids' => 'required|array|min:1',
+                'line_item_ids.*' => 'required|integer',
+                'qurbani_item_status' => 'nullable|string|max:50',
+            ]);
+
+            $newStatus = $validated['qurbani_item_status'] ?? null;
+            if ($newStatus === '') $newStatus = null;
+
+            // Validate against t_crm_qurbani_field_options when a non-null
+            // status was supplied. NULL is always valid (means "open"/unassigned).
+            if ($newStatus !== null) {
+                $exists = \DB::table('t_crm_qurbani_field_options')
+                    ->where('field_name', 'qurbani_item_status')
+                    ->where('option_value', $newStatus)
+                    ->where('is_active', 1)
+                    ->exists();
+                if (!$exists) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Unknown qurbani item status: {$newStatus}",
+                    ], 422);
+                }
+            }
+
+            $now = now();
+            $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
+                ->update([
+                    'qurbani_item_status' => $newStatus,
+                    'qurbani_status_updated_at' => $now,
+                    'qurbani_status_updated_by' => $user->id,
+                    'updated_by' => $user->id,
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Updated {$updated} item(s)",
+                'updated_count' => $updated,
+                'qurbani_item_status' => $newStatus,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed bulk qurbani item status update', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to update items: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Bulk assign a rider to specific Qurbani line items.
+     *
+     * POST /api/rider/qurbani/line-items/bulk-assign-rider
+     * Body:
+     *   line_item_ids: int[]
+     *   assigned_rider_user_id: int|null   (null clears the assignment)
+     *
+     * Order-level t_crm_prod_order.assigned_rider_user_id is intentionally
+     * NOT modified — Qurbani is the only flow with per-item riders today.
+     */
+    public function bulkAssignQurbaniRider(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            $validated = $request->validate([
+                'line_item_ids' => 'required|array|min:1',
+                'line_item_ids.*' => 'required|integer',
+                'assigned_rider_user_id' => 'nullable|integer|exists:t_sys_user,id',
+            ]);
+
+            $riderId = $validated['assigned_rider_user_id'] ?? null;
+
+            $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
+                ->update([
+                    'qurbani_assigned_rider_user_id' => $riderId,
+                    'updated_by' => $user->id,
+                ]);
+
+            $riderName = null;
+            if ($riderId) {
+                $riderName = \DB::table('t_sys_user')->where('id', $riderId)->value('fullname');
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $riderId
+                    ? "Assigned {$riderName} to {$updated} item(s)"
+                    : "Cleared rider on {$updated} item(s)",
+                'updated_count' => $updated,
+                'assigned_rider_user_id' => $riderId,
+                'assigned_rider_name' => $riderName,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed bulk qurbani rider assignment', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed to assign rider: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Single-item Qurbani status update (thin wrapper around the bulk endpoint
+     * so mobile can call it without building a one-element array client-side).
+     *
+     * PUT /api/rider/qurbani/line-items/{lineItemId}/status
+     */
+    public function updateQurbaniItemStatus(Request $request, $lineItemId)
+    {
+        $request->merge(['line_item_ids' => [(int) $lineItemId]]);
+        return $this->bulkUpdateQurbaniItemStatus($request);
+    }
+
+    /**
+     * Single-item Qurbani rider assignment.
+     *
+     * PUT /api/rider/qurbani/line-items/{lineItemId}/rider
+     */
+    public function assignQurbaniRider(Request $request, $lineItemId)
+    {
+        $request->merge(['line_item_ids' => [(int) $lineItemId]]);
+        return $this->bulkAssignQurbaniRider($request);
+    }
+
+    /**
+     * Rider Qurbani delivery feed (May-2026).
+     *
+     * GET /api/rider/qurbani/my-deliveries
+     *
+     * Returns ONLY orders where the current user is assigned to one or more
+     * line items via t_crm_prod_order_line_item.qurbani_assigned_rider_user_id.
+     * Each order payload includes ONLY the items assigned to this rider —
+     * other line items in the same order belong to other riders / other
+     * slots and are filtered out (they would confuse the rider screen).
+     *
+     * Bundle metadata (bundle_size, bundle_position_end, bundle_key) is
+     * computed across the FULL order so the rider sees the correct
+     * "3 of 5 packets" position even when their assignment covers a
+     * subset of the bundle.
+     *
+     * Filtering: ?show=open|delivered|all (default open) — open hides
+     * line items already marked qurbani_item_status='delivered'.
+     */
+    public function getQurbaniRiderDeliveries(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            // Authorisation here is per-item (we filter to line items where
+            // qurbani_assigned_rider_user_id = user->id), so we do NOT gate
+            // on access_qurbani_mode — that permission is for the Qurbani
+            // dispatch / management screens, not the rider's own feed of
+            // assignments. Rider users without that permission still need
+            // to be able to see what's been pushed to them.
+
+            $show = strtolower((string) $request->get('show', 'open'));
+            if (!in_array($show, ['open', 'delivered', 'all'], true)) {
+                $show = 'open';
+            }
+
+            // Step 1: discover orders where this rider has at least one
+            // assigned line item. We start from the line-item table because
+            // assignment lives there now (not on the order).
+            $assignedQuery = \DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_assigned_rider_user_id', $user->id);
+            if ($show === 'open') {
+                $assignedQuery->where(function($q) {
+                    $q->whereNull('qurbani_item_status')
+                      ->orWhere('qurbani_item_status', '!=', 'delivered');
+                });
+            } elseif ($show === 'delivered') {
+                $assignedQuery->where('qurbani_item_status', 'delivered');
+            }
+            $orderIds = $assignedQuery->pluck('order_id')->unique()->values();
+            if ($orderIds->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'orders' => [],
+                    'summary' => ['total' => 0, 'open_items' => 0, 'delivered_items' => 0],
+                ]);
+            }
+
+            $orders = \App\Models\CRM\OrderModel::with(['customer', 'lineItems' => function($q) {
+                    $q->select(
+                        'id', 'order_id', 'product_id', 'name', 'sku', 'quantity', 'unit_price', 'line_total',
+                        'qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region',
+                        'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya',
+                        'qurbani_item_status', 'qurbani_assigned_rider_user_id',
+                        'qurbani_status_updated_at', 'instructions'
+                    );
+                }, 'lineItems.product' => function($q) {
+                    $q->select('id', 'attribute_2');
+                }])
+                ->whereIn('id', $orderIds)
+                ->orderBy('order_date', 'desc')
+                ->get();
+
+            // Compute bundles across the FULL order line items so the
+            // rider sees the same "3/5" position the dispatch screen shows.
+            $bundleInputs = [];
+            foreach ($orders as $o) {
+                foreach ($o->lineItems as $li) {
+                    $bundleInputs[] = [
+                        'id'                    => $li->id,
+                        'order_id'              => $li->order_id,
+                        'quantity'              => $li->quantity,
+                        'qurbani_day'           => $li->qurbani_day,
+                        'qurbani_slot'          => $li->qurbani_slot,
+                        'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                        'category_level_2'      => $li->product->attribute_2 ?? null,
+                        'product_id'            => $li->product_id,
+                    ];
+                }
+            }
+            $bundleMap = (new \App\Services\QurbaniBundleService())->computeBundles($bundleInputs);
+
+            $payload = [];
+            $totalOpen = 0; $totalDelivered = 0;
+            foreach ($orders as $order) {
+                // Filter line items down to ones assigned to this rider, and
+                // apply the show filter (open|delivered|all).
+                $myItems = $order->lineItems->filter(function($li) use ($user, $show) {
+                    if ((int) $li->qurbani_assigned_rider_user_id !== (int) $user->id) return false;
+                    $isDelivered = $li->qurbani_item_status === 'delivered';
+                    if ($show === 'open') return !$isDelivered;
+                    if ($show === 'delivered') return $isDelivered;
+                    return true;
+                })->values();
+
+                if ($myItems->isEmpty()) continue;
+
+                // Group my items by bundle_key so the mobile UI can render
+                // one card per bundle (the way the rider thinks about
+                // delivery: one trip, one customer, one bundle).
+                $bundles = [];
+                foreach ($myItems as $li) {
+                    $b = $bundleMap[$li->id] ?? null;
+                    $bk = $b['bundle_key'] ?? "no-bundle:{$li->id}";
+                    if (!isset($bundles[$bk])) {
+                        $bundles[$bk] = [
+                            'bundle_key' => $bk,
+                            'bundle_size' => $b['bundle_size'] ?? null,
+                            'qurbani_day' => $li->qurbani_day,
+                            'qurbani_slot' => $li->qurbani_slot,
+                            'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                            'items' => [],
+                            'my_qty_in_bundle' => 0,
+                            'all_delivered' => true,
+                        ];
+                    }
+                    $isDelivered = $li->qurbani_item_status === 'delivered';
+                    if (!$isDelivered) $bundles[$bk]['all_delivered'] = false;
+                    $bundles[$bk]['my_qty_in_bundle'] += max(1, (int) $li->quantity);
+                    $bundles[$bk]['items'][] = [
+                        'id' => $li->id,
+                        'name' => $li->name,
+                        'quantity' => (float) $li->quantity,
+                        'category_level_2' => $li->product->attribute_2 ?? null,
+                        'qurbani_type' => $li->qurbani_type,
+                        'qurbani_paya' => $li->qurbani_paya,
+                        'qurbani_item_status' => $li->qurbani_item_status,
+                        'qurbani_status_updated_at' => $li->qurbani_status_updated_at
+                            ? (string) $li->qurbani_status_updated_at : null,
+                        'instructions' => $li->instructions,
+                        'bundle_position_start' => $b['bundle_position_start'] ?? null,
+                        'bundle_position_end'   => $b['bundle_position_end'] ?? null,
+                        'bundle_size'           => $b['bundle_size'] ?? null,
+                        // Total distinct line items in the FULL bundle (not
+                        // just the ones assigned to this rider). The
+                        // mobile chip uses this to decide whether the
+                        // i/N label is meaningful — a single-line-item
+                        // bundle shouldn't surface "3/3".
+                        'bundle_item_count'     => $b['bundle_item_count'] ?? null,
+                    ];
+
+                    if ($isDelivered) $totalDelivered++; else $totalOpen++;
+                }
+
+                // Sort items inside each bundle by their packet position so
+                // rider sees 1/5, 2/5, 3/5… in order — not jumbled by
+                // line-item id. NULL position falls last (defensive).
+                foreach ($bundles as &$bRef) {
+                    usort($bRef['items'], function($a, $b) {
+                        $ap = $a['bundle_position_start'] ?? PHP_INT_MAX;
+                        $bp = $b['bundle_position_start'] ?? PHP_INT_MAX;
+                        return $ap <=> $bp;
+                    });
+                }
+                unset($bRef);
+
+                $customerName = $order->name ?? null;
+                if (!$customerName && ($order->address_first_name || $order->address_last_name)) {
+                    $customerName = trim(($order->address_first_name ?? '') . ' ' . ($order->address_last_name ?? ''));
+                }
+                if (!$customerName && $order->customer) {
+                    $customerName = trim(($order->customer->first_name ?? '') . ' ' . ($order->customer->last_name ?? '')) ?: null;
+                }
+
+                $payload[] = [
+                    'id' => $order->id,
+                    'order_number' => $order->order_number,
+                    'customer_id' => $order->customer_id,
+                    'customer_name' => $customerName ?: 'Unknown',
+                    'customer_phone' => $order->address_phone ?? ($order->customer->phone_original ?? null),
+                    'customer_address' => trim(implode(', ', array_filter([
+                        $order->address_line1, $order->address_line2, $order->address_city,
+                    ]))),
+                    'order_status' => $order->order_status,
+                    'qurbani_region' => $order->qurbani_region,
+                    'bundles' => array_values($bundles),
+                    'my_item_count' => $myItems->count(),
+                    'my_total_qty'  => $myItems->sum(fn($li) => max(1, (int) $li->quantity)),
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'orders' => $payload,
+                'summary' => [
+                    'total' => count($payload),
+                    'open_items' => $totalOpen,
+                    'delivered_items' => $totalDelivered,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load qurbani rider deliveries', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Bulk mark Qurbani line items as 'delivered' from the rider's app.
+     *
+     * POST /api/rider/qurbani/line-items/bulk-mark-delivered
+     * Body: { line_item_ids: int[] }
+     *
+     * Distinct from bulkUpdateQurbaniItemStatus because this endpoint:
+     *   - Only ever sets qurbani_item_status='delivered' (no slug freedom)
+     *   - Validates that the caller is the assigned rider on every item
+     *     (anti-tamper — a rider can't mark someone else's items)
+     *   - Auto-promotes parent order_status to 'delivered' once ALL line
+     *     items in the order are qurbani_item_status='delivered'. The
+     *     ledger guard (OrderModel::hasPreReceivedPayments) keeps Qurbani
+     *     orders out of the rider ledger pending list.
+     *   - Records a delivery snapshot into t_crm_order_status_history if
+     *     the order is auto-promoted.
+     */
+    public function bulkMarkQurbaniItemsDelivered(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            // Authorisation here is per-item — every line item must have
+            // qurbani_assigned_rider_user_id == $user->id (verified below).
+            // We deliberately do NOT require access_qurbani_mode because
+            // that permission is for the Qurbani dispatch screens, not for
+            // riders confirming their own deliveries. Pattern matches
+            // markOrderDelivered() for regular orders, which also relies
+            // solely on rider-of-record auth.
+            //
+            // The qurbani_rider_delivered_enabled config used to gate this
+            // endpoint, but we've decoupled it: the toggle now strictly
+            // controls whether regular orders are HIDDEN in rider mode
+            // (see RiderTabs in mobile nav). Mark-delivered must work
+            // regardless of toggle state so admins can test the flow off
+            // season — the per-item assigned-rider check is the real gate.
+
+            $validated = $request->validate([
+                'line_item_ids' => 'required|array|min:1',
+                'line_item_ids.*' => 'required|integer',
+                'latitude' => 'nullable|numeric',
+                'longitude' => 'nullable|numeric',
+            ]);
+
+            // Authorisation: every line item must be assigned to the caller.
+            $items = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])->get();
+            if ($items->isEmpty()) {
+                return response()->json(['success' => false, 'message' => 'No items found'], 404);
+            }
+            foreach ($items as $li) {
+                if ((int) $li->qurbani_assigned_rider_user_id !== (int) $user->id) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Line item #{$li->id} is not assigned to you",
+                    ], 403);
+                }
+            }
+
+            $now = now();
+            $updated = \App\Models\CRM\OrderLineItemModel::whereIn('id', $validated['line_item_ids'])
+                ->update([
+                    'qurbani_item_status' => 'delivered',
+                    'qurbani_status_updated_at' => $now,
+                    'qurbani_status_updated_by' => $user->id,
+                    'updated_by' => $user->id,
+                ]);
+
+            // Auto-promote: if ALL line items in any of the affected orders
+            // are now qurbani_item_status='delivered', bump the parent
+            // order_status to 'delivered' too. The order's own ledger
+            // posting flow already skips Qurbani orders via
+            // hasPreReceivedPayments() so this won't pollute the rider
+            // ledger pending list.
+            $autoPromoted = [];
+            $affectedOrderIds = $items->pluck('order_id')->unique();
+            foreach ($affectedOrderIds as $oid) {
+                $order = \App\Models\CRM\OrderModel::with('customer')->find($oid);
+                if (!$order) continue;
+                if (in_array($order->order_status, ['delivered', 'completed', 'cancelled'])) continue;
+
+                $totalCount = \App\Models\CRM\OrderLineItemModel::where('order_id', $oid)->count();
+                if ($totalCount === 0) continue;
+                $deliveredCount = \App\Models\CRM\OrderLineItemModel::where('order_id', $oid)
+                    ->where('qurbani_item_status', 'delivered')
+                    ->count();
+                if ($deliveredCount < $totalCount) continue;
+
+                try {
+                    $note = "Auto-promoted: all {$totalCount} qurbani items delivered by rider {$user->fullname}";
+                    if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
+                        $note .= " (GPS: {$validated['latitude']}, {$validated['longitude']})";
+                    }
+                    if ($order->changeStatus('delivered', $note, $user->id)) {
+                        $autoPromoted[] = $order->order_number;
+                        if (!empty($validated['latitude']) && !empty($validated['longitude'])) {
+                            \DB::table('t_crm_order_status_history')
+                                ->where('order_id', $order->id)
+                                ->where('status_code', 'delivered')
+                                ->where('is_current', 1)
+                                ->update([
+                                    'delivery_latitude'  => $validated['latitude'],
+                                    'delivery_longitude' => $validated['longitude'],
+                                ]);
+                        }
+                    }
+                } catch (\Exception $e) {
+                    // Don't fail the line-item delivery if promotion fails;
+                    // the items are already marked delivered and the next
+                    // mark-delivered call will retry promotion.
+                    \Log::warning('Qurbani auto-promote failed', [
+                        'order_id' => $oid, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => "Marked {$updated} item(s) as delivered",
+                'updated_count' => $updated,
+                'auto_promoted_orders' => $autoPromoted,
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
+        } catch (\Exception $e) {
+            \Log::error('Failed to bulk mark qurbani items delivered', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Single-item rider mark-delivered (thin wrapper).
+     *
+     * POST /api/rider/qurbani/line-items/{lineItemId}/mark-delivered
+     */
+    public function markQurbaniItemDelivered(Request $request, $lineItemId)
+    {
+        $request->merge(['line_item_ids' => [(int) $lineItemId]]);
+        return $this->bulkMarkQurbaniItemsDelivered($request);
+    }
+
+    /**
+     * Lightweight line-items endpoint for the region-view / all-orders view.
+     * Returns a flat array of qurbani line items with minimal embedded order
+     * context. Skips the heavy per-order processing (discounts, paid stamps,
+     * merged-customer lookups, payment history) that the invoice view needs.
+     *
+     * GET /api/rider/qurbani/line-items
+     *   ?qurbani_region=...
+     *   &qurbani_day[]=Day 1&qurbani_day[]=Day 2
+     *   &qurbani_delivery_type[]=Delivery
+     *   &status=open
+     */
+    public function getQurbaniLineItems(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'No permission'], 403);
+            }
+
+            // Step 1: pre-resolve qurbani order IDs using two cheap, well-indexed
+            // queries. This mirrors getQurbaniOpenOrders so we get the same
+            // qurbani-order detection behaviour AND avoid the slow full-scan
+            // pattern (whereNotNull(qurbani_day) OR ... OR LOWER(attribute_1))
+            // which the optimizer can't use any index for.
+            $qurbaniOrderIds = \DB::table('t_crm_prod_order')
+                ->whereNotIn('order_status', ['cancelled', 'refunded'])
+                ->where(function ($q) {
+                    $q->where('external_source', '!=', 'shopify')->orWhereNull('external_source');
+                })
+                ->where(function ($q) {
+                    $q->whereNotNull('qurbani_day')
+                      ->orWhereNotNull('qurbani_slot')
+                      ->orWhereNotNull('qurbani_region')
+                      ->orWhereNotNull('qurbani_delivery_type');
+                })
+                ->pluck('id');
+
+            $lineItemQurbaniIds = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->whereRaw("LOWER(p.attribute_1) = 'qurbani'")
+                ->whereNotIn('o.order_status', ['cancelled', 'refunded'])
+                ->where(function ($q) {
+                    $q->where('o.external_source', '!=', 'shopify')->orWhereNull('o.external_source');
+                })
+                ->where('o.order_date', '>=', \Carbon\Carbon::now()->subDays(60))
+                ->distinct()
+                ->pluck('li.order_id');
+
+            $allQurbaniIds = $qurbaniOrderIds->merge($lineItemQurbaniIds)->unique()->values();
+
+            if ($allQurbaniIds->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'items' => [],
+                    'summary' => ['total' => 0, 'open' => 0, 'delivered' => 0, 'in_progress' => 0],
+                ]);
+            }
+
+            // Step 2: load line items only for those orders. Now we have a
+            // bounded, indexed lookup (whereIn('li.order_id', ...)) instead
+            // of a full-scan OR.
+            $query = \DB::table('t_crm_prod_order_line_item as li')
+                ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
+                ->join('t_crm_prod_product as p', 'li.product_id', '=', 'p.id')
+                ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
+                ->whereIn('li.order_id', $allQurbaniIds)
+                ->select([
+                    'li.id',
+                    'li.order_id',
+                    'li.name',
+                    'li.quantity',
+                    'li.product_id',
+                    'li.qurbani_day',
+                    'li.qurbani_slot',
+                    'li.qurbani_region',
+                    'li.qurbani_sub_region',
+                    'li.qurbani_delivery_type',
+                    'li.qurbani_type',
+                    'li.qurbani_paya',
+                    'li.qurbani_item_status',
+                    'li.qurbani_assigned_rider_user_id',
+                    'li.qurbani_status_updated_at',
+                    'li.instructions',
+                    'p.attribute_2 as category_level_2',
+                    'p.attribute_1 as attribute_1',
+                    'o.order_number',
+                    'o.order_status',
+                    'o.order_date',
+                    'o.total_price',
+                    'o.name as order_name',
+                    'o.address_first_name',
+                    'o.address_last_name',
+                    'o.address_phone',
+                    'o.address_line1',
+                    'o.address_line2',
+                    'o.address_city',
+                    'c.first_name as cust_first_name',
+                    'c.last_name as cust_last_name',
+                    'c.phone_original as cust_phone',
+                    'c.latitude as cust_lat',
+                    'c.longitude as cust_lng',
+                ]);
+
+            // Filter line items to only qurbani-flagged rows. An order can
+            // contain non-qurbani line items (rare but possible) and we don't
+            // want them to clutter the All Orders / region views. A line item
+            // is qurbani if EITHER its qurbani_* fields are set OR its
+            // product is tagged as qurbani.
+            $query->where(function ($q) {
+                $q->whereNotNull('li.qurbani_day')
+                  ->orWhereNotNull('li.qurbani_slot')
+                  ->orWhereNotNull('li.qurbani_region')
+                  ->orWhereNotNull('li.qurbani_delivery_type')
+                  ->orWhereRaw("LOWER(p.attribute_1) = 'qurbani'");
+            });
+
+            // Apply Qurbani-specific filters (multi-select arrays + scalars).
+            foreach (['qurbani_day', 'qurbani_slot', 'qurbani_region', 'qurbani_sub_region', 'qurbani_delivery_type', 'qurbani_type', 'qurbani_paya'] as $field) {
+                $raw = $request->input($field);
+                if ($raw === null || $raw === '') continue;
+                $values = is_array($raw) ? $raw : [$raw];
+                $values = array_values(array_filter(array_map('trim', $values), fn($v) => $v !== ''));
+                if (empty($values)) continue;
+                $query->whereIn("li.{$field}", $values);
+            }
+
+            // Status filter on qurbani_item_status (not order_status)
+            if ($request->input('status')) {
+                $statusVal = $request->input('status');
+                if ($statusVal === 'open') {
+                    $query->where(function ($q) {
+                        $q->whereNull('li.qurbani_item_status')
+                          ->orWhere('li.qurbani_item_status', '')
+                          ->orWhere('li.qurbani_item_status', 'open');
+                    });
+                } else {
+                    $query->where('li.qurbani_item_status', $statusVal);
+                }
+            }
+
+            $rows = $query->orderBy('o.order_date', 'desc')
+                          ->orderBy('li.id', 'asc')
+                          ->get();
+
+            // Resolve per-item rider names in one query
+            $riderIds = $rows->pluck('qurbani_assigned_rider_user_id')->filter()->unique();
+            $riderMap = [];
+            if ($riderIds->isNotEmpty()) {
+                $riderMap = \DB::table('t_sys_user')
+                    ->whereIn('id', $riderIds->values())
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+            }
+
+            // Compute bundles via QurbaniBundleService
+            $bundleInputs = $rows->map(fn($r) => [
+                'id' => $r->id,
+                'order_id' => $r->order_id,
+                'quantity' => $r->quantity,
+                'qurbani_day' => $r->qurbani_day,
+                'qurbani_slot' => $r->qurbani_slot,
+                'qurbani_delivery_type' => $r->qurbani_delivery_type,
+                'category_level_2' => $r->category_level_2,
+                'product_id' => $r->product_id,
+            ])->toArray();
+            $bundleMap = (new \App\Services\QurbaniBundleService())->computeBundles($bundleInputs);
+
+            // Format response
+            $items = $rows->map(function ($r) use ($riderMap, $bundleMap) {
+                $customerName = $r->order_name ?? 'N/A';
+                if ($customerName === 'N/A' || $customerName === null) {
+                    $customerName = trim(($r->address_first_name ?? '') . ' ' . ($r->address_last_name ?? ''));
+                }
+                if ((!$customerName || $customerName === 'N/A') && ($r->cust_first_name || $r->cust_last_name)) {
+                    $customerName = trim(($r->cust_first_name ?? '') . ' ' . ($r->cust_last_name ?? ''));
+                }
+
+                $b = $bundleMap[$r->id] ?? [];
+
+                return [
+                    'id' => $r->id,
+                    'order_id' => $r->order_id,
+                    'order_number' => $r->order_number ?? 'NF-' . str_pad($r->order_id, 4, '0', STR_PAD_LEFT),
+                    'order_status' => $r->order_status,
+                    'customer_name' => $customerName ?: 'Unknown',
+                    'customer_phone' => $r->address_phone ?? $r->cust_phone ?? null,
+                    'customer_address' => trim(implode(', ', array_filter([$r->address_line1, $r->address_line2, $r->address_city]))),
+                    'name' => $r->name,
+                    'quantity' => (float) $r->quantity,
+                    'category_level_2' => $r->category_level_2,
+                    'qurbani_day' => $r->qurbani_day,
+                    'qurbani_slot' => $r->qurbani_slot,
+                    'qurbani_region' => $r->qurbani_region,
+                    'qurbani_sub_region' => $r->qurbani_sub_region,
+                    'qurbani_delivery_type' => $r->qurbani_delivery_type,
+                    'qurbani_type' => $r->qurbani_type,
+                    'qurbani_paya' => $r->qurbani_paya,
+                    'qurbani_item_status' => $r->qurbani_item_status,
+                    'qurbani_assigned_rider_user_id' => $r->qurbani_assigned_rider_user_id,
+                    'qurbani_assigned_rider_name' => $riderMap[$r->qurbani_assigned_rider_user_id] ?? null,
+                    'qurbani_status_updated_at' => $r->qurbani_status_updated_at,
+                    'instructions' => $r->instructions,
+                    'bundle_key' => $b['bundle_key'] ?? null,
+                    'bundle_size' => $b['bundle_size'] ?? null,
+                    'bundle_position_start' => $b['bundle_position_start'] ?? null,
+                    'bundle_position_end' => $b['bundle_position_end'] ?? null,
+                    'bundle_item_count' => $b['bundle_item_count'] ?? null,
+                ];
+            })->values();
+
+            // Summary counts
+            $total = $items->count();
+            $open = $items->filter(fn($i) => !$i['qurbani_item_status'] || $i['qurbani_item_status'] === 'open')->count();
+            $delivered = $items->filter(fn($i) => $i['qurbani_item_status'] === 'delivered')->count();
+
+            return response()->json([
+                'success' => true,
+                'items' => $items,
+                'summary' => [
+                    'total' => $total,
+                    'open' => $open,
+                    'delivered' => $delivered,
+                    'in_progress' => $total - $open - $delivered,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to get qurbani line items', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Failed: ' . $e->getMessage()], 500);
         }
     }
 

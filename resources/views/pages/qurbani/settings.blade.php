@@ -315,8 +315,15 @@ function saveCancellationCode() {
 }
 
 // NOTE: Order here also drives the render sequence on the settings page.
-// qurbani_type / qurbani_paya are simple flat dropdowns (no parent) so
-// they slot in with the same renderer used for qurbani_delivery_type.
+// qurbani_type / qurbani_paya / qurbani_item_status are simple flat dropdowns
+// (no parent) so they slot in with the same renderer used for qurbani_delivery_type.
+//
+// qurbani_item_status drives the per-line-item lifecycle in the mobile region
+// view (Open / Slaughtered / Out for Delivery / Delivered). The mobile client
+// has a hard rule: NULL/empty status sorts to the very top regardless of
+// display_order, and the option_value 'delivered' sorts to the very bottom.
+// Renaming labels here is fine; the slug 'delivered' is what triggers the
+// "always last" behaviour.
 const FIELD_CONFIG = {
     qurbani_day: { label: 'Qurbani Day', icon: '📅', description: 'Day options for qurbani delivery' },
     qurbani_slot: { label: 'Qurbani Slot', icon: '🕐', description: 'Time slots (assigned per day)' },
@@ -325,11 +332,13 @@ const FIELD_CONFIG = {
     qurbani_delivery_type: { label: 'Delivery Type', icon: '🚚', description: 'Delivery or self collection' },
     qurbani_type: { label: 'Qurbani Type', icon: '🐐', description: 'Standard, custom, or your own values' },
     qurbani_paya: { label: 'Paya', icon: '🦵', description: 'Paya handling (standard, bhunnay paye, ...)' },
+    qurbani_item_status: { label: 'Item Status', icon: '🏷️', description: 'Per-line-item lifecycle (open → delivered). The slug "delivered" always renders last in the mobile region view.' },
 };
 const FIELD_LABELS = {
     qurbani_day: 'Day', qurbani_slot: 'Slot', qurbani_region: 'Region',
     qurbani_sub_region: 'Sub Region', qurbani_delivery_type: 'Type',
     qurbani_type: 'Qurbani Type', qurbani_paya: 'Paya',
+    qurbani_item_status: 'Item Status',
 };
 
 let allOptions = {};

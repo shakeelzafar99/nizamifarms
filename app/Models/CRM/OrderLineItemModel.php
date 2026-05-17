@@ -39,6 +39,10 @@ class OrderLineItemModel extends BaseModel
         'qurbani_delivery_type',
         'qurbani_type',
         'qurbani_paya',
+        'qurbani_item_status',
+        'qurbani_assigned_rider_user_id',
+        'qurbani_status_updated_at',
+        'qurbani_status_updated_by',
         'instructions',
         'created_by',
         'updated_by'

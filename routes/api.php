@@ -251,10 +251,28 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Qurbani Mode
     Route::get('/qurbani/open-orders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOpenOrders']);
+    Route::get('/qurbani/line-items', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniLineItems']);
     Route::get('/qurbani/field-options', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniFieldOptions']);
     // Booked summary + targets (soft-limit guidance on new-order form).
     Route::get('/qurbani/booked-stats', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniBookedStats']);
     Route::put('/orders/{id}/qurbani-details', [\App\Http\Controllers\API\RiderController::class, 'updateQurbaniDetails']);
+    // May-2026: Per-line-item Qurbani status & rider assignment.
+    // Bulk endpoints take an explicit `line_item_ids` array (no order_id in
+    // the URL) so callers can never accidentally cascade to all items in
+    // an order — that was the long-standing Mark-as-Prepared bug.
+    Route::post('/qurbani/line-items/bulk-update-status', [\App\Http\Controllers\API\RiderController::class, 'bulkUpdateQurbaniItemStatus']);
+    Route::post('/qurbani/line-items/bulk-assign-rider', [\App\Http\Controllers\API\RiderController::class, 'bulkAssignQurbaniRider']);
+    Route::put('/qurbani/line-items/{lineItemId}/status', [\App\Http\Controllers\API\RiderController::class, 'updateQurbaniItemStatus']);
+    Route::put('/qurbani/line-items/{lineItemId}/rider', [\App\Http\Controllers\API\RiderController::class, 'assignQurbaniRider']);
+    // May-2026: Rider-mode Qurbani delivery feed + per-item mark-delivered.
+    // The mark-delivered endpoints set qurbani_item_status='delivered' (NOT
+    // order_status) so the rider can mark items spanning different
+    // days/slots independently. Auto-promotes parent order_status only
+    // when ALL items in the order are delivered, and that promotion's
+    // ledger guard skips Qurbani via OrderModel::hasPreReceivedPayments().
+    Route::get('/qurbani/my-deliveries', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderDeliveries']);
+    Route::post('/qurbani/line-items/bulk-mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'bulkMarkQurbaniItemsDelivered']);
+    Route::post('/qurbani/line-items/{lineItemId}/mark-delivered', [\App\Http\Controllers\API\RiderController::class, 'markQurbaniItemDelivered']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     Route::get('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'getOrderPayments']);
     Route::post('/orders/{id}/payments', [\App\Http\Controllers\API\RiderController::class, 'addOrderPayment']);

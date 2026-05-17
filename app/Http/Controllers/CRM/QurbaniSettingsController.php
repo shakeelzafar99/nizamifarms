@@ -48,7 +48,7 @@ class QurbaniSettingsController extends Controller
     public function storeOption(Request $request)
     {
         $validated = $request->validate([
-            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_sub_region,qurbani_delivery_type,qurbani_type,qurbani_paya',
+            'field_name' => 'required|string|in:qurbani_day,qurbani_slot,qurbani_region,qurbani_sub_region,qurbani_delivery_type,qurbani_type,qurbani_paya,qurbani_item_status',
             'option_value' => 'required|string|max:100',
             'parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',
             'delivery_type_parent_id' => 'nullable|integer|exists:t_crm_qurbani_field_options,id',

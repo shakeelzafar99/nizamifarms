@@ -81,9 +81,73 @@ function closeNewRequestModal() {
     }
 }
 
+// Quick-launch helper that opens the New Request modal pre-filled for a
+// Qurbani expense — Business Unit = NF (id 1), Request Type = Qurbani,
+// Pay From Account = Qurbani Online. Saves finance users from clicking
+// the same dropdowns every time during the Qurbani season.
+//
+// Order of operations matters here:
+//   1. Open the modal (renders all dropdowns).
+//   2. Force BU to NF (id=1) and trigger onBusinessUnitChanged so the
+//      Request Type list filters down to NF-eligible categories.
+//   3. Select the qurbani category by data-code and call
+//      handleQuickCategoryChange — that's what reveals the Pay From
+//      and Expense Type fields and runs filterPaymentSourcesByBU.
+//   4. Finally, with Pay From visible, find the QURBANI_ONLINE option
+//      and select it.
+function openQurbaniExpenseModal() {
+    openNewRequestModal();
+
+    // Defer a tick so the DOM finishes rendering / the modal animation
+    // doesn't interfere with focus, then walk the dropdown chain.
+    setTimeout(function() {
+        // Step 1: Business Unit = NF (1). The select might not exist if
+        // the user only has one BU in scope (the field is conditionally
+        // rendered). In that case BU is implicitly NF and we skip.
+        var buSelect = document.getElementById('quick_business_unit');
+        if (buSelect) {
+            var nfOption = Array.from(buSelect.options).find(function(o){return o.value === '1';});
+            if (nfOption) {
+                buSelect.value = '1';
+                if (typeof onBusinessUnitChanged === 'function') onBusinessUnitChanged();
+            }
+        }
+
+        // Step 2: Request Type = qurbani (matched on data-code).
+        var catSelect = document.getElementById('quick_category_id');
+        if (catSelect) {
+            var qOpt = Array.from(catSelect.options).find(function(o){
+                return (o.dataset && o.dataset.code === 'qurbani') && !o.disabled;
+            });
+            if (qOpt) {
+                catSelect.value = qOpt.value;
+                if (typeof handleQuickCategoryChange === 'function') handleQuickCategoryChange();
+            } else {
+                console.warn('[QurbaniExpense] qurbani category not found in dropdown — was the migration run?');
+            }
+        }
+
+        // Step 3: Pay From Account = QURBANI_ONLINE. handleQuickCategoryChange
+        // already revealed the field and ran filterPaymentSourcesByBU; we
+        // just need to pick the right option among the visible ones.
+        var paySelect = document.getElementById('quick_payment_source');
+        if (paySelect) {
+            var qAcct = Array.from(paySelect.options).find(function(o){
+                return o.dataset && o.dataset.accountCode === 'QURBANI_ONLINE' && !o.disabled;
+            });
+            if (qAcct) {
+                paySelect.value = qAcct.value;
+            } else {
+                console.warn('[QurbaniExpense] QURBANI_ONLINE account not visible — falling back to default');
+            }
+        }
+    }, 50);
+}
+
 // Make globally available
 window.openNewRequestModal = openNewRequestModal;
 window.closeNewRequestModal = closeNewRequestModal;
+window.openQurbaniExpenseModal = openQurbaniExpenseModal;
 
 console.log('[NewRequest] Functions defined and ready');
 
@@ -94,9 +158,20 @@ document.addEventListener('DOMContentLoaded', function() {
         newRequestBtn.addEventListener('click', openNewRequestModal);
         console.log('[NewRequest] Click handler attached');
     }
+    const qurbaniExpenseBtn = document.getElementById('qurbaniExpenseBtn');
+    if (qurbaniExpenseBtn) {
+        qurbaniExpenseBtn.addEventListener('click', openQurbaniExpenseModal);
+        console.log('[QurbaniExpense] Quick-launch handler attached');
+    }
     // Auto-open new request modal if ?auto_new=1 is in URL (shortcut from sidebar)
     if (new URLSearchParams(window.location.search).get('auto_new') === '1') {
         setTimeout(function() { openNewRequestModal(); }, 300);
+        window.history.replaceState({}, '', window.location.pathname);
+    }
+    // Same shortcut for Qurbani: ?auto_qurbani=1 lands users straight on
+    // the pre-filled form (useful for sidebar / dashboard cards later).
+    if (new URLSearchParams(window.location.search).get('auto_qurbani') === '1') {
+        setTimeout(function() { openQurbaniExpenseModal(); }, 300);
         window.history.replaceState({}, '', window.location.pathname);
     }
 });
@@ -104,16 +179,41 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <div class="container-fluid px-6 py-6">
     <!-- Page Header -->
+    @php
+        // Detect whether the Qurbani request type is configured + active.
+        // Drives the "Qurbani Expense" quick button next to "New Request".
+        // The button pre-fills Request Type=Qurbani + Pay From=Qurbani Online
+        // so finance users don't have to walk through the dropdowns every
+        // time during the Qurbani season.
+        try {
+            $hasQurbaniRequestType = \App\Models\Request\RequestCategoryModel::where('category_code', 'qurbani')
+                ->where('is_active', 1)
+                ->where('show_in_expenses', 1)
+                ->exists();
+        } catch (\Exception $e) {
+            $hasQurbaniRequestType = false;
+        }
+    @endphp
     <div class="flex items-center justify-between mb-6">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">💰 Expense Management</h1>
             <p class="text-sm text-gray-600 mt-1">Track all expenses and manage requests</p>
         </div>
-        <button id="newRequestBtn" type="button" role="button"
-                class="px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 hover:text-blue-700 text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2">
-            <span class="text-lg">➕</span>
-            <span class="font-bold">New Request</span>
-        </button>
+        <div class="flex items-center gap-2">
+            @if($hasQurbaniRequestType)
+            <button id="qurbaniExpenseBtn" type="button" role="button"
+                    class="px-4 py-2 bg-amber-50 border border-amber-500 text-amber-800 hover:bg-amber-100 hover:text-amber-900 text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2"
+                    title="Quick request: Request Type set to Qurbani, Pay From set to Qurbani Online">
+                <span class="text-lg">🐐</span>
+                <span class="font-bold">Qurbani Expense</span>
+            </button>
+            @endif
+            <button id="newRequestBtn" type="button" role="button"
+                    class="px-4 py-2 bg-white border border-blue-600 text-blue-600 hover:bg-blue-50 hover:text-blue-700 text-sm font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2">
+                <span class="text-lg">➕</span>
+                <span class="font-bold">New Request</span>
+            </button>
+        </div>
     </div>
 
     <!-- KPI Cards - Redesigned Layout: 4 cards (2x2) on left, 1 large card on right -->
