@@ -53,6 +53,8 @@
 .qo-meta-tag.paya { background: #f0f9ff; border-color: #bae6fd; color: #0c4a6e; }
 
 .qo-rider-chip { display: inline-flex; align-items: center; gap: 4px; background: #dbeafe; color: #1e40af; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+/* Phase C — GPS health pill on order cards (small, sits next to the rider chip). */
+.qo-gps-chip { display: inline-flex; align-items: center; gap: 3px; border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
 .qo-eta-chip { display: inline-flex; align-items: center; gap: 4px; background: #fef3c7; color: #92400e; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
 
 .qo-print-state { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
@@ -118,6 +120,9 @@
             <p style="font-size: 13px; color: #6b7280; margin: 4px 0 0;">Region-wise dispatch view &middot; box label printing &middot; per-item actions</p>
         </div>
         <div style="display: flex; gap: 8px;">
+            <button class="qo-toolbar-btn secondary" onclick="openRidersMap()" title="Open the live dispatch map for any rider">
+                🗺️ Riders Map
+            </button>
             <button class="qo-toolbar-btn secondary" onclick="openPrintModal()" title="Open print picker (filtered)">
                 Print Box Labels
             </button>
@@ -289,6 +294,53 @@
     </div>
 </div>
 <style>@keyframes qoSpin { to { transform: rotate(360deg); } }</style>
+
+{{-- Phase C2 (May-2026) — Dispatch map modal. Lazy-loads Google Maps
+     JS only on first open so the orders page stays fast. The list on
+     the left is built from the rider dropdown options; clicking a
+     rider fetches /qurbani/api/riders/{id}/dispatch-map and pins the
+     OFD bundles + delivered + rider GPS + base. Auto-refreshes the
+     rider's GPS every 30s while the modal is open. --}}
+{{-- Phase 2 (May-2026) — Timeline modal for a single Qurbani line item.
+     Slides in from the right with status events, rider + dispatch info,
+     current ETA, delay alert (when a prior stop slipped), and today's
+     WhatsApp activity. Loads on demand via openTimeline(lineItemId). --}}
+<div id="qoTimelineOverlay" onclick="closeTimeline()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;"></div>
+<div id="qoTimelineModal" style="display:none;position:fixed;top:0;right:0;bottom:0;width:min(480px, 95vw);background:#fff;box-shadow:-8px 0 24px rgba(0,0,0,0.18);z-index:10001;overflow:hidden;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e5e7eb;background:#fef3c7;">
+        <div style="min-width:0;">
+            <h2 style="margin:0;font-size:17px;font-weight:700;color:#1f2937;">🕒 Timeline</h2>
+            <p id="qoTimelineSubtitle" style="margin:3px 0 0;font-size:12px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Loading…</p>
+        </div>
+        <button onclick="closeTimeline()" style="background:none;border:none;font-size:24px;color:#6b7280;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div id="qoTimelineBody" style="flex:1;overflow-y:auto;padding:14px 18px;background:#fff;">
+        <div style="text-align:center;padding:40px 0;color:#9ca3af;font-size:13px;">Loading…</div>
+    </div>
+</div>
+
+<div id="qoMapOverlay" onclick="closeRidersMap()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9998;"></div>
+<div id="qoMapModal" style="display:none;position:fixed;top:3vh;left:3vw;right:3vw;bottom:3vh;background:#fff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);z-index:9999;overflow:hidden;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #e5e7eb;">
+        <div>
+            <h2 style="margin:0;font-size:18px;font-weight:700;">🗺️ Dispatch map</h2>
+            <p id="qoMapSubtitle" style="margin:3px 0 0;font-size:12px;color:#6b7280;">Pick a rider on the left to plot their current dispatch.</p>
+        </div>
+        <button onclick="closeRidersMap()" style="background:none;border:none;font-size:22px;color:#6b7280;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="display:flex;flex:1;min-height:0;">
+        <div id="qoMapRidersList" style="width:240px;flex-shrink:0;border-right:1px solid #e5e7eb;overflow-y:auto;padding:8px 6px;background:#f9fafb;">
+            <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;padding:6px 8px;letter-spacing:.4px;">Riders with dispatch</div>
+            <div id="qoMapRidersInner"><span style="font-size:13px;color:#9ca3af;padding:6px 8px;display:block;">Loading...</span></div>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
+            <div id="qoMapLegend" style="display:flex;gap:14px;padding:8px 14px;border-bottom:1px solid #e5e7eb;background:#fff;font-size:12px;color:#374151;flex-wrap:wrap;align-items:center;">
+                <span>📍 Tap a rider to load their dispatch</span>
+            </div>
+            <div id="qoMapContainer" style="flex:1;min-height:300px;background:#f3f4f6;"></div>
+        </div>
+    </div>
+</div>
 
 @endsection
 @push('custom_js')
@@ -746,7 +798,19 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         if (it.qurbani_delivery_type) html += '<span class="qo-meta-tag delivery-type">🚚 ' + esc(it.qurbani_delivery_type) + '</span>';
         if (it.qurbani_type) html += '<span class="qo-meta-tag q-type">' + esc(it.qurbani_type) + '</span>';
         if (it.qurbani_paya) html += '<span class="qo-meta-tag paya">Paya: ' + esc(it.qurbani_paya) + '</span>';
-        if (it.assigned_rider_name) html += '<span class="qo-rider-chip">🛵 ' + esc(it.assigned_rider_name) + '</span>';
+        if (it.assigned_rider_name) {
+            html += '<span class="qo-rider-chip">🛵 ' + esc(it.assigned_rider_name) + '</span>';
+            // Phase C (May-2026) — small GPS health pill next to the
+            // rider chip. Only rendered when we have an assignment.
+            if (it.assigned_rider_gps) {
+                const g = it.assigned_rider_gps;
+                let bg = '#f3f4f6', fg = '#6b7280', icon = '⚫', label = 'No GPS';
+                if (g.status === 'live')      { bg = '#d1fae5'; fg = '#065f46'; icon = '🟢'; label = 'Live'; }
+                else if (g.status === 'recent') { bg = '#fef3c7'; fg = '#92400e'; icon = '🟡'; label = g.age_minutes != null ? (g.age_minutes + 'm') : 'Recent'; }
+                else if (g.status === 'stale') { bg = '#fee2e2'; fg = '#991b1b'; icon = '🔴'; label = 'Stale'; }
+                html += '<span class="qo-gps-chip" style="background:' + bg + ';color:' + fg + ';" title="GPS ' + esc(label) + (g.captured_at ? ' (last seen ' + esc(g.captured_at) + ')' : '') + '">' + icon + ' ' + esc(label) + '</span>';
+            }
+        }
         if (it.qurbani_estimated_delivery_at) {
             const eta = new Date(it.qurbani_estimated_delivery_at);
             html += '<span class="qo-eta-chip">ETA ' + eta.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) + '</span>';
@@ -780,6 +844,13 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
         if (it.has_verified_location && it.cust_lat && it.cust_lng) {
             html += '<a href="https://www.google.com/maps/search/?api=1&query=' + it.cust_lat + ',' + it.cust_lng + '" target="_blank" class="qo-action-btn">📍 Map</a>';
         }
+        // Phase 2 (May-2026) — Timeline button. Always visible since
+        // the timeline data exists from order placement onwards (even
+        // before slaughter). One click loads everything for THIS line
+        // item: status events, rider/dispatch, current ETA, delay
+        // alert (when a prior stop slipped), and today's WhatsApp
+        // activity for this customer.
+        html += '<button class="qo-action-btn" onclick="openTimeline(' + it.line_item_id + ')" title="See status, rider, ETA, delay alerts and today\'s WhatsApp activity">🕒 Timeline</button>';
         html += '</div>';
 
         html += '</div>';
@@ -1074,7 +1145,19 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
             '.info-grid { width: 100%; border-collapse: collapse; margin-top: 2mm; border: 2.5pt solid #111; flex: 1 1 auto; }' +
             '.info-grid td { border: 1pt solid #444; padding: 5mm 6mm; vertical-align: middle; }' +
             '.cell-label { font-size: 10pt; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.5pt; margin-bottom: 1.5mm; }' +
-            '.cell-value { font-size: 18pt; font-weight: 700; color: #111; line-height: 1.2; word-wrap: break-word; }' +
+            '.cell-value { font-size: 20pt; font-weight: 700; color: #111; line-height: 1.2; word-wrap: break-word; }' +
+            // Auto-fit tiers — applied per-cell by the JS helper fitClass()
+            // based on text length. Short text (Day 3, Washed) gets a much
+            // bigger font so the cell space is actually used; long text
+            // stays smaller so it doesn't wrap into 4 lines and overflow
+            // the cell. Tiers were bumped one notch up (vs original) so
+            // "Day 3" feels edge-to-edge instead of floating in the cell.
+            // The "lg" + "xl" classes are explicit overrides for the two
+            // visual hero values (No. of Boxes, Customer Name).
+            '.cell-value.cv-tiny  { font-size: 48pt; line-height: 1.05; }' +
+            '.cell-value.cv-short { font-size: 34pt; line-height: 1.1; }' +
+            '.cell-value.cv-mid   { font-size: 26pt; line-height: 1.15; }' +
+            '.cell-value.cv-long  { font-size: 15pt; line-height: 1.25; }' +
             '.cell-value.lg { font-size: 30pt; font-weight: 800; letter-spacing: -0.5pt; }' +
             '.cell-value.xl { font-size: 34pt; font-weight: 800; }' +
             // Footer — pinned to bottom by margin-top:auto on the flex column.
@@ -1098,24 +1181,75 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     //   • 3-column info grid: Order/Day/Region, Qurbani/Slot/Sub-Region,
     //     Delivery-Type/Trotters/No.-of-Boxes, Qurbani-Type + Instructions
     //   • Footer with phone + order number + print stamp
+    // Auto-fit helper — picks a font-size class based on text length so
+    // each cell value visually fills its cell. Tuned against the actual
+    // cell width (~60mm at 3-col layout) — sizes were bumped one tier
+    // higher across the board on user request so "Day 3" and similar
+    // short values feel edge-to-edge instead of floating in the cell:
+    //   ≤5   ("Day 3", "Yes")              → 48pt
+    //   ≤12  ("QUR26-169", "Delivery")     → 34pt
+    //   ≤22  ("Bahria Phase 8")            → 26pt
+    //   23-45                               → 20pt (default)
+    //   >45   (long instructions)          → 15pt
+    function fitClass(text) {
+        const t = String(text == null ? '' : text);
+        if (!t || t === '—') return 'cell-value';
+        const len = t.length;
+        if (len <= 5)  return 'cell-value cv-tiny';
+        if (len <= 12) return 'cell-value cv-short';
+        if (len <= 22) return 'cell-value cv-mid';
+        if (len > 45)  return 'cell-value cv-long';
+        return 'cell-value';
+    }
+
+    // Strips noise from the product name so the cell shows just the
+    // meat description, e.g.:
+    //   "Qurbani '26 - Goat (Bakra) Day 3 (Goat (Bakra))" + cat="Goat (Bakra)"
+    //     → "Goat (Bakra)"
+    // Three cleanups:
+    //   1) Drop the leading "Qurbani 'YY - " (any 1-2 digit year) — the
+    //      brand strip already says "Qurbani '26", so repeating it in
+    //      every cell wastes space.
+    //   2) Drop "Day N" embedded in the product name — there's already a
+    //      dedicated DAY cell on the label, so duplicating it in the
+    //      Qurbani cell is noise. Match patterns like "Day 3", " - Day 3",
+    //      " (Day 3)" anywhere in the name.
+    //   3) Don't append the category in parens if it's already part of
+    //      the product name (avoids the duplication seen earlier).
+    function cleanProductName(name, category) {
+        let t = String(name || '').trim();
+        t = t.replace(/^qurbani\s*['\u2018\u2019]?\s*\d{1,2}\s*-\s*/i, '');
+        // Strip embedded Day N — handles "- Day 3", "(Day 3)", " Day 3 ",
+        // and trailing/leading occurrences. Run twice in case of multiple.
+        t = t.replace(/[\s\-,]*\(?\s*day\s*\d+\s*\)?/gi, '').trim();
+        // Clean up double spaces and stray punctuation left behind.
+        t = t.replace(/\s+/g, ' ').replace(/\s*-\s*$/, '').trim();
+        const cat = String(category || '').trim();
+        if (cat && t.toLowerCase().indexOf(cat.toLowerCase()) === -1) {
+            t = t + ' (' + cat + ')';
+        }
+        return t || '—';
+    }
+
     function buildLabelHTML(l) {
         // Field mapping (left-side label → underlying data):
-        //   "Qurbani"      → product_name (e.g., "Goat (Bakra)")
+        //   "Qurbani"      → cleaned product_name (no "Qurbani '26 -" prefix,
+        //                    no duplicate category)
         //   "Qurbani Type" → qurbani_type (e.g., "Bakra Q-2")
         //   "Trotters"     → qurbani_paya (Yes/No / "Bhunnay Paaye")
-        //   "No. of Boxes" → "X of Y" so the cell mirrors the big block
+        //   "No. of Boxes" → "X/Y" — compact form for the cell
         const customerName = esc(l.customer_name || '—');
         const orderNo      = esc(l.order_number || '—');
         const day          = esc(l.qurbani_day || '—');
         const region       = esc(l.qurbani_region || '—');
-        const product      = esc((l.product_name || '') + (l.category_level_2 ? ' (' + l.category_level_2 + ')' : '')) || '—';
+        const product      = esc(cleanProductName(l.product_name, l.category_level_2));
         const slot         = esc(l.qurbani_slot || '—');
         const subRegion    = esc(l.qurbani_sub_region || '—');
         const delivery     = esc(l.qurbani_delivery_type || '—');
         const trotters     = esc(l.qurbani_paya || '—');
-        // Compact form ("1/2") for the small cell so it doesn\'t wrap on
+        // Compact form ("1/2") for the small cell so it doesn't wrap on
         // narrow A4 columns. The big box-number block at the top still
-        // uses the verbose "1 of 2" form because it\'s the visual hero.
+        // uses the verbose "1 of 2" form because it's the visual hero.
         const noOfBoxes    = l.position + '/' + l.bundle_size;
         const qurbaniType  = esc(l.qurbani_type || '—');
         const instructions = esc(l.instructions || '');
@@ -1143,32 +1277,39 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
                 '<div class="cell-value xl">' + customerName + '</div>' +
                 '</td></tr>';
 
-        // Row: Order No. | Day | Region
+        // Row: Order No. | Day | Region — fitClass() picks the font size
+        // tier so short values like "Day 3" really fill the cell, while
+        // long values fall back to the default size.
         html += '<tr>' +
-                '<td><div class="cell-label">Order No.</div><div class="cell-value">' + orderNo + '</div></td>' +
-                '<td><div class="cell-label">Day</div><div class="cell-value">' + day + '</div></td>' +
-                '<td><div class="cell-label">Region</div><div class="cell-value">' + region + '</div></td>' +
+                '<td><div class="cell-label">Order No.</div><div class="' + fitClass(l.order_number) + '">' + orderNo + '</div></td>' +
+                '<td><div class="cell-label">Day</div><div class="' + fitClass(l.qurbani_day) + '">' + day + '</div></td>' +
+                '<td><div class="cell-label">Region</div><div class="' + fitClass(l.qurbani_region) + '">' + region + '</div></td>' +
                 '</tr>';
 
-        // Row: Qurbani | Slot | Sub-Region
+        // Row: Qurbani | Slot | Sub-Region. Use the cleaned product name
+        // for fit calculation so the size tier reflects what's actually
+        // shown (not the long raw value with the "Qurbani '26 -" prefix).
+        const productLen = cleanProductName(l.product_name, l.category_level_2);
         html += '<tr>' +
-                '<td><div class="cell-label">Qurbani</div><div class="cell-value">' + product + '</div></td>' +
-                '<td><div class="cell-label">Slot</div><div class="cell-value">' + slot + '</div></td>' +
-                '<td><div class="cell-label">Sub-Region</div><div class="cell-value">' + subRegion + '</div></td>' +
+                '<td><div class="cell-label">Qurbani</div><div class="' + fitClass(productLen) + '">' + product + '</div></td>' +
+                '<td><div class="cell-label">Slot</div><div class="' + fitClass(l.qurbani_slot) + '">' + slot + '</div></td>' +
+                '<td><div class="cell-label">Sub-Region</div><div class="' + fitClass(l.qurbani_sub_region) + '">' + subRegion + '</div></td>' +
                 '</tr>';
 
-        // Row: Delivery / Self Collection | Trotters | No. of Boxes
+        // Row: Delivery / Self Collection | Trotters | No. of Boxes.
+        // No. of Boxes keeps the explicit "lg" override — it's the
+        // visual hero echoing the big block at the top.
         html += '<tr>' +
-                '<td><div class="cell-label">Delivery / Self Collection</div><div class="cell-value">' + delivery + '</div></td>' +
-                '<td><div class="cell-label">Trotters (Paya)</div><div class="cell-value">' + trotters + '</div></td>' +
+                '<td><div class="cell-label">Delivery / Self Collection</div><div class="' + fitClass(l.qurbani_delivery_type) + '">' + delivery + '</div></td>' +
+                '<td><div class="cell-label">Trotters (Paya)</div><div class="' + fitClass(l.qurbani_paya) + '">' + trotters + '</div></td>' +
                 '<td style="background:#fef3c7;"><div class="cell-label">No. of Boxes</div><div class="cell-value lg">' + noOfBoxes + '</div></td>' +
                 '</tr>';
 
         // Row: Qurbani Type | Instructions (spans 2 cols).
-        // Instructions are kept at 14pt because they can be a long
-        // sentence; bumping to 19pt risks overflow on multi-line text.
+        // Instructions stay capped at 14pt because they can be a long
+        // sentence; bumping higher risks overflow on multi-line text.
         html += '<tr>' +
-                '<td><div class="cell-label">Qurbani Type</div><div class="cell-value">' + qurbaniType + '</div></td>' +
+                '<td><div class="cell-label">Qurbani Type</div><div class="' + fitClass(l.qurbani_type) + '">' + qurbaniType + '</div></td>' +
                 '<td colspan="2"><div class="cell-label">Instructions</div><div class="cell-value" style="font-size:14pt;font-weight:600;line-height:1.3;">' + (instructions || '—') + '</div></td>' +
                 '</tr>';
 
@@ -1379,6 +1520,446 @@ window.QURBANI_ORDERS_BOOT = {!! json_encode($qurbaniOrdersBoot, JSON_HEX_TAG | 
     window.selectAllLabels = selectAllLabels;
     window.deselectAllLabels = deselectAllLabels;
     window.updatePrintCount = updatePrintCount;
+    window.openRidersMap = openRidersMap;
+    window.closeRidersMap = closeRidersMap;
+
+    // ===== Phase C2 (May-2026) — Riders Map modal =====================
+    // Lazy-loads the Google Maps JS API on first open. Same key as
+    // attendance/locations.blade.php and the new Qurbani settings card.
+    let _qoMap = null;
+    let _qoMapMarkers = []; // marker references so we can clear between rider switches
+    let _qoMapPoly = null;  // polyline (rider GPS → next OFD bundle)
+    let _qoMapBoundsLast = null;
+    let _qoMapActiveRider = null;
+    let _qoMapRefreshTimer = null;
+
+    function ensureQoGoogleMaps(cb) {
+        if (typeof google !== 'undefined' && typeof google.maps !== 'undefined') return cb();
+        if (window._qoMapsLoading) {
+            const prev = window._qoMapsLoading;
+            window._qoMapsLoading = function() { prev(); cb(); };
+            return;
+        }
+        window._qoMapsLoading = cb;
+        const script = document.createElement('script');
+        const apiKey = 'AIzaSyBFCBj7ebflrliC1pHq0XhsjuW18Q3iElk';
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+        script.async = true; script.defer = true;
+        script.onload = function() {
+            const fn = window._qoMapsLoading; window._qoMapsLoading = null;
+            if (typeof fn === 'function') fn();
+        };
+        script.onerror = function() {
+            toast('Failed to load Google Maps — check internet / API key.', 'error');
+            window._qoMapsLoading = null;
+        };
+        window.gm_authFailure = function() { toast('Google Maps API key rejected. Contact admin.', 'error'); };
+        document.head.appendChild(script);
+    }
+
+    function openRidersMap() {
+        document.getElementById('qoMapOverlay').style.display = 'block';
+        const modal = document.getElementById('qoMapModal');
+        modal.style.display = 'flex';
+        // Build the riders list from the Rider filter <select> options
+        // (already populated server-side with all active Qurbani-permitted
+        // riders). Filtered down to riders with at least one assigned
+        // line item visible in `allItems`.
+        const ridersWithItems = {};
+        (window.QURBANI_ORDERS_ALL_ITEMS_REF && window.QURBANI_ORDERS_ALL_ITEMS_REF()).forEach(it => {
+            if (it.assigned_rider_user_id && it.assigned_rider_name) {
+                ridersWithItems[it.assigned_rider_user_id] = it.assigned_rider_name;
+            }
+        });
+        const ids = Object.keys(ridersWithItems);
+        let html = '';
+        if (ids.length === 0) {
+            html = '<div style="padding:12px;font-size:12px;color:#9ca3af;">No riders with assigned items right now.</div>';
+        } else {
+            ids.sort((a, b) => ridersWithItems[a].localeCompare(ridersWithItems[b]));
+            ids.forEach(id => {
+                html += '<button type="button" data-rider-id="' + id + '" class="qo-map-rider-row" style="display:block;width:100%;text-align:left;padding:8px 10px;border:none;background:transparent;border-radius:6px;cursor:pointer;font-size:13px;color:#1f2937;font-weight:600;">';
+                html += '🛵 ' + (ridersWithItems[id] || ('Rider #' + id));
+                html += '</button>';
+            });
+        }
+        document.getElementById('qoMapRidersInner').innerHTML = html;
+        // Lazy-init map
+        ensureQoGoogleMaps(initQoMap);
+        // Wire delegation for the rider rows.
+        document.getElementById('qoMapRidersInner').onclick = function(e) {
+            const btn = e.target.closest('button[data-rider-id]');
+            if (!btn) return;
+            // Highlight the active row.
+            document.querySelectorAll('.qo-map-rider-row').forEach(b => {
+                b.style.background = 'transparent'; b.style.color = '#1f2937';
+            });
+            btn.style.background = '#1e40af'; btn.style.color = '#fff';
+            loadDispatchMapForRider(parseInt(btn.dataset.riderId, 10));
+        };
+    }
+
+    function closeRidersMap() {
+        document.getElementById('qoMapOverlay').style.display = 'none';
+        document.getElementById('qoMapModal').style.display = 'none';
+        if (_qoMapRefreshTimer) { clearInterval(_qoMapRefreshTimer); _qoMapRefreshTimer = null; }
+        _qoMapActiveRider = null;
+    }
+
+    // ── Phase 2 (May-2026) — Timeline modal ────────────────────────
+    // Single line-item scope; lazy-loaded on click. The endpoint
+    // returns everything in one shot so we just render. We keep the
+    // modal open even after fetch failure so the user can close it
+    // cleanly — no auto-dismiss on errors.
+    function openTimeline(lineItemId) {
+        const overlay = document.getElementById('qoTimelineOverlay');
+        const modal   = document.getElementById('qoTimelineModal');
+        const sub     = document.getElementById('qoTimelineSubtitle');
+        const body    = document.getElementById('qoTimelineBody');
+        overlay.style.display = 'block';
+        modal.style.display = 'flex';
+        sub.textContent = 'Loading…';
+        body.innerHTML = '<div style="text-align:center;padding:40px 0;color:#9ca3af;font-size:13px;">Loading…</div>';
+        fetch('/qurbani/api/line-items/' + lineItemId + '/timeline', {
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': CSRF }
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.success) {
+                body.innerHTML = '<div style="padding:30px 0;color:#dc2626;font-size:13px;text-align:center;">' + esc(d && d.message ? d.message : 'Failed to load timeline.') + '</div>';
+                return;
+            }
+            renderTimeline(d);
+        })
+        .catch(e => {
+            body.innerHTML = '<div style="padding:30px 0;color:#dc2626;font-size:13px;text-align:center;">' + esc(e.message || 'Network error.') + '</div>';
+        });
+    }
+
+    function closeTimeline() {
+        document.getElementById('qoTimelineOverlay').style.display = 'none';
+        document.getElementById('qoTimelineModal').style.display = 'none';
+    }
+
+    function renderTimeline(d) {
+        const sub  = document.getElementById('qoTimelineSubtitle');
+        const body = document.getElementById('qoTimelineBody');
+
+        // Compact relative time helper. Used inside dispatch / ETA
+        // notes so the user gets "today 16:32" instead of an ISO blob.
+        function fmtTime(ts) {
+            if (!ts) return '';
+            try {
+                const dt = new Date(ts.replace(' ', 'T'));
+                return dt.toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+            } catch (e) { return ts; }
+        }
+        function fmtTimeOnly(ts) {
+            if (!ts) return '';
+            try {
+                const dt = new Date(ts.replace(' ', 'T'));
+                return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (e) { return ts; }
+        }
+
+        // Subtitle in the modal header so the user knows which order
+        // they're looking at without reading the body. Combines
+        // customer + order_number for quick scan.
+        const order = d.order || {};
+        const li = d.line_item || {};
+        const subParts = [];
+        if (order.customer_name) subParts.push(order.customer_name);
+        if (order.order_number)  subParts.push('#' + order.order_number);
+        sub.textContent = subParts.join(' · ');
+
+        let html = '';
+
+        // ── Order details strip ────────────────────────────────────
+        const itemBits = [];
+        if (li.qurbani_day)  itemBits.push(esc(li.qurbani_day));
+        if (li.qurbani_slot) itemBits.push(esc(li.qurbani_slot));
+        if (li.qurbani_delivery_type) itemBits.push(esc(li.qurbani_delivery_type));
+        if (li.qurbani_sub_region)    itemBits.push(esc(li.qurbani_sub_region));
+        if (itemBits.length) {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">';
+            itemBits.forEach(t => {
+                html += '<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;color:#374151;">' + t + '</span>';
+            });
+            html += '</div>';
+        }
+
+        // ── Delay alert (top of body when active) ──────────────────
+        if (d.delay_alert && d.delay_alert.active) {
+            html += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start;">';
+            html += '<span style="font-size:18px;line-height:1;">⚠️</span>';
+            html += '<div style="flex:1;font-size:13px;color:#92400e;line-height:1.45;"><strong>Running late.</strong> ' + esc(d.delay_alert.reason) + '</div>';
+            html += '</div>';
+        }
+
+        // ── Rider + Dispatch summary ───────────────────────────────
+        if (d.rider || d.dispatch) {
+            html += '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+            html += '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Rider &amp; Dispatch</div>';
+            if (d.rider) {
+                html += '<div style="font-size:13px;color:#1f2937;margin-bottom:4px;"><strong>🛵 Rider:</strong> ' + esc(d.rider.name) + '</div>';
+            } else {
+                html += '<div style="font-size:13px;color:#9ca3af;margin-bottom:4px;font-style:italic;">No rider assigned yet.</div>';
+            }
+            if (d.dispatch) {
+                let dispLine = '<strong>🚀 Dispatched:</strong> ' + esc(fmtTime(d.dispatch.at));
+                if (d.dispatch.by_name) dispLine += ' · by ' + esc(d.dispatch.by_name);
+                html += '<div style="font-size:13px;color:#1f2937;margin-bottom:4px;">' + dispLine + '</div>';
+                if (d.dispatch.started_at) {
+                    html += '<div style="font-size:13px;color:#0e7490;"><strong>🏁 Rider started:</strong> ' + esc(fmtTime(d.dispatch.started_at)) + '</div>';
+                }
+            } else {
+                html += '<div style="font-size:13px;color:#9ca3af;font-style:italic;">Not yet dispatched.</div>';
+            }
+            html += '</div>';
+        }
+
+        // ── Current ETA ────────────────────────────────────────────
+        if (d.current_eta) {
+            html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+            html += '<div style="font-size:11px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Current ETA</div>';
+            html += '<div style="font-size:18px;font-weight:700;color:#1e3a8a;">⏱ ' + esc(fmtTime(d.current_eta.at)) + '</div>';
+            if (d.current_eta.note) {
+                html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">' + esc(d.current_eta.note) + '</div>';
+            } else if (d.current_eta.is_initial && d.current_eta.calculated_at) {
+                html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">Initial estimate from dispatch.</div>';
+            }
+            html += '</div>';
+        } else if (d.dispatch) {
+            html += '<div style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:#6b7280;">⏱ ETA not yet calculated for this stop.</div>';
+        }
+
+        // ── Status events timeline (most recent at the bottom; we
+        //    walk top-to-bottom in order of occurrence so the eye
+        //    follows the order's lifecycle naturally). ──────────────
+        html += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+        html += '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Status Events</div>';
+        if (!d.events || d.events.length === 0) {
+            html += '<div style="font-size:13px;color:#9ca3af;font-style:italic;">No status events yet.</div>';
+        } else {
+            d.events.forEach((ev, idx) => {
+                const isLast = idx === d.events.length - 1;
+                html += '<div style="display:flex;gap:10px;align-items:flex-start;position:relative;padding-bottom:' + (isLast ? '0' : '14px') + ';">';
+                if (!isLast) {
+                    html += '<div style="position:absolute;left:11px;top:22px;bottom:0;width:2px;background:' + esc(ev.color || '#e5e7eb') + ';opacity:0.35;"></div>';
+                }
+                html += '<div style="width:24px;height:24px;border-radius:50%;background:' + esc(ev.color || '#6b7280') + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;line-height:1;z-index:1;">' + esc(ev.icon || '•') + '</div>';
+                html += '<div style="flex:1;min-width:0;">';
+                html += '<div style="font-size:13px;font-weight:600;color:#1f2937;">' + esc(ev.label) + '</div>';
+                let metaParts = [];
+                if (ev.at) metaParts.push(fmtTime(ev.at));
+                if (ev.by) metaParts.push('by ' + ev.by);
+                if (metaParts.length) {
+                    html += '<div style="font-size:11px;color:#6b7280;margin-top:2px;">' + esc(metaParts.join(' · ')) + '</div>';
+                }
+                html += '</div>';
+                html += '</div>';
+            });
+        }
+        html += '</div>';
+
+        // ── WhatsApp today ─────────────────────────────────────────
+        const wa = d.whatsapp_today || {};
+        html += '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+        html += '<div style="font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">📱 WhatsApp · Today</div>';
+        if (!wa.last_inbound && !wa.last_outbound) {
+            html += '<div style="font-size:13px;color:#6b7280;font-style:italic;">No messages exchanged today.</div>';
+        } else {
+            if (wa.last_inbound) {
+                html += '<div style="margin-bottom:8px;">';
+                html += '<div style="font-size:11px;color:#15803d;font-weight:700;margin-bottom:2px;">⬅️ Last from customer · ' + esc(fmtTimeOnly(wa.last_inbound.at)) + '</div>';
+                html += '<div style="font-size:13px;color:#1f2937;line-height:1.45;">' + esc(wa.last_inbound.preview || '(empty message)') + '</div>';
+                html += '</div>';
+            } else {
+                html += '<div style="margin-bottom:8px;font-size:12px;color:#6b7280;font-style:italic;">No customer messages today.</div>';
+            }
+            if (wa.last_outbound) {
+                html += '<div>';
+                let label = 'Last sent';
+                if (wa.last_outbound.is_template) label += ' (template)';
+                html += '<div style="font-size:11px;color:#15803d;font-weight:700;margin-bottom:2px;">➡️ ' + esc(label) + ' · ' + esc(fmtTimeOnly(wa.last_outbound.at));
+                if (wa.last_outbound.by) html += ' · by ' + esc(wa.last_outbound.by);
+                html += '</div>';
+                html += '<div style="font-size:13px;color:#1f2937;line-height:1.45;">' + esc(wa.last_outbound.preview || '(empty message)') + '</div>';
+                html += '</div>';
+            } else {
+                html += '<div style="font-size:12px;color:#6b7280;font-style:italic;">Nothing sent today.</div>';
+            }
+        }
+        html += '</div>';
+
+        body.innerHTML = html;
+    }
+
+    function initQoMap() {
+        const c = document.getElementById('qoMapContainer');
+        if (!c) return;
+        if (!_qoMap) {
+            _qoMap = new google.maps.Map(c, {
+                center: { lat: 33.6844, lng: 73.0479 },
+                zoom: 12,
+                mapTypeControl: false,
+                streetViewControl: false,
+                fullscreenControl: true,
+            });
+        }
+    }
+
+    function clearQoMapMarkers() {
+        _qoMapMarkers.forEach(m => m.setMap(null));
+        _qoMapMarkers = [];
+        if (_qoMapPoly) { _qoMapPoly.setMap(null); _qoMapPoly = null; }
+    }
+
+    async function loadDispatchMapForRider(riderId) {
+        if (!riderId) return;
+        _qoMapActiveRider = riderId;
+        ensureQoGoogleMaps(() => {
+            initQoMap();
+            fetchAndRenderDispatchMap(riderId);
+        });
+        // 30-second auto-refresh on rider GPS while the modal is open.
+        if (_qoMapRefreshTimer) clearInterval(_qoMapRefreshTimer);
+        _qoMapRefreshTimer = setInterval(() => {
+            if (_qoMapActiveRider) fetchAndRenderDispatchMap(_qoMapActiveRider);
+        }, 30000);
+    }
+
+    async function fetchAndRenderDispatchMap(riderId) {
+        try {
+            const r = await fetch('{{ url("/qurbani/api/riders") }}/' + riderId + '/dispatch-map');
+            const j = await r.json();
+            if (!j.success) { toast(j.message || 'Failed to load dispatch map', 'error'); return; }
+            renderDispatchMap(j);
+        } catch (e) {
+            toast('Failed to load map data: ' + (e.message || e), 'error');
+        }
+    }
+
+    function renderDispatchMap(d) {
+        if (!_qoMap) return;
+        clearQoMapMarkers();
+
+        const subtitleEl = document.getElementById('qoMapSubtitle');
+        const legend = document.getElementById('qoMapLegend');
+
+        if (!d.dispatched_at) {
+            subtitleEl.textContent = (d.rider?.name || 'Rider') + ' — no active dispatch yet.';
+            legend.innerHTML = '<span style="color:#9ca3af;">Nothing dispatched. Press "Set Route" then "Start Delivery" on the rider planner.</span>';
+            return;
+        }
+
+        const ofd = d.ofd_bundles || [];
+        const delivered = d.delivered_bundles || [];
+        subtitleEl.textContent = (d.rider?.name || 'Rider') + ' · ' + ofd.length + ' OFD · ' + delivered.length + ' delivered · dispatched ' + (d.dispatched_at || '');
+        legend.innerHTML = '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3B82F6;margin-right:4px;"></span> Rider GPS</span>'
+            + ' <span><span style="display:inline-block;width:10px;height:10px;background:#F59E0B;margin-right:4px;"></span> OFD bundle</span>'
+            + ' <span><span style="display:inline-block;width:10px;height:10px;background:#10B981;margin-right:4px;"></span> Delivered</span>'
+            + ' <span><span style="display:inline-block;width:10px;height:10px;background:#7C3AED;margin-right:4px;"></span> Base</span>'
+            + (d.rider_gps?.status ? ' <span style="margin-left:auto;font-weight:600;color:' + (d.rider_gps.status === 'live' ? '#059669' : d.rider_gps.status === 'recent' ? '#B45309' : d.rider_gps.status === 'stale' ? '#DC2626' : '#6B7280') + ';">GPS ' + d.rider_gps.status + (d.rider_gps.age_minutes != null ? ' (' + d.rider_gps.age_minutes + ' min)' : '') + '</span>' : '');
+
+        const bounds = new google.maps.LatLngBounds();
+        let anyPin = false;
+
+        // Base pin
+        if (d.base && d.base.lat && d.base.lng) {
+            const m = new google.maps.Marker({
+                position: { lat: d.base.lat, lng: d.base.lng },
+                map: _qoMap,
+                label: { text: '🏪', fontSize: '18px' },
+                title: 'Qurbani Base — ' + d.base.name,
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 12, fillColor: '#7C3AED', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
+            });
+            _qoMapMarkers.push(m);
+            bounds.extend(m.getPosition()); anyPin = true;
+        }
+
+        // Rider GPS pin (blue, larger)
+        if (d.rider_gps && d.rider_gps.lat && d.rider_gps.lng) {
+            const m = new google.maps.Marker({
+                position: { lat: d.rider_gps.lat, lng: d.rider_gps.lng },
+                map: _qoMap,
+                title: '🛵 Rider — GPS ' + (d.rider_gps.status || 'unknown') + (d.rider_gps.age_minutes != null ? ' · ' + d.rider_gps.age_minutes + ' min ago' : ''),
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#3B82F6', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 3 },
+                zIndex: 999,
+            });
+            _qoMapMarkers.push(m);
+            bounds.extend(m.getPosition()); anyPin = true;
+        }
+
+        // Delivered bundles (green, with check)
+        delivered.forEach((b, idx) => {
+            if (!b.lat || !b.lng) return;
+            const m = new google.maps.Marker({
+                position: { lat: b.lat, lng: b.lng },
+                map: _qoMap,
+                label: { text: '✓', color: '#fff', fontSize: '12px', fontWeight: '700' },
+                title: '✓ Delivered #' + idx + ' · ' + (b.customer_name || '') + ' · ' + (b.order_number || ''),
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 11, fillColor: '#10B981', fillOpacity: 0.85, strokeColor: '#fff', strokeWeight: 2 },
+            });
+            const info = new google.maps.InfoWindow({
+                content: '<div style="font-size:12px;line-height:1.4;"><b>Delivered</b><br>' + esc(b.customer_name || '') + '<br>Order ' + esc(b.order_number || '') + '<br><span style="color:#6b7280;">at ' + esc(b.delivered_at || '') + '</span></div>',
+            });
+            m.addListener('click', () => info.open(_qoMap, m));
+            _qoMapMarkers.push(m);
+            bounds.extend(m.getPosition()); anyPin = true;
+        });
+
+        // OFD bundles (orange, numbered)
+        ofd.forEach((b, idx) => {
+            if (!b.lat || !b.lng) return;
+            const seq = b.priority || (idx + 1);
+            const m = new google.maps.Marker({
+                position: { lat: b.lat, lng: b.lng },
+                map: _qoMap,
+                label: { text: String(seq), color: '#fff', fontSize: '13px', fontWeight: '800' },
+                title: 'Stop ' + seq + ' · ' + (b.customer_name || ''),
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 13, fillColor: '#F59E0B', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 },
+            });
+            const eta = b.estimated_delivery_at ? new Date(String(b.estimated_delivery_at).replace(' ', 'T')).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : '—';
+            const info = new google.maps.InfoWindow({
+                content: '<div style="font-size:12px;line-height:1.4;"><b>Stop ' + seq + '</b><br>' + esc(b.customer_name || '') + '<br>Order ' + esc(b.order_number || '') + '<br>ETA ' + esc(eta) + '<br><span style="color:#6b7280;">' + esc((b.qurbani_sub_region || b.qurbani_region) || '') + '</span></div>',
+            });
+            m.addListener('click', () => info.open(_qoMap, m));
+            _qoMapMarkers.push(m);
+            bounds.extend(m.getPosition()); anyPin = true;
+        });
+
+        // Soft polyline from rider GPS → next OFD stop, just to make it
+        // visually obvious where the rider is heading next.
+        if (d.rider_gps && d.rider_gps.lat && d.rider_gps.lng && ofd.length > 0 && ofd[0].lat && ofd[0].lng) {
+            _qoMapPoly = new google.maps.Polyline({
+                path: [
+                    { lat: d.rider_gps.lat, lng: d.rider_gps.lng },
+                    { lat: ofd[0].lat, lng: ofd[0].lng },
+                ],
+                geodesic: true,
+                strokeColor: '#3B82F6',
+                strokeOpacity: 0.7,
+                strokeWeight: 3,
+                map: _qoMap,
+            });
+        }
+
+        if (anyPin) {
+            // Only auto-fit bounds the first time we render this rider's
+            // dispatch — subsequent 30s GPS refreshes shouldn't re-zoom
+            // and yank the user's current pan/zoom around.
+            const boundsKey = (d.rider?.id || 0) + ':' + (d.dispatched_at || '');
+            if (_qoMapBoundsLast !== boundsKey) {
+                _qoMap.fitBounds(bounds, 60);
+                _qoMapBoundsLast = boundsKey;
+            }
+        }
+    }
+
+    // Expose a tiny accessor so openRidersMap() can read the latest
+    // items array without polluting the rest of the IIFE scope.
+    window.QURBANI_ORDERS_ALL_ITEMS_REF = function() { return allItems || []; };
 
     document.addEventListener('DOMContentLoaded', function() {
         bindRegionChipDelegation();

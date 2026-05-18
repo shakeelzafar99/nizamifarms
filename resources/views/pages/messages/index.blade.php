@@ -3457,7 +3457,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     </div>
                     ${o.rider_name ? '<div class="wa-op-rider">🏍️ ' + esc(o.rider_name) + (o.eta ? ' · ETA ' + o.eta : '') + '</div>' : (o.eta ? '<div class="wa-op-rider">⏱️ ETA ' + o.eta + '</div>' : '')}
                     ${o.items_summary ? '<div class="wa-op-items">' + esc(o.items_summary) + '</div>' : ''}
-                    <button class="wa-op-inv-btn" onclick="openInvoiceFromPanel(${o.id}, '${esc(o.order_number||'')}', ${parseFloat(o.total||0)})">📄 Send Invoice</button>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+                        <button class="wa-op-inv-btn" style="flex:1; min-width:120px; margin-top:0;" onclick="openInvoiceFromPanel(${o.id}, '${esc(o.order_number||'')}', ${parseFloat(o.total||0)})">📄 Send Invoice</button>
+                        ${o.is_qurbani && (o.qurbani_items || []).length ? `<button class="wa-op-inv-btn" style="flex:1; min-width:120px; margin-top:0; background:#dbeafe; border-color:#93c5fd; color:#1e3a8a;" onclick='openMessagesTimeline(${JSON.stringify({order_id:o.id, order_number:o.order_number||'', items:o.qurbani_items||[]}).replace(/'/g, "&#39;")})'>🕒 Timeline</button>` : ''}
+                    </div>
                 </div>`;
             });
             list.innerHTML = html;
@@ -3468,6 +3471,223 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
         if (ordersPanelOpen) {
             document.getElementById('waOrdersPanel').classList.add('open');
         }
+    }
+
+    // ─── Phase 3 (May-2026) — Qurbani Timeline modal ──────────────
+    // Opens a slide-in panel showing the timeline for one Qurbani
+    // line item (status events, dispatch, ETA, delay alert, today's
+    // WhatsApp activity for this customer). When the order has more
+    // than one Qurbani bundle, a tab strip at the top lets the user
+    // switch between bundles WITHOUT closing the modal.
+    //
+    // Reuses the same /api/line-items/{id}/timeline endpoint built
+    // for the qurbani orders page.
+    window.openMessagesTimeline = function(payload) {
+        let data;
+        try { data = (typeof payload === 'string') ? JSON.parse(payload) : payload; }
+        catch (e) { console.error('Bad timeline payload', e); return; }
+        if (!data || !data.items || !data.items.length) return;
+
+        let modal = document.getElementById('waTimelineModal');
+        if (modal) modal.remove();
+
+        modal = document.createElement('div');
+        modal.id = 'waTimelineModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10001;display:flex;justify-content:flex-end;';
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+        // Tab list — single bundle gets no tab strip, just a header.
+        const items = data.items;
+        const tabsHtml = items.length > 1
+            ? `<div id="waTlTabs" style="display:flex; gap:4px; padding:8px 12px; background:#f9fafb; border-bottom:1px solid #e5e7eb; overflow-x:auto; flex-shrink:0;">
+                  ${items.map((it, i) => {
+                      const lbl = (it.qurbani_day ? it.qurbani_day + ' · ' : '') + (it.name || ('Item ' + (i+1)));
+                      return `<button class="wa-tl-tab" data-idx="${i}" data-li="${it.line_item_id}" style="padding:6px 12px; border-radius:6px; border:1px solid #d1d5db; background:#fff; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">${esc(lbl)}</button>`;
+                  }).join('')}
+              </div>`
+            : '';
+
+        modal.innerHTML = `
+            <div style="background:#fff; width:540px; max-width:96vw; height:100vh; display:flex; flex-direction:column; box-shadow:-10px 0 30px rgba(0,0,0,0.2);">
+                <div style="padding:14px 16px; background:linear-gradient(135deg,#1e40af,#1e3a8a); color:#fff; flex-shrink:0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <div style="font-size:11px; opacity:0.85; text-transform:uppercase; letter-spacing:0.5px;">Timeline</div>
+                            <div style="font-size:16px; font-weight:700;">#${esc(data.order_number || '')}</div>
+                        </div>
+                        <button onclick="document.getElementById('waTimelineModal').remove()" style="background:rgba(255,255,255,0.2); border:none; color:#fff; width:32px; height:32px; border-radius:6px; font-size:18px; cursor:pointer;">&times;</button>
+                    </div>
+                </div>
+                ${tabsHtml}
+                <div id="waTlBody" style="flex:1; overflow-y:auto; padding:14px 16px; background:#f9fafb;">
+                    <div style="padding:30px; text-align:center; color:#6b7280;">Loading…</div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Tab clicks load that line item's timeline into the body.
+        modal.querySelectorAll('.wa-tl-tab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                modal.querySelectorAll('.wa-tl-tab').forEach(b => {
+                    b.style.background = '#fff';
+                    b.style.color = '#374151';
+                    b.style.borderColor = '#d1d5db';
+                });
+                btn.style.background = '#1e40af';
+                btn.style.color = '#fff';
+                btn.style.borderColor = '#1e40af';
+                fetchAndRenderMessagesTimeline(parseInt(btn.dataset.li, 10));
+            });
+        });
+
+        // Auto-select first tab.
+        const firstTab = modal.querySelector('.wa-tl-tab') || null;
+        if (firstTab) firstTab.click();
+        else fetchAndRenderMessagesTimeline(items[0].line_item_id);
+    };
+
+    function fetchAndRenderMessagesTimeline(lineItemId) {
+        const body = document.getElementById('waTlBody');
+        if (!body) return;
+        body.innerHTML = '<div style="padding:30px; text-align:center; color:#6b7280;">Loading…</div>';
+        fetch('/qurbani/api/line-items/' + lineItemId + '/timeline', { headers: { 'Accept': 'application/json' } })
+            .then(r => r.json())
+            .then(d => {
+                if (!d || !d.success) {
+                    body.innerHTML = '<div style="padding:20px; color:#dc2626;">Failed to load timeline.</div>';
+                    return;
+                }
+                body.innerHTML = renderMessagesTimeline(d);
+            })
+            .catch(() => {
+                body.innerHTML = '<div style="padding:20px; color:#dc2626;">Network error.</div>';
+            });
+    }
+
+    // Field shape mirrors the qurbani/orders timeline modal renderer
+    // so updates to that endpoint flow through here transparently.
+    function renderMessagesTimeline(d) {
+        const fmtTime = (ts) => {
+            if (!ts) return '';
+            try {
+                const dt = new Date(String(ts).replace(' ', 'T'));
+                return dt.toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+            } catch (e) { return String(ts); }
+        };
+
+        const li = d.line_item || {};
+        const events = d.events || [];
+        const rider = d.rider || null;
+        const dispatch = d.dispatch || null;
+        const currentEta = d.current_eta || null;
+        const delay = d.delay_alert || null;
+        const wa = d.whatsapp_today || {};
+
+        let html = '';
+
+        // Item summary chips.
+        const itemBits = [];
+        if (li.qurbani_day) itemBits.push(esc(li.qurbani_day));
+        if (li.qurbani_slot) itemBits.push(esc(li.qurbani_slot));
+        if (li.qurbani_delivery_type) itemBits.push(esc(li.qurbani_delivery_type));
+        if (li.qurbani_sub_region) itemBits.push(esc(li.qurbani_sub_region));
+        if (itemBits.length) {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">';
+            itemBits.forEach(t => {
+                html += '<span style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600;color:#374151;">' + t + '</span>';
+            });
+            html += '</div>';
+        }
+
+        if (delay && delay.active) {
+            html += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px 12px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start;">'
+                + '<span style="font-size:18px;line-height:1;">⚠️</span>'
+                + '<div style="flex:1;font-size:13px;color:#92400e;line-height:1.45;"><strong>Running late.</strong> ' + esc(delay.reason || '') + '</div>'
+                + '</div>';
+        }
+
+        if (rider || dispatch) {
+            html += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+            html += '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Rider &amp; Dispatch</div>';
+            html += rider
+                ? '<div style="font-size:13px;color:#1f2937;margin-bottom:4px;"><strong>🛵 Rider:</strong> ' + esc(rider.name || '') + '</div>'
+                : '<div style="font-size:13px;color:#9ca3af;margin-bottom:4px;font-style:italic;">No rider assigned yet.</div>';
+            if (dispatch) {
+                let line = '<strong>🚀 Dispatched:</strong> ' + esc(fmtTime(dispatch.at));
+                if (dispatch.by_name) line += ' · by ' + esc(dispatch.by_name);
+                html += '<div style="font-size:13px;color:#1f2937;margin-bottom:4px;">' + line + '</div>';
+                if (dispatch.started_at) {
+                    html += '<div style="font-size:13px;color:#0e7490;"><strong>🏁 Rider started:</strong> ' + esc(fmtTime(dispatch.started_at)) + '</div>';
+                }
+            } else {
+                html += '<div style="font-size:13px;color:#9ca3af;font-style:italic;">Not yet dispatched.</div>';
+            }
+            html += '</div>';
+        }
+
+        if (currentEta) {
+            html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+            html += '<div style="font-size:11px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Current ETA</div>';
+            html += '<div style="font-size:18px;font-weight:700;color:#1e3a8a;">⏱ ' + esc(fmtTime(currentEta.at)) + '</div>';
+            if (currentEta.note) {
+                html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">' + esc(currentEta.note) + '</div>';
+            } else if (currentEta.is_initial && currentEta.calculated_at) {
+                html += '<div style="font-size:11px;color:#1d4ed8;margin-top:4px;">Initial estimate from dispatch.</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:14px;">';
+        html += '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Status Events</div>';
+        if (!events.length) {
+            html += '<div style="font-size:13px;color:#9ca3af;font-style:italic;">No status events yet.</div>';
+        } else {
+            events.forEach((ev, idx) => {
+                const isLast = idx === events.length - 1;
+                html += '<div style="display:flex;gap:10px;align-items:flex-start;position:relative;padding-bottom:' + (isLast ? '0' : '14px') + ';">';
+                if (!isLast) {
+                    html += '<div style="position:absolute;left:11px;top:22px;bottom:0;width:2px;background:' + esc(ev.color || '#e5e7eb') + ';opacity:0.35;"></div>';
+                }
+                html += '<div style="width:24px;height:24px;border-radius:50%;background:' + esc(ev.color || '#6b7280') + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;line-height:1;z-index:1;">' + esc(ev.icon || '•') + '</div>';
+                html += '<div style="flex:1;min-width:0;">';
+                html += '<div style="font-size:13px;font-weight:600;color:#1f2937;">' + esc(ev.label || '') + '</div>';
+                const metaParts = [];
+                if (ev.at) metaParts.push(fmtTime(ev.at));
+                if (ev.by) metaParts.push('by ' + ev.by);
+                if (metaParts.length) {
+                    html += '<div style="font-size:11px;color:#6b7280;margin-top:2px;">' + esc(metaParts.join(' · ')) + '</div>';
+                }
+                html += '</div></div>';
+            });
+        }
+        html += '</div>';
+
+        html += '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;">';
+        html += '<div style="font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">📱 WhatsApp · Today</div>';
+        if (!wa.last_inbound && !wa.last_outbound) {
+            html += '<div style="font-size:13px;color:#6b7280;font-style:italic;">No messages exchanged today.</div>';
+        } else {
+            if (wa.last_inbound) {
+                html += '<div style="margin-bottom:8px;">'
+                    + '<div style="font-size:11px;color:#6b7280;">Last received · ' + esc(fmtTime(wa.last_inbound.at)) + '</div>'
+                    + '<div style="font-size:12px;color:#374151;padding:6px 8px;background:#fff;border-radius:6px;margin-top:3px;">' + esc((wa.last_inbound.preview || '').slice(0, 200)) + '</div>'
+                    + '</div>';
+            }
+            if (wa.last_outbound) {
+                html += '<div>'
+                    + '<div style="font-size:11px;color:#6b7280;">Last sent · ' + esc(fmtTime(wa.last_outbound.at))
+                    + (wa.last_outbound.template_name ? ' · ' + esc(wa.last_outbound.template_name) : '')
+                    + (wa.last_outbound.by ? ' · by ' + esc(wa.last_outbound.by) : '')
+                    + '</div>'
+                    + '<div style="font-size:12px;color:#374151;padding:6px 8px;background:#dcfce7;border-radius:6px;margin-top:3px;">' + esc((wa.last_outbound.preview || '').slice(0, 200)) + '</div>'
+                    + '</div>';
+            }
+        }
+        html += '</div>';
+
+        return html;
     }
 
     window.openInvoiceFromPanel = function(orderId, orderNum, total) {

@@ -1934,8 +1934,17 @@ class WhatsAppWebController extends Controller
      */
     public function getCustomerOrders(Request $request, $customerId)
     {
+        // Phase 3 (May-2026): we now need the per-line-item qurbani
+        // metadata so the right-rail can render a "🕒 Timeline" button
+        // for QUR orders (which can have multiple bundles, hence
+        // line-item-level granularity). The eager-loaded lineItems
+        // selection is widened to include the qurbani_* fields used
+        // by the timeline tab switcher.
         $orders = OrderModel::where('customer_id', $customerId)
-            ->with(['lineItems:id,order_id,name,quantity,unit_price,line_total', 'assignedRider:id,fullname'])
+            ->with([
+                'lineItems:id,order_id,name,quantity,unit_price,line_total,qurbani_day,qurbani_slot,qurbani_region,qurbani_delivery_type,qurbani_item_status',
+                'assignedRider:id,fullname',
+            ])
             ->orderBy('order_date', 'desc')
             ->limit(20)
             ->get(['id', 'order_number', 'order_date', 'order_status', 'total_price', 'customer_id', 'assigned_rider_user_id', 'estimated_delivery_at']);
@@ -1947,6 +1956,42 @@ class WhatsAppWebController extends Controller
                 if ($o->estimated_delivery_at && strtolower($o->order_status) === 'out_for_delivery') {
                     $eta = \Carbon\Carbon::parse($o->estimated_delivery_at)->format('h:i A');
                 }
+
+                // QUR orders are detected by either their order_number
+                // prefix (Qurbani orders typically start with QUR) OR
+                // by ANY line item carrying qurbani_* metadata. The
+                // second test catches manual-entry orders that may not
+                // follow the QUR-prefix convention.
+                $orderNum = (string) ($o->order_number ?? '');
+                $hasQurbaniMeta = $o->lineItems->contains(function ($li) {
+                    return !empty($li->qurbani_day) || !empty($li->qurbani_slot)
+                        || !empty($li->qurbani_region) || !empty($li->qurbani_delivery_type);
+                });
+                $isQurbani = (str_starts_with(strtoupper($orderNum), 'QUR') || $hasQurbaniMeta);
+
+                // Build qurbani_items only for qurbani orders to keep
+                // the payload small for regular orders. Each item
+                // carries just enough info to power the timeline-tab
+                // labels client-side.
+                $qurbaniItems = [];
+                if ($isQurbani) {
+                    foreach ($o->lineItems as $li) {
+                        if (empty($li->qurbani_day) && empty($li->qurbani_slot)
+                            && empty($li->qurbani_region) && empty($li->qurbani_delivery_type)) {
+                            continue;
+                        }
+                        $qurbaniItems[] = [
+                            'line_item_id' => (int) $li->id,
+                            'name'         => (string) $li->name,
+                            'qurbani_day'  => $li->qurbani_day,
+                            'qurbani_slot' => $li->qurbani_slot,
+                            'qurbani_region' => $li->qurbani_region,
+                            'qurbani_delivery_type' => $li->qurbani_delivery_type,
+                            'status'       => $li->qurbani_item_status,
+                        ];
+                    }
+                }
+
                 return [
                     'id' => $o->id,
                     'order_number' => $o->order_number,
@@ -1957,6 +2002,8 @@ class WhatsAppWebController extends Controller
                     'items_summary' => $o->lineItems->take(3)->pluck('name')->join(', '),
                     'rider_name' => $o->assignedRider?->fullname,
                     'eta' => $eta,
+                    'is_qurbani' => $isQurbani,
+                    'qurbani_items' => $qurbaniItems,
                 ];
             }),
         ]);

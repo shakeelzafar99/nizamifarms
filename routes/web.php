@@ -299,6 +299,15 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/api/default-payment-method', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateDefaultPaymentMethod'])->name('qurbani-settings.api.default-payment-method');
         Route::post('/api/cancellation-code', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateCancellationCode'])->name('qurbani-settings.api.cancellation-code');
         Route::post('/api/hidden-categories', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateHiddenCategories'])->name('qurbani-settings.api.hidden-categories');
+        // Qurbani Operations Base location — used as origin fallback +
+        // return-to-base ETA endpoint (May-2026 plan). Save name/lat/lng
+        // as ConfigModel keys; pass all-empty to clear.
+        Route::post('/api/base-location', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateBaseLocation'])->name('qurbani-settings.api.base-location');
+        // Rider-side ETA auto-refresh cadence (Phase D).
+        Route::post('/api/eta-refresh', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateEtaRefresh'])->name('qurbani-settings.api.eta-refresh');
+        // Phase 3 (May-2026) — Qurbani auto-WhatsApp settings.
+        Route::get('/api/wa-auto',  [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'getWaAuto'])->name('qurbani-settings.api.wa-auto.get');
+        Route::post('/api/wa-auto', [\App\Http\Controllers\CRM\QurbaniSettingsController::class, 'updateWaAuto'])->name('qurbani-settings.api.wa-auto');
     });
 
     // Qurbani Web Pages (orders, dashboard)
@@ -316,6 +325,15 @@ Route::middleware(['auth'])->group(function () {
         // Inline per-row actions on the new orders dispatch page.
         Route::post('/api/items/{id}/status', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'updateItemStatus'])->name('qurbani.api.items.status');
         Route::post('/api/items/{id}/rider', [\App\Http\Controllers\CRM\QurbaniWebController::class, 'assignItemRider'])->name('qurbani.api.items.rider');
+        // Phase C (May-2026) — dispatch-map endpoint, returns rider GPS
+        // + bundle pins + base for the per-rider Map modal on the
+        // Qurbani Orders web page. Mirrors the rider-side endpoint.
+        Route::get('/api/riders/{riderId}/dispatch-map', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniDispatchMap'])->name('qurbani.api.riders.dispatch-map');
+        // Phase 2 (May-2026) — order timeline endpoint, returns status +
+        // dispatch + current ETA + delay alert + today's WhatsApp
+        // activity for a single Qurbani line item. Mirrors the mobile
+        // endpoint. Manager-only (access_qurbani_mode).
+        Route::get('/api/line-items/{lineItemId}/timeline', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOrderTimeline'])->name('qurbani.api.line-items.timeline');
 
         // -----------------------------------------------------------
         // QURBANI INVOICES — invoice-level page (formerly /qurbani/orders).

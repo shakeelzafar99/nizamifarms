@@ -280,9 +280,17 @@ Route::middleware('auth:sanctum')->group(function () {
     // can simultaneously have a regular-orders lock and a qurbani lock.
     Route::get('/qurbani/riders', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRidersSummary']);
     Route::get('/qurbani/riders/{riderId}/route', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniRiderRoute']);
+    Route::get('/qurbani/riders/{riderId}/dispatch-map', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniDispatchMap']);
     Route::post('/qurbani/riders/{riderId}/optimize-route', [\App\Http\Controllers\API\RiderController::class, 'optimizeQurbaniRoute']);
     Route::post('/qurbani/riders/{riderId}/save-route', [\App\Http\Controllers\API\RiderController::class, 'saveQurbaniRoute']);
     Route::post('/qurbani/riders/{riderId}/dispatch', [\App\Http\Controllers\API\RiderController::class, 'dispatchQurbaniRoute']);
+    // Phase 1 (May-2026) — Live ETA tracking toggle. Either the manager
+    // (with access_qurbani_mode) or the rider themselves can flip it.
+    Route::post('/qurbani/riders/{riderId}/live-tracking', [\App\Http\Controllers\API\RiderController::class, 'setQurbaniLiveTracking']);
+    // Phase 2 (May-2026) — Qurbani order timeline (per line item).
+    // Returns status + dispatch + current ETA + delay alert + today's
+    // WhatsApp activity. Manager-only (access_qurbani_mode).
+    Route::get('/qurbani/line-items/{lineItemId}/timeline', [\App\Http\Controllers\API\RiderController::class, 'getQurbaniOrderTimeline']);
     Route::post('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'lockQurbaniRoute']);
     Route::delete('/qurbani/riders/{riderId}/lock-route', [\App\Http\Controllers\API\RiderController::class, 'unlockQurbaniRoute']);
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);

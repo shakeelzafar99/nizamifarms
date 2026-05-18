@@ -1347,6 +1347,40 @@ class QurbaniWebController extends Controller
             ? DB::table('t_sys_user')->whereIn('id', $verifierIds)->pluck('fullname', 'id')->toArray()
             : [];
 
+        // Phase C (May-2026) — pre-load latest GPS reading for every
+        // assigned rider so each item card can show a small GPS pill
+        // ("Live / Recent / Stale / No GPS") next to the rider chip.
+        // One query per page render rather than N+1 against
+        // t_ops_rider_location.
+        $assignedRiderIds = $rows->pluck('qurbani_assigned_rider_user_id')
+            ->filter()->unique()->values()->all();
+        $riderGpsMap = [];
+        if (!empty($assignedRiderIds)) {
+            $gpsRows = DB::table('t_ops_rider_location as rl')
+                ->whereIn('rl.user_id', $assignedRiderIds)
+                ->whereRaw('rl.captured_at = (SELECT MAX(rl2.captured_at) FROM t_ops_rider_location rl2 WHERE rl2.user_id = rl.user_id)')
+                ->select('rl.user_id', 'rl.captured_at')
+                ->get();
+            $now = now();
+            foreach ($gpsRows as $g) {
+                $status = 'none';
+                $ageMin = null;
+                if ($g->captured_at) {
+                    try {
+                        $ageMin = (int) abs($now->diffInMinutes(\Carbon\Carbon::parse($g->captured_at)));
+                        if ($ageMin <= 5)        $status = 'live';
+                        elseif ($ageMin <= 30)   $status = 'recent';
+                        else                     $status = 'stale';
+                    } catch (\Exception $e) { /* leave as none */ }
+                }
+                $riderGpsMap[(int) $g->user_id] = [
+                    'status'      => $status,
+                    'age_minutes' => $ageMin,
+                    'captured_at' => $g->captured_at ? (string) $g->captured_at : null,
+                ];
+            }
+        }
+
         // Build the response items.
         $items = [];
         foreach ($rows as $r) {
@@ -1389,6 +1423,11 @@ class QurbaniWebController extends Controller
 
                 'assigned_rider_user_id'      => $r->qurbani_assigned_rider_user_id,
                 'assigned_rider_name'         => $r->rider_name,
+                // Phase C — GPS health for the assigned rider (or null
+                // when unassigned / no GPS reading ever captured).
+                'assigned_rider_gps'          => $r->qurbani_assigned_rider_user_id
+                    ? ($riderGpsMap[(int) $r->qurbani_assigned_rider_user_id] ?? ['status' => 'none', 'age_minutes' => null, 'captured_at' => null])
+                    : null,
                 'qurbani_delivery_priority'   => $r->qurbani_delivery_priority,
                 'qurbani_estimated_delivery_at' => $r->qurbani_estimated_delivery_at,
                 'qurbani_dispatched_at'         => $r->qurbani_dispatched_at,

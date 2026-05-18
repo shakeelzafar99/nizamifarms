@@ -7659,6 +7659,11 @@ class RiderController extends Controller
             
             $hasQurbaniMode = in_array('access_qurbani_mode', $permissions);
             $qurbaniRiderDeliveredEnabled = \App\Models\FIN\ConfigModel::get('qurbani_rider_delivered_enabled', '0') === '1';
+            // Phase D (May-2026) — rider-side ETA auto-refresh.
+            // Defaults: enabled, every 3 minutes. Bounded 1..30.
+            $etaRefreshEnabled = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
+            $etaRefreshMinutes = (int) \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_minutes', '3');
+            if ($etaRefreshMinutes < 1 || $etaRefreshMinutes > 30) { $etaRefreshMinutes = 3; }
 
             return response()->json([
                 'success' => true,
@@ -7668,6 +7673,8 @@ class RiderController extends Controller
                 'khaas_business_unit' => $khaasBusinessUnit,
                 'has_qurbani_mode' => $hasQurbaniMode,
                 'qurbani_rider_delivered_enabled' => $qurbaniRiderDeliveredEnabled,
+                'qurbani_eta_refresh_enabled' => $etaRefreshEnabled,
+                'qurbani_eta_refresh_minutes' => $etaRefreshMinutes,
                 'expense_backdate_days' => (int)$expenseBackdateDays
             ]);
             
@@ -18084,6 +18091,40 @@ class RiderController extends Controller
                 $show = 'open';
             }
 
+            // Phase A3 (May-2026) — passive late detection on the
+            // RIDER's own feed too. If their earliest pending dispatched
+            // bundle's stored ETA has slipped past the threshold, fire
+            // ONE recompute before we read the rows below so the rider
+            // gets fresh ETAs in the same response. No-op when rate-
+            // limited / disabled / no GPS / no Google base.
+            $passiveResult = null;
+            try {
+                $masterEnabled = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
+                if ($masterEnabled) {
+                    $thresholdMin = (int) \App\Models\FIN\ConfigModel::get('qurbani_eta_delay_threshold_minutes', '10');
+                    if ($thresholdMin < 1) $thresholdMin = 10;
+                    $cutoff = now()->subMinutes($thresholdMin);
+                    $latestSlip = \DB::table('t_crm_prod_order_line_item')
+                        ->where('qurbani_assigned_rider_user_id', $user->id)
+                        ->whereNotNull('qurbani_dispatched_at')
+                        ->whereNotNull('qurbani_estimated_delivery_at')
+                        ->whereNull('qurbani_delivered_at')
+                        ->where('qurbani_estimated_delivery_at', '<', $cutoff)
+                        ->where(function ($q) {
+                            $q->whereNull('qurbani_item_status')
+                              ->orWhere('qurbani_item_status', '!=', 'delivered');
+                        })
+                        ->exists();
+                    if ($latestSlip) {
+                        $passiveResult = $this->recomputeQurbaniEtasInternal((int) $user->id, (int) $user->id, 'rider_passive_late_detect');
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Qurbani rider passive late-detect failed', [
+                    'user_id' => $user->id, 'error' => $e->getMessage(),
+                ]);
+            }
+
             // Step 1: discover orders where this rider has at least one
             // assigned line item. We start from the line-item table because
             // assignment lives there now (not on the order).
@@ -18117,6 +18158,7 @@ class RiderController extends Controller
                         'qurbani_delivery_priority', 'qurbani_estimated_delivery_at',
                         'qurbani_eta_calculated_at', 'qurbani_dispatched_at', 'qurbani_dispatched_by',
                         'qurbani_started_delivery_at',
+                        'qurbani_live_tracking_enabled',
                         'instructions'
                     );
                 }, 'lineItems.product' => function($q) {
@@ -18190,6 +18232,7 @@ class RiderController extends Controller
                             'qurbani_dispatched_by'          => $li->qurbani_dispatched_by,
                             'qurbani_started_delivery_at'    => $li->qurbani_started_delivery_at
                                 ? (string) $li->qurbani_started_delivery_at : null,
+                            'qurbani_live_tracking_enabled'  => (int) ($li->qurbani_live_tracking_enabled ?? 0) === 1,
                             'qurbani_delivered_at'           => null,
                             // Dispatch lifecycle: drives the rider /
                             // manager UI grouping (Pending vs Dispatched
@@ -18323,6 +18366,9 @@ class RiderController extends Controller
             $latestDispatchedAt = null;
             $latestDispatchedBy = null;
             $latestStartedAt = null;
+            // Phase 1 — bundle-shared aggregate: any non-delivered
+            // dispatched bundle has live tracking ON?
+            $liveTrackingEnabled = false;
             foreach ($payload as $p) {
                 foreach ($p['bundles'] as $b) {
                     if (!empty($b['qurbani_dispatched_at'])) {
@@ -18335,6 +18381,11 @@ class RiderController extends Controller
                         if (!$latestStartedAt || strtotime($b['qurbani_started_delivery_at']) > strtotime($latestStartedAt)) {
                             $latestStartedAt = $b['qurbani_started_delivery_at'];
                         }
+                    }
+                    if (!empty($b['qurbani_live_tracking_enabled'])
+                        && empty($b['qurbani_delivered_at'])
+                        && !($b['all_delivered'] ?? false)) {
+                        $liveTrackingEnabled = true;
                     }
                 }
             }
@@ -18377,7 +18428,17 @@ class RiderController extends Controller
                     'dispatched_by' => $latestDispatchedBy ? (int) $latestDispatchedBy : null,
                     'dispatched_by_name' => $dispatchedByName,
                     'started_delivery_at' => $latestStartedAt,
+                    // Phase 1 — server-stored Live ETA tracking flag.
+                    // Replaces the old AsyncStorage per-dispatch toggle:
+                    // rider screen reads this to gate the 3-min refresh
+                    // loop; manager planner mutates it via the new
+                    // POST .../live-tracking endpoint.
+                    'live_tracking_enabled' => $liveTrackingEnabled,
                 ],
+                // Phase A3 — server tells the rider's screen when it
+                // auto-recomputed because something slipped past
+                // threshold. Mobile shows a one-off toast.
+                'passive_recompute' => $passiveResult,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to load qurbani rider deliveries', [
@@ -18505,11 +18566,29 @@ class RiderController extends Controller
                 }
             }
 
+            // Phase A2 (May-2026) — delay detection. Compare the
+            // delivered_at (NOW) of each just-marked item against its
+            // PRE-UPDATE qurbani_estimated_delivery_at (still in the
+            // $items collection because we loaded it before the
+            // update). If any rider's items slipped past the threshold,
+            // recompute that rider's remaining undelivered ETAs once.
+            // Failures are best-effort and never break the delivery
+            // confirmation flow.
+            $delayResults = [];
+            try {
+                $delayResults = $this->maybeRecomputeOnDeliveryDelay($items, $user->id);
+            } catch (\Exception $e) {
+                \Log::warning('Qurbani delay-recompute hook failed', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => "Marked {$updated} item(s) as delivered",
                 'updated_count' => $updated,
                 'auto_promoted_orders' => $autoPromoted,
+                'eta_delay_recomputes' => $delayResults,
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['success' => false, 'message' => 'Validation failed', 'errors' => $e->errors()], 422);
@@ -19540,6 +19619,7 @@ class RiderController extends Controller
                     'qurbani_delivery_priority', 'qurbani_estimated_delivery_at',
                     'qurbani_eta_calculated_at', 'qurbani_dispatched_at', 'qurbani_dispatched_by',
                     'qurbani_started_delivery_at',
+                    'qurbani_live_tracking_enabled',
                     'instructions'
                 );
             }, 'lineItems.product' => function ($q) {
@@ -19652,6 +19732,12 @@ class RiderController extends Controller
                         'qurbani_dispatched_by'          => $li->qurbani_dispatched_by,
                         'qurbani_started_delivery_at'    => $li->qurbani_started_delivery_at
                             ? (string) $li->qurbani_started_delivery_at : null,
+                        // Live ETA tracking flag — bundle-shared (every
+                        // line item in a dispatched bundle stores the
+                        // same value). Manager + rider can flip via
+                        // POST .../live-tracking; reset on every fresh
+                        // dispatch (see dispatchQurbaniRoute).
+                        'qurbani_live_tracking_enabled'  => (int) ($li->qurbani_live_tracking_enabled ?? 0) === 1,
                         'qurbani_delivered_at'           => null,
                     ];
                 }
@@ -19856,9 +19942,56 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('rider_id');
 
+            // Phase C (May-2026) — pull GPS health for every rider in
+            // one query so the manager screen + planner can show a
+            // pill (live / recent / stale / none) without N+1 hits.
+            //
+            // We grab the most recent reading per rider via a
+            // correlated subquery on captured_at MAX. Index on
+            // (user_id, captured_at) keeps this cheap.
+            $riderIds = $rows->pluck('rider_id')->all();
+            $gpsByRider = [];
+            if (!empty($riderIds)) {
+                $gpsRows = \DB::table('t_ops_rider_location as rl')
+                    ->whereIn('rl.user_id', $riderIds)
+                    ->whereRaw('rl.captured_at = (SELECT MAX(rl2.captured_at) FROM t_ops_rider_location rl2 WHERE rl2.user_id = rl.user_id)')
+                    ->select('rl.user_id', 'rl.latitude', 'rl.longitude', 'rl.captured_at')
+                    ->get();
+                foreach ($gpsRows as $g) {
+                    $gpsByRider[(int) $g->user_id] = $g;
+                }
+            }
+
+            $now = now();
             $payload = [];
             foreach ($rows as $r) {
                 $lock = $locks[$r->rider_id] ?? null;
+
+                // Compute GPS health bucket. The thresholds below match
+                // the dispatch-tracker conventions used for regular
+                // orders (5 min = "live", 30 min = "recent",
+                // anything older or absent = "stale" / "none").
+                $g = $gpsByRider[(int) $r->rider_id] ?? null;
+                $gpsStatus = 'none';
+                $gpsAgeMinutes = null;
+                $gpsCapturedAt = null;
+                if ($g && $g->captured_at) {
+                    $gpsCapturedAt = (string) $g->captured_at;
+                    try {
+                        $captured = \Carbon\Carbon::parse($g->captured_at);
+                        $gpsAgeMinutes = (int) abs($now->diffInMinutes($captured));
+                        if ($gpsAgeMinutes <= 5) {
+                            $gpsStatus = 'live';
+                        } elseif ($gpsAgeMinutes <= 30) {
+                            $gpsStatus = 'recent';
+                        } else {
+                            $gpsStatus = 'stale';
+                        }
+                    } catch (\Exception $e) {
+                        $gpsStatus = 'none';
+                    }
+                }
+
                 $payload[] = [
                     'rider_id' => (int) $r->rider_id,
                     'rider_name' => $r->rider_name,
@@ -19872,13 +20005,56 @@ class RiderController extends Controller
                         'locked_by_name' => $lock->locked_by_name,
                         'locked_at' => $lock->locked_at,
                     ] : null,
+                    // Phase C — GPS health.
+                    'gps' => [
+                        'status'         => $gpsStatus,           // live | recent | stale | none
+                        'age_minutes'    => $gpsAgeMinutes,
+                        'captured_at'    => $gpsCapturedAt,
+                        'latitude'       => $g && $g->latitude ? (float) $g->latitude : null,
+                        'longitude'      => $g && $g->longitude ? (float) $g->longitude : null,
+                    ],
                 ];
             }
+
+            // Phase 3 (May-2026) — auto-WhatsApp piggyback. Cheap
+            // when nothing's eligible (master-off / no candidates) and
+            // self-throttled by a 55s cache lock so the high-frequency
+            // poll from the manager planner doesn't matter.
+            $this->fireQurbaniWaAutoSender();
 
             return response()->json(['success' => true, 'riders' => $payload]);
         } catch (\Exception $e) {
             \Log::error('Failed to load qurbani riders summary', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Phase 3 (May-2026) — fire the Qurbani auto-WhatsApp sender on
+     * an `app()->terminating()` callback so the response is already
+     * flushed by the time we hit Meta's API.
+     *
+     * Safe to call from anywhere; the service short-circuits if the
+     * master switch is off, and a Cache lock prevents two parallel
+     * callers from both running the worker (the second one no-ops).
+     */
+    private function fireQurbaniWaAutoSender(): void
+    {
+        try {
+            app()->terminating(function () {
+                try {
+                    /** @var \App\Services\QurbaniWaAutoSender $svc */
+                    $svc = app(\App\Services\QurbaniWaAutoSender::class);
+                    $svc->processNow();
+                } catch (\Throwable $e) {
+                    // Worker errors must NEVER affect the request.
+                    \Log::warning('QurbaniWaAutoSender (terminating) failed', ['error' => $e->getMessage()]);
+                }
+            });
+        } catch (\Throwable $e) {
+            // Some exotic environments (testing) can't register
+            // terminating callbacks — silently no-op there too.
+            \Log::debug('QurbaniWaAutoSender hook skipped', ['error' => $e->getMessage()]);
         }
     }
 
@@ -19924,6 +20100,56 @@ class RiderController extends Controller
                 }));
             }
 
+            // Phase A3 (May-2026) — passive late detection. If the
+            // earliest pending dispatched bundle's stored ETA is more
+            // than threshold minutes in the past, the rider is running
+            // late even before any delivery has completed. Fire one
+            // recompute (no-op if rate-limited or no GPS available).
+            // Re-fetch bundles afterwards so the caller sees the new
+            // ETAs in the same response.
+            $passiveResult = null;
+            try {
+                $masterEnabled = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
+                if ($masterEnabled) {
+                    $thresholdMin = (int) \App\Models\FIN\ConfigModel::get('qurbani_eta_delay_threshold_minutes', '10');
+                    if ($thresholdMin < 1) $thresholdMin = 10;
+                    $now = now();
+                    $earliestSlip = 0;
+                    foreach ($bundles as $b) {
+                        if (($b['bundle_status'] ?? '') !== 'out_for_delivery') continue;
+                        if (($b['bundle_dispatch_status'] ?? '') !== 'dispatched') continue;
+                        // Skip bundles already delivered.
+                        if (!empty($b['qurbani_delivered_at'])) continue;
+                        $eta = $b['qurbani_estimated_delivery_at'] ?? null;
+                        if (!$eta) continue;
+                        try {
+                            $etaCarbon = \Carbon\Carbon::parse($eta);
+                            $slip = (int) $etaCarbon->diffInMinutes($now, false); // signed
+                            if ($slip > $earliestSlip) $earliestSlip = $slip;
+                        } catch (\Exception $e) { /* ignore */ }
+                    }
+                    if ($earliestSlip > $thresholdMin) {
+                        $passiveResult = $this->recomputeQurbaniEtasInternal((int) $riderId, (int) $user->id, 'passive_late_detect');
+                        // Re-fetch bundles only when the recompute
+                        // actually mutated rows — avoids a redundant
+                        // query when we got rate-limited.
+                        if (($passiveResult['action'] ?? '') === 'updated' && ($passiveResult['updated'] ?? 0) > 0) {
+                            $route = $this->buildQurbaniRiderRoute($riderId, $filter);
+                            $bundles = $route['bundles'];
+                            if ($show === 'ofd') {
+                                $bundles = array_values(array_filter($bundles, function ($b) {
+                                    return ($b['bundle_status'] ?? '') === 'out_for_delivery';
+                                }));
+                            }
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Qurbani passive late-detect failed', [
+                    'rider_id' => $riderId, 'error' => $e->getMessage(),
+                ]);
+            }
+
             $this->enrichBundleEtaComparison($bundles);
 
             $rider = \DB::table('t_sys_user')
@@ -19937,6 +20163,11 @@ class RiderController extends Controller
             $latestDispatchedAt = null;
             $latestDispatchedBy = null;
             $latestStartedAt = null;
+            // Live tracking is bundle-shared but stored per row, so we
+            // surface ONE aggregate boolean: true if any DISPATCHED &
+            // undelivered bundle has the flag on. Bundles already
+            // delivered shouldn't keep live tracking "on" in the UI.
+            $liveTrackingEnabled = false;
             foreach ($bundles as $b) {
                 if (!empty($b['qurbani_dispatched_at'])) {
                     if (!$latestDispatchedAt || strtotime($b['qurbani_dispatched_at']) > strtotime($latestDispatchedAt)) {
@@ -19949,11 +20180,46 @@ class RiderController extends Controller
                         $latestStartedAt = $b['qurbani_started_delivery_at'];
                     }
                 }
+                if (!empty($b['qurbani_live_tracking_enabled'])
+                    && empty($b['qurbani_delivered_at'])
+                    && ($b['bundle_status'] ?? '') === 'out_for_delivery') {
+                    $liveTrackingEnabled = true;
+                }
             }
             $dispatchedByName = null;
             if ($latestDispatchedBy) {
                 $dispatchedByName = \DB::table('t_sys_user')->where('id', $latestDispatchedBy)->value('fullname');
             }
+
+            // Phase C — GPS health for THIS rider so the planner card
+            // can show a pill at the top. Re-uses the same thresholds
+            // as getQurbaniRidersSummary (live ≤5min, recent ≤30min,
+            // stale beyond, none = no reading).
+            $gpsRow = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->orderBy('captured_at', 'desc')
+                ->select('latitude', 'longitude', 'captured_at')
+                ->first();
+            $gpsStatus = 'none';
+            $gpsAgeMinutes = null;
+            $gpsCapturedAt = null;
+            if ($gpsRow && $gpsRow->captured_at) {
+                $gpsCapturedAt = (string) $gpsRow->captured_at;
+                try {
+                    $captured = \Carbon\Carbon::parse($gpsRow->captured_at);
+                    $gpsAgeMinutes = (int) abs(now()->diffInMinutes($captured));
+                    if ($gpsAgeMinutes <= 5)        $gpsStatus = 'live';
+                    elseif ($gpsAgeMinutes <= 30)   $gpsStatus = 'recent';
+                    else                            $gpsStatus = 'stale';
+                } catch (\Exception $e) { /* leave as none */ }
+            }
+
+            // Phase 3 (May-2026) — Qurbani auto-WhatsApp piggyback.
+            // Run the auto-sender AFTER the response is flushed so the
+            // manager UI never waits on Meta latency. The service
+            // self-throttles via Cache::add (55s lock) so calling it
+            // from every poll is safe.
+            $this->fireQurbaniWaAutoSender();
 
             return response()->json([
                 'success' => true,
@@ -19965,10 +20231,179 @@ class RiderController extends Controller
                     'dispatched_by' => $latestDispatchedBy ? (int) $latestDispatchedBy : null,
                     'dispatched_by_name' => $dispatchedByName,
                     'started_delivery_at' => $latestStartedAt,
+                    // Phase 1 (May-2026) — bundle-shared aggregate flag.
+                    // Manager planner renders the toggle pill from this;
+                    // rider app gates the auto-refresh loop on it.
+                    'live_tracking_enabled' => $liveTrackingEnabled,
                 ],
+                'gps' => [
+                    'status'      => $gpsStatus,
+                    'age_minutes' => $gpsAgeMinutes,
+                    'captured_at' => $gpsCapturedAt,
+                    'latitude'    => $gpsRow && $gpsRow->latitude  ? (float) $gpsRow->latitude  : null,
+                    'longitude'   => $gpsRow && $gpsRow->longitude ? (float) $gpsRow->longitude : null,
+                ],
+                // Phase A3 — present only when a passive late-detect
+                // recompute was attempted on this request. Clients can
+                // surface a one-off toast (e.g. "Running late — ETAs
+                // refreshed") without polling extra endpoints.
+                'passive_recompute' => $passiveResult,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to load qurbani rider route', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * GET /api/rider/qurbani/riders/{riderId}/dispatch-map
+     * GET /qurbani/api/riders/{riderId}/dispatch-map  (web alias)
+     *
+     * Phase C (May-2026) — payload for the Qurbani dispatch map (mobile +
+     * web). Scoped to ONE rider's CURRENT dispatch event (the latest
+     * qurbani_dispatched_at across their assignments) so the modal
+     * shows pins for just this trip:
+     *
+     *   - rider's last GPS reading (with status: live | recent | stale | none)
+     *   - Qurbani Operations Base (when configured)
+     *   - one pin per OFD bundle (orange, with sequence + ETA + customer)
+     *   - one pin per delivered-this-dispatch bundle (green, greyed-out
+     *     style on client; we just expose the data)
+     *
+     * Authorisation mirrors getQurbaniRiderRoute — manager with
+     * access_qurbani_mode OR the rider themselves.
+     */
+    public function getQurbaniDispatchMap(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwnRoute = ((int) $user->id === (int) $riderId);
+            if (!$isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $rider = \DB::table('t_sys_user')
+                ->where('id', $riderId)
+                ->select('id', 'fullname')
+                ->first();
+            if (!$rider) {
+                return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
+            }
+
+            // Pull the rider's latest dispatched_at — this becomes the
+            // batch discriminator for the map. We allow a small tolerance
+            // (5 min) on either side to capture bundles that were
+            // dispatched in the same press but stamped a few seconds
+            // apart due to per-bundle UPDATE order.
+            $latestDispatch = \DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_assigned_rider_user_id', $riderId)
+                ->whereNotNull('qurbani_dispatched_at')
+                ->max('qurbani_dispatched_at');
+
+            // Build the rider's full route with location info, then
+            // bucket bundles into "this dispatch · OFD" and "this
+            // dispatch · delivered". Bundles never dispatched are
+            // ignored — the map is about the in-flight trip.
+            $route = $this->buildQurbaniRiderRoute($riderId, 'all');
+            $ofd = [];
+            $delivered = [];
+            if ($latestDispatch) {
+                $cutoffMin = \Carbon\Carbon::parse($latestDispatch)->subMinutes(5);
+                $cutoffMax = \Carbon\Carbon::parse($latestDispatch)->addMinutes(5);
+                foreach ($route['bundles'] as $b) {
+                    $disp = $b['qurbani_dispatched_at'] ?? null;
+                    if (!$disp) continue;
+                    try {
+                        $d = \Carbon\Carbon::parse($disp);
+                        if ($d->lt($cutoffMin) || $d->gt($cutoffMax)) continue;
+                    } catch (\Exception $e) { continue; }
+                    $entry = [
+                        'bundle_key'                    => $b['bundle_key'],
+                        'order_id'                      => $b['order_id'] ?? null,
+                        'order_number'                  => $b['order_number'] ?? null,
+                        'customer_name'                 => $b['customer_name'] ?? null,
+                        'customer_phone'                => $b['customer_phone'] ?? null,
+                        'customer_address'              => $b['customer_address'] ?? null,
+                        'qurbani_region'                => $b['qurbani_region'] ?? null,
+                        'qurbani_sub_region'            => $b['qurbani_sub_region'] ?? null,
+                        'lat'                           => $b['cust_lat'] ? (float) $b['cust_lat'] : null,
+                        'lng'                           => $b['cust_lng'] ? (float) $b['cust_lng'] : null,
+                        'priority'                      => $b['qurbani_delivery_priority'] ?? null,
+                        'estimated_delivery_at'         => $b['qurbani_estimated_delivery_at'] ?? null,
+                        'delivered_at'                  => $b['qurbani_delivered_at'] ?? null,
+                        'bundle_size'                   => $b['bundle_size'] ?? null,
+                        'item_count'                    => count($b['items'] ?? []),
+                    ];
+                    $isDelivered = !empty($b['qurbani_delivered_at']) || ($b['bundle_status'] ?? '') === 'delivered';
+                    if ($isDelivered) {
+                        $delivered[] = $entry;
+                    } elseif (($b['bundle_status'] ?? '') === 'out_for_delivery') {
+                        $ofd[] = $entry;
+                    }
+                }
+                // Order OFD by route priority for nicer numbering on map.
+                usort($ofd, function ($a, $b) {
+                    $pa = $a['priority'] ?? 9999;
+                    $pb = $b['priority'] ?? 9999;
+                    return $pa <=> $pb;
+                });
+                // Delivered ordered by actual delivery time.
+                usort($delivered, function ($a, $b) {
+                    return strcmp((string) ($a['delivered_at'] ?? ''), (string) ($b['delivered_at'] ?? ''));
+                });
+            }
+
+            // Rider GPS — same shape as getQurbaniRiderRoute.
+            $gpsRow = \DB::table('t_ops_rider_location')
+                ->where('user_id', $riderId)
+                ->orderBy('captured_at', 'desc')
+                ->select('latitude', 'longitude', 'captured_at')
+                ->first();
+            $gpsStatus = 'none';
+            $gpsAgeMinutes = null;
+            $gpsCapturedAt = null;
+            if ($gpsRow && $gpsRow->captured_at) {
+                $gpsCapturedAt = (string) $gpsRow->captured_at;
+                try {
+                    $captured = \Carbon\Carbon::parse($gpsRow->captured_at);
+                    $gpsAgeMinutes = (int) abs(now()->diffInMinutes($captured));
+                    if ($gpsAgeMinutes <= 5)        $gpsStatus = 'live';
+                    elseif ($gpsAgeMinutes <= 30)   $gpsStatus = 'recent';
+                    else                            $gpsStatus = 'stale';
+                } catch (\Exception $e) { /* leave none */ }
+            }
+
+            $qBase = \App\Services\LocationService::getQurbaniBaseLocation();
+
+            return response()->json([
+                'success' => true,
+                'rider' => ['id' => (int) $rider->id, 'name' => $rider->fullname],
+                'dispatched_at' => $latestDispatch,
+                'rider_gps' => [
+                    'status'      => $gpsStatus,
+                    'age_minutes' => $gpsAgeMinutes,
+                    'captured_at' => $gpsCapturedAt,
+                    'lat'         => $gpsRow && $gpsRow->latitude  ? (float) $gpsRow->latitude  : null,
+                    'lng'         => $gpsRow && $gpsRow->longitude ? (float) $gpsRow->longitude : null,
+                ],
+                'base' => $qBase ? [
+                    'name' => (string) $qBase->location_name,
+                    'lat'  => (float) $qBase->latitude,
+                    'lng'  => (float) $qBase->longitude,
+                ] : null,
+                'ofd_bundles'       => $ofd,
+                'delivered_bundles' => $delivered,
+                'counts' => [
+                    'ofd'       => count($ofd),
+                    'delivered' => count($delivered),
+                    'total'     => count($ofd) + count($delivered),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load Qurbani dispatch map', [
                 'rider_id' => $riderId,
                 'error' => $e->getMessage(),
             ]);
@@ -20004,29 +20439,23 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
             }
 
-            // Origin = rider's recent GPS, fallback to assigned base location.
-            $riderLocation = \DB::table('t_ops_rider_location')
-                ->where('user_id', $riderId)
-                ->where('captured_at', '>=', now()->subMinutes(30))
-                ->orderBy('captured_at', 'desc')
-                ->first();
-
-            $usedShopLocation = false;
-            if (!$riderLocation) {
-                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
-                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
-                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "Rider GPS not active and no shop location configured.",
-                    ], 400);
-                }
-                $riderLocation = (object) [
-                    'latitude' => $baseLocation->latitude,
-                    'longitude' => $baseLocation->longitude,
-                ];
-                $usedShopLocation = true;
+            // Origin lookup: rider GPS → Qurbani Operations Base →
+            // assigned office → primary office. The Qurbani-specific
+            // base (configurable from /qurbani-settings) is the new
+            // preferred fallback so ETAs reflect the actual depot
+            // when the rider's app hasn't pinged GPS recently.
+            $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, 30);
+            if (!$origin) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No origin available — rider GPS is stale, no Qurbani base set, and no office location configured.',
+                ], 400);
             }
+            $usedShopLocation = ($origin['source'] !== 'rider_gps');
+            $riderLocation = (object) [
+                'latitude'  => $origin['latitude'],
+                'longitude' => $origin['longitude'],
+            ];
 
             // Optimise PENDING out-for-delivery bundles only — the
             // already-dispatched batch is frozen by design (the manager
@@ -20119,8 +20548,13 @@ class RiderController extends Controller
                 'bundles_count' => count($optimised),
                 'no_location_bundles' => $noLocation,
             ];
+            // Tell the caller which origin we used so the UI can warn
+            // the manager when the route was planned from a fallback
+            // (rider's GPS off / Qurbani base / regular office).
+            $response['origin_source']       = $origin['source'];
+            $response['origin_source_label'] = $origin['source_label'];
             if ($usedShopLocation) {
-                $response['gps_warning'] = "Rider GPS not active — route optimized from shop location.";
+                $response['gps_warning'] = "Rider GPS not active — route optimized from " . $origin['source_label'] . '.';
             }
             return response()->json($response);
         } catch (\Exception $e) {
@@ -20261,9 +20695,19 @@ class RiderController extends Controller
      *     bundles in current priority order). Does NOT change
      *     qurbani_dispatched_at/by — the original dispatch is still
      *     the same dispatch event.
-     *   - Riders cannot call this. They get one shot at ETA refresh
-     *     by pressing Start Delivery; after that, any traffic-driven
-     *     ETA update is the manager's responsibility.
+     *   - Riders cannot call this directly. See 'refresh-self' below.
+     *
+     * target='refresh-self' (Phase D, May-2026) — rider-only auto/manual
+     * ETA refresh while OFD:
+     *   - Same effect as 'refresh' but allowed only on the rider's OWN
+     *     route. Origin = rider's current GPS (since this is exactly
+     *     the situation we want live ETA for).
+     *   - Server-side rate limit: max 1 call per minute per rider via
+     *     a Cache lock. Avoids hammering Google Directions when the
+     *     mobile app misbehaves.
+     *   - Skipped (returns success=true with skipped=true) if the
+     *     rider has no fresh GPS reading — caller can decide whether
+     *     to retry later.
      */
     public function dispatchQurbaniRoute(Request $request, $riderId)
     {
@@ -20274,11 +20718,34 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
             }
 
-            // 'pending' (default) | 'refresh'
+            // 'pending' (default) | 'refresh' | 'refresh-self'
             $target = strtolower((string) $request->input('target', 'pending'));
-            if (!in_array($target, ['pending', 'refresh'], true)) $target = 'pending';
-            // Only managers can hit the refresh path. Riders pressing
-            // their Start Delivery button always go through 'pending'.
+            if (!in_array($target, ['pending', 'refresh', 'refresh-self'], true)) $target = 'pending';
+            // refresh-self is rider-only on their own route. It's the
+            // sanctioned way for the rider's app to recompute ETAs
+            // mid-run without giving them the manager-only 'refresh'.
+            if ($target === 'refresh-self' && !$isOwnRoute) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'refresh-self is only valid on your own route.',
+                ], 403);
+            }
+            // Server-side rate limit on rider-driven auto-refresh —
+            // max 1 call/minute/rider. Stops misbehaving mobiles from
+            // hammering Google Directions during a delivery run.
+            if ($target === 'refresh-self') {
+                $rlKey = 'qurbani_eta_refresh_self_' . $riderId;
+                if (\Cache::has($rlKey)) {
+                    return response()->json([
+                        'success'      => true,
+                        'skipped'      => true,
+                        'skip_reason'  => 'rate_limited',
+                        'message'      => 'ETA refresh skipped (rate-limited — try again in a moment).',
+                    ]);
+                }
+                \Cache::put($rlKey, 1, 60);
+            }
+            // Only managers can hit the manager refresh path.
             if ($target === 'refresh' && $isOwnRoute && !$user->hasMobilePermission('access_qurbani_mode')) {
                 return response()->json([
                     'success' => false,
@@ -20295,28 +20762,37 @@ class RiderController extends Controller
                 return response()->json(['success' => false, 'message' => 'Rider not found'], 404);
             }
 
-            // Origin = rider GPS, fallback to base location.
-            $riderLocation = \DB::table('t_ops_rider_location')
-                ->where('user_id', $riderId)
-                ->where('captured_at', '>=', now()->subMinutes(30))
-                ->orderBy('captured_at', 'desc')
-                ->first();
-            $usedShopLocation = false;
-            if (!$riderLocation) {
-                $baseLocation = \App\Services\LocationService::getUserAssignedLocation($riderId)
-                    ?? \App\Services\LocationService::getPrimaryBaseLocation();
-                if (!$baseLocation || !$baseLocation->latitude || !$baseLocation->longitude) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Rider GPS not active and no shop location configured.',
-                    ], 400);
-                }
-                $riderLocation = (object) [
-                    'latitude' => $baseLocation->latitude,
-                    'longitude' => $baseLocation->longitude,
-                ];
-                $usedShopLocation = true;
+            // Origin lookup: rider GPS → Qurbani Operations Base →
+            // assigned office → primary office. Phase A (May-2026)
+            // moved this into a shared helper so optimize + dispatch
+            // agree on the chain.
+            //
+            // refresh-self uses a tighter freshness window (5 min) —
+            // the whole point of an auto-refresh during a live run is
+            // to react to the rider's current position; if their GPS
+            // is older than 5 min, we silently skip rather than
+            // recompute against stale data.
+            $freshness = ($target === 'refresh-self') ? 5 : 30;
+            $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, $freshness);
+            if ($target === 'refresh-self' && (!$origin || $origin['source'] !== 'rider_gps')) {
+                return response()->json([
+                    'success'     => true,
+                    'skipped'     => true,
+                    'skip_reason' => 'gps_stale',
+                    'message'     => 'ETA refresh skipped (rider GPS is stale).',
+                ]);
             }
+            if (!$origin) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No origin available — rider GPS is stale, no Qurbani base set, and no office location configured.',
+                ], 400);
+            }
+            $usedShopLocation = ($origin['source'] !== 'rider_gps');
+            $riderLocation = (object) [
+                'latitude'  => $origin['latitude'],
+                'longitude' => $origin['longitude'],
+            ];
 
             $sequence = $request->input('sequence', []);
 
@@ -20358,20 +20834,33 @@ class RiderController extends Controller
             }
 
             // Choose the bundle set to dispatch based on target.
-            //   pending  → only never-dispatched OFD bundles
-            //   refresh  → only already-dispatched (not delivered) bundles
+            //   pending       → only never-dispatched OFD bundles
+            //   refresh       → only already-dispatched (not delivered) bundles
+            //   refresh-self  → same as refresh (rider's own route)
             $route = $this->buildQurbaniRiderRoute($riderId, 'open');
-            $ofdBundles = array_values(array_filter($route['bundles'], function ($b) use ($target) {
+            $isRefresh = ($target === 'refresh' || $target === 'refresh-self');
+            $ofdBundles = array_values(array_filter($route['bundles'], function ($b) use ($isRefresh) {
                 if (($b['bundle_status'] ?? '') !== 'out_for_delivery') return false;
                 $ds = $b['bundle_dispatch_status'] ?? 'pending';
-                return $target === 'refresh' ? ($ds === 'dispatched') : ($ds === 'pending');
+                return $isRefresh ? ($ds === 'dispatched') : ($ds === 'pending');
             }));
 
             if (empty($ofdBundles)) {
                 \DB::rollBack();
+                // For rider auto-refresh, treat "nothing to refresh" as
+                // a soft skip rather than an error — the screen polls
+                // periodically and we don't want a noisy alert.
+                if ($target === 'refresh-self') {
+                    return response()->json([
+                        'success'     => true,
+                        'skipped'     => true,
+                        'skip_reason' => 'no_dispatched_bundles',
+                        'message'     => 'No dispatched bundles to refresh.',
+                    ]);
+                }
                 return response()->json([
                     'success' => false,
-                    'message' => $target === 'refresh'
+                    'message' => $isRefresh
                         ? 'No dispatched bundles to refresh.'
                         : 'No pending out-for-delivery bundles to dispatch.',
                 ], 400);
@@ -20391,8 +20880,21 @@ class RiderController extends Controller
                 }
             }
 
+            // Phase B (May-2026) — append the Qurbani Operations Base
+            // as a synthetic FINAL waypoint when configured. The extra
+            // leg gives us a "Return to base" ETA after the last
+            // delivery without any extra Google API calls. If no base
+            // is configured we just don't append, and return-to-base
+            // stays null in the response.
+            $qBase = \App\Services\LocationService::getQurbaniBaseLocation();
+            $appendBase = ($qBase !== null && count($bundlesWithLoc) > 0);
+            if ($appendBase) {
+                $waypoints[] = ['lat' => (float) $qBase->latitude, 'lng' => (float) $qBase->longitude];
+            }
+
             $estimatedAtByBundle = [];
             $totalDuration = 0;
+            $returnToBase = null;
             if (count($bundlesWithLoc) > 0) {
                 $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
                 if (!$etaResult) {
@@ -20412,7 +20914,35 @@ class RiderController extends Controller
                     $estimatedAtByBundle[$b['bundle_key']] = $estAt;
                     $cumulative += $stopBufferMinutes;
                 }
+                // Total duration BEFORE the synthetic return leg —
+                // existing callers expect this to mean "time to last
+                // customer", not "time to back at base".
                 $totalDuration = round($cumulative);
+                // Return-to-base leg = the leg AFTER the last customer.
+                // legs array length is (waypoints - 1); the last leg
+                // is from last_customer → qBase. We don't add the 5min
+                // stop buffer here because the rider isn't "stopping"
+                // at base in the same sense.
+                if ($appendBase) {
+                    $returnLegIdx = count($bundlesWithLoc); // = legs index for last_customer→base
+                    $returnLegMin = $etaResult['legs'][$returnLegIdx] ?? 0;
+                    if ($returnLegMin > 0) {
+                        // ETA at base = ETA at last customer + return-leg minutes.
+                        // We can't reuse $cumulative directly because it
+                        // already added the stop buffer for the last
+                        // customer; subtract that buffer back out.
+                        $cumulativeAtLast = $cumulative - $stopBufferMinutes;
+                        $eta = $now->copy()->addMinutes(round($cumulativeAtLast + $returnLegMin));
+                        $returnToBase = [
+                            'base_name'        => (string) $qBase->location_name,
+                            'base_lat'         => (float) $qBase->latitude,
+                            'base_lng'         => (float) $qBase->longitude,
+                            'return_minutes'   => (int) round($returnLegMin),
+                            'estimated_at'     => $eta->toIso8601String(),
+                            'estimated_at_iso' => $eta->toIso8601String(),
+                        ];
+                    }
+                }
             }
 
             // Persist ETAs (and on 'pending' also dispatched_at) on every
@@ -20436,6 +20966,10 @@ class RiderController extends Controller
                 if ($target === 'pending') {
                     $update['qurbani_dispatched_at'] = $dispatchedAt;
                     $update['qurbani_dispatched_by'] = $user->id;
+                    // Reset Live ETA tracking on every fresh dispatch so a
+                    // toggle from a previous trip doesn't silently bleed
+                    // into the next one. Manager / rider opts in again.
+                    $update['qurbani_live_tracking_enabled'] = 0;
                 }
                 if ($estAt) {
                     $update['qurbani_estimated_delivery_at'] = $estAt;
@@ -20457,7 +20991,7 @@ class RiderController extends Controller
 
             \DB::commit();
 
-            \Log::info('Qurbani route ' . ($target === 'refresh' ? 'ETAs refreshed' : 'dispatched'), [
+            \Log::info('Qurbani route ' . ($isRefresh ? 'ETAs refreshed' : 'dispatched'), [
                 'rider_id' => $riderId,
                 'target' => $target,
                 'dispatched_by' => $user->id,
@@ -20465,10 +20999,14 @@ class RiderController extends Controller
                 'bundles' => count($ofdBundles),
                 'items_touched' => $itemsTouched,
                 'total_duration_minutes' => $totalDuration,
+                'origin_source' => $origin['source'],
+                'return_to_base' => $returnToBase ? $returnToBase['return_minutes'] : null,
             ]);
 
             if ($target === 'refresh') {
                 $msg = "ETAs refreshed for " . count($ofdBundles) . ' dispatched bundle(s).';
+            } elseif ($target === 'refresh-self') {
+                $msg = "ETAs auto-refreshed for " . count($ofdBundles) . ' bundle(s).';
             } elseif ($isOwnRoute) {
                 $msg = 'Delivery started — ETAs computed.';
             } else {
@@ -20490,15 +21028,661 @@ class RiderController extends Controller
                 'no_location_bundles' => array_map(function ($b) {
                     return $b['order_number'] . ' (' . $b['customer_name'] . ')';
                 }, $bundlesNoLoc),
+                // Phase A — origin metadata (always returned).
+                'origin_source'       => $origin['source'],
+                'origin_source_label' => $origin['source_label'],
+                // Phase B — return-to-base ETA (null if no Qurbani base configured).
+                'return_to_base' => $returnToBase,
+                // For rider auto-refresh — caller can show "ETA refreshed N min ago".
+                'eta_calculated_at' => $isRefresh ? $dispatchedAt->toIso8601String() : null,
             ];
             if ($usedShopLocation) {
-                $response['gps_warning'] = 'Rider GPS not active — ETAs computed from shop location.';
+                $response['gps_warning'] = 'Rider GPS not active — ETAs computed from ' . $origin['source_label'] . '.';
             }
             return response()->json($response);
         } catch (\Exception $e) {
             \DB::rollBack();
             \Log::error('Qurbani dispatch failed', [
                 'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Internal Qurbani ETA recompute (May-2026 revision).
+     *
+     * Server-initiated cousin of dispatchQurbaniRoute(target='refresh').
+     * Used when delay detection fires after a delivery completion, or
+     * when planner / summary endpoints notice the earliest pending ETA
+     * has slipped past the configured threshold. Distinct from the
+     * rider-driven 'refresh-self' so we can:
+     *   - run even when rider GPS is stale (we WANT to react when the
+     *     rider's phone is dead but the dispatcher knows things are late)
+     *   - charge against the same 1/min/rider rate-limit cache so the
+     *     three triggers (delay-on-delivery, passive late-detect, rider
+     *     auto-refresh) can never combined-overload Google
+     *   - ignore master-switch=disabled (delay detection is admin-driven
+     *     ground truth, not a rider convenience). Callers gate this
+     *     themselves when needed.
+     *
+     * Returns an array with shape:
+     *   ['action' => 'updated' | 'skipped' | 'failed',
+     *    'reason' => string|null, 'updated' => int]
+     *
+     * Never throws — failures are logged and reported via 'failed'.
+     */
+    private function recomputeQurbaniEtasInternal(int $riderId, int $userId, string $reason): array
+    {
+        try {
+            // Same rate-limit cache key as the rider-driven path so all
+            // three triggers share the 1/min/rider budget.
+            $rlKey = 'qurbani_eta_refresh_self_' . $riderId;
+            if (\Cache::has($rlKey)) {
+                return ['action' => 'skipped', 'reason' => 'rate_limited', 'updated' => 0];
+            }
+
+            // Origin lookup with the GENEROUS 30-min freshness window —
+            // the manager-side trigger needs to work when rider GPS is
+            // briefly stale (battery dip, app backgrounded). If even
+            // the office is unavailable we bail.
+            $origin = \App\Services\LocationService::getQurbaniOriginForRider($riderId, 30);
+            if (!$origin) {
+                return ['action' => 'skipped', 'reason' => 'no_origin', 'updated' => 0];
+            }
+
+            // Pull the rider's currently-dispatched, undelivered bundles.
+            $route = $this->buildQurbaniRiderRoute($riderId, 'open');
+            $ofdBundles = array_values(array_filter($route['bundles'], function ($b) {
+                if (($b['bundle_status'] ?? '') !== 'out_for_delivery') return false;
+                return ($b['bundle_dispatch_status'] ?? '') === 'dispatched';
+            }));
+            if (empty($ofdBundles)) {
+                return ['action' => 'skipped', 'reason' => 'no_dispatched_bundles', 'updated' => 0];
+            }
+
+            // Build waypoints (origin + each bundle with location). Skip
+            // bundles without coords as elsewhere — their ETAs stay null.
+            $waypoints = [['lat' => (float) $origin['latitude'], 'lng' => (float) $origin['longitude']]];
+            $bundlesWithLoc = [];
+            foreach ($ofdBundles as $b) {
+                if ($b['cust_lat'] && $b['cust_lng']) {
+                    $waypoints[] = ['lat' => (float) $b['cust_lat'], 'lng' => (float) $b['cust_lng']];
+                    $bundlesWithLoc[] = $b;
+                }
+            }
+            if (count($bundlesWithLoc) === 0) {
+                return ['action' => 'skipped', 'reason' => 'no_geo_bundles', 'updated' => 0];
+            }
+
+            $etaResult = $this->getMultiStopEtaFromGoogle($waypoints);
+            if (!$etaResult) {
+                return ['action' => 'failed', 'reason' => 'google_directions_error', 'updated' => 0];
+            }
+
+            // Burn the rate-limit AFTER we know we'll actually mutate
+            // data — failed Google calls shouldn't lock the next try.
+            \Cache::put($rlKey, 1, 60);
+
+            $stopBufferMinutes = 5;
+            $cumulative = 0;
+            $now = now();
+            $estimatedAtByBundle = [];
+            foreach ($bundlesWithLoc as $idx => $b) {
+                $legDuration = $etaResult['legs'][$idx] ?? 0;
+                $cumulative += $legDuration;
+                $estimatedAtByBundle[$b['bundle_key']] = $now->copy()->addMinutes(round($cumulative));
+                $cumulative += $stopBufferMinutes;
+            }
+
+            $itemsTouched = 0;
+            foreach ($bundlesWithLoc as $b) {
+                $itemIds = array_map(fn($it) => $it['id'], $b['items']);
+                if (empty($itemIds)) continue;
+                $itemsTouched += \DB::table('t_crm_prod_order_line_item')
+                    ->whereIn('id', $itemIds)
+                    ->where('qurbani_assigned_rider_user_id', $riderId)
+                    ->update([
+                        'qurbani_estimated_delivery_at' => $estimatedAtByBundle[$b['bundle_key']],
+                        'qurbani_eta_calculated_at'     => $now,
+                        'updated_at'                    => $now,
+                    ]);
+            }
+
+            \Log::info('Qurbani ETA auto-recompute', [
+                'rider_id'      => $riderId,
+                'reason'        => $reason,
+                'origin_source' => $origin['source'],
+                'bundles'       => count($bundlesWithLoc),
+                'items_touched' => $itemsTouched,
+                'triggered_by'  => $userId,
+            ]);
+
+            return ['action' => 'updated', 'reason' => $reason, 'updated' => $itemsTouched];
+        } catch (\Exception $e) {
+            \Log::error('Qurbani ETA auto-recompute failed', [
+                'rider_id' => $riderId,
+                'reason'   => $reason,
+                'error'    => $e->getMessage(),
+            ]);
+            return ['action' => 'failed', 'reason' => 'exception', 'updated' => 0];
+        }
+    }
+
+    /**
+     * Detect ETA-vs-delivered slip on a freshly-delivered batch and,
+     * if any rider's items slipped past the threshold, kick off a
+     * single ETA recompute for the rest of that rider's dispatch.
+     *
+     * Pre-condition: the items have ALREADY been updated to
+     * qurbani_item_status='delivered' with qurbani_delivered_at=NOW().
+     * We pass the original $items collection (read BEFORE the update)
+     * so we still have the OLD qurbani_estimated_delivery_at to compare
+     * against — that's the "ETA stored at the time of dispatch" the
+     * user described.
+     *
+     * Returns the per-rider trigger results so callers can surface
+     * "ETAs auto-refreshed" toasts to the rider's screen.
+     */
+    private function maybeRecomputeOnDeliveryDelay($items, int $userId): array
+    {
+        $thresholdMin = (int) \App\Models\FIN\ConfigModel::get('qurbani_eta_delay_threshold_minutes', '10');
+        if ($thresholdMin < 1) $thresholdMin = 10;
+        $masterEnabled = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
+        if (!$masterEnabled) {
+            // Admin disabled the whole feature — don't auto-recompute.
+            return [];
+        }
+
+        $now = now();
+        $delayedRiders = [];
+        $delayDetails = [];
+        foreach ($items as $li) {
+            $eta = $li->qurbani_estimated_delivery_at ?? null;
+            $rider = (int) ($li->qurbani_assigned_rider_user_id ?? 0);
+            if (!$eta || !$rider) continue;
+            try {
+                $etaCarbon = \Carbon\Carbon::parse($eta);
+                $slipMinutes = $etaCarbon->diffInMinutes($now, false); // signed: positive when now > eta
+                if ($slipMinutes > $thresholdMin) {
+                    $delayedRiders[$rider] = true;
+                    $delayDetails[] = [
+                        'line_item_id' => $li->id,
+                        'rider_id'     => $rider,
+                        'slip_minutes' => (int) $slipMinutes,
+                    ];
+                }
+            } catch (\Exception $e) {
+                // Ignore malformed timestamps.
+            }
+        }
+
+        if (empty($delayedRiders)) {
+            return [];
+        }
+
+        // One recompute per rider — even if 5 of their bundles slipped
+        // we only recompute the route once.
+        $results = [];
+        foreach (array_keys($delayedRiders) as $riderId) {
+            $r = $this->recomputeQurbaniEtasInternal((int) $riderId, $userId, 'delivery_delay');
+            $r['rider_id'] = (int) $riderId;
+            $results[] = $r;
+        }
+
+        \Log::info('Qurbani delay-trigger recompute', [
+            'threshold_min' => $thresholdMin,
+            'delayed_items' => $delayDetails,
+            'results'       => $results,
+        ]);
+        return $results;
+    }
+
+    /**
+     * POST /rider/qurbani/riders/{riderId}/live-tracking
+     * Body: { enabled: bool }
+     *
+     * Phase 1 (May-2026) — toggle the per-dispatch Live ETA tracking
+     * flag. Either the manager (with access_qurbani_mode) or the rider
+     * themselves can flip it. The flag is stored on every dispatched
+     * line item assigned to this rider and is reset to 0 every time
+     * a fresh dispatch is pressed (see dispatchQurbaniRoute,
+     * target='pending').
+     *
+     * When ON, the rider app's auto-refresh loop wakes up every
+     * qurbani_eta_refresh_minutes (default 3) and calls dispatchQurbaniRoute
+     * with target='refresh-self', recomputing ETAs from current GPS.
+     * The shared 1-min/rider rate limit in recomputeQurbaniEtasInternal
+     * still applies — if delay-detect or passive late-detect fires in
+     * the same minute, the auto refresh will no-op silently.
+     *
+     * Hard requirements:
+     *   - Master switch (qurbani_eta_refresh_enabled) must be ON,
+     *     otherwise we refuse the toggle entirely (the rider app's
+     *     timer also gates on this so it would never fire anyway,
+     *     but UX-wise we want a clean error message instead of a
+     *     silently-accepted toggle that does nothing).
+     *   - The rider must have at least one DISPATCHED, undelivered
+     *     bundle; turning it on for a rider with nothing dispatched
+     *     is meaningless (and confusing — the next dispatch resets
+     *     the flag anyway).
+     */
+    public function setQurbaniLiveTracking(Request $request, $riderId)
+    {
+        try {
+            $user = Auth::user();
+            $isOwn = ((int) $user->id === (int) $riderId);
+            if (!$isOwn && !$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            $enabled = filter_var($request->input('enabled'), FILTER_VALIDATE_BOOLEAN);
+
+            if ($enabled) {
+                $masterOn = \App\Models\FIN\ConfigModel::get('qurbani_eta_refresh_enabled', '1') === '1';
+                if (!$masterOn) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Live ETA tracking is disabled in Qurbani Settings — ask an admin to enable it.',
+                    ], 422);
+                }
+            }
+
+            // Scope: every line item this rider has that is currently
+            // dispatched and not delivered. Same scope as the
+            // refresh-self / delay-detect recomputes so the rider's
+            // app sees a consistent flag across all dispatched bundles.
+            $rowsAffected = \DB::table('t_crm_prod_order_line_item')
+                ->where('qurbani_assigned_rider_user_id', $riderId)
+                ->whereNotNull('qurbani_dispatched_at')
+                ->whereNull('qurbani_delivered_at')
+                ->where(function ($q) {
+                    $q->whereNull('qurbani_item_status')
+                      ->orWhere('qurbani_item_status', '!=', 'delivered');
+                })
+                ->update([
+                    'qurbani_live_tracking_enabled' => $enabled ? 1 : 0,
+                    'updated_at' => now(),
+                ]);
+
+            if ($rowsAffected === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No dispatched undelivered bundles for this rider — toggle is reset on every new dispatch.',
+                ], 422);
+            }
+
+            \Log::info('Qurbani live tracking toggled', [
+                'rider_id'   => (int) $riderId,
+                'enabled'    => $enabled,
+                'changed_by' => $user->id,
+                'is_own'     => $isOwn,
+                'rows'       => $rowsAffected,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'enabled' => $enabled,
+                'rider_id' => (int) $riderId,
+                'rows_updated' => $rowsAffected,
+                'message' => $enabled
+                    ? 'Live ETA tracking enabled — rider app will refresh ETAs every few minutes.'
+                    : 'Live ETA tracking disabled.',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to toggle qurbani live tracking', [
+                'rider_id' => $riderId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * GET /rider/qurbani/line-items/{lineItemId}/timeline    (mobile)
+     * GET /qurbani/api/line-items/{lineItemId}/timeline      (web alias)
+     *
+     * Phase 2 (May-2026) — Qurbani order timeline. Returns a single
+     * snapshot of everything customer-service / dispatch-watchers want
+     * to know about a Qurbani line item at a glance:
+     *
+     *   - Status events reached so far (placed → slaughtered → OFD →
+     *     delivered) with timestamps. Only the LATEST status change
+     *     has a "by" attribute because qurbani_status_updated_by is
+     *     overwritten on each transition.
+     *   - Rider name + dispatch event (who dispatched, when, when
+     *     the rider actually started the trip).
+     *   - Current ETA — single line, not a history. Includes a small
+     *     note when qurbani_eta_calculated_at > qurbani_dispatched_at
+     *     (i.e. the ETA was refreshed after dispatch).
+     *   - Delay alert — fires when ANY prior bundle in the same rider's
+     *     dispatch sequence was delivered more than the configured
+     *     threshold past its own ETA. Names the slipping prior stop
+     *     so the manager knows which delivery threw the schedule off.
+     *   - WhatsApp today — just the latest inbound + latest outbound
+     *     template message for this customer's conversation since
+     *     midnight. No per-order linking; this is for "did we hear
+     *     from them today / did we send them anything?" context.
+     *
+     * Authorisation: any logged-in user with access_qurbani_mode (the
+     * timeline shows operational details for managers / customer
+     * service, not for riders' own delivery feed).
+     */
+    public function getQurbaniOrderTimeline(Request $request, $lineItemId)
+    {
+        try {
+            $user = Auth::user();
+            if (!$user->hasMobilePermission('access_qurbani_mode')) {
+                return response()->json(['success' => false, 'message' => 'Permission denied'], 403);
+            }
+
+            // Step 1: fetch the line item + its parent order with
+            // customer info. Single row, no joins — keeps this fast.
+            $li = \DB::table('t_crm_prod_order_line_item as li')
+                ->leftJoin('t_crm_prod_order as o', 'o.id', '=', 'li.order_id')
+                ->leftJoin('t_crm_customer as c', 'c.id', '=', 'o.customer_id')
+                ->where('li.id', $lineItemId)
+                ->select(
+                    'li.id', 'li.order_id', 'li.name as item_name', 'li.quantity',
+                    'li.qurbani_day', 'li.qurbani_slot', 'li.qurbani_region',
+                    'li.qurbani_sub_region', 'li.qurbani_delivery_type',
+                    'li.qurbani_type', 'li.qurbani_paya', 'li.qurbani_item_status',
+                    'li.qurbani_status_updated_at', 'li.qurbani_status_updated_by',
+                    'li.qurbani_assigned_rider_user_id',
+                    'li.qurbani_dispatched_at', 'li.qurbani_dispatched_by',
+                    'li.qurbani_started_delivery_at',
+                    'li.qurbani_estimated_delivery_at', 'li.qurbani_eta_calculated_at',
+                    'li.qurbani_slaughtered_at', 'li.qurbani_out_for_delivery_at', 'li.qurbani_delivered_at',
+                    'li.qurbani_delivery_priority', 'li.created_at as line_created_at',
+                    'o.id as order_id_dup', 'o.order_number', 'o.customer_id',
+                    'o.created_at as order_created_at',
+                    'o.address_first_name', 'o.address_last_name',
+                    'o.address_line1', 'o.address_line2', 'o.address_city',
+                    'o.name as order_name'
+                )
+                ->first();
+
+            if (!$li) {
+                return response()->json(['success' => false, 'message' => 'Line item not found'], 404);
+            }
+
+            // Step 2: resolve all "by" user IDs in one query so we can
+            // attach names without N+1 lookups.
+            $userIds = array_filter([
+                $li->qurbani_status_updated_by,
+                $li->qurbani_dispatched_by,
+                $li->qurbani_assigned_rider_user_id,
+            ]);
+            $userMap = [];
+            if (!empty($userIds)) {
+                $userMap = \DB::table('t_sys_user')
+                    ->whereIn('id', array_unique($userIds))
+                    ->pluck('fullname', 'id')
+                    ->toArray();
+            }
+
+            // Step 3: build status events. Include only events that
+            // have a timestamp (i.e. that have actually happened).
+            // The latest status carries the "by" attribute since
+            // qurbani_status_updated_by only stores the most recent
+            // transition's actor.
+            $currentStatus = strtolower((string) ($li->qurbani_item_status ?? ''));
+            $latestActorId = $li->qurbani_status_updated_by;
+            $events = [];
+            $events[] = [
+                'key'   => 'placed',
+                'label' => 'Order placed',
+                'at'    => $li->order_created_at ? (string) $li->order_created_at : (string) $li->line_created_at,
+                'by'    => null,
+                'icon'  => '📝',
+                'color' => '#6B7280',
+            ];
+            if ($li->qurbani_slaughtered_at) {
+                $events[] = [
+                    'key'   => 'slaughtered',
+                    'label' => 'Slaughtered',
+                    'at'    => (string) $li->qurbani_slaughtered_at,
+                    'by'    => $currentStatus === 'slaughtered' && $latestActorId
+                        ? ($userMap[$latestActorId] ?? null) : null,
+                    'icon'  => '🔪',
+                    'color' => '#92400E',
+                ];
+            }
+            if ($li->qurbani_out_for_delivery_at) {
+                $events[] = [
+                    'key'   => 'ofd',
+                    'label' => 'Out for Delivery',
+                    'at'    => (string) $li->qurbani_out_for_delivery_at,
+                    'by'    => $currentStatus === 'out_for_delivery' && $latestActorId
+                        ? ($userMap[$latestActorId] ?? null) : null,
+                    'icon'  => '🛵',
+                    'color' => '#1E40AF',
+                ];
+            }
+            if ($li->qurbani_delivered_at) {
+                $events[] = [
+                    'key'   => 'delivered',
+                    'label' => 'Delivered',
+                    'at'    => (string) $li->qurbani_delivered_at,
+                    'by'    => $currentStatus === 'delivered' && $latestActorId
+                        ? ($userMap[$latestActorId] ?? null) : null,
+                    'icon'  => '✅',
+                    'color' => '#065F46',
+                ];
+            }
+
+            // Step 4: dispatch + rider info. Bundle-shared fields so a
+            // single line item is enough.
+            $rider = null;
+            if ($li->qurbani_assigned_rider_user_id) {
+                $rider = [
+                    'id'   => (int) $li->qurbani_assigned_rider_user_id,
+                    'name' => $userMap[$li->qurbani_assigned_rider_user_id] ?? 'Rider',
+                ];
+            }
+            $dispatch = null;
+            if ($li->qurbani_dispatched_at) {
+                $dispatch = [
+                    'at'         => (string) $li->qurbani_dispatched_at,
+                    'by_id'      => $li->qurbani_dispatched_by ? (int) $li->qurbani_dispatched_by : null,
+                    'by_name'    => $li->qurbani_dispatched_by
+                        ? ($userMap[$li->qurbani_dispatched_by] ?? null) : null,
+                    'started_at' => $li->qurbani_started_delivery_at
+                        ? (string) $li->qurbani_started_delivery_at : null,
+                ];
+            }
+
+            // Step 5: current ETA — show ONE line. Note when the ETA
+            // was recomputed after dispatch (eta_calculated_at strictly
+            // after dispatched_at by more than 1 minute, to ignore
+            // the same-second stamp written during the initial
+            // dispatch flow).
+            $currentEta = null;
+            if ($li->qurbani_estimated_delivery_at) {
+                $isInitial = true;
+                $note = null;
+                if ($li->qurbani_dispatched_at && $li->qurbani_eta_calculated_at) {
+                    try {
+                        $dispAt = \Carbon\Carbon::parse($li->qurbani_dispatched_at);
+                        $calcAt = \Carbon\Carbon::parse($li->qurbani_eta_calculated_at);
+                        if ($calcAt->gt($dispAt->copy()->addMinute())) {
+                            $isInitial = false;
+                            $note = 'ETA refreshed after dispatch · last calculated at '
+                                . $calcAt->format('H:i');
+                        }
+                    } catch (\Exception $e) { /* fallthrough */ }
+                }
+                $currentEta = [
+                    'at'             => (string) $li->qurbani_estimated_delivery_at,
+                    'calculated_at'  => $li->qurbani_eta_calculated_at
+                        ? (string) $li->qurbani_eta_calculated_at : null,
+                    'is_initial'     => $isInitial,
+                    'note'           => $note,
+                ];
+            }
+
+            // Step 6: delay alert. Find any prior bundle (lower
+            // qurbani_delivery_priority, same rider) that was
+            // delivered more than threshold past its own ETA.
+            // Only meaningful while the current item is still
+            // dispatched & undelivered — once delivered, the alert
+            // becomes historical noise.
+            $delayAlert = null;
+            $thresholdMin = (int) \App\Models\FIN\ConfigModel::get('qurbani_eta_delay_threshold_minutes', '10');
+            if ($thresholdMin < 1) $thresholdMin = 10;
+            if ($currentStatus !== 'delivered'
+                && $li->qurbani_assigned_rider_user_id
+                && $li->qurbani_delivery_priority !== null
+                && $li->qurbani_dispatched_at) {
+                $priorSlips = \DB::table('t_crm_prod_order_line_item as li2')
+                    ->leftJoin('t_crm_prod_order as o2', 'o2.id', '=', 'li2.order_id')
+                    ->leftJoin('t_crm_customer as c2', 'c2.id', '=', 'o2.customer_id')
+                    ->where('li2.qurbani_assigned_rider_user_id', $li->qurbani_assigned_rider_user_id)
+                    ->where('li2.qurbani_delivery_priority', '<', $li->qurbani_delivery_priority)
+                    ->whereNotNull('li2.qurbani_dispatched_at')
+                    ->whereNotNull('li2.qurbani_estimated_delivery_at')
+                    ->whereNotNull('li2.qurbani_delivered_at')
+                    ->where('li2.qurbani_dispatched_at', '>=', \Carbon\Carbon::parse($li->qurbani_dispatched_at)->subMinutes(5))
+                    ->select(
+                        'li2.qurbani_estimated_delivery_at',
+                        'li2.qurbani_delivered_at',
+                        'li2.qurbani_delivery_priority',
+                        'o2.name as order_name',
+                        'o2.address_first_name', 'o2.address_last_name',
+                        'c2.first_name as cust_first_name', 'c2.last_name as cust_last_name'
+                    )
+                    ->get();
+
+                $worstSlipMin = 0;
+                $worstStop = null;
+                foreach ($priorSlips as $s) {
+                    try {
+                        $eta = \Carbon\Carbon::parse($s->qurbani_estimated_delivery_at);
+                        $del = \Carbon\Carbon::parse($s->qurbani_delivered_at);
+                        $slip = (int) $eta->diffInMinutes($del, false); // positive when delivered AFTER eta
+                        if ($slip > $thresholdMin && $slip > $worstSlipMin) {
+                            $worstSlipMin = $slip;
+                            $worstStop = trim((string) (
+                                $s->order_name
+                                ?: trim(($s->address_first_name ?? '') . ' ' . ($s->address_last_name ?? ''))
+                                ?: trim(($s->cust_first_name ?? '') . ' ' . ($s->cust_last_name ?? ''))
+                            )) ?: 'a previous stop';
+                        }
+                    } catch (\Exception $e) { /* skip malformed */ }
+                }
+
+                if ($worstSlipMin > 0) {
+                    $delayAlert = [
+                        'active'       => true,
+                        'slip_minutes' => $worstSlipMin,
+                        'prior_stop'   => $worstStop,
+                        'reason'       => "Earlier stop ({$worstStop}) delivered {$worstSlipMin} min past its ETA — this delivery may slip too.",
+                    ];
+                }
+            }
+
+            // Step 7: WhatsApp today. Single conversation per customer,
+            // we just need the latest inbound + latest outbound from
+            // since-midnight (server timezone). No per-order linking.
+            $whatsappToday = ['last_inbound' => null, 'last_outbound' => null];
+            if ($li->customer_id) {
+                $convo = \DB::table('t_wa_conversations')
+                    ->where('customer_id', $li->customer_id)
+                    ->select('id')
+                    ->first();
+                if ($convo) {
+                    $startOfDay = now()->startOfDay();
+                    $msgs = \DB::table('t_wa_messages')
+                        ->where('conversation_id', $convo->id)
+                        ->where('created_at', '>=', $startOfDay)
+                        ->select('id', 'direction', 'type', 'content', 'template_name', 'sent_by', 'created_at')
+                        ->orderBy('created_at', 'desc')
+                        ->get();
+
+                    $sentByIds = [];
+                    foreach ($msgs as $m) {
+                        if ($m->direction === 'outbound' && $m->sent_by) $sentByIds[] = $m->sent_by;
+                    }
+                    $sentByMap = [];
+                    if (!empty($sentByIds)) {
+                        $sentByMap = \DB::table('t_sys_user')
+                            ->whereIn('id', array_unique($sentByIds))
+                            ->pluck('fullname', 'id')
+                            ->toArray();
+                    }
+
+                    foreach ($msgs as $m) {
+                        if ($m->direction === 'inbound' && !$whatsappToday['last_inbound']) {
+                            $preview = (string) ($m->content ?? '');
+                            if (mb_strlen($preview) > 80) $preview = mb_substr($preview, 0, 80) . '…';
+                            if ($preview === '' && $m->type) $preview = '[' . strtoupper($m->type) . ']';
+                            $whatsappToday['last_inbound'] = [
+                                'at'      => (string) $m->created_at,
+                                'preview' => $preview,
+                                'type'    => $m->type,
+                            ];
+                        }
+                        if ($m->direction === 'outbound' && !$whatsappToday['last_outbound']) {
+                            $preview = (string) ($m->content ?? '');
+                            if (mb_strlen($preview) > 80) $preview = mb_substr($preview, 0, 80) . '…';
+                            if ($preview === '' && $m->template_name) $preview = 'Template: ' . $m->template_name;
+                            $whatsappToday['last_outbound'] = [
+                                'at'            => (string) $m->created_at,
+                                'preview'       => $preview,
+                                'type'          => $m->type,
+                                'is_template'   => $m->type === 'template',
+                                'template_name' => $m->template_name,
+                                'by'            => $m->sent_by ? ($sentByMap[$m->sent_by] ?? null) : null,
+                            ];
+                        }
+                        if ($whatsappToday['last_inbound'] && $whatsappToday['last_outbound']) break;
+                    }
+                }
+            }
+
+            // Step 8: payload. Customer name uses the same fallback
+            // chain as the rest of the Qurbani views.
+            $customerName = $li->order_name
+                ?: trim(($li->address_first_name ?? '') . ' ' . ($li->address_last_name ?? ''));
+            if (!$customerName) $customerName = 'Unknown';
+
+            return response()->json([
+                'success' => true,
+                'order' => [
+                    'id'             => (int) $li->order_id,
+                    'order_number'   => $li->order_number,
+                    'customer_id'    => $li->customer_id ? (int) $li->customer_id : null,
+                    'customer_name'  => $customerName,
+                    'address'        => trim(implode(', ', array_filter([
+                        $li->address_line1, $li->address_line2, $li->address_city,
+                    ]))) ?: null,
+                ],
+                'line_item' => [
+                    'id'                       => (int) $li->id,
+                    'name'                     => $li->item_name,
+                    'quantity'                 => (float) $li->quantity,
+                    'qurbani_day'              => $li->qurbani_day,
+                    'qurbani_slot'             => $li->qurbani_slot,
+                    'qurbani_region'           => $li->qurbani_region,
+                    'qurbani_sub_region'       => $li->qurbani_sub_region,
+                    'qurbani_delivery_type'    => $li->qurbani_delivery_type,
+                    'qurbani_type'             => $li->qurbani_type,
+                    'qurbani_paya'             => $li->qurbani_paya,
+                    'qurbani_item_status'      => $li->qurbani_item_status,
+                    'qurbani_delivery_priority'=> $li->qurbani_delivery_priority !== null
+                        ? (int) $li->qurbani_delivery_priority : null,
+                ],
+                'events'         => $events,
+                'rider'          => $rider,
+                'dispatch'       => $dispatch,
+                'current_eta'    => $currentEta,
+                'delay_alert'    => $delayAlert,
+                'whatsapp_today' => $whatsappToday,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to load qurbani order timeline', [
+                'line_item_id' => $lineItemId,
                 'error' => $e->getMessage(),
             ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);

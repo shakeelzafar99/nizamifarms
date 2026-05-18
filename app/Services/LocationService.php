@@ -64,6 +64,101 @@ class LocationService
     }
 
     /**
+     * Get the configured Qurbani Operations Base.
+     *
+     * Qurbani is seasonal — the slaughter / packing depot is usually a
+     * different physical location from the regular office. Storing it
+     * as a ConfigModel key/value (rather than a row in
+     * t_ops_company_locations) keeps it cleanly toggleable for the
+     * season without polluting the attendance pickers.
+     *
+     * Returns null if any of name/lat/lng is unset, so callers can
+     * fall back to the regular office.
+     *
+     * Shape mirrors getPrimaryBaseLocation() so callers can swap.
+     *
+     * @return object|null {id:null, location_name, latitude, longitude, radius_meters:null, is_qurbani_base:true}
+     */
+    public static function getQurbaniBaseLocation()
+    {
+        $name = \App\Models\FIN\ConfigModel::get('qurbani_base_name');
+        $lat  = \App\Models\FIN\ConfigModel::get('qurbani_base_lat');
+        $lng  = \App\Models\FIN\ConfigModel::get('qurbani_base_lng');
+        if (!$name || !$lat || !$lng) {
+            return null;
+        }
+        return (object) [
+            'id'              => null,
+            'location_name'   => (string) $name,
+            'latitude'        => (float) $lat,
+            'longitude'       => (float) $lng,
+            'radius_meters'   => null,
+            'is_qurbani_base' => true,
+        ];
+    }
+
+    /**
+     * Origin lookup for Qurbani route ETA / dispatch.
+     *
+     * Priority chain (matches the Qurbani plan agreed May-2026):
+     *   1) Rider's recent GPS  (≤30 min old)
+     *   2) Qurbani Operations Base (from ConfigModel)
+     *   3) Rider's assigned company office
+     *   4) Primary company office
+     *
+     * Returns an associative array with the latitude/longitude PLUS a
+     * `source` enum so the API response can tell the user where the
+     * origin came from. The shape is intentionally small — callers
+     * only need lat/lng/source for the actual Google Directions call.
+     *
+     * @param int $riderId
+     * @param int $gpsFreshnessMinutes Default 30 — how recent the rider GPS reading must be
+     * @return array{latitude:float, longitude:float, source:string, source_label:string}|null
+     */
+    public static function getQurbaniOriginForRider(int $riderId, int $gpsFreshnessMinutes = 30): ?array
+    {
+        // 1. Rider GPS (preferred — most accurate origin while OFD).
+        $gps = DB::table('t_ops_rider_location')
+            ->where('user_id', $riderId)
+            ->where('captured_at', '>=', now()->subMinutes($gpsFreshnessMinutes))
+            ->orderBy('captured_at', 'desc')
+            ->first();
+        if ($gps && $gps->latitude && $gps->longitude) {
+            return [
+                'latitude'     => (float) $gps->latitude,
+                'longitude'    => (float) $gps->longitude,
+                'source'       => 'rider_gps',
+                'source_label' => 'Rider GPS',
+            ];
+        }
+
+        // 2. Qurbani Operations Base — Qurbani-specific override before
+        //    we fall back to generic office locations.
+        $qBase = self::getQurbaniBaseLocation();
+        if ($qBase) {
+            return [
+                'latitude'     => (float) $qBase->latitude,
+                'longitude'    => (float) $qBase->longitude,
+                'source'       => 'qurbani_base',
+                'source_label' => 'Qurbani Base (' . $qBase->location_name . ')',
+            ];
+        }
+
+        // 3-4. Existing fallback chain — assigned company location, then
+        //      primary company location.
+        $assigned = self::getUserAssignedLocation($riderId);
+        if ($assigned && $assigned->latitude && $assigned->longitude) {
+            return [
+                'latitude'     => (float) $assigned->latitude,
+                'longitude'    => (float) $assigned->longitude,
+                'source'       => 'assigned_office',
+                'source_label' => 'Office (' . $assigned->location_name . ')',
+            ];
+        }
+        return null;
+    }
+
+    /**
      * Get assigned location for a specific user
      * Falls back to primary location if no assignment exists
      * 
